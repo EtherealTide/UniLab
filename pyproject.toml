@@ -41,9 +41,9 @@ requires-python = ">=3.10,<3.14"
 dependencies = [
     "numpy",
     # Physics implementations are provided by the independently released
-    # unisim-core package from the production PyPI index. >=1.2.1 is the
-    # first line whose mujoco adapter executes on the mjbatch-uni engine.
-    "unisim-core>=1.2.1",
+    # unisim-core package. The 1.3.0 release carries the fixed model variant
+    # and per-world reset-default contracts.
+    "unisim-core>=1.3.0",
     # RL algorithms and async runtimes (PPO/APPO/SAC/TD3 runners,
     # collectors, IPC, logging) live in the independently released uni-rl
     # package (distribution name ``unilab-rl``), consumed via the injected
@@ -121,12 +121,8 @@ mujoco = [
     # mujoco==3.11.0 — switching MuJoCo versions requires an mjbatch rebuild,
     # not a UniLab config change.
     "mujoco~=3.11.0",
-    # The batch engine is the unilabsim mjbatch fork, published on PyPI as
-    # mjbatch-uni (#1552). Its build backend pins mujoco==3.11.0 at build
-    # time, so isolated builds are correct and no compiler preflight is
-    # needed; prebuilt wheels cover cp310-cp313 on linux x86_64/aarch64 and
-    # macOS arm64.
-    "mjbatch-uni~=0.1.0",
+    # The batch engine is the published unilabsim mjbatch fork.
+    "mjbatch-uni~=0.2.0",
 ]
 mjwarp = [
     # Keep the Warp backend on the same MuJoCo minor line as the host backend.
@@ -176,7 +172,7 @@ viser = ["viser>=1.0.26", "trimesh>=3.21.7"]
 # required-environments; elsewhere the extra is empty and the CLI reports a
 # targeted runtime diagnostic.
 superdex = [
-    "unisim-core[superdex] ; python_version >= '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "unisim-core[superdex]>=1.3.0 ; python_version >= '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
 [dependency-groups]
