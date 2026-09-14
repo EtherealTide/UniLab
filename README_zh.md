@@ -103,6 +103,8 @@ recipe，同时消费同一套 task、backend 和 RL contract。目前的下游�
 - [EngineAI RL](https://github.com/unilabsim/engineai_rl_unilab)
 - [Wuji](https://github.com/unilabsim/wuji_unilab)
 - [Legged Manipulation](https://github.com/unilabsim/legged-manipulation_unilab)
+- [Sharpa](https://github.com/unilabsim/sharpa_rl_unilab)
+- [Cricket-Gym](https://github.com/kishanpb/Cricket-Gym-Unilab)
 
 ## 文档
 
