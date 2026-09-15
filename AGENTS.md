@@ -35,6 +35,11 @@ architecture changes.
 - Environment reset returns `(obs_dict, info_dict)` and `NpEnvState.obs` is a
   dict. Keep `obs_groups_spec` and policy dimensions consistent with wrappers
   and learners.
+- The Manager-Based runtime is the sole task runtime; do not restore legacy
+  `EnvCfg -> NpEnv` factories or compatibility seams.
+- Manager-Based event terms negotiated through `SimBackend` capabilities are
+  the sole DR lifecycle; do not reintroduce a DR manager/provider protocol, and
+  unsupported capabilities fail closed.
 - Backend-specific behavior belongs behind the declared `unisim.backend.base.SimBackend`
   interface. Extend that interface before consuming a capability in an env;
   never probe or call backend-private methods from env or training code.
