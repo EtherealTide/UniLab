@@ -109,6 +109,7 @@ same task, backend, and RL contracts. Current downstream examples:
 
 - [MicroDuck RL](https://github.com/unilabsim/microduck_rl_unilab)
 - [EngineAI RL](https://github.com/unilabsim/engineai_rl_unilab)
+- [Unitree RL](https://github.com/unilabsim/unitree_rl_unilab)
 - [Wuji](https://github.com/unilabsim/wuji_unilab)
 - [Legged Manipulation](https://github.com/unilabsim/legged-manipulation_unilab)
 - [Sharpa](https://github.com/unilabsim/sharpa_rl_unilab)
