@@ -174,6 +174,8 @@ def test_per_environment_entity_defaults_are_not_broadcast_from_first_variant():
     for entity in cfg.scene.entity_assets:
         if entity.name == "object":
             continue
+        if entity.source is None:
+            continue
         path = Path(entity.source.model_file)
         key = (
             '<key name="home" qpos="0.25" ctrl="0.37"/>'

@@ -103,7 +103,7 @@ def make_fixture_cfg():
     return build_fixture_cfg(passive=True)
 
 
-def build_fixture_cfg(*, passive, num_envs=2):
+def build_fixture_cfg(*, passive: bool, num_envs: int = 2, mirror: bool | None = None):
     robot, variants, table = _sources(passive)
     entities = [
         SceneEntitySpec(
@@ -139,7 +139,8 @@ def build_fixture_cfg(*, passive, num_envs=2):
             root_body_name="table/base", physical_entity="table", joint_names=(), actuator_names=()
         ),
     }
-    if not passive:
+    include_mirror = not passive if mirror is None else mirror
+    if include_mirror:
         entities.append(
             SceneEntitySpec(
                 "target",
@@ -211,6 +212,63 @@ def test_registry_factory_mujoco_multi_entity_reset_isolation(num_envs):
         with pytest.raises(ValueError), env._reset_state.scoped(np.array([1])):
             env.scene["object"].write_root_link_pose_to_sim(np.zeros((1, 7)), env_ids=np.array([1]))
         np.testing.assert_array_equal(env.scene["robot"].data.joint_pos, robot_before)
+    finally:
+        env.close()
+
+
+def test_registry_factory_mujoco_consumes_portable_profile_operation_fixture():
+    scene_compiler = pytest.importorskip(
+        "unisim.scene_compiler",
+        reason="UniSim portable MJCF profile is newer than the released 1.6.0 dependency",
+    )
+    assert scene_compiler.PORTABLE_MJCF_PROFILE_ID == "portable-mjcf-v1"
+    factory = pickle.loads(pickle.dumps(registry_env_factory(TASK, "mujoco")))
+    env = factory(
+        num_envs=5,
+        env_cfg_override={"scene": build_fixture_cfg(passive=True, num_envs=5, mirror=True).scene},
+    )
+    try:
+        state = env.init_state()
+        assert state.obs["obs"].shape == (5, 4)
+        assert env.action_space.shape == (1,)
+        assert env.scene["object"].data.joint_pos.shape == (5, 1)
+
+        mirror_before = env.scene["target"].data.root_link_pose_w.copy()
+        with env._reset_state.scoped(np.array([3])):
+            env.scene["object"].write_root_link_pose_to_sim(
+                np.array([[0.4, -0.2, 1.5, 1.0, 0.0, 0.0, 0.0]]), env_ids=np.array([3])
+            )
+        np.testing.assert_allclose(env.scene["object"].data.root_link_pos_w[3], [0.4, -0.2, 1.5])
+        np.testing.assert_array_equal(env.scene["target"].data.root_link_pose_w, mirror_before)
+
+        env.step(np.full((5, 1), 0.25, dtype=np.float32))
+        np.testing.assert_allclose(env._control, 0.25)
+        env.reset(env_ids=np.array([2]))
+        np.testing.assert_allclose(env._control[:, 0], [0.25, 0.25, 0.0, 0.25, 0.25])
+
+        report = env._backend.get_import_report()
+        entity_fields = [field for field in report.fields if field.field.startswith("entity.")]
+        assert {field.scope.entity for field in entity_fields} == {
+            "robot",
+            "object",
+            "table",
+            "target",
+        }
+        assert all(field.effective is not None for field in entity_fields)
+
+        masses = []
+        for env_index in range(5):
+            playback = env.get_playback_model(env_index)
+            masses.append(float(np.asarray(playback.body("object/base").mass).reshape(-1)[0]))
+            for geom_name in ("target/object_geom", "target/lid_geom"):
+                mirror = playback.geom(geom_name)
+                np.testing.assert_array_equal(
+                    (np.asarray(mirror.contype).item(), np.asarray(mirror.conaffinity).item()),
+                    (0, 0),
+                )
+            for entity_name in ("robot", "object", "table", "target"):
+                assert playback.body(f"{entity_name}/base")
+        np.testing.assert_allclose(masses, [2.0, 2.0, 1.0, 2.0, 1.0])
     finally:
         env.close()
 
