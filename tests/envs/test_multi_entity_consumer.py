@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 from unisim.dr.types import FixedVariantPlan, ModelSourceDescriptor
 from unisim.entities import EntityInitialState, EntityVariantBinding, SceneEntitySpec
+from unisim.scene_compiler import PORTABLE_MJCF_PROFILE_ID
 
 from unilab.base import registry
 from unilab.base.entity import EntityCfg
@@ -217,11 +218,7 @@ def test_registry_factory_mujoco_multi_entity_reset_isolation(num_envs):
 
 
 def test_registry_factory_mujoco_consumes_portable_profile_operation_fixture():
-    scene_compiler = pytest.importorskip(
-        "unisim.scene_compiler",
-        reason="UniSim portable MJCF profile is newer than the released 1.6.0 dependency",
-    )
-    assert scene_compiler.PORTABLE_MJCF_PROFILE_ID == "portable-mjcf-v1"
+    assert PORTABLE_MJCF_PROFILE_ID == "portable-mjcf-v1"
     factory = pickle.loads(pickle.dumps(registry_env_factory(TASK, "mujoco")))
     env = factory(
         num_envs=5,

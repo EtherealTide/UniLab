@@ -73,7 +73,7 @@ TINY_MODEL_XML = """
     <framezaxis objtype="site" objname="imu_site" name="base_up"/>
     <framepos objtype="site" objname="foot_site" name="foot_pos"/>
     <framequat objtype="site" objname="foot_site" name="foot_quat"/>
-    <contact name="foot_contact" geom1="floor" geom2="foot_geom" data="found" num="1" reduce="mindist"/>
+    <contact name="foot_contact" geom1="floor" geom2="foot_geom" data="found" num="1"/>
   </sensor>
   <keyframe>
     <key name="stand" qpos="0 0 0.8 1 0 0 0 0.1 -0.2"/>

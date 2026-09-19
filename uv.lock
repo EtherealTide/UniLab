@@ -4556,7 +4556,7 @@ wheels = [
 
 [[package]]
 name = "superdex-physics-uni"
-version = "1.0.0"
+version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "imageio", extra = ["ffmpeg"] },
@@ -4574,20 +4574,20 @@ dependencies = [
     { name = "unrealcv" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5a/1f/deaaf137a3bd4e233c58702005d65a71abec953d22be00605e449859b094/superdex_physics_uni-1.0.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:29fc2d2a063244c0bb90a181c0dc418db25ded3db2b75262cb921c294da4d832", size = 11930457, upload-time = "2026-09-09T13:04:13.814Z" },
-    { url = "https://files.pythonhosted.org/packages/66/53/e2fc09c2c3d45a853f811e3fc216cf52fdb6f4a82dbdda688994b7c54451/superdex_physics_uni-1.0.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:e3832675306f5a34580d46a86618db44b9e45bb26b0a2ec178b2aa6c48e5e4d4", size = 11930880, upload-time = "2026-09-09T14:46:45.279Z" },
+    { url = "https://files.pythonhosted.org/packages/58/88/e20f0dab44dbdb2a98e02a1ff8c2297f21d60be039cd95eddcae723ee7d5/superdex_physics_uni-1.1.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:802ad6a306c40dbf752d8842e8849a3aad96ef74e3b30150861438befa6a6ab4", size = 11968570, upload-time = "2026-09-19T05:37:01.505Z" },
+    { url = "https://files.pythonhosted.org/packages/27/01/124c793d0041616f33cbd00b17242f6e6475880aca2d21f168f1571ec5e3/superdex_physics_uni-1.1.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:421f884fcb7592b1b95fe520c46ee6e28bf8a69ec431589652086fdb567c9c8e", size = 11968674, upload-time = "2026-09-19T05:37:08.101Z" },
 ]
 
 [[package]]
 name = "superdex-robotics-uni"
-version = "1.0.0"
+version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "superdex-physics-uni" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a3/00/d670077fcbf7324bf0137e55dee51255084379aeb48494fe2b4350879138/superdex_robotics_uni-1.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3bb31135b39451862af8213feb2053c2482337e7f58ae36544093e723c9e5bfc", size = 1043255, upload-time = "2026-09-09T13:04:17.66Z" },
-    { url = "https://files.pythonhosted.org/packages/77/3f/a854c6d94019279e68c4259348ac3ab46bd9f975bf30d718df6f4254af87/superdex_robotics_uni-1.0.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f61140e76c8809a22b58787dbbe5710ad074e44727b7dfa8b29009d335d7251c", size = 1043319, upload-time = "2026-09-09T14:46:47.57Z" },
+    { url = "https://files.pythonhosted.org/packages/20/5d/0b911ebe20da57797bcb058ed4a16ea1f7334d66ee9ec7d4eaf65f6ea25f/superdex_robotics_uni-1.1.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:8cd36fe93b2c1baea06570edb5506e3f2897fad03b91767ddde13215324f83d6", size = 1043475, upload-time = "2026-09-19T05:37:12.105Z" },
+    { url = "https://files.pythonhosted.org/packages/2f/61/1fff02bc141627fde36e526758d9f36658eb37a8651be1f77a2fd252dfbc/superdex_robotics_uni-1.1.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:60e531b7e680b167a3daadc35ca209da171aacba27635b2d4a2bb05a4100842c", size = 1043573, upload-time = "2026-09-19T05:37:14.692Z" },
 ]
 
 [[package]]
@@ -5240,8 +5240,8 @@ requires-dist = [
     { name = "trimesh", marker = "extra == 'viser'", specifier = ">=3.21.7" },
     { name = "typing-extensions" },
     { name = "unilab-rl", specifier = "==1.3.0" },
-    { name = "unisim-core", specifier = ">=1.6.0" },
-    { name = "unisim-core", extras = ["superdex"], marker = "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'superdex'", specifier = ">=1.6.0" },
+    { name = "unisim-core", specifier = ">=1.7.1" },
+    { name = "unisim-core", extras = ["superdex"], marker = "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'superdex'", specifier = ">=1.7.1" },
     { name = "viser", marker = "extra == 'viser'", specifier = ">=1.0.26" },
     { name = "wandb" },
     { name = "warp-lang", marker = "extra == 'mjwarp'", specifier = "==1.16.0" },
@@ -5284,13 +5284,13 @@ wheels = [
 
 [[package]]
 name = "unisim-core"
-version = "1.6.0"
+version = "1.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/df/d2/6802ddbfea15f27e165f8565faae39eeb6ab31a484384b64a3fc459f269a/unisim_core-1.6.0.tar.gz", hash = "sha256:72dbc11170e9516909a9ec81c353aad17222b52a0aa24f0fc63f5290aee3cf51", size = 363157, upload-time = "2026-09-17T10:25:30.036Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/68/95/8be00e6aa8dfebece0421a2f9216a9f6159455476ac97c4e6eb3d616e31f/unisim_core-1.7.1.tar.gz", hash = "sha256:d9a26a8cbf239cc6ae1b3dde35bcb6b844efd71ac2b23c86037d644c18780338", size = 459983, upload-time = "2026-09-19T06:11:01.577Z" }
 
 [package.optional-dependencies]
 superdex = [

@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 from unisim.backend.base import CameraCfg, RenderClosedError
 from unisim.backend.isaacgym.backend import IsaacGymWorkerError
+from unisim.backend.isaacsim import dependencies as isaacsim_dependencies
 from unisim.backend.isaacsim.backend import (
     IsaacSimBackend,
     IsaacSimRenderError,
@@ -165,7 +166,10 @@ def test_dependencies_resolve_default_layout(
     env = build_worker_env(runtime)
     assert env["LD_LIBRARY_PATH"].split(":")[0] == str(tmp_path / "venv" / "lib")
     assert env["PATH"].split(":")[0] == str(tmp_path / "venv" / "bin")
-    assert env["PYTHONPATH"].split(":")[0] == str(tmp_path / "IsaacLab" / "source")
+    python_paths = env["PYTHONPATH"].split(":")
+    host_package_root = Path(isaacsim_dependencies.__file__).resolve().parents[3]
+    assert python_paths[0] == str(tmp_path / "IsaacLab" / "source")
+    assert str(host_package_root) not in python_paths
     assert env["OMNI_KIT_ACCEPT_EULA"] == "1"
 
 
@@ -220,7 +224,7 @@ def test_contact_sensor_is_explicitly_unsupported(backend: IsaacSimBackend) -> N
     metadata = backend._scene_metadata
     assert metadata is not None
     assert "foot_contact" in metadata.unsupported_sensors
-    with pytest.raises(NotImplementedError, match="contact-force reporting"):
+    with pytest.raises(NotImplementedError, match="PhysX collision-pair force reporter"):
         backend.get_sensor_data("foot_contact")
     # Non-contact sensors remain available through the inherited cached path.
     assert backend.get_sensor_data("base_gyro").shape == (NUM_ENVS, 3)
