@@ -42,8 +42,9 @@ dependencies = [
     # unisim-core package. Version 1.5.0 provides the M2 physical entity,
     # immutable variant, layout and selected-reset contracts; 1.5.1 adds
     # get_motion_body_ids on the newton/genesis adapters; 1.6.0 adds Newton
-    # CUDA graph execution.
-    "unisim-core>=1.6.0",
+    # CUDA graph execution; 1.7.0 adds the portable MJCF scene profile and
+    # 1.7.1 isolates the IsaacSim worker from host compiled dependencies.
+    "unisim-core>=1.7.1",
     # RL algorithms and async runtimes (PPO/APPO/SAC/TD3 runners,
     # collectors, IPC, logging) live in the independently released uni-rl
     # package (distribution name ``unilab-rl``), consumed via the injected
@@ -159,7 +160,7 @@ genesis = [
     "genesis-world==1.3.3",
 ]
 viser = ["viser>=1.0.26", "trimesh>=3.21.7"]
-# SuperDex Physics/Robotics 1.0.0 ships as published wheels; the exact pins and
+# SuperDex Physics/Robotics 1.1.0 ships as published wheels; the exact pins and
 # the temporary superdex-uni build names are owned by unisim-core's superdex
 # extra (they revert to superdex-physics/-robotics once the upstream
 # project_superdex release lands). That extra already carries plain `mujoco`
@@ -171,7 +172,7 @@ viser = ["viser>=1.0.26", "trimesh>=3.21.7"]
 # required-environments; elsewhere the extra is empty and the CLI reports a
 # targeted runtime diagnostic.
 superdex = [
-    "unisim-core[superdex]>=1.6.0 ; python_version >= '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "unisim-core[superdex]>=1.7.1 ; python_version >= '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
 [dependency-groups]

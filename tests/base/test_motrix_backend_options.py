@@ -270,6 +270,7 @@ def test_motrix_backend_dr_capabilities_include_pd_gains_when_overrides_availabl
     import unisim.backend.motrix.backend as mod
 
     backend = object.__new__(mod.MotrixBackend)
+    backend._portable_mode = False
     backend._supports_position_actuator_gains = True
     backend._supports_geom_friction_override = True
     backend._supports_gravity_override = True
@@ -290,6 +291,7 @@ def test_motrix_backend_uses_cached_batch_link_velocities() -> None:
     import unisim.backend.motrix.backend as mod
 
     backend = object.__new__(mod.MotrixBackend)
+    backend._portable_mode = False
     backend._link_velocities = np.arange(2 * 3 * 6, dtype=np.float32).reshape(2, 3, 6)
     backend._link_velocity_cache_valid = True
 
@@ -319,6 +321,7 @@ def test_motrix_copy_body_state_uses_cached_state_and_reuses_scratch() -> None:
     )
 
     backend = object.__new__(mod.MotrixBackend)
+    backend._portable_mode = False
     backend._num_envs = num_envs
     backend._np_dtype = np.float32
     backend._link_poses = poses
@@ -362,6 +365,7 @@ def test_motrix_backend_get_body_pose_w_slices_cached_poses_once() -> None:
     import unisim.backend.motrix.backend as mod
 
     backend = object.__new__(mod.MotrixBackend)
+    backend._portable_mode = False
     backend._link_poses = np.asarray(
         [
             [
@@ -390,6 +394,7 @@ def test_motrix_root_layout_uses_selected_body_floating_base_indices() -> None:
         "floating": SimpleNamespace(floatingbase=floating_base),
     }
     backend = object.__new__(mod.MotrixBackend)
+    backend._portable_mode = False
     backend._model = SimpleNamespace(get_body=lambda name: bodies.get(name))
 
     layout = backend.get_root_state_layout("floating")
@@ -427,6 +432,7 @@ def test_motrix_backend_applies_body_mass_and_ipos_reset_payload() -> None:
     link1.index = 1
     link1.name = "object"
     backend = object.__new__(mod.MotrixBackend)
+    backend._portable_mode = False
     backend.backend_type = "motrix"
     backend._model = SimpleNamespace(num_links=2)
     backend._links_by_id = {0: link0, 1: link1}
@@ -462,6 +468,7 @@ def test_motrix_backend_applies_geom_friction_reset_payload() -> None:
     geom1 = _FakeMotrixGeom(name="object")
     geom1.index = 1
     backend = object.__new__(mod.MotrixBackend)
+    backend._portable_mode = False
     backend.backend_type = "motrix"
     backend._model = SimpleNamespace(num_links=1, num_geoms=2)
     backend._geoms_by_id = {0: geom0, 1: geom1}
@@ -524,6 +531,7 @@ def test_motrix_backend_applies_gravity_reset_payload() -> None:
 
     fake_model = _FakeMotrixModel()
     backend = object.__new__(mod.MotrixBackend)
+    backend._portable_mode = False
     backend.backend_type = "motrix"
     backend._model = fake_model
     backend._supports_gravity_override = True
@@ -548,6 +556,7 @@ def test_motrix_backend_interval_body_force_uses_link_external_force_delta() -> 
 
     link = _FakeMotrixLink()
     backend = object.__new__(mod.MotrixBackend)
+    backend._portable_mode = False
     backend._num_envs = 2
     backend._data = object()
     backend._links_by_id = {0: link}

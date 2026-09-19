@@ -292,6 +292,7 @@ def _fake_motrix_backend(pre_step_control_fn=None):
     from unisim.backend.motrix.backend import MotrixBackend
 
     backend = object.__new__(MotrixBackend)
+    backend._portable_mode = False
     backend._pre_step_control_fn = pre_step_control_fn
     backend._model = _FakeMotrixModel()
     backend._data = SimpleNamespace(
@@ -383,6 +384,7 @@ def test_motrix_native_video_capture_uses_headless_system_camera(monkeypatch) ->
     monkeypatch.setattr(mod, "RenderSettings", FakeRenderSettings, raising=False)
 
     backend = object.__new__(mod.MotrixBackend)
+    backend._portable_mode = False
     backend._model = FakeModel()
     backend._data = object()
     backend._num_envs = 3
@@ -468,6 +470,7 @@ def test_motrix_native_video_capture_defaults_camera_lookat_to_grid_center(monke
     monkeypatch.setattr(mod, "RenderSettings", FakeRenderSettings, raising=False)
 
     backend = object.__new__(mod.MotrixBackend)
+    backend._portable_mode = False
     backend._model = FakeModel()
     backend._num_envs = 4
     backend._render_app = None
@@ -561,6 +564,7 @@ def test_motrix_native_video_capture_tracks_primary_env_base(monkeypatch) -> Non
     monkeypatch.setattr(mod, "RenderSettings", FakeRenderSettings, raising=False)
 
     backend = object.__new__(mod.MotrixBackend)
+    backend._portable_mode = False
     backend._model = FakeModel()
     backend._data = object()
     backend._num_envs = 3
@@ -652,6 +656,7 @@ def test_motrix_interactive_renderer_applies_camera_kwargs(monkeypatch) -> None:
     monkeypatch.setattr(mod, "RenderSettings", FakeRenderSettings, raising=False)
 
     backend = object.__new__(mod.MotrixBackend)
+    backend._portable_mode = False
     backend._model = FakeModel()
     backend._num_envs = 1
     backend._render_app = None
@@ -707,6 +712,7 @@ def test_motrix_renderer_zero_offset_mode(monkeypatch) -> None:
     monkeypatch.setattr(mod, "RenderSettings", FakeRenderSettings, raising=False)
 
     backend = object.__new__(mod.MotrixBackend)
+    backend._portable_mode = False
     backend._model = FakeModel()
     backend._num_envs = 4
     backend._render_app = None
