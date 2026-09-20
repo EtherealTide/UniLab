@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "unilab"
-version = "1.3.0"
+version = "1.3.1"
 description = "Universal Lab for Robot Learning"
 readme = "README.md"
 license = "Apache-2.0"
@@ -26,9 +26,11 @@ dependencies = [
     # Physics implementations are provided by the independently released
     # unisim-core package. Version 1.5.0 provides the M2 physical entity,
     # immutable variant, layout and selected-reset contracts; 1.6.0 adds
-    # Newton CUDA graph execution; and 1.7.2 adds SuperDex physical
-    # kinematic roots to the portable MJCF profile.
-    "unisim-core>=1.7.2",
+    # Newton CUDA graph execution; 1.7.2 adds SuperDex physical
+    # kinematic roots to the portable MJCF profile; and 1.7.3 adds IsaacSim
+    # mapped-scene contact sensors, bounded PhysX solver configuration and
+    # mapped reset domain randomization.
+    "unisim-core>=1.7.3",
     # RL algorithms and async runtimes live in the independently released
     # uni-rl package (distribution name ``unilab-rl``); see pyproject.toml.
     "unilab-rl==1.3.0",
@@ -83,7 +85,10 @@ mujoco = [
     "mujoco~=3.11.0",
     "mjbatch-uni~=0.2.1",
 ]
-motrix = ["motrixsim-core==0.8.2"]
+# The Motrix runtime pin lives in the unisim-core ``motrix`` extra, so
+# the consumed runtime always matches the version the
+# unisim.backend.motrix adapter is tested against.
+motrix = ["unisim-core[motrix]>=1.7.3"]
 viser = ["viser>=1.0.26", "trimesh>=3.21.7"]
 
 [dependency-groups]

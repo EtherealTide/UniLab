@@ -311,27 +311,37 @@ def test_motrix_backend_uses_cached_batch_link_velocities() -> None:
     np.testing.assert_allclose(ang_vel, backend._link_velocities[:, body_ids, 3:])
 
 
-def test_motrix_copy_body_state_uses_cached_state_and_reuses_scratch() -> None:
+def test_motrix_copy_body_state_routes_fused_read_into_caller_buffers() -> None:
     import unisim.backend.motrix.backend as mod
 
-    num_envs, num_bodies = 2, 4
-    poses = np.arange(num_envs * num_bodies * 7, dtype=np.float32).reshape(num_envs, num_bodies, 7)
-    velocities = np.arange(num_envs * num_bodies * 6, dtype=np.float32).reshape(
-        num_envs, num_bodies, 6
-    )
+    num_envs = 2
+    body_ids = np.asarray([3, 1], dtype=np.int32)
+    shape = (num_envs, len(body_ids), 3)
+    quat_shape = (num_envs, len(body_ids), 4)
+    expected = {
+        "out_pos": np.arange(np.prod(shape), dtype=np.float32).reshape(shape),
+        "out_quat": np.arange(np.prod(quat_shape), dtype=np.float32).reshape(quat_shape),
+        "out_linvel": (100 + np.arange(np.prod(shape), dtype=np.float32)).reshape(shape),
+        "out_angvel": (200 + np.arange(np.prod(shape), dtype=np.float32)).reshape(shape),
+    }
+    calls: dict[str, object] = {}
+    sentinel_data = object()
+
+    class _StubModel:
+        def get_link_states(self, data, *, indices, quat_order, **buffers):
+            calls["data"] = data
+            calls["indices"] = list(indices)
+            calls["quat_order"] = quat_order
+            for name, buffer in buffers.items():
+                buffer[...] = expected[name]
 
     backend = object.__new__(mod.MotrixBackend)
     backend._portable_mode = False
-    backend._num_envs = num_envs
-    backend._np_dtype = np.float32
-    backend._link_poses = poses
-    backend._link_velocities = velocities
-    backend._link_velocity_cache_valid = True
-    backend._link_velocity_cache = None
-    body_ids = np.asarray([3, 1], dtype=np.int32)
-    shape = (num_envs, len(body_ids), 3)
+    backend._model = _StubModel()
+    backend._data = sentinel_data
+
     out_pos = np.empty(shape, dtype=np.float32)
-    out_quat = np.empty((num_envs, len(body_ids), 4), dtype=np.float32)
+    out_quat = np.empty(quat_shape, dtype=np.float32)
     out_lin_vel = np.empty(shape, dtype=np.float32)
     out_ang_vel = np.empty(shape, dtype=np.float32)
 
@@ -347,18 +357,14 @@ def test_motrix_copy_body_state_uses_cached_state_and_reuses_scratch() -> None:
     assert result[1] is out_quat
     assert result[2] is out_lin_vel
     assert result[3] is out_ang_vel
-    np.testing.assert_array_equal(out_pos, poses[:, body_ids, :3])
-    np.testing.assert_array_equal(out_quat[:, :, 0], poses[:, body_ids, 6])
-    np.testing.assert_array_equal(out_quat[:, :, 1:], poses[:, body_ids, 3:6])
-    np.testing.assert_array_equal(out_lin_vel, velocities[:, body_ids, :3])
-    np.testing.assert_array_equal(out_ang_vel, velocities[:, body_ids, 3:])
-
-    first_scratch = backend._link_velocity_cache
-    velocities += 1000.0
-    backend.copy_body_state_w(body_ids, out_pos, out_quat, out_lin_vel, out_ang_vel)
-
-    assert backend._link_velocity_cache is first_scratch
-    np.testing.assert_array_equal(out_lin_vel, velocities[:, body_ids, :3])
+    # The float32 C-contiguous buffers are written natively in place.
+    assert calls["data"] is sentinel_data
+    assert calls["indices"] == body_ids.tolist()
+    assert calls["quat_order"] == "wxyz"
+    np.testing.assert_array_equal(out_pos, expected["out_pos"])
+    np.testing.assert_array_equal(out_quat, expected["out_quat"])
+    np.testing.assert_array_equal(out_lin_vel, expected["out_linvel"])
+    np.testing.assert_array_equal(out_ang_vel, expected["out_angvel"])
 
 
 def test_motrix_backend_get_body_pose_w_slices_cached_poses_once() -> None:
