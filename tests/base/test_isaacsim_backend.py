@@ -224,7 +224,7 @@ def test_contact_sensor_is_explicitly_unsupported(backend: IsaacSimBackend) -> N
     metadata = backend._scene_metadata
     assert metadata is not None
     assert "foot_contact" in metadata.unsupported_sensors
-    with pytest.raises(NotImplementedError, match="PhysX collision-pair force reporter"):
+    with pytest.raises(NotImplementedError, match="no PhysX per-body or pair contact reporter"):
         backend.get_sensor_data("foot_contact")
     # Non-contact sensors remain available through the inherited cached path.
     assert backend.get_sensor_data("base_gyro").shape == (NUM_ENVS, 3)

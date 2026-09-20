@@ -19,7 +19,7 @@ source-exclude = [
 
 [project]
 name = "unilab"
-version = "1.3.0"
+version = "1.3.1"
 description = "Configurable, contract-driven robot learning across physics backends"
 readme = "README.md"
 license = "Apache-2.0"
@@ -43,9 +43,12 @@ dependencies = [
     # immutable variant, layout and selected-reset contracts; 1.5.1 adds
     # get_motion_body_ids on the newton/genesis adapters; 1.6.0 adds Newton
     # CUDA graph execution; 1.7.0 adds the portable MJCF scene profile;
-    # 1.7.1 isolates the IsaacSim worker from host compiled dependencies; and
-    # 1.7.2 adds SuperDex physical kinematic roots to the portable profile.
-    "unisim-core>=1.7.2",
+    # 1.7.1 isolates the IsaacSim worker from host compiled dependencies;
+    # 1.7.2 adds SuperDex physical kinematic roots to the portable profile;
+    # and 1.7.3 adds IsaacSim mapped-scene contact sensors, bounded PhysX
+    # solver configuration, per-entity self-collision and mapped reset
+    # domain randomization, plus IsaacGym mapped-scene reset randomization.
+    "unisim-core>=1.7.3",
     # RL algorithms and async runtimes (PPO/APPO/SAC/TD3 runners,
     # collectors, IPC, logging) live in the independently released uni-rl
     # package (distribution name ``unilab-rl``), consumed via the injected
@@ -153,7 +156,10 @@ newton = [
     "pyglet>=2.1.6,<3",
     "imgui-bundle>=1.92.0",
 ]
-motrix = ["motrixsim-core==0.8.2"]
+# The Motrix runtime pin lives in the unisim-core ``motrix`` extra, so
+# the consumed runtime always matches the version the
+# unisim.backend.motrix adapter is tested against.
+motrix = ["unisim-core[motrix]>=1.7.3"]
 genesis = [
     # Genesis imports as ``genesis`` and owns the GPU physics implementation;
     # it is a separate optional extra pinned exactly to the probed release
@@ -173,7 +179,7 @@ viser = ["viser>=1.0.26", "trimesh>=3.21.7"]
 # required-environments; elsewhere the extra is empty and the CLI reports a
 # targeted runtime diagnostic.
 superdex = [
-    "unisim-core[superdex]>=1.7.2 ; python_version >= '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "unisim-core[superdex]>=1.7.3 ; python_version >= '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
 [dependency-groups]
