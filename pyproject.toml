@@ -49,11 +49,13 @@ dependencies = [
     # solver configuration, per-entity self-collision and mapped reset
     # domain randomization, plus IsaacGym mapped-scene reset randomization.
     "unisim-core>=1.7.4",
-    # RL algorithms and async runtimes (PPO/APPO/SAC/TD3 runners,
-    # collectors, IPC, logging) live in the independently released uni-rl
-    # package (distribution name ``unilab-rl``), consumed via the injected
-    # env contract (uni_rl.env_contract.EnvFactory). Published on PyPI.
-    "unilab-rl==1.3.0",
+    # RL algorithms and async runtimes (APPO/SAC/TD3 runners, collectors,
+    # IPC, logging) live in the independently released uni-rl package
+    # (distribution name ``unilab-rl``), consumed via the injected env
+    # contract (uni_rl.env_contract.EnvFactory). It is an optional dependency:
+    # PPO training and playback run directly on rsl-rl-lib; only APPO,
+    # off-policy algorithms, and multi-GPU data-parallel PPO need it
+    # (extra ``uni_rl``). Published on PyPI.
     "numba>=0.67",
     "prettytable>=3.10",
     # torch is a range (not an exact pin) so that published PyPI metadata lets
@@ -167,6 +169,10 @@ genesis = [
     "genesis-world==1.3.3",
 ]
 viser = ["viser>=1.0.26", "trimesh>=3.21.7"]
+# APPO / off-policy (SAC/TD3) runners, collectors, IPC, and multi-GPU
+# data-parallel PPO launches require the optional uni-rl runtime. PPO
+# single-process training and playback run directly on rsl-rl-lib.
+uni_rl = ["unilab-rl==1.3.0"]
 # SuperDex Physics/Robotics 1.1.0 ships as published wheels; the exact pins and
 # the temporary superdex-uni build names are owned by unisim-core's superdex
 # extra (they revert to superdex-physics/-robotics once the upstream
@@ -183,7 +189,9 @@ superdex = [
 ]
 
 [dependency-groups]
-dev = ["pytest", "pytest-cov", "ruff", "mypy", "pyright>=1.1.408"]
+# Repo development and CI exercise the APPO/off-policy/multi-GPU paths, so
+# the dev environment keeps the optional unilab-rl runtime installed.
+dev = ["pytest", "pytest-cov", "ruff", "mypy", "pyright>=1.1.408", "unilab-rl==1.3.0"]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

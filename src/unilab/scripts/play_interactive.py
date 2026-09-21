@@ -44,12 +44,6 @@ from omegaconf import DictConfig, OmegaConf
 
 _PACKAGE_CONF_ROOT = Path(__file__).resolve().parents[1] / "conf"
 
-from uni_rl.algos.rsl_rl import (
-    RslRlVecEnvWrapper,
-    get_policy_obs_dims,
-    normalize_ppo_train_cfg,
-)
-
 from unilab.base.process_device import (
     apply_backend_env_device_override,
     configure_backend_process_device,
@@ -107,12 +101,6 @@ from unilab.structured_configs import PPOConfig as _StructuredPPOConfig
 
 PPOConfig = _StructuredPPOConfig
 _PLAYBACK_ENV_UNAVAILABLE = "playback_env_unavailable"
-
-try:
-    from rsl_rl.runners import OnPolicyRunner
-except ImportError:
-    print("Could not import rsl_rl. Please ensure it is installed.")
-    sys.exit(1)
 
 import mujoco
 import mujoco.viewer
@@ -867,17 +855,6 @@ def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = 
     try:
         playback_cfg = build_playback_config(args, num_envs=1)
         if algo == "ppo":
-            wrapper_cls = RslRlVecEnvWrapper
-            runner_cls = OnPolicyRunner
-            if cfg is not None:
-                from uni_rl.algos.rsl_rl_runtime import resolve_rsl_rl_ppo_runtime
-
-                runtime = resolve_rsl_rl_ppo_runtime(
-                    _algo_config_dict(cfg),
-                    default_wrapper_cls=RslRlVecEnvWrapper,
-                )
-                wrapper_cls = runtime.wrapper_cls
-                runner_cls = runtime.runner_cls or OnPolicyRunner
             session: Any = create_rsl_rl_playback_session(
                 playback_cfg=playback_cfg,
                 env_factory=_create_env,
@@ -887,16 +864,14 @@ def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = 
                 checkpoint_resolver=resolve_checkpoint,
                 checkpoint_input_dim_reader=infer_checkpoint_actor_input_dim,
                 entrypoint_log_root=get_entrypoint_log_root,
-                wrapper_cls=wrapper_cls,
-                runner_cls=runner_cls,
-                policy_obs_dims_getter=get_policy_obs_dims,
-                train_cfg_normalizer=normalize_ppo_train_cfg,
                 sim2sim_preflight=make_sim2sim_preflight(cfg, algo_name="ppo"),
                 log=lambda message: print(f"[play_interactive] {message}"),
             )
         elif algo == "appo":
             if cfg is None:
                 raise ValueError("APPO interactive playback requires a composed Hydra config.")
+            from uni_rl.algos.rsl_rl import RslRlVecEnvWrapper
+
             session = create_appo_playback_session(
                 playback_cfg=playback_cfg,
                 cfg=cfg,

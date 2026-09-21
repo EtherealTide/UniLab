@@ -14,14 +14,15 @@ algo:
   num_envs: 2
   num_steps_per_env: 32
   max_iterations: 100
-  empirical_normalization: false
   obs_groups:
     actor: [actor]
     critic: [actor]
-  policy:
-    actor_hidden_dims: [64, 64]
-    critic_hidden_dims: [64, 64]
-    init_noise_std: 0.25
+  actor:
+    hidden_dims: [64, 64]
+    distribution_cfg:
+      init_std: 0.25
+  critic:
+    hidden_dims: [64, 64]
   algorithm:
     num_mini_batches: 1
 

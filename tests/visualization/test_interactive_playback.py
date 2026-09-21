@@ -158,7 +158,6 @@ def test_create_rsl_rl_playback_session_loads_checkpoint_and_runner_log_dir() ->
         wrapper_cls=Wrapper,
         runner_cls=Runner,
         policy_obs_dims_getter=lambda spec: (5, 7),
-        train_cfg_normalizer=lambda cfg: cfg,
         log=lambda message: None,
     )
 
@@ -193,7 +192,6 @@ def test_create_rsl_rl_playback_session_rejects_missing_env() -> None:
             wrapper_cls=object,
             runner_cls=object,
             policy_obs_dims_getter=lambda spec: (0, 0),
-            train_cfg_normalizer=lambda cfg: cfg,
             log=lambda message: None,
         )
 
@@ -244,7 +242,6 @@ def _rsl_rl_session_kwargs(tmp_path: Path) -> dict[str, Any]:
         ),
         wrapper_cls=_RslRlTestWrapper,
         policy_obs_dims_getter=lambda spec: (5, 7),
-        train_cfg_normalizer=lambda cfg: cfg,
         log=lambda message: None,
     )
 
@@ -627,13 +624,11 @@ def test_build_play_backend_adapter_injects_root_dir_and_materializer(
     }
 
 
-def test_playback_explicitly_skips_training_progress_for_stateful_runner(tmp_path):
-    from uni_rl.algos.rsl_rl_training_state import TrainingStateOnPolicyRunner
-
+def test_playback_loads_actor_weights_only(tmp_path):
     captured = {}
 
-    class Runner(TrainingStateOnPolicyRunner):
-        def __init__(self, *args, **kwargs):
+    class Runner:
+        def __init__(self, wrapped_env, train_cfg, log_dir, device):
             pass
 
         def load(self, path, **kwargs):
@@ -646,7 +641,7 @@ def test_playback_explicitly_skips_training_progress_for_stateful_runner(tmp_pat
     kwargs["runner_cls"] = Runner
     kwargs["checkpoint_resolver"] = lambda *args: str(tmp_path / "model.pt")
     create_rsl_rl_playback_session(**kwargs)
-    assert captured["restore_training_state"] is False
+    assert "restore_training_state" not in captured
     assert captured["load_cfg"]["actor"] is True
     assert not any(value for key, value in captured["load_cfg"].items() if key != "actor")
 

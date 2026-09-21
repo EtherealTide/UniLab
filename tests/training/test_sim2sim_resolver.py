@@ -40,10 +40,12 @@ def _mujoco_cfg() -> Any:
             "training": {"sim_backend": "mujoco"},
             "algo": {
                 "obs_groups": {"actor": ["actor"]},
-                "empirical_normalization": False,
-                "policy": {
-                    "actor_hidden_dims": [512, 256, 128],
-                    "critic_hidden_dims": [512, 256, 128],
+                "actor": {
+                    "hidden_dims": [512, 256, 128],
+                    "obs_normalization": False,
+                },
+                "critic": {
+                    "hidden_dims": [512, 256, 128],
                 },
             },
             "env": {
@@ -108,7 +110,7 @@ def test_extract_snapshot_includes_only_present_contract_fields():
     # Present DENY/WARN fields are captured...
     assert snapshot["env.control_config.action_scale"] == 0.25
     assert snapshot["algo.obs_groups"] == {"actor": ["actor"]}
-    assert snapshot["algo.empirical_normalization"] is False
+    assert snapshot["algo.actor.obs_normalization"] is False
     assert snapshot["reward.scales"] == {"tracking_lin_vel": 2.0}
     # ...ALLOWLIST fields are excluded...
     assert "training.sim_backend" not in snapshot
@@ -223,9 +225,9 @@ def test_none_source_returns_none(capsys):
 
 
 def test_target_missing_path_is_skipped(tmp_path):
-    # Snapshot was taken from a PPO run (empirical_normalization); the off-policy
+    # Snapshot was taken from a PPO run (actor obs normalization); the off-policy
     # target only has obs_normalization, so the snapshot path is simply skipped.
-    _write_sidecar(tmp_path, {"algo.empirical_normalization": True})
+    _write_sidecar(tmp_path, {"algo.actor.obs_normalization": True})
     target = OmegaConf.create({"algo": {"obs_normalization": True}, "env": {}})
     assert resolve_sim2sim_config(tmp_path, target) is target
 
@@ -238,10 +240,25 @@ def test_non_strict_downgrades_denial_to_warning(tmp_path, capsys):
     assert "action_scale" in capsys.readouterr().out
 
 
-def test_empirical_normalization_on_vs_off_raises(tmp_path):
+def test_actor_obs_normalization_on_vs_off_raises(tmp_path):
     # The real case: trained with obs normalization ON, played with it OFF.
+    _write_sidecar(tmp_path, {"algo.actor.obs_normalization": True})
+    target = OmegaConf.create({"algo": {"actor": {"obs_normalization": False}}})
+    with pytest.raises(CrossBackendIncompatibleError):
+        resolve_sim2sim_config(tmp_path, target)
+
+
+def test_legacy_empirical_normalization_alias_resolves_against_canonical_target(tmp_path):
+    # Old snapshots record the pre-native-schema key; LEGACY_PATH_ALIASES maps it
+    # onto the canonical actor-side path before comparison.
     _write_sidecar(tmp_path, {"algo.empirical_normalization": True})
-    target = OmegaConf.create({"algo": {"empirical_normalization": False}})
+    target = OmegaConf.create({"algo": {"actor": {"obs_normalization": True}}, "env": {}})
+    assert resolve_sim2sim_config(tmp_path, target) is target
+
+
+def test_legacy_empirical_normalization_alias_mismatch_raises(tmp_path):
+    _write_sidecar(tmp_path, {"algo.empirical_normalization": True})
+    target = OmegaConf.create({"algo": {"actor": {"obs_normalization": False}}, "env": {}})
     with pytest.raises(CrossBackendIncompatibleError):
         resolve_sim2sim_config(tmp_path, target)
 
@@ -291,10 +308,10 @@ def test_env_field_present_in_source_absent_in_target_raises(tmp_path):
 def test_env_field_present_in_target_absent_in_source_raises(tmp_path):
     # Reverse asymmetry: the trained run omitted sampling_mode (used the env default),
     # the target sets it explicitly. Still unverifiable -> fail closed.
-    _write_sidecar(tmp_path, {"algo.empirical_normalization": False})
+    _write_sidecar(tmp_path, {"algo.actor.obs_normalization": False})
     target = OmegaConf.create(
         {
-            "algo": {"empirical_normalization": False},
+            "algo": {"actor": {"obs_normalization": False}},
             "env": {"commands": {"motion": {"params": {"sampling_mode": "adaptive"}}}},
         }
     )
@@ -324,15 +341,15 @@ def test_legacy_config_sampling_mode_is_snapshotted_under_canonical_path() -> No
 
 def test_env_field_symmetric_absence_does_not_raise(tmp_path):
     # Neither side sets the env structural field -> both use the same env default -> ok.
-    _write_sidecar(tmp_path, {"algo.empirical_normalization": False})
-    target = OmegaConf.create({"algo": {"empirical_normalization": False}, "env": {}})
+    _write_sidecar(tmp_path, {"algo.actor.obs_normalization": False})
+    target = OmegaConf.create({"algo": {"actor": {"obs_normalization": False}}, "env": {}})
     assert resolve_sim2sim_config(tmp_path, target) is target
 
 
 def test_algo_field_absent_in_target_still_skipped_not_fail_closed(tmp_path):
     # Regression: algo-specific fields keep the cross-algo skip and must NOT fail closed
     # the way env structural fields now do.
-    _write_sidecar(tmp_path, {"algo.empirical_normalization": True})
+    _write_sidecar(tmp_path, {"algo.actor.obs_normalization": True})
     target = OmegaConf.create({"algo": {"obs_normalization": True}, "env": {}})
     assert resolve_sim2sim_config(tmp_path, target) is target
 
@@ -407,7 +424,7 @@ def test_g1_walk_flat_mujoco_inherits_base_contract():
     # The MuJoCo owner inherits the full contract from the shared base owner.
     mujoco = _compose_task("g1_walk_flat/mujoco")
     assert OmegaConf.select(mujoco, "env.actions.joint_pos.scale") == 0.25
-    assert OmegaConf.select(mujoco, "algo.empirical_normalization") is False
+    assert OmegaConf.select(mujoco, "algo.actor.obs_normalization") is False
     assert OmegaConf.select(mujoco, "algo.obs_groups.actor") == ["actor"]
 
 

@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any
 
 import numpy as np
 import pytest
-from uni_rl.algos.rsl_rl import RslRlVecEnvWrapper
 
 from unilab.envs import make_manager_based_rl_env
 from unilab.tasks.manipulation.simtool_real import (
@@ -162,48 +160,37 @@ def test_cpu_representative_fixed_tools_complete_one_ppo_iteration(
     )
     pytest.importorskip("rsl_rl", reason="SimToolReal PPO smoke requires rsl_rl")
     from rsl_rl.runners import OnPolicyRunner
-    from uni_rl.algos.rsl_rl import normalize_ppo_train_cfg
 
+    from unilab.rl import RslRlVecEnvAdapter
     from unilab.structured_configs import PPOConfig
 
     sources = write_representative_simtool_real_sources(tmp_path)
     cfg = build_representative_simtool_real_env_cfg(sources)
     env = make_manager_based_rl_env(cfg, num_envs=12, backend_type="mujoco")
-    wrapped = RslRlVecEnvWrapper(env)
+    wrapped = RslRlVecEnvAdapter(env)
     train_cfg = PPOConfig().to_dict()
-    train_cfg.update(
-        {
-            "runner": {"logger": "none"},
-            "num_steps_per_env": 2,
-            "empirical_normalization": False,
-            "policy": {
-                "actor_hidden_dims": [16],
-                "critic_hidden_dims": [16],
-                "activation": "elu",
-                "init_noise_std": 1.0,
-            },
-        }
-    )
+    # log_dir=None disables the logging writer (upstream v5 rejects "none").
+    train_cfg["num_steps_per_env"] = 2
+    train_cfg["actor"]["hidden_dims"] = [16]
+    train_cfg["critic"]["hidden_dims"] = [16]
     train_cfg["algorithm"]["num_learning_epochs"] = 1
     train_cfg["algorithm"]["num_mini_batches"] = 1
-    train_cfg = normalize_ppo_train_cfg(train_cfg)
 
     try:
-        with TemporaryDirectory() as log_dir:
-            runner = OnPolicyRunner(wrapped, train_cfg, log_dir=log_dir, device="cpu")
-            runner.learn(num_learning_iterations=1, init_at_random_ep_len=True)
-            parameters = [
-                parameter.detach().cpu().numpy()
-                for parameter in (
-                    *runner.alg.actor.parameters(),
-                    *runner.alg.critic.parameters(),
-                )
-            ]
-            optimizer_steps = [
-                int(state["step"].item())
-                for state in runner.alg.optimizer.state.values()
-                if "step" in state
-            ]
+        runner = OnPolicyRunner(wrapped, train_cfg, log_dir=None, device="cpu")
+        runner.learn(num_learning_iterations=1, init_at_random_ep_len=True)
+        parameters = [
+            parameter.detach().cpu().numpy()
+            for parameter in (
+                *runner.alg.actor.parameters(),
+                *runner.alg.critic.parameters(),
+            )
+        ]
+        optimizer_steps = [
+            int(state["step"].item())
+            for state in runner.alg.optimizer.state.values()
+            if "step" in state
+        ]
     finally:
         env.close()
     assert parameters

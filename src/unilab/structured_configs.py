@@ -227,17 +227,32 @@ class APPOConfig(BaseConfig):
 
 
 @dataclass
-class PPOPolicyConfig:
-    init_noise_std: float = 1.0
-    actor_hidden_dims: list = field(default_factory=lambda: [512, 256, 128])
-    critic_hidden_dims: list = field(default_factory=lambda: [512, 256, 128])
+class PPODistributionConfig:
+    class_name: str = "rsl_rl.modules.distribution.GaussianDistribution"
+    init_std: float = 1.0
+    std_type: str = "scalar"
+
+
+@dataclass
+class PPOActorConfig:
+    class_name: str = "rsl_rl.models.MLPModel"
+    hidden_dims: list = field(default_factory=lambda: [512, 256, 128])
     activation: str = "elu"
-    class_name: str = "ActorCritic"
+    obs_normalization: bool = False
+    distribution_cfg: PPODistributionConfig = field(default_factory=PPODistributionConfig)
+
+
+@dataclass
+class PPOCriticConfig:
+    class_name: str = "rsl_rl.models.MLPModel"
+    hidden_dims: list = field(default_factory=lambda: [512, 256, 128])
+    activation: str = "elu"
+    obs_normalization: bool = False
 
 
 @dataclass
 class PPOAlgorithmConfig:
-    class_name: str = "uni_rl.algos.rsl_rl_ppo:FinalObservationAwarePPO"
+    class_name: str = "rsl_rl.algorithms:PPO"
     value_loss_coef: float = 1.0
     use_clipped_value_loss: bool = True
     clip_param: float = 0.2
@@ -249,19 +264,7 @@ class PPOAlgorithmConfig:
     gamma: float = 0.99
     lam: float = 0.95
     desired_kl: float = 0.01
-    target_kl_stop: Optional[float] = None
     max_grad_norm: float = 1.0
-    adaptive_kl_beta: float = 0.9
-    adaptive_lr_growth: float = 1.1
-    adaptive_lr_decay: float = 1.2
-    adaptive_lr_update_interval: int = 5
-    metrics_interval: int = 8
-    finite_check_interval: int = 8
-    enable_compile: bool = True
-    warmup_strict_iters: int = 10
-    warmup_metrics_interval: int = 2
-    warmup_finite_check_interval: int = 2
-    disable_finite_checks: bool = True
 
 
 @dataclass
@@ -273,14 +276,13 @@ class PPOConfig(BaseConfig):
     num_steps_per_env: int = 24
     max_iterations: int = 101
     save_interval: int = 100
-    empirical_normalization: bool = False
-    runner_class_name: str = "OnPolicyRunner"
-    obs_groups: dict = field(default_factory=lambda: {"default": ["policy"]})
+    obs_groups: dict = field(default_factory=lambda: {"actor": ["policy"]})
     experiment_name: str = "test"
     run_name: str = ""
     resume: bool = False
     load_run: str = "-1"
     checkpoint: int = -1
     resume_path: Optional[str] = None
-    policy: PPOPolicyConfig = field(default_factory=PPOPolicyConfig)
+    actor: PPOActorConfig = field(default_factory=PPOActorConfig)
+    critic: PPOCriticConfig = field(default_factory=PPOCriticConfig)
     algorithm: PPOAlgorithmConfig = field(default_factory=PPOAlgorithmConfig)

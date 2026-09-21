@@ -10,10 +10,13 @@ training:
 
 algo:
   max_iterations: 40000
-  empirical_normalization: true
   obs_groups:
     actor: [actor]
     critic: [critic]
+  actor:
+    obs_normalization: true
+  critic:
+    obs_normalization: true
   algorithm:
     entropy_coef: 0.002
     desired_kl: 0.01

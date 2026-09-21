@@ -10,27 +10,6 @@ import hydra
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
-from uni_rl.algos.rsl_rl import (
-    RslRlVecEnvWrapper,
-    apply_rsl_rl_rank_seed,
-    finish_rsl_rl_distributed,
-    get_policy_obs_dims,
-    normalize_ppo_train_cfg,
-    ppo_samples_per_iteration,
-    resolve_rsl_rl_device,
-    rsl_rl_single_process_topology,
-)
-from uni_rl.algos.rsl_rl_runtime import resolve_rsl_rl_ppo_runtime
-from uni_rl.ipc.dp_launcher import (
-    UNILAB_DP_LOG_DIR,
-    current_torch_distributed_local_rank,
-    current_torch_distributed_rank,
-    current_torch_distributed_world_size,
-    launch_torchrun_workers,
-    resolve_collector_cpu_ids,
-    resolve_dp_topology,
-    validate_dp_launchable,
-)
 from unisim.backend.base import DebugPrimitive, RenderClosedError, log_playback_plan
 from unisim.backend.mujoco.xml import materialize_scene_visual_override
 
@@ -43,6 +22,22 @@ from unilab.base.process_device import (
     warn_if_backend_device_collision,
 )
 from unilab.base.run_control import RunComplete
+from unilab.rl import (
+    UNILAB_DP_LOG_DIR,
+    RslRlVecEnvAdapter,
+    apply_rsl_rl_rank_seed,
+    current_torch_distributed_local_rank,
+    current_torch_distributed_rank,
+    current_torch_distributed_world_size,
+    finish_rsl_rl_distributed,
+    launch_torchrun_workers,
+    ppo_samples_per_iteration,
+    resolve_collector_cpu_ids,
+    resolve_dp_topology,
+    resolve_rsl_rl_device,
+    rsl_rl_single_process_topology,
+    validate_dp_launchable,
+)
 from unilab.training import (
     algo_config_dict,
     apply_env_nan_guard,
@@ -194,38 +189,6 @@ def resolve_ppo_log_dir(
     )
 
 
-def _resolve_ppo_wrapper_cls(rl_cfg: dict[str, Any]) -> type[RslRlVecEnvWrapper]:
-    """Resolve the VecEnv wrapper class from the owner-selected PPO runtime.
-
-    Args:
-        rl_cfg: Resolved algorithm config dictionary from Hydra composition.
-
-    Returns:
-        Wrapper class used to adapt the UniLab env contract to the active
-        RSL-RL PPO runtime.
-    """
-    return cast(
-        "type[RslRlVecEnvWrapper]",
-        resolve_rsl_rl_ppo_runtime(
-            rl_cfg,
-            default_wrapper_cls=RslRlVecEnvWrapper,
-        ).wrapper_cls,
-    )
-
-
-def apply_ppo_runtime_flags(
-    train_cfg: dict[str, Any],
-    cfg: DictConfig,
-    *,
-    training_enabled: bool,
-) -> None:
-    algorithm_cfg = train_cfg.setdefault("algorithm", {})
-    if not isinstance(algorithm_cfg, dict):
-        return
-    if not training_enabled:
-        algorithm_cfg["enable_compile"] = False
-
-
 def validate_ppo_run_completion_topology(
     cfg: DictConfig,
     *,
@@ -344,11 +307,6 @@ def play_rsl_rl(cfg: DictConfig, device: str) -> str | None:
         )
         return None
 
-    def _normalize_play_train_cfg(train_cfg: dict[str, Any]) -> dict[str, Any]:
-        normalized = cast("dict[str, Any]", normalize_ppo_train_cfg(train_cfg))
-        apply_ppo_runtime_flags(normalized, cfg, training_enabled=False)
-        return normalized
-
     playback_cfg = RslRlPlaybackConfig(
         task=str(cfg.training.task_name),
         load_run=str(cfg.algo.load_run),
@@ -407,13 +365,6 @@ def play_rsl_rl(cfg: DictConfig, device: str) -> str | None:
         checkpoint_resolver=lambda *_args: str(load_path),
         checkpoint_input_dim_reader=infer_checkpoint_actor_input_dim,
         entrypoint_log_root=get_entrypoint_log_root,
-        wrapper_cls=_resolve_ppo_wrapper_cls(rl_cfg),
-        runner_cls=resolve_rsl_rl_ppo_runtime(
-            rl_cfg, default_wrapper_cls=RslRlVecEnvWrapper
-        ).runner_cls
-        or OnPolicyRunner,
-        policy_obs_dims_getter=get_policy_obs_dims,
-        train_cfg_normalizer=_normalize_play_train_cfg,
         sim2sim_preflight=make_sim2sim_preflight(cfg, algo_name="ppo"),
         guard_algo_name="ppo",
     )
@@ -620,24 +571,17 @@ def main(cfg: DictConfig) -> None:
                     env_cfg_override=env_cfg_override,
                 )
                 try:
-                    rl_cfg = algo_config_dict(cfg)
-                    wrapper_cls = _resolve_ppo_wrapper_cls(rl_cfg)
+                    train_cfg = algo_config_dict(cfg)
 
                     apply_env_nan_guard(env, cfg.training)
 
-                    wrapped_env = wrapper_cls(env, device=device)
-
-                    train_cfg = normalize_ppo_train_cfg(rl_cfg)
-                    apply_ppo_runtime_flags(train_cfg, cfg, training_enabled=True)
-                    if "runner" not in train_cfg:
-                        train_cfg["runner"] = {}
+                    wrapped_env = RslRlVecEnvAdapter(env, device=device)
 
                     logger_type = (
                         cfg.training.logger
                         if cfg.training.logger in ["tensorboard", "wandb"]
                         else "none"
                     )
-                    train_cfg["runner"]["logger"] = logger_type
                     train_cfg["logger"] = logger_type
 
                     patch_rsl_rl_resume_state()
@@ -653,15 +597,9 @@ def main(cfg: DictConfig) -> None:
                         train_cfg["wandb_notes"] = wandb_settings["notes"]
                         train_cfg["wandb_mode"] = wandb_settings["mode"]
 
-                    runner_cls = (
-                        resolve_rsl_rl_ppo_runtime(
-                            rl_cfg, default_wrapper_cls=RslRlVecEnvWrapper
-                        ).runner_cls
-                        or OnPolicyRunner
-                    )
                     runner = cast(
                         Any,
-                        runner_cls(
+                        OnPolicyRunner(
                             cast(Any, wrapped_env), train_cfg, log_dir=log_dir, device=device
                         ),
                     )

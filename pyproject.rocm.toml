@@ -33,7 +33,8 @@ dependencies = [
     "unisim-core>=1.7.3",
     # RL algorithms and async runtimes live in the independently released
     # uni-rl package (distribution name ``unilab-rl``); see pyproject.toml.
-    "unilab-rl==1.3.0",
+    # Optional: only APPO, off-policy algorithms, and multi-GPU PPO need it
+    # (extra ``uni_rl``); the dev group below keeps it installed for CI.
     "torch==2.11.0",
     "triton-rocm==3.6.0 ; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "gymnasium",
@@ -90,9 +91,15 @@ mujoco = [
 # unisim.backend.motrix adapter is tested against.
 motrix = ["unisim-core[motrix]>=1.7.3"]
 viser = ["viser>=1.0.26", "trimesh>=3.21.7"]
+# APPO / off-policy (SAC/TD3) runners, collectors, IPC, and multi-GPU
+# data-parallel PPO launches require the optional uni-rl runtime. PPO
+# single-process training and playback run directly on rsl-rl-lib.
+uni_rl = ["unilab-rl==1.3.0"]
 
 [dependency-groups]
-dev = ["pytest", "pytest-cov", "ruff", "mypy", "pyright>=1.1.408"]
+# Repo development and CI exercise the APPO/off-policy/multi-GPU paths, so
+# the dev environment keeps the optional unilab-rl runtime installed.
+dev = ["pytest", "pytest-cov", "ruff", "mypy", "pyright>=1.1.408", "unilab-rl==1.3.0"]
 
 # ========== ROCm 索引配置 ==========
 [[tool.uv.index]]

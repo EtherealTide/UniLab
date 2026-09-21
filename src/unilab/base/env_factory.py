@@ -12,11 +12,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from functools import partial
-from typing import Any, cast
-
-from uni_rl.env_contract import EnvFactory, EnvProtocol
+from typing import TYPE_CHECKING, Any, cast
 
 from unilab.base.process_device import bind_genesis_process_device
+
+if TYPE_CHECKING:
+    # uni_rl is an optional dependency (``unilab[uni_rl]``); its
+    # ``EnvFactory``/``EnvProtocol`` are typing-only Protocols, so the import
+    # is annotation-only and must not run at module import time.
+    from uni_rl.env_contract import EnvFactory, EnvProtocol
 
 
 def make_registry_env(

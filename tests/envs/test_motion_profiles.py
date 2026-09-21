@@ -244,7 +244,8 @@ def test_appo_profiles_preserve_training_owner_contract(
 def test_ppo_motrix_flip_profiles_keep_actor_normalization_disabled(task: str) -> None:
     owner = _compose_owner("ppo", task, "motrix")
 
-    assert owner.algo.empirical_normalization is False
+    assert owner.algo.actor.obs_normalization is False
+    assert owner.algo.critic.obs_normalization is False
     assert owner.algo.obs_groups.actor == ["actor"]
     assert owner.algo.obs_groups.critic == ["critic"]
 

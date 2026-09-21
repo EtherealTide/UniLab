@@ -25,13 +25,9 @@ training:
 algo:
   num_envs: 2048
   max_iterations: 2200
-  empirical_normalization: false
   obs_groups:
     actor:
       - actor
-  policy:
-    actor_hidden_dims: [512, 256, 128]
-    critic_hidden_dims: [512, 256, 128]
 env:
   # GPU device id for the process-wide Genesis session.  Multi-GPU training
   # overrides this cold-path field from the rank topology; zero preserves the
