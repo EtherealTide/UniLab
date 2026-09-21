@@ -23,6 +23,11 @@ algo:
     max_grad_norm: 10.0
 
 env:
+  events:
+    base_com: null
+    encoder_bias: null
+    foot_friction: null
+    push_robot: null
   scene:
     model_file: src/unilab/assets/robots/g1/scene_flat.xml
   sim_dt: 0.005

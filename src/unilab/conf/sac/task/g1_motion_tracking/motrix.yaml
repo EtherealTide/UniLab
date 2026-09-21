@@ -1,5 +1,6 @@
 # @package _global_
-# Motrix is the sim2sim eval owner for MuJoCo-trained WBT checkpoints.
+# Motrix mirrors the MuJoCo WBT training DR within its supported capability
+# set. Root velocity pushes are unsupported by Motrix and stay disabled.
 defaults:
   - /task/g1_motion_tracking/mujoco
   - _self_
@@ -7,3 +8,6 @@ defaults:
 training:
   task_name: G1MotionTrackingSAC
   sim_backend: motrix
+env:
+  events:
+    push_robot: null

@@ -31,6 +31,14 @@ def _require_mujoco_runtime() -> None:
     )
 
 
+def _require_mjwarp_runtime() -> None:
+    from unisim.backend.mjwarp.dependencies import load_mjwarp_dependencies
+
+    dependencies = load_mjwarp_dependencies()
+    if not bool(dependencies.warp.get_device().is_cuda):
+        pytest.fail("mjwarp runtime tests require an active CUDA Warp device")
+
+
 def _allegro_manager_override(
     backend: str = "mujoco",
     *,
@@ -817,6 +825,43 @@ def test_g1_motion_manager_sac_clip_end_is_truncation() -> None:
         np.testing.assert_array_equal(state.terminated, [False, False])
         np.testing.assert_array_equal(state.truncated, [True, True])
         np.testing.assert_array_equal(command.time_steps, command.sampler.current_clip_end_frames)
+    finally:
+        env.close()
+
+
+def test_sac_g1_motion_mjwarp_dr_runtime_applies_reset_and_interval_dr() -> None:
+    ensure_registries()
+    _require_mjwarp_runtime()
+    from unilab.base import registry
+
+    _, override = _motion_manager_override(
+        "g1_motion_tracking",
+        "mjwarp",
+        config_root="sac",
+    )
+    push_robot = override["events"]["push_robot"]
+    push_robot["interval_range_s"] = [0.0, 0.0]
+    env = registry.make(
+        "G1MotionTrackingSAC",
+        num_envs=2,
+        sim_backend="mjwarp",
+        env_cfg_override=override,
+    )
+    try:
+        state = env.init_state()
+        assert np.isfinite(state.obs["obs"]).all()
+        assert np.isfinite(state.obs["critic"]).all()
+
+        for _ in range(3):
+            state = env.step(np.zeros((2, 29), dtype=np.float32))
+            assert np.isfinite(state.obs["obs"]).all()
+            assert np.isfinite(state.obs["critic"]).all()
+            assert np.isfinite(state.reward).all()
+
+        velocity_range = env.event_manager.get_term_cfg("push_robot").params["velocity_range"]
+        assert velocity_range["x"] == [-0.5, 0.5]
+        assert velocity_range["z"] == [-0.2, 0.2]
+        assert all(velocity_range[axis] == [0.0, 0.0] for axis in ("roll", "pitch", "yaw"))
     finally:
         env.close()
 

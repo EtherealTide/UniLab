@@ -307,12 +307,12 @@ def test_box_flip_wbt_and_x2_profiles_keep_only_owner_differences() -> None:
     assert critic_terms["joint_pos"].func.__name__ == "motion_joint_pos_rel"
     assert wbt.actions["joint_pos"].simulate_action_latency is True
     assert list(wbt.events) == [
-        "base_mass",
         "base_com",
-        "pd_gains",
-        "foot_friction",
         "encoder_bias",
+        "foot_friction",
         "push_robot",
+        "base_mass",
+        "pd_gains",
     ]
 
     assert len(x2.scene.entities["robot"].joint_names) == 29

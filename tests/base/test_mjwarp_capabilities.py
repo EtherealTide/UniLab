@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import pytest
 from unisim.backend.mjwarp.dependencies import load_mjwarp_dependencies
-from unisim.dr.types import IntervalRandomizationPlan, ResetRandomizationPayload
+from unisim.dr.types import IntervalRandomizationPlan
 
 from unilab.base.backend_factory import create_backend
 from unilab.base.scene import SceneCfg
@@ -30,8 +30,6 @@ def _backend() -> Any:
 def test_unsupported_matrix_fails_before_step() -> None:
     """Every currently unadvertised public path errors before a physics step."""
     backend = _backend()
-    with pytest.raises(NotImplementedError, match="host pre-step callbacks"):
-        backend.set_pre_step_control(lambda _backend, control: control)
     with pytest.raises(NotImplementedError, match="body positions"):
         backend.get_body_pos_w(np.asarray([1], dtype=np.int32))
     with pytest.raises(NotImplementedError, match="height-field scanners"):
@@ -44,18 +42,9 @@ def test_unsupported_matrix_fails_before_step() -> None:
     assert not backend.get_play_capabilities().supports_native_interactive_renderer
     assert not backend.get_play_capabilities().supports_native_video_capture
     assert Path(backend.get_playback_model()).is_file()
-    # Per-world gravity DR stays out of scope for the mjwarp host profile.
+    # Current unisim-core exposes per-world gravity reset randomization.
     capabilities = backend.get_dr_capabilities()
-    assert not capabilities.supports_reset_term("gravity")
-    qpos = np.tile(backend.get_keyframe_qpos("stand"), (1, 1))
-    qvel = np.zeros((1, backend.get_init_qvel().size), dtype=np.float32)
-    with pytest.raises(NotImplementedError, match="reset domain randomization"):
-        backend.set_state(
-            np.asarray([0], dtype=np.int32),
-            qpos,
-            qvel,
-            randomization=ResetRandomizationPayload(gravity=np.zeros((1, 3), dtype=np.float32)),
-        )
+    assert capabilities.supports_reset_term("gravity")
 
 
 def test_interval_push_and_velocity_require_named_bodies() -> None:
