@@ -153,6 +153,48 @@ def test_env_cfg_rejects_invalid_isaacsim_render_settings(
         EnvCfg(**kwargs).validate()
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"isaacsim_solver_position_iteration_count": 0}, "position_iteration_count"),
+        ({"isaacsim_solver_position_iteration_count": 1.5}, "position_iteration_count"),
+        ({"isaacsim_solver_position_iteration_count": True}, "position_iteration_count"),
+        ({"isaacsim_solver_velocity_iteration_count": -1}, "velocity_iteration_count"),
+        ({"isaacsim_bounce_threshold_velocity": -0.1}, "bounce_threshold_velocity"),
+        ({"isaacsim_contact_offset": "0.002"}, "contact_offset"),
+        ({"isaacsim_rest_offset": True}, "rest_offset"),
+        ({"isaacsim_max_depenetration_velocity": -1.0}, "max_depenetration_velocity"),
+    ],
+)
+def test_env_cfg_rejects_invalid_isaacsim_solver_settings(
+    kwargs: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        EnvCfg(**kwargs).validate()
+
+
+def test_env_backend_kwargs_forwards_isaacsim_solver_knobs() -> None:
+    """Every PhysX solver override reaches the UniSim factory by the same name."""
+    from unilab.base.backend_factory import env_backend_kwargs
+
+    solver = {
+        "isaacsim_solver_position_iteration_count": 8,
+        "isaacsim_solver_velocity_iteration_count": 0,
+        "isaacsim_bounce_threshold_velocity": 0.2,
+        "isaacsim_contact_offset": 0.002,
+        "isaacsim_rest_offset": 0.0,
+        "isaacsim_max_depenetration_velocity": 1000.0,
+    }
+    kwargs = env_backend_kwargs(EnvCfg(**solver))
+    for name, value in solver.items():
+        assert kwargs[name] == value
+
+    defaults = env_backend_kwargs(EnvCfg())
+    for name in solver:
+        # ``None`` keeps the PhysX scene defaults on the UniSim side.
+        assert defaults[name] is None
+
+
 def test_dependencies_resolve_default_layout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

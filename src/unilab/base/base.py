@@ -100,6 +100,16 @@ class EnvCfg:
     isaacsim_render_mode: Optional[str] = None
     isaacsim_render_width: int = 1280
     isaacsim_render_height: int = 720
+    # ``isaacsim`` PhysX solver overrides, forwarded to UniSim's bounded,
+    # readback-validated PhysxSolverConfig (unilabsim/unisim#251, #259).
+    # ``None`` keeps the PhysX scene defaults; the backend validates each
+    # override and compares it against the engine readback fail-closed.
+    isaacsim_solver_position_iteration_count: Optional[int] = None
+    isaacsim_solver_velocity_iteration_count: Optional[int] = None
+    isaacsim_bounce_threshold_velocity: Optional[float] = None
+    isaacsim_contact_offset: Optional[float] = None
+    isaacsim_rest_offset: Optional[float] = None
+    isaacsim_max_depenetration_velocity: Optional[float] = None
 
     @property
     def max_episode_steps(self) -> Optional[int]:
@@ -260,6 +270,36 @@ class EnvCfg:
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer, got {value!r}")
+        # PhysX accepts zero velocity iterations (its scene minimum is 0) but
+        # requires at least one position iteration; mirror UniSim's
+        # PhysxSolverConfig bounds here so owner configs fail fast.
+        for name, value, minimum in (
+            (
+                "isaacsim_solver_position_iteration_count",
+                self.isaacsim_solver_position_iteration_count,
+                1,
+            ),
+            (
+                "isaacsim_solver_velocity_iteration_count",
+                self.isaacsim_solver_velocity_iteration_count,
+                0,
+            ),
+        ):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < minimum
+            ):
+                raise ValueError(f"{name} must be an integer >= {minimum} or None, got {value!r}")
+        for name in (
+            "isaacsim_bounce_threshold_velocity",
+            "isaacsim_contact_offset",
+            "isaacsim_rest_offset",
+            "isaacsim_max_depenetration_velocity",
+        ):
+            value = getattr(self, name)
+            if value is not None and (
+                not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0
+            ):
+                raise ValueError(f"{name} must be a non-negative number or None, got {value!r}")
         if self.cpu_ids is not None:
             ids = list(self.cpu_ids)
             if not ids:

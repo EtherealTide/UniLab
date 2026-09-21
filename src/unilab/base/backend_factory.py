@@ -50,6 +50,12 @@ def env_backend_kwargs(cfg: "EnvCfg") -> dict[str, Any]:
         "isaacsim_render_mode": cfg.isaacsim_render_mode,
         "isaacsim_render_width": cfg.isaacsim_render_width,
         "isaacsim_render_height": cfg.isaacsim_render_height,
+        "isaacsim_solver_position_iteration_count": cfg.isaacsim_solver_position_iteration_count,
+        "isaacsim_solver_velocity_iteration_count": cfg.isaacsim_solver_velocity_iteration_count,
+        "isaacsim_bounce_threshold_velocity": cfg.isaacsim_bounce_threshold_velocity,
+        "isaacsim_contact_offset": cfg.isaacsim_contact_offset,
+        "isaacsim_rest_offset": cfg.isaacsim_rest_offset,
+        "isaacsim_max_depenetration_velocity": cfg.isaacsim_max_depenetration_velocity,
         "superdex_execution_mode": cfg.superdex_execution_mode,
     }
     # Forward the explicit Genesis device id only when a rank selected one;
