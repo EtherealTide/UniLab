@@ -27,7 +27,13 @@ from unisim.dr.types import (
     RESET_TERM_BODY_IQUAT,
     RESET_TERM_BODY_MASS,
     RESET_TERM_DOF_ARMATURE,
+    RESET_TERM_DOF_DAMPING,
+    RESET_TERM_DOF_FRICTIONLOSS,
     RESET_TERM_GEOM_FRICTION,
+    RESET_TERM_GEOM_SIZE,
+    RESET_TERM_GEOM_SOLIMP,
+    RESET_TERM_GEOM_SOLREF,
+    RESET_TERM_GRAVITY,
     RESET_TERM_KD,
     RESET_TERM_KP,
     IntervalRandomizationPlan,
@@ -99,7 +105,13 @@ def test_dr_capabilities_advertise_supported_terms(backend: Any) -> None:
             RESET_TERM_BODY_IPOS,
             RESET_TERM_BODY_MASS,
             RESET_TERM_DOF_ARMATURE,
+            RESET_TERM_DOF_DAMPING,
+            RESET_TERM_DOF_FRICTIONLOSS,
             RESET_TERM_GEOM_FRICTION,
+            RESET_TERM_GEOM_SIZE,
+            RESET_TERM_GEOM_SOLIMP,
+            RESET_TERM_GEOM_SOLREF,
+            RESET_TERM_GRAVITY,
             RESET_TERM_KP,
             RESET_TERM_KD,
         }
@@ -167,7 +179,7 @@ def test_reset_payload_writes_only_selected_rows(backend: Any) -> None:
         _device_field(backend, "actuator_gainprm")[rows, :, 0], kp, rtol=1e-6
     )
     np.testing.assert_allclose(
-        _device_field(backend, "actuator_biasprm")[rows, :, 2], kd, rtol=1e-6
+        _device_field(backend, "actuator_biasprm")[rows, :, 2], -kd, rtol=1e-6
     )
 
     default_mass = backend.get_body_mass()

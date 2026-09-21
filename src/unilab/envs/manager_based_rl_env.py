@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import math
+import re
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -154,7 +155,9 @@ class ManagerBasedRlEnvCfg(EnvCfg):
         self.scene.__post_init__()
 
 
-def _resolve_backend_entity_contract(cfg: ManagerBasedRlEnvCfg) -> tuple[str, bool]:
+def _resolve_backend_entity_contract(
+    cfg: ManagerBasedRlEnvCfg,
+) -> tuple[str, bool, tuple[str, ...] | None]:
     """Resolve task-independent backend inputs from declared scene entities."""
     assert cfg.scene is not None
     if cfg.scene.entity_assets:
@@ -184,9 +187,10 @@ def _resolve_backend_entity_contract(cfg: ManagerBasedRlEnvCfg) -> tuple[str, bo
         ]
         if not root_names:
             raise ValueError("primary_entity needs an entity-qualified logical root selector")
-        return root_names[0], True
+        return root_names[0], True, None
     root_entities: list[tuple[str, str]] = []
     body_state_requested = False
+    tracked_body_names: list[str] | None = []
     for entity_name, entity_cfg in cfg.scene.entities.items():
         if not isinstance(entity_name, str) or not entity_name:
             raise TypeError(
@@ -207,8 +211,22 @@ def _resolve_backend_entity_contract(cfg: ManagerBasedRlEnvCfg) -> tuple[str, bo
                 )
             root_entities.append((entity_name, root_body_name))
             body_state_requested = True
+            if tracked_body_names is not None:
+                tracked_body_names.append(root_body_name)
         if entity_cfg.body_names is not None:
             body_state_requested = True
+            selector_names = (
+                (entity_cfg.body_names,)
+                if isinstance(entity_cfg.body_names, str)
+                else entity_cfg.body_names
+            )
+            if tracked_body_names is not None and any(
+                not isinstance(name, str) or not name or re.search(r"[\\^$.|?*+()\[\]{}]", name)
+                for name in selector_names
+            ):
+                tracked_body_names = None
+            elif tracked_body_names is not None:
+                tracked_body_names.extend(selector_names)
 
     if not root_entities:
         raise ValueError(
@@ -222,7 +240,10 @@ def _resolve_backend_entity_contract(cfg: ManagerBasedRlEnvCfg) -> tuple[str, bo
             "ManagerBasedRlEnv factory requires a conventional 'robot' root entity when "
             f"multiple floating entities are declared; found {declared}"
         )
-    return (primary_root or root_entities[0])[1], body_state_requested
+    selected_names = (
+        None if tracked_body_names is None else tuple(dict.fromkeys(tracked_body_names))
+    )
+    return (primary_root or root_entities[0])[1], body_state_requested, selected_names
 
 
 class ManagerBasedRlEnv(NpEnv):
@@ -828,9 +849,11 @@ def make_manager_based_rl_env(
     # themselves from the rank-owned CPU block.
     apply_env_cpu_runtime(cfg.cpu_ids)
     assert cfg.scene is not None
-    base_name, body_state_requested = _resolve_backend_entity_contract(cfg)
+    base_name, body_state_requested, tracked_body_names = _resolve_backend_entity_contract(cfg)
     backend_kwargs = env_backend_kwargs(cfg)
     backend_kwargs["base_name"] = base_name
+    if backend_type == "mujoco" and tracked_body_names is not None:
+        backend_kwargs["tracked_body_names"] = tracked_body_names
 
     backend = create_backend(
         backend_type,
