@@ -732,10 +732,20 @@ def test_g1_motion_core_registrations_are_manager_only() -> None:
             "available_backends": ["mujoco", "motrix"],
         }
     # mjwarp is registered for G1MotionTrackingSAC only (benchmark scope, #1292);
-    # genesis/newton extend the same SAC contract (unisim-core>=1.5.1, #137).
+    # genesis/newton extend the same SAC contract (unisim-core>=1.5.1, #137);
+    # isaacgym/isaacsim join since unisim-core>=1.7.4 fixed the subprocess
+    # body-state publish/reset paths (#141).
     assert metadata["G1MotionTrackingSAC"] == {
         "config_factory": "ManagerBasedRlEnvCfg",
-        "available_backends": ["mujoco", "motrix", "mjwarp", "genesis", "newton"],
+        "available_backends": [
+            "mujoco",
+            "motrix",
+            "mjwarp",
+            "genesis",
+            "newton",
+            "isaacgym",
+            "isaacsim",
+        ],
     }
 
 

@@ -66,6 +66,73 @@ def test_sac_g1_motion_tracking_mjwarp_inherits_full_dr() -> None:
     assert cfg.training.sim_backend == "mjwarp"
 
 
+def test_sac_g1_motion_tracking_genesis_inherits_mujoco_parity() -> None:
+    mujoco_cfg = _compose_sac("g1_motion_tracking/mujoco")
+    cfg = _compose_sac("g1_motion_tracking/genesis")
+    assert cfg.training.task_name == "G1MotionTrackingSAC"
+    assert cfg.training.sim_backend == "genesis"
+    assert cfg.training.play_render_mode == "auto"
+    assert cfg.training.inference_request_timeout_sec == 180.0
+    assert cfg.env.genesis_device_id == 0
+    assert cfg.env.genesis_integrator == "implicitfast"
+    # Genesis legacy scenes declare no model-field reset terms and no interval
+    # velocity delta; only the host-side encoder_bias bias stays enabled.
+    assert set(cfg.env.events) == {"base_com", "encoder_bias", "foot_friction", "push_robot"}
+    assert cfg.env.events.foot_friction is None
+    assert cfg.env.events.base_com is None
+    assert cfg.env.events.push_robot is None
+    assert cfg.env.events.encoder_bias is not None
+    assert cfg.env.scene.entities.robot.geom_names is None
+    # Algo block inherits the MuJoCo owner verbatim (DENYLIST parity).
+    assert cfg.algo.num_envs == mujoco_cfg.algo.num_envs
+    assert cfg.algo.max_iterations == mujoco_cfg.algo.max_iterations
+    assert cfg.algo.updates_per_step == mujoco_cfg.algo.updates_per_step
+
+
+def test_sac_g1_motion_tracking_isaacgym_disables_unsupported_dr() -> None:
+    cfg = _compose_sac("g1_motion_tracking/isaacgym")
+    assert cfg.training.task_name == "G1MotionTrackingSAC"
+    assert cfg.training.sim_backend == "isaacgym"
+    assert cfg.training.play_render_mode == "auto"
+    assert cfg.env.isaacgym_device_id == 0
+    assert cfg.env.render_spacing == 2.0
+    # The isaacgym legacy path declares an empty DR capability set (fail-closed).
+    assert set(cfg.env.events) == {"base_com", "encoder_bias", "foot_friction", "push_robot"}
+    assert all(term is None for term in cfg.env.events.values())
+
+
+def test_sac_g1_motion_tracking_newton_keeps_full_dr() -> None:
+    cfg = _compose_sac("g1_motion_tracking/newton")
+    assert cfg.training.task_name == "G1MotionTrackingSAC"
+    assert cfg.training.sim_backend == "newton"
+    assert cfg.training.inference_request_timeout_sec == 180.0
+    assert cfg.env.newton_device is None
+    assert cfg.env.newton_nconmax == 320
+    assert cfg.env.newton_njmax == 512
+    assert cfg.env.newton_use_cuda_graph is True
+    # Newton declares an empty DR capability set; only the host-side
+    # encoder_bias observation bias stays enabled.
+    assert set(cfg.env.events) == {"base_com", "encoder_bias", "foot_friction", "push_robot"}
+    assert cfg.env.events.foot_friction is None
+    assert cfg.env.events.base_com is None
+    assert cfg.env.events.push_robot is None
+    assert cfg.env.events.encoder_bias is not None
+    assert cfg.env.scene.entities.robot.geom_names is None
+
+
+def test_sac_g1_motion_tracking_isaacsim_disables_unsupported_dr() -> None:
+    cfg = _compose_sac("g1_motion_tracking/isaacsim")
+    assert cfg.training.task_name == "G1MotionTrackingSAC"
+    assert cfg.training.sim_backend == "isaacsim"
+    assert cfg.training.play_render_mode == "auto"
+    assert cfg.env.isaacsim_device_id == 0
+    assert cfg.env.isaacsim_worker_timeout_s == 120.0
+    assert cfg.play_profile.enabled is False
+    # The isaacsim legacy path declares an empty DR capability set (fail-closed).
+    assert set(cfg.env.events) == {"base_com", "encoder_bias", "foot_friction", "push_robot"}
+    assert all(term is None for term in cfg.env.events.values())
+
+
 def test_sac_g1_flip_tracking_stays_dr_free() -> None:
     cfg = _compose_sac("g1_flip_tracking/mujoco")
     assert all(term is None for term in cfg.env.events.values())
