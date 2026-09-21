@@ -103,9 +103,14 @@ def test_sac_g1_motion_tracking_newton_keeps_full_dr() -> None:
     assert cfg.env.newton_nconmax == 320
     assert cfg.env.newton_njmax == 512
     assert cfg.env.newton_use_cuda_graph is True
-    # Newton supports the full MuJoCo-owner DR stack (flashsac owner parity).
+    # Geom-friction DR needs geom name resolution, which newton does not
+    # expose; the rest of the MuJoCo-owner DR stack stays enabled.
     assert set(cfg.env.events) == {"base_com", "encoder_bias", "foot_friction", "push_robot"}
-    assert all(term is not None for term in cfg.env.events.values())
+    assert cfg.env.events.foot_friction is None
+    assert cfg.env.events.base_com is not None
+    assert cfg.env.events.encoder_bias is not None
+    assert cfg.env.events.push_robot is not None
+    assert cfg.env.scene.entities.robot.geom_names is None
 
 
 def test_sac_g1_motion_tracking_isaacsim_disables_unsupported_dr() -> None:
