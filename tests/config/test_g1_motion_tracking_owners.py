@@ -75,8 +75,15 @@ def test_sac_g1_motion_tracking_genesis_inherits_mujoco_parity() -> None:
     assert cfg.training.inference_request_timeout_sec == 180.0
     assert cfg.env.genesis_device_id == 0
     assert cfg.env.genesis_integrator == "implicitfast"
-    # Algo block and DR events inherit the MuJoCo owner verbatim (DENYLIST parity).
+    # Geom-friction DR needs geom name resolution, which genesis does not
+    # expose; the rest of the MuJoCo-owner DR stack stays enabled.
     assert set(cfg.env.events) == {"base_com", "encoder_bias", "foot_friction", "push_robot"}
+    assert cfg.env.events.foot_friction is None
+    assert cfg.env.events.base_com is not None
+    assert cfg.env.events.encoder_bias is not None
+    assert cfg.env.events.push_robot is not None
+    assert cfg.env.scene.entities.robot.geom_names is None
+    # Algo block inherits the MuJoCo owner verbatim (DENYLIST parity).
     assert cfg.algo.num_envs == mujoco_cfg.algo.num_envs
     assert cfg.algo.max_iterations == mujoco_cfg.algo.max_iterations
     assert cfg.algo.updates_per_step == mujoco_cfg.algo.updates_per_step

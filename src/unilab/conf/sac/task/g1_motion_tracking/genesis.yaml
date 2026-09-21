@@ -5,7 +5,11 @@
 # §3.3), so the integrator g1.xml declares is re-declared here: the timestep
 # flows through the existing base.yaml sim_dt -> ctrl_dt chain, and the
 # integrator through the env field below. Requires unisim-core>=1.5.1 for the
-# motion body id capability (unilabsim/unisim#137). Playback uses Genesis
+# motion body id capability (unilabsim/unisim#137), plus the contact-sensor
+# scan fix for found+mindist geom pairs (unilabsim/unisim#276). Genesis does
+# not expose geom names, so the foot-geom declaration and its friction DR
+# binding stay disabled; the remaining MuJoCo-owner DR stack (base_com,
+# encoder_bias, push_robot) stays enabled. Playback uses Genesis
 # native rendering: with a display, play_render_mode=auto opens the
 # interactive viewer; headless hosts fall back to offscreen camera recording.
 defaults:
@@ -27,3 +31,14 @@ env:
   # Re-declares the MJCF <option integrator="implicitfast"> that Genesis drops
   # at import; the remaining global options keep the Genesis defaults.
   genesis_integrator: implicitfast
+  scene:
+    entities:
+      robot:
+        # The genesis backend does not expose portable geom names; the
+        # foot-geom declaration only feeds the disabled foot_friction DR
+        # binding.
+        geom_names: null
+  events:
+    # Geom-friction DR requires geom name resolution, which genesis does not
+    # expose; keep the owner fail-closed until that capability is added.
+    foot_friction: null
