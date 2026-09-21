@@ -6,10 +6,10 @@
 # flows through the existing base.yaml sim_dt -> ctrl_dt chain, and the
 # integrator through the env field below. Requires unisim-core>=1.5.1 for the
 # motion body id capability (unilabsim/unisim#137), plus the contact-sensor
-# scan fix for found+mindist geom pairs (unilabsim/unisim#276). Genesis does
-# not expose geom names, so the foot-geom declaration and its friction DR
-# binding stay disabled; the remaining MuJoCo-owner DR stack (base_com,
-# encoder_bias, push_robot) stays enabled. Playback uses Genesis
+# scan fix for found+mindist geom pairs (unilabsim/unisim#276). Genesis legacy
+# scenes declare no model-field reset terms and no interval velocity-delta
+# capability, so base_com/foot_friction/push_robot stay disabled; encoder_bias
+# is a host-side observation bias and stays enabled. Playback uses Genesis
 # native rendering: with a display, play_render_mode=auto opens the
 # interactive viewer; headless hosts fall back to offscreen camera recording.
 defaults:
@@ -39,6 +39,8 @@ env:
         # binding.
         geom_names: null
   events:
-    # Geom-friction DR requires geom name resolution, which genesis does not
-    # expose; keep the owner fail-closed until that capability is added.
+    # Genesis legacy scenes declare no model-field reset terms and no interval
+    # velocity-delta capability; keep the owner fail-closed.
+    base_com: null
     foot_friction: null
+    push_robot: null

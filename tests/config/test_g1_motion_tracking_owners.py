@@ -75,13 +75,13 @@ def test_sac_g1_motion_tracking_genesis_inherits_mujoco_parity() -> None:
     assert cfg.training.inference_request_timeout_sec == 180.0
     assert cfg.env.genesis_device_id == 0
     assert cfg.env.genesis_integrator == "implicitfast"
-    # Geom-friction DR needs geom name resolution, which genesis does not
-    # expose; the rest of the MuJoCo-owner DR stack stays enabled.
+    # Genesis legacy scenes declare no model-field reset terms and no interval
+    # velocity delta; only the host-side encoder_bias bias stays enabled.
     assert set(cfg.env.events) == {"base_com", "encoder_bias", "foot_friction", "push_robot"}
     assert cfg.env.events.foot_friction is None
-    assert cfg.env.events.base_com is not None
+    assert cfg.env.events.base_com is None
+    assert cfg.env.events.push_robot is None
     assert cfg.env.events.encoder_bias is not None
-    assert cfg.env.events.push_robot is not None
     assert cfg.env.scene.entities.robot.geom_names is None
     # Algo block inherits the MuJoCo owner verbatim (DENYLIST parity).
     assert cfg.algo.num_envs == mujoco_cfg.algo.num_envs
@@ -110,13 +110,13 @@ def test_sac_g1_motion_tracking_newton_keeps_full_dr() -> None:
     assert cfg.env.newton_nconmax == 320
     assert cfg.env.newton_njmax == 512
     assert cfg.env.newton_use_cuda_graph is True
-    # Geom-friction DR needs geom name resolution, which newton does not
-    # expose; the rest of the MuJoCo-owner DR stack stays enabled.
+    # Newton declares an empty DR capability set; only the host-side
+    # encoder_bias observation bias stays enabled.
     assert set(cfg.env.events) == {"base_com", "encoder_bias", "foot_friction", "push_robot"}
     assert cfg.env.events.foot_friction is None
-    assert cfg.env.events.base_com is not None
+    assert cfg.env.events.base_com is None
+    assert cfg.env.events.push_robot is None
     assert cfg.env.events.encoder_bias is not None
-    assert cfg.env.events.push_robot is not None
     assert cfg.env.scene.entities.robot.geom_names is None
 
 
