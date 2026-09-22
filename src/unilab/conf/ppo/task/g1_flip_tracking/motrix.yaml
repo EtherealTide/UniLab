@@ -9,7 +9,10 @@ training:
 
 algo:
   max_iterations: 30000
-  empirical_normalization: false
+  actor:
+    obs_normalization: false
+  critic:
+    obs_normalization: false
 
 env:
   actions:

@@ -39,9 +39,10 @@ DENYLIST: list[str] = [
     "env.actions",
     "env.policy_observation_group",
     "env.critic_observation_group",
-    "algo.policy.actor_hidden_dims",
-    "algo.policy.critic_hidden_dims",
-    "algo.empirical_normalization",
+    "algo.actor.hidden_dims",
+    "algo.critic.hidden_dims",
+    "algo.actor.obs_normalization",
+    "algo.critic.obs_normalization",
     "algo.obs_normalization",
     "env.commands.motion.params.sampling_mode",
 ]
@@ -52,6 +53,12 @@ ENV_STRUCTURAL_DENYLIST: list[str] = [path for path in DENYLIST if path.startswi
 
 LEGACY_PATH_ALIASES: dict[str, str] = {
     "env.sampling_mode": "env.commands.motion.params.sampling_mode",
+    # Pre-native-schema PPO owner keys (legacy `policy:` block / flat toggle).
+    "algo.policy.actor_hidden_dims": "algo.actor.hidden_dims",
+    "algo.policy.critic_hidden_dims": "algo.critic.hidden_dims",
+    # The legacy flat toggle drove both actor and critic normalization; the
+    # actor-side field carries the check for old snapshots.
+    "algo.empirical_normalization": "algo.actor.obs_normalization",
 }
 _CANONICAL_PATH_FALLBACKS: dict[str, str] = {
     canonical: legacy for legacy, canonical in LEGACY_PATH_ALIASES.items()

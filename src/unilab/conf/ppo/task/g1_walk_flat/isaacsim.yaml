@@ -15,13 +15,9 @@ training:
 algo:
   num_envs: 2048
   max_iterations: 2200
-  empirical_normalization: false
   obs_groups:
     actor:
       - actor
-  policy:
-    actor_hidden_dims: [512, 256, 128]
-    critic_hidden_dims: [512, 256, 128]
 env:
   # IsaacSim 5.1 / IsaacLab v2.3.0 run in a dedicated Python 3.11 worker.
   isaacsim_device_id: 0

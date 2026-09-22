@@ -14,7 +14,6 @@ algo:
   num_envs: 128
   num_steps_per_env: 64
   max_iterations: 400
-  empirical_normalization: true
   obs_groups:
     actor: [policy]
     critic: [policy]

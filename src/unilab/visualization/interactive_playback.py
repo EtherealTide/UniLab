@@ -448,16 +448,25 @@ def create_rsl_rl_playback_session(
     checkpoint_resolver: Callable[[str, str, str | None, str, str | None], str | None],
     checkpoint_input_dim_reader: Callable[[str], int | None],
     entrypoint_log_root: Callable[..., Path],
-    wrapper_cls: Any,
-    runner_cls: Any,
-    policy_obs_dims_getter: Callable[[Any], tuple[int, int]],
-    train_cfg_normalizer: Callable[[dict[str, Any]], dict[str, Any]],
+    wrapper_cls: Any = None,
+    runner_cls: Any = None,
+    policy_obs_dims_getter: Callable[[Any], tuple[int, int]] | None = None,
     sim2sim_preflight: Callable[[str | None], Any] | None = None,
     runner_loader: Callable[[Any, str], None] | None = None,
     guard_algo_name: str | None = None,
     log: LogFn = print,
 ) -> tuple[RslRlPlaybackSession, str, str | None]:
     """Create a playback session and load the selected policy checkpoint."""
+    from rsl_rl.runners import OnPolicyRunner
+
+    from unilab.rl import RslRlVecEnvAdapter, get_policy_obs_dims
+
+    if wrapper_cls is None:
+        wrapper_cls = RslRlVecEnvAdapter
+    if runner_cls is None:
+        runner_cls = OnPolicyRunner
+    if policy_obs_dims_getter is None:
+        policy_obs_dims_getter = get_policy_obs_dims
 
     device_name = select_torch_device() if device is None else str(device)
     env = env_factory(int(playback_cfg.num_envs))
@@ -493,7 +502,7 @@ def create_rsl_rl_playback_session(
     wrapped_env = wrapper_cls(env, device=device_name, policy_obs_mode=policy_obs_mode)
     log(f"Policy obs mode: {policy_obs_mode} (actor_obs={actor_obs_dim}, flat_obs={flat_obs_dim})")
 
-    train_cfg = train_cfg_normalizer(copy.deepcopy(algo_config))
+    train_cfg = copy.deepcopy(algo_config)
     if "runner" not in train_cfg:
         train_cfg["runner"] = {}
     train_cfg["runner"]["logger"] = "none"
@@ -527,13 +536,6 @@ def create_rsl_rl_playback_session(
                 if runner_loader is not None:
                     runner_loader(runner, checkpoint_path)
                 else:
-                    from uni_rl.algos.rsl_rl_training_state import TrainingStateOnPolicyRunner
-
-                    load_options = (
-                        {"restore_training_state": False}
-                        if isinstance(runner, TrainingStateOnPolicyRunner)
-                        else {}
-                    )
                     runner.load(
                         checkpoint_path,
                         load_cfg={
@@ -543,7 +545,6 @@ def create_rsl_rl_playback_session(
                             "iteration": False,
                             "rnd": False,
                         },
-                        **load_options,
                     )
             policy = runner.get_inference_policy(device=device_name)
 

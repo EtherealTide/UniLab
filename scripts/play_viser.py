@@ -46,12 +46,6 @@ if str(SRC_DIR) not in sys.path:
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from uni_rl.algos.rsl_rl import (
-    RslRlVecEnvWrapper,
-    get_policy_obs_dims,
-    normalize_ppo_train_cfg,
-)
-
 from unilab.training import ensure_registries
 from unilab.utils.checkpoint import get_entrypoint_log_root
 from unilab.visualization.interactive_playback import (
@@ -75,12 +69,6 @@ from unilab.visualization.viser_scene import (
 ensure_registries()
 
 from unilab.base import registry
-
-try:
-    from rsl_rl.runners import OnPolicyRunner
-except ImportError:
-    print("Could not import rsl_rl. Please ensure it is installed.")
-    sys.exit(1)
 
 if not VISER_AVAILABLE:
     print("[play_viser] viser is not installed. Install with: uv sync --extra viser")
@@ -239,10 +227,6 @@ def play_viser(args: PlayInteractiveArgs, cfg: DictConfig) -> None:
         checkpoint_resolver=resolve_checkpoint,
         checkpoint_input_dim_reader=infer_checkpoint_actor_input_dim,
         entrypoint_log_root=get_entrypoint_log_root,
-        wrapper_cls=RslRlVecEnvWrapper,
-        runner_cls=OnPolicyRunner,
-        policy_obs_dims_getter=get_policy_obs_dims,
-        train_cfg_normalizer=normalize_ppo_train_cfg,
         sim2sim_preflight=make_sim2sim_preflight(cfg, algo_name="ppo"),
         log=lambda message: print(f"[play_viser] {message}"),
     )

@@ -96,9 +96,8 @@ def test_ppo_config_defaults():
     assert cfg.algo == "ppo"
     assert cfg.max_iterations == 101
     assert cfg.algorithm.clip_param == 0.2
-    assert cfg.algorithm.class_name == "uni_rl.algos.rsl_rl_ppo:FinalObservationAwarePPO"
-    assert cfg.algorithm.enable_compile is True
-    assert cfg.policy.class_name == "ActorCritic"
+    assert cfg.algorithm.class_name == "rsl_rl.algorithms:PPO"
+    assert cfg.actor.class_name == "rsl_rl.models.MLPModel"
 
 
 def test_appo_config_defaults():
@@ -280,7 +279,6 @@ def test_ppo_go2_max_iterations():
         cfg = compose("config", overrides=["task=go2_joystick_flat/mujoco"])
     assert cfg.algo.max_iterations == 151
     assert "actor" in cfg.algo.obs_groups
-    assert cfg.algo.algorithm.enable_compile is False
 
 
 def test_ppo_g1_num_envs():
@@ -347,7 +345,8 @@ def test_ppo_g1_flip_tracking():
     assert cfg.training.task_name == "G1FlipTracking"
     assert cfg.algo.num_envs == 1024
     assert cfg.algo.max_iterations == 20000
-    assert cfg.algo.empirical_normalization is True
+    assert cfg.algo.actor.obs_normalization is True
+    assert cfg.algo.critic.obs_normalization is True
     assert cfg.algo.obs_groups.critic == ["critic"]
     assert cfg.algo.algorithm.entropy_coef == pytest.approx(0.005)
     assert cfg.algo.algorithm.desired_kl == pytest.approx(0.01)
@@ -378,7 +377,8 @@ def test_ppo_x2_wall_flip_tracking():
     assert cfg.training.sim_backend == "mujoco"
     assert cfg.algo.num_envs == 1024
     assert cfg.algo.max_iterations == 9500
-    assert cfg.algo.empirical_normalization is True
+    assert cfg.algo.actor.obs_normalization is True
+    assert cfg.algo.critic.obs_normalization is True
     assert cfg.algo.obs_groups.critic == ["critic"]
     assert cfg.algo.algorithm.entropy_coef == pytest.approx(0.005)
     assert cfg.algo.algorithm.desired_kl == pytest.approx(0.01)

@@ -115,8 +115,6 @@ def test_go2_superdex_executes_mujoco_checkpoint(tmp_path: Path) -> None:
         pytest.skip("set UNILAB_SUPERDEX_GO2_CHECKPOINT to a MuJoCo Go2 PPO checkpoint")
     pytest.importorskip("superdex.physics")
     import torch
-    from rsl_rl.runners import OnPolicyRunner
-    from uni_rl.algos.rsl_rl import RslRlVecEnvWrapper, get_policy_obs_dims, normalize_ppo_train_cfg
 
     from unilab.training.run import algo_config_dict
     from unilab.visualization.interactive_playback import (
@@ -157,10 +155,6 @@ def test_go2_superdex_executes_mujoco_checkpoint(tmp_path: Path) -> None:
             checkpoint_resolver=lambda *_: str(checkpoint),
             checkpoint_input_dim_reader=infer_checkpoint_actor_input_dim,
             entrypoint_log_root=lambda *args, **kwargs: tmp_path,
-            wrapper_cls=RslRlVecEnvWrapper,
-            runner_cls=OnPolicyRunner,
-            policy_obs_dims_getter=get_policy_obs_dims,
-            train_cfg_normalizer=normalize_ppo_train_cfg,
             sim2sim_preflight=make_sim2sim_preflight(owner, algo_name="ppo"),
             guard_algo_name="ppo",
         )

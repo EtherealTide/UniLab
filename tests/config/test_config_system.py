@@ -225,11 +225,13 @@ def test_ppo_g1_backend_specific_hyperparams_remain_separate():
     motrix_cfg = _compose("ppo", overrides=["task=g1_walk_flat/motrix"])
 
     assert mujoco_cfg.algo.max_iterations == 2200
-    assert mujoco_cfg.algo.empirical_normalization is False
+    assert mujoco_cfg.algo.actor.obs_normalization is False
+    assert mujoco_cfg.algo.critic.obs_normalization is False
     assert mujoco_cfg.algo.obs_groups.actor == ["actor"]
 
     assert motrix_cfg.algo.max_iterations == 2200
-    assert motrix_cfg.algo.empirical_normalization is True
+    assert motrix_cfg.algo.actor.obs_normalization is True
+    assert motrix_cfg.algo.critic.obs_normalization is True
     assert motrix_cfg.algo.obs_groups.actor == ["policy"]
     assert OmegaConf.select(motrix_cfg, "env.motrix_max_iterations") is None
     assert motrix_cfg.env.actions.joint_pos.scale == pytest.approx(0.5)
@@ -269,7 +271,8 @@ def test_ppo_go2_motrix_preserves_backend_env_overrides():
     cfg = _compose("ppo", overrides=["task=go2_joystick_flat/motrix"])
 
     assert cfg.algo.num_envs == 1024
-    assert cfg.algo.empirical_normalization is True
+    assert cfg.algo.actor.obs_normalization is True
+    assert cfg.algo.critic.obs_normalization is True
     assert cfg.env.events.pd_gains is None
     assert cfg.env.commands.twist.ranges.lin_vel_x == [0.5, 0.5]
     assert cfg.env.commands.twist.ranges.lin_vel_y == [0.0, 0.0]
@@ -326,4 +329,5 @@ def test_cli_override_beats_task_defaults():
     )
 
     assert cfg.algo.max_iterations == 1
-    assert cfg.algo.empirical_normalization is True
+    assert cfg.algo.actor.obs_normalization is True
+    assert cfg.algo.critic.obs_normalization is True

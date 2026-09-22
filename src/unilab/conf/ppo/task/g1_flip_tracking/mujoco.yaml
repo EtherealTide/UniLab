@@ -12,10 +12,13 @@ algo:
   num_envs: 1024
   max_iterations: 20000
   save_interval: 500
-  empirical_normalization: true
   obs_groups:
     actor: [actor]
     critic: [critic]
+  actor:
+    obs_normalization: true
+  critic:
+    obs_normalization: true
   algorithm:
     entropy_coef: 0.005
     desired_kl: 0.01

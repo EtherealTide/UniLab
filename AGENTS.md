@@ -29,9 +29,15 @@ architecture changes.
 
 ## Architecture contracts
 
-- UniLab provides environments and adapters. `uni_rl` owns algorithm runners,
-  learners, collectors, IPC, and training logs; `uni_rl` must not import UniLab.
-  The env factory must be a pickleable `EnvFactory` for spawn collectors.
+- UniLab provides environments and adapters. `uni_rl` owns the APPO and
+  off-policy algorithm runners, learners, collectors, IPC, and training logs;
+  `uni_rl` must not import UniLab. `uni_rl` is an optional dependency (extra
+  `uni_rl`, kept in the dev group): the PPO path is a direct rsl-rl
+  integration owned by `unilab.rl` (VecEnv adapter and
+  distributed helpers; runner and algorithm are upstream rsl-rl) and must
+  stay importable and functional without uni_rl for single-process runs;
+  only multi-GPU launch delegates lazily to `uni_rl.ipc`. The env factory
+  must be a pickleable `EnvFactory` for spawn collectors.
 - Environment reset returns `(obs_dict, info_dict)` and `NpEnvState.obs` is a
   dict. Keep `obs_groups_spec` and policy dimensions consistent with wrappers
   and learners.
@@ -100,6 +106,7 @@ them in the issue/ADR before expanding the work.
   `src/unilab/base/process_device.py`
 - Backend owner: `src/unilab/base/backend_factory.py`
 - Training/run helpers: `src/unilab/training/run.py`
+- PPO (direct rsl-rl integration): `src/unilab/rl/`
 - Sim2Sim: `src/unilab/utils/sim2sim.py`
 - Architecture and contracts: `docs/sphinx/source/zh_CN/4-developer_guide/0-index.md`
 - Workflow policy: `docs/sphinx/source/en/4-developer_guide/5-contributing_workflow.md`

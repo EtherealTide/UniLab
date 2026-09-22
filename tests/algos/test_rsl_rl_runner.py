@@ -6,7 +6,6 @@ Requires MuJoCo and rsl_rl to be installed. Run with:
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 from typing import Any, cast
 
@@ -21,11 +20,10 @@ pytest.importorskip(
 )
 rsl_rl = pytest.importorskip("rsl_rl")
 
-from uni_rl.algos.rsl_rl import RslRlVecEnvWrapper, normalize_ppo_train_cfg
-
 from unilab.base import registry
 from unilab.base.config_adapter import BackendAdapter
 from unilab.base.registry import ensure_registries
+from unilab.rl import RslRlVecEnvAdapter
 from unilab.structured_configs import PPOConfig
 
 ensure_registries()
@@ -73,44 +71,26 @@ def test_rsl_rl_ppo_one_iteration(
         sim_backend="mujoco",
         env_cfg_override=env_cfg_override,
     )
-    wrapped = RslRlVecEnvWrapper(env, device="cpu")
+    wrapped = RslRlVecEnvAdapter(env, device="cpu")
 
     cfg = PPOConfig()
     train_cfg = cfg.to_dict()
-    train_cfg["runner"] = {"logger": "none"}
     if env_name == "Go2JoystickFlat":
         train_cfg["obs_groups"] = {"actor": ["actor"], "critic": ["critic"]}
     # Small network + short loop; large num_envs to saturate CPU
     train_cfg["num_steps_per_env"] = 8
-    train_cfg["policy"] = {
-        "class_name": "ActorCritic",
-        "actor_hidden_dims": [64, 64],
-        "critic_hidden_dims": [64, 64],
-        "activation": "elu",
-        "init_noise_std": 1.0,
-    }
+    train_cfg["actor"]["hidden_dims"] = [64, 64]
+    train_cfg["critic"]["hidden_dims"] = [64, 64]
     train_cfg["algorithm"]["num_learning_epochs"] = 1
     train_cfg["algorithm"]["num_mini_batches"] = 2
-    train_cfg = normalize_ppo_train_cfg(train_cfg)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        runner = OnPolicyRunner(cast(Any, wrapped), train_cfg, log_dir=tmpdir, device="cpu")
-        try:
-            runner.learn(num_learning_iterations=1, init_at_random_ep_len=True)
-        finally:
-            writer = getattr(getattr(runner, "logger", None), "writer", None)
-            if writer is not None and hasattr(writer, "close"):
-                writer.close()
+    # log_dir=None disables the logging writer (upstream v5 rejects "none").
+    runner = OnPolicyRunner(cast(Any, wrapped), train_cfg, log_dir=None, device="cpu")
+    try:
+        runner.learn(num_learning_iterations=1, init_at_random_ep_len=True)
+    finally:
+        writer = getattr(getattr(runner, "logger", None), "writer", None)
+        if writer is not None and hasattr(writer, "close"):
+            writer.close()
 
     env.close()
-
-
-def test_normalize_ppo_train_cfg_maps_empirical_normalization_to_models():
-    cfg = PPOConfig()
-    train_cfg = cfg.to_dict()
-    train_cfg["empirical_normalization"] = True
-
-    normalized = normalize_ppo_train_cfg(train_cfg)
-
-    assert normalized["actor"]["obs_normalization"] is True
-    assert normalized["critic"]["obs_normalization"] is True

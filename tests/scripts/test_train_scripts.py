@@ -413,8 +413,9 @@ def test_ppo_go2_resolved_algo_matches_old_motrix_behavior():
     cfg = _ppo_cfg(["task=go2_joystick_flat/motrix"])
 
     assert cfg.algo.max_iterations == 151
-    assert cfg.algo.empirical_normalization is True
-    assert cfg.algo.policy.init_noise_std == pytest.approx(0.5)
+    assert cfg.algo.actor.obs_normalization is True
+    assert cfg.algo.critic.obs_normalization is True
+    assert cfg.algo.actor.distribution_cfg.init_std == pytest.approx(0.5)
     assert cfg.algo.algorithm.learning_rate == pytest.approx(3.0e-4)
     assert cfg.algo.algorithm.entropy_coef == pytest.approx(1.0e-3)
 
@@ -427,9 +428,10 @@ def test_ppo_g1_resolved_algo_matches_motrix_owner():
     cfg = _ppo_cfg(["task=g1_walk_flat/motrix"])
 
     assert cfg.algo.max_iterations == 2200
-    assert cfg.algo.empirical_normalization is True
+    assert cfg.algo.actor.obs_normalization is True
+    assert cfg.algo.critic.obs_normalization is True
     assert cfg.algo.obs_groups.actor == ["policy"]
-    assert cfg.algo.policy.init_noise_std == pytest.approx(0.5)
+    assert cfg.algo.actor.distribution_cfg.init_std == pytest.approx(0.5)
     assert cfg.algo.algorithm.learning_rate == pytest.approx(3.0e-4)
     assert cfg.algo.algorithm.entropy_coef == pytest.approx(5.0e-3)
 
@@ -438,7 +440,8 @@ def test_ppo_g1_mujoco_base_hyperparams_remain_separate():
     cfg = _ppo_cfg(["task=g1_walk_flat/mujoco"])
 
     assert cfg.algo.max_iterations == 2200
-    assert cfg.algo.empirical_normalization is False
+    assert cfg.algo.actor.obs_normalization is False
+    assert cfg.algo.critic.obs_normalization is False
     assert cfg.algo.obs_groups.actor == ["actor"]
 
 
@@ -464,10 +467,11 @@ def test_ppo_task_go2_aligns_mujoco_with_motrix_defaults():
     assert cfg.reward.tracking_ang_vel.weight == pytest.approx(0.2)
     assert cfg.reward.lin_vel_z.weight == pytest.approx(-5.0)
     assert cfg.reward.ang_vel_xy.weight == pytest.approx(-0.1)
-    assert cfg.algo.empirical_normalization is True
+    assert cfg.algo.actor.obs_normalization is True
+    assert cfg.algo.critic.obs_normalization is True
     assert cfg.algo.obs_groups.actor == ["actor"]
     assert cfg.algo.obs_groups.critic == ["critic"]
-    assert cfg.algo.policy.init_noise_std == pytest.approx(0.5)
+    assert cfg.algo.actor.distribution_cfg.init_std == pytest.approx(0.5)
     assert cfg.algo.algorithm.learning_rate == pytest.approx(3.0e-4)
     assert cfg.algo.algorithm.entropy_coef == pytest.approx(1.0e-3)
 
@@ -479,8 +483,9 @@ def test_ppo_go2_drake_batch_config_matches_go2_training_defaults():
     assert cfg.training.sim_backend == "drake"
     assert cfg.algo.num_envs == 1024
     assert cfg.algo.max_iterations == 151
-    assert cfg.algo.empirical_normalization is True
-    assert cfg.algo.policy.init_noise_std == pytest.approx(0.5)
+    assert cfg.algo.actor.obs_normalization is True
+    assert cfg.algo.critic.obs_normalization is True
+    assert cfg.algo.actor.distribution_cfg.init_std == pytest.approx(0.5)
     assert cfg.algo.algorithm.learning_rate == pytest.approx(3.0e-4)
     assert cfg.algo.algorithm.entropy_coef == pytest.approx(1.0e-3)
     assert cfg.env.drake_backend_mode == "batch"
@@ -585,7 +590,6 @@ def test_build_ppo_env_cfg_override_allegro_mujoco(
     env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
 
     assert cfg.training.task_name == "AllegroInhandRotation"
-    assert cfg.algo.empirical_normalization is False
     assert cfg.algo.actor.obs_normalization is True
     assert cfg.algo.critic.obs_normalization is True
     assert env_cfg_override["rewards"]["rotate"]["weight"] == pytest.approx(1.25)
@@ -647,7 +651,6 @@ def test_build_ppo_env_cfg_override_allegro_grasp_mujoco(
     env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
 
     assert cfg.training.task_name == "AllegroInhandRotationGrasp"
-    assert cfg.algo.empirical_normalization is False
     assert cfg.algo.actor.obs_normalization is True
     assert cfg.algo.critic.obs_normalization is True
     assert env_cfg_override["rewards"]["rotate"]["weight"] == pytest.approx(0.0)
@@ -842,8 +845,7 @@ def _build_rsl_lifecycle_case(
 
     monkeypatch.setattr(mod, "create_env", create_env)
     monkeypatch.setattr(mod, "algo_config_dict", lambda _cfg: {})
-    monkeypatch.setattr(mod, "_resolve_ppo_wrapper_cls", lambda _rl_cfg: FakeWrapper)
-    monkeypatch.setattr(mod, "normalize_ppo_train_cfg", lambda _rl_cfg: {})
+    monkeypatch.setattr(mod, "RslRlVecEnvAdapter", FakeWrapper)
     monkeypatch.setattr(mod, "patch_rsl_rl_resume_state", lambda: None)
     monkeypatch.setattr(mod, "OnPolicyRunner", FakeRunner)
     monkeypatch.setattr(mod, "patch_rsl_rl_action_std_logging", lambda _runner: None)
@@ -1001,7 +1003,8 @@ def test_ppo_cli_algo_override_wins_over_base(
 
     assert cfg.algo.max_iterations == 1
     # Other base values remain intact
-    assert cfg.algo.empirical_normalization is True
+    assert cfg.algo.actor.obs_normalization is True
+    assert cfg.algo.critic.obs_normalization is True
 
 
 def test_g1_motion_tracking_ppo_motrix_prefers_backend_specific_reward(
@@ -2003,7 +2006,7 @@ def test_play_resolve_checkpoint_delegates_to_shared_helper(
 
 
 # ---------------------------------------------------------------------------
-# play_interactive.py — RslRlVecEnvWrapper contract behavior
+# RslRlVecEnvAdapter contract behavior (PPO path)
 # ---------------------------------------------------------------------------
 
 
@@ -2013,19 +2016,23 @@ def _play_interactive():
 
 
 def test_play_wrapper_imports_shared_implementation():
-    """Verify play_interactive.py uses shared RslRlVecEnvWrapper."""
-    from uni_rl.algos.rsl_rl import RslRlVecEnvWrapper as SharedWrapper
-
+    """PPO and APPO playback both use the UniLab-owned VecEnv adapter."""
     mod = _play_interactive()
-    # The wrapper class in play_interactive should be the shared one
-    assert mod.RslRlVecEnvWrapper is SharedWrapper
+    # uni_rl's RslRlVecEnvWrapper is no longer referenced: the PPO playback
+    # session defaults to the UniLab-owned adapter and the APPO branch passes
+    # it explicitly.
+    assert not hasattr(mod, "RslRlVecEnvWrapper")
+    source = Path(mod.__file__).read_text(encoding="utf-8")
+    assert "uni_rl.algos.rsl_rl" not in source
+    assert "wrapper_cls=RslRlVecEnvAdapter" in source
 
 
 def test_play_wrapper_uses_current_reset_contract():
     """Verify wrapper reset() uses current (obs, info) contract, not old (_, obs, _)."""
     import numpy as np
     from tensordict import TensorDict
-    from uni_rl.algos.rsl_rl import RslRlVecEnvWrapper
+
+    from unilab.rl import RslRlVecEnvAdapter
 
     # Create a fake environment that returns (obs, info) tuple
     class FakeEnv:
@@ -2045,7 +2052,7 @@ def test_play_wrapper_uses_current_reset_contract():
             return {"obs": np.ones((2, 5), dtype=np.float32)}, {}
 
     env = FakeEnv()
-    wrapper = RslRlVecEnvWrapper(env, device="cpu", policy_obs_mode="flat")
+    wrapper = RslRlVecEnvAdapter(env, device="cpu", policy_obs_mode="flat")
 
     # Reset should work with current contract
     obs_td, info = wrapper.reset()
@@ -2059,7 +2066,8 @@ def test_play_wrapper_uses_current_reset_contract():
 def test_play_wrapper_policy_obs_mode_actor():
     """Verify wrapper supports policy_obs_mode='actor'."""
     import numpy as np
-    from uni_rl.algos.rsl_rl import RslRlVecEnvWrapper
+
+    from unilab.rl import RslRlVecEnvAdapter
 
     class FakeEnv:
         def __init__(self):
@@ -2082,7 +2090,7 @@ def test_play_wrapper_policy_obs_mode_actor():
     env = FakeEnv()
 
     # Test actor mode - num_obs should match actor obs dim only
-    wrapper_actor = RslRlVecEnvWrapper(env, device="cpu", policy_obs_mode="actor")
+    wrapper_actor = RslRlVecEnvAdapter(env, device="cpu", policy_obs_mode="actor")
     assert wrapper_actor.num_obs == 3  # Only "obs" group
     assert wrapper_actor._actor_obs_dim == 3
     assert wrapper_actor._flat_obs_dim == 3
@@ -2096,7 +2104,8 @@ def test_play_wrapper_policy_obs_mode_actor():
 
 def test_play_wrapper_flat_policy_excludes_critic_only_group():
     import numpy as np
-    from uni_rl.algos.rsl_rl import RslRlVecEnvWrapper
+
+    from unilab.rl import RslRlVecEnvAdapter
 
     class FakeEnv:
         def __init__(self):
@@ -2122,7 +2131,7 @@ def test_play_wrapper_flat_policy_excludes_critic_only_group():
         def reset(self, env_indices):
             return cast(dict[str, np.ndarray], getattr(self.state, "obs")), {}
 
-    wrapper = RslRlVecEnvWrapper(FakeEnv(), device="cpu", policy_obs_mode="flat")
+    wrapper = RslRlVecEnvAdapter(FakeEnv(), device="cpu", policy_obs_mode="flat")
     obs_td, _ = wrapper.reset()
 
     np.testing.assert_allclose(
@@ -2137,9 +2146,10 @@ def test_play_wrapper_flat_policy_excludes_critic_only_group():
     assert wrapper.num_privileged_obs == 4
 
 
-def test_play_wrapper_step_exports_timeout_bootstrap_obs():
+def test_play_wrapper_step_exports_time_outs_without_bootstrap_obs():
     import torch
-    from uni_rl.algos.rsl_rl import RslRlVecEnvWrapper
+
+    from unilab.rl import RslRlVecEnvAdapter
 
     class FakeEnv:
         def __init__(self):
@@ -2178,19 +2188,13 @@ def test_play_wrapper_step_exports_timeout_bootstrap_obs():
                 },
             )()
 
-    wrapper = RslRlVecEnvWrapper(FakeEnv(), device="cpu", policy_obs_mode="flat")
+    wrapper = RslRlVecEnvAdapter(FakeEnv(), device="cpu", policy_obs_mode="flat")
 
     _, _, _, infos = wrapper.step(torch.zeros((1, 2)))
 
     assert torch.equal(infos["time_outs"], torch.tensor([True]))
-    np.testing.assert_allclose(
-        infos["time_out_bootstrap_obs"]["policy"].cpu().numpy(),
-        np.array([[7.0, 8.0, 9.0]], dtype=np.float32),
-    )
-    np.testing.assert_allclose(
-        infos["time_out_bootstrap_obs"]["critic"].cpu().numpy(),
-        np.array([[4.0, 5.0]], dtype=np.float32),
-    )
+    # The direct rsl-rl adapter no longer exports final observations.
+    assert "time_out_bootstrap_obs" not in infos
 
 
 # ---------------------------------------------------------------------------
@@ -2428,9 +2432,14 @@ def test_train_rsl_rl_motrix_auto_play_is_interactive(
     monkeypatch.setattr(mod, "parse_checkpoint_path", lambda *args, **kwargs: (checkpoint, run_dir))
     monkeypatch.setattr(mod, "build_ppo_play_env_cfg_override", lambda cfg: {})
     monkeypatch.setattr(mod, "create_env", lambda *args, **kwargs: FakeEnv())
-    monkeypatch.setattr(mod, "_resolve_ppo_wrapper_cls", lambda rl_cfg: FakeWrapper)
-    monkeypatch.setattr(mod, "normalize_ppo_train_cfg", lambda rl_cfg: {})
-    monkeypatch.setattr(mod, "OnPolicyRunner", FakeRunner)
+    create_session = mod.create_rsl_rl_playback_session
+    monkeypatch.setattr(
+        mod,
+        "create_rsl_rl_playback_session",
+        lambda *args, **kwargs: create_session(
+            *args, wrapper_cls=FakeWrapper, runner_cls=FakeRunner, **kwargs
+        ),
+    )
 
     result = mod.play_rsl_rl(cfg, device="cpu")
 
@@ -2522,9 +2531,14 @@ def test_train_rsl_rl_record_play_uses_backend_plan(
     monkeypatch.setattr(mod, "parse_checkpoint_path", lambda *args, **kwargs: (checkpoint, run_dir))
     monkeypatch.setattr(mod, "build_ppo_play_env_cfg_override", lambda cfg: {})
     monkeypatch.setattr(mod, "create_env", lambda *args, **kwargs: FakeEnv())
-    monkeypatch.setattr(mod, "_resolve_ppo_wrapper_cls", lambda rl_cfg: FakeWrapper)
-    monkeypatch.setattr(mod, "normalize_ppo_train_cfg", lambda rl_cfg: {})
-    monkeypatch.setattr(mod, "OnPolicyRunner", FakeRunner)
+    create_session = mod.create_rsl_rl_playback_session
+    monkeypatch.setattr(
+        mod,
+        "create_rsl_rl_playback_session",
+        lambda *args, **kwargs: create_session(
+            *args, wrapper_cls=FakeWrapper, runner_cls=FakeRunner, **kwargs
+        ),
+    )
 
     result = mod.play_rsl_rl(cfg, device="cpu")
 
@@ -2730,8 +2744,14 @@ def test_play_interactive_runner_log_dir_uses_algo_log_name(monkeypatch: pytest.
         "get_entrypoint_log_root",
         lambda root_dir, *, algo_log_name, log_root=None: Path("/tmp") / algo_log_name,
     )
-    monkeypatch.setattr(mod, "RslRlVecEnvWrapper", FakeWrapper)
-    monkeypatch.setattr(mod, "OnPolicyRunner", FakeRunner)
+    create_session = mod.create_rsl_rl_playback_session
+    monkeypatch.setattr(
+        mod,
+        "create_rsl_rl_playback_session",
+        lambda *args, **kwargs: create_session(
+            *args, wrapper_cls=FakeWrapper, runner_cls=FakeRunner, **kwargs
+        ),
+    )
     monkeypatch.setattr(mod, "PPOConfig", lambda: types.SimpleNamespace(to_dict=lambda: {}))
     monkeypatch.setattr(mod.mujoco, "MjData", lambda model: object())
     monkeypatch.setattr(mod.mujoco, "mj_setState", lambda *args, **kwargs: None)
@@ -2852,7 +2872,6 @@ def test_train_rsl_rl_play_uses_shared_playback_session_factory(
             return "obs_1"
 
     fake_session = FakeSession()
-    sentinel_wrapper_cls = type("SentinelWrapper", (), {})
 
     def fake_create_session(**kwargs: Any):
         captured["factory_kwargs"] = kwargs
@@ -2860,7 +2879,6 @@ def test_train_rsl_rl_play_uses_shared_playback_session_factory(
 
     monkeypatch.setattr(mod, "EXPORT_POLICY", False, raising=False)
     monkeypatch.setattr(mod, "parse_checkpoint_path", lambda *args, **kwargs: (checkpoint, run_dir))
-    monkeypatch.setattr(mod, "_resolve_ppo_wrapper_cls", lambda rl_cfg: sentinel_wrapper_cls)
     monkeypatch.setattr(mod, "create_rsl_rl_playback_session", fake_create_session)
 
     result = mod.play_rsl_rl(cfg, device="cpu")
@@ -2875,8 +2893,11 @@ def test_train_rsl_rl_play_uses_shared_playback_session_factory(
     assert playback_cfg.num_envs == cfg.training.play_env_num
     assert factory_kwargs["device"] == "cpu"
     assert factory_kwargs["root_dir"] == Path.cwd()
-    assert factory_kwargs["wrapper_cls"] is sentinel_wrapper_cls
-    assert factory_kwargs["runner_cls"] is mod.OnPolicyRunner
+    # The session factory resolves the UniLab adapter and the upstream
+    # OnPolicyRunner itself; play_rsl_rl no longer forwards them.
+    assert "wrapper_cls" not in factory_kwargs
+    assert "runner_cls" not in factory_kwargs
+    assert "train_cfg_normalizer" not in factory_kwargs
     assert factory_kwargs["guard_algo_name"] == "ppo"
     assert factory_kwargs.get("runner_loader") is None
     assert factory_kwargs["checkpoint_resolver"]() == str(checkpoint)
@@ -2978,7 +2999,7 @@ def test_play_appo_uses_shared_playback_session_factory(
     assert factory_kwargs["cfg"] is cfg
     assert factory_kwargs["rl_cfg"] is rl_cfg
     assert factory_kwargs["root_dir"] == Path.cwd()
-    assert factory_kwargs["wrapper_cls"] is mod.RslRlVecEnvWrapper
+    assert factory_kwargs["wrapper_cls"] is mod.RslRlVecEnvAdapter
     assert "onnx_export" in captured
     assert fake_session.reset_calls == 1
     assert fake_session.step_calls == 1
