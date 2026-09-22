@@ -73,7 +73,7 @@ def test_parse_case_requires_algo_task_sim() -> None:
 def test_default_cases_cover_motrix_only() -> None:
     specs = bench._resolve_case_specs(
         "default",
-        algos_arg="sac,flashsac,td3",
+        algos_arg="sac,flashsac",
         backends=("motrix",),
     )
 
@@ -86,7 +86,7 @@ def test_all_backend_selection_expands_default_cases() -> None:
     backends = bench._resolve_backend_selection(backend="mujoco", all_backends=True)
     specs = bench._resolve_case_specs(
         "default",
-        algos_arg="sac,flashsac,td3",
+        algos_arg="sac,flashsac",
         backends=backends,
     )
 
@@ -109,12 +109,12 @@ def test_mjwarp_backend_is_opt_in_and_never_part_of_all() -> None:
 
 def test_resolve_case_specs_deduplicates_explicit_specs() -> None:
     specs = bench._resolve_case_specs(
-        "sac/g1_walk_flat/mujoco,sac/g1_walk_flat/mujoco,td3/g1_walk_flat/mujoco",
-        algos_arg="sac,td3",
+        "sac/g1_walk_flat/mujoco,sac/g1_walk_flat/mujoco,flashsac/g1_walk_flat/mujoco",
+        algos_arg="sac,flashsac",
         backends=("mujoco",),
     )
 
-    assert specs == ["sac/g1_walk_flat/mujoco", "td3/g1_walk_flat/mujoco"]
+    assert specs == ["sac/g1_walk_flat/mujoco", "flashsac/g1_walk_flat/mujoco"]
 
 
 def test_motrixsim_case_alias_uses_motrix_owner_config() -> None:
@@ -134,13 +134,12 @@ def test_motrixsim_case_alias_uses_motrix_owner_config() -> None:
 def test_auto_discovery_supports_motrixsim_alias() -> None:
     specs = bench._resolve_case_specs(
         "auto",
-        algos_arg="sac,flashsac,td3",
+        algos_arg="sac,flashsac",
         backends=("motrix",),
     )
 
     assert "sac/g1_walk_flat/motrix" in specs
     assert "flashsac/g1_walk_flat/motrix" in specs
-    assert "td3/go2_joystick_flat/motrix" in specs
 
 
 def test_noise_seed_override_composes_for_target_g1_profiles() -> None:

@@ -30,7 +30,6 @@ def test_discover_offpolicy_trees_group_by_task() -> None:
 
     sac = audit._discover("sac")
     flashsac = audit._discover("flashsac")
-    td3 = audit._discover("td3")
 
     assert {
         "mujoco",
@@ -41,7 +40,6 @@ def test_discover_offpolicy_trees_group_by_task() -> None:
         "isaacsim",
     }.issubset(sac["g1_walk_flat"])
     assert {"mujoco", "motrix", "mjwarp"}.issubset(flashsac["g1_walk_flat"])
-    assert td3["g1_walk_flat"] == ["mujoco"]
 
 
 def test_go2_superdex_pair_is_audited_and_transferable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -60,7 +58,6 @@ def test_go2_superdex_pair_is_audited_and_transferable(monkeypatch: pytest.Monke
     ("tree", "task_variant", "expected_algo"),
     [
         ("sac", "g1_walk_flat/mujoco", "sac"),
-        ("td3", "g1_walk_flat/mujoco", "td3"),
         ("flashsac", "g1_walk_flat/mujoco", "flashsac"),
     ],
 )

@@ -105,7 +105,6 @@ def test_appo_task_configs_load(task, tmp_path):
     ("algo", "task"),
     [
         ("sac", "g1_walk_flat/mujoco"),
-        ("td3", "g1_walk_flat/mujoco"),
     ],
 )
 def test_offpolicy_task_configs_load(algo, task):

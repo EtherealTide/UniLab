@@ -62,47 +62,6 @@ class SACConfig(BaseConfig):
     algo_params: SACAlgoParams = field(default_factory=SACAlgoParams)
 
 
-# ── Off-policy: TD3 ──────────────────────────────────────────────────────────
-
-
-@dataclass
-class TD3AlgoParams:
-    weight_decay: float = 0.1
-    v_min: float = -10.0
-    v_max: float = 10.0
-    init_scale: float = 0.01
-    log_std_min: float = -0.9
-    log_std_max: float = 0.0
-    policy_noise: float = 0.2
-    noise_clip: float = 0.5
-    use_cdq: bool = True
-
-
-@dataclass
-class TD3Config(BaseConfig):
-    algo: str = "td3"
-    algo_log_name: str = "fast_td3"
-    seed: int = 1
-    num_envs: int = 4096
-    batch_size: int = 8192
-    replay_buffer_n: int = 1000
-    updates_per_step: int = 4
-    learning_starts: int = 1
-    policy_frequency: int = 2
-    max_iterations: int = 5000
-    save_interval: int = 500
-    gamma: float = 0.97
-    tau: float = 0.1
-    actor_lr: float = 3e-4
-    critic_lr: float = 3e-4
-    actor_hidden_dim: int = 256
-    critic_hidden_dim: int = 512
-    num_atoms: int = 101
-    obs_normalization: bool = True
-    use_layer_norm: bool = False
-    algo_params: TD3AlgoParams = field(default_factory=TD3AlgoParams)
-
-
 # ── Off-policy: FlashSAC ─────────────────────────────────────────────────────
 
 

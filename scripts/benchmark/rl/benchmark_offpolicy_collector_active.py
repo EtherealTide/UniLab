@@ -62,7 +62,7 @@ DEFAULT_CASE_TEMPLATES = (
     "sac/g1_motion_tracking",
     "flashsac/g1_walk_flat",
 )
-DEFAULT_ALGOS = ("sac", "flashsac", "td3")
+DEFAULT_ALGOS = ("sac", "flashsac")
 DEFAULT_BACKEND = "motrix"
 BENCHMARK_BACKENDS = ("mujoco", "motrix")
 # mjwarp (GPU) is opt-in only: it requires the optional ``mjwarp`` extra

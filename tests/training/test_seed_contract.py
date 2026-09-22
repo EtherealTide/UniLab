@@ -59,7 +59,6 @@ def test_apply_training_seed_rejects_negative_seed():
         ("ppo", ["task=go2_joystick_flat/mujoco", "algo.seed=41"]),
         ("appo", ["task=go2_joystick_flat/mujoco"]),
         ("sac", ["task=g1_walk_flat/mujoco"]),
-        ("td3", ["task=g1_walk_flat/mujoco"]),
     ],
 )
 def test_owner_configs_resolve_algorithm_seed_contract(config_dir: str, overrides: list[str]):

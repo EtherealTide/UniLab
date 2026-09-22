@@ -116,16 +116,6 @@ _OWNER_CASES = (
         id="flashsac-mujoco",
     ),
     pytest.param(
-        "td3",
-        ("task=go2_joystick_flat/motrix",),
-        "motrix",
-        0.25,
-        False,
-        False,
-        True,
-        id="td3-motrix",
-    ),
-    pytest.param(
         "sac",
         ("task=go2_joystick_flat/drake",),
         "drake",

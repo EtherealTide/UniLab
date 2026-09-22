@@ -101,8 +101,8 @@ except ImportError:
     _HAS_MUJOCO = False
 
 # ---------------------------------------------------------------------------
-# train_sac.py / train_td3.py / train_flashsac.py — Hydra config defaults
-# (composed from the per-algo trees conf/sac, conf/td3, conf/flashsac)
+# train_sac.py / train_flashsac.py — Hydra config defaults
+# (composed from the per-algo trees conf/sac, conf/flashsac)
 # ---------------------------------------------------------------------------
 
 
@@ -295,11 +295,6 @@ def test_offpolicy_hydra_default_torch_thread_budget():
     assert cfg.training.torch_threads.collector_num_interop_threads == 1
     assert cfg.training.torch_threads.compile_threads == "auto"
     assert cfg.training.torch_threads.set_env_vars is True
-
-
-def test_offpolicy_hydra_algo_td3():
-    cfg = _offpolicy_cfg(algo="td3")
-    assert cfg.algo.algo == "td3"
 
 
 def test_offpolicy_go2_motrix_task_is_not_configured():
@@ -1739,66 +1734,6 @@ def test_offpolicy_build_play_actor_preserves_flashsac_model_kwargs(
     assert captured["actor_eval"] is True
 
 
-def test_offpolicy_build_play_actor_restores_td3_state_and_normalizer(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    import torch
-    import uni_rl.algos.fast_td3.learner as learner_module
-
-    from unilab.visualization.interactive_playback import build_play_actor, load_play_actor
-
-    captured: dict[str, Any] = {}
-
-    class FakeActor:
-        def __init__(self, *args, **kwargs):
-            captured["actor_init"] = (args, kwargs)
-
-        def eval(self):
-            captured["actor_eval"] = True
-
-        def load_state_dict(self, state_dict, strict=True):
-            captured["actor_load"] = (state_dict, strict)
-
-    class FakeNormalizer:
-        def __init__(self, *args, **kwargs):
-            captured["normalizer_init"] = (args, kwargs)
-
-        def load_state_dict(self, state_dict):
-            captured["normalizer_load"] = state_dict
-
-        def eval(self):
-            captured["normalizer_eval"] = True
-
-    monkeypatch.setattr(learner_module, "TD3Actor", FakeActor)
-    monkeypatch.setattr(learner_module, "EmpiricalNormalization", FakeNormalizer)
-    cfg = _offpolicy_cfg(algo="td3")
-    actor_state = {"weight": torch.ones(1), "noise_scales": torch.zeros(1)}
-    normalizer_state = {"mean": torch.ones(1)}
-
-    actor, normalizer, actor_algo_type, actor_kwargs = build_play_actor(
-        "td3",
-        cfg,
-        obs_dim=4,
-        critic_obs_dim=6,
-        action_dim=2,
-        device="cpu",
-    )
-    load_play_actor(
-        "td3",
-        actor,
-        normalizer,
-        {"actor": actor_state, "obs_normalizer": normalizer_state},
-    )
-
-    assert isinstance(actor, FakeActor)
-    assert isinstance(normalizer, FakeNormalizer)
-    assert (actor_algo_type, actor_kwargs) == ("td3", {})
-    assert captured["actor_load"] == ({"weight": actor_state["weight"]}, False)
-    assert captured["actor_eval"] is True
-    assert captured["normalizer_load"] == normalizer_state
-    assert captured["normalizer_eval"] is True
-
-
 @pytest.mark.parametrize("algo_name", ["sac", "flashsac"])
 def test_offpolicy_load_play_actor_keeps_sac_state_dict_strict(algo_name: str):
     from unilab.visualization.interactive_playback import load_play_actor
@@ -2232,13 +2167,6 @@ def test_offpolicy_sac_hydra_default_algo_log_name():
     assert cfg.algo.load_run == "-1"
 
 
-def test_offpolicy_td3_hydra_default_algo_log_name():
-    """Verify TD3 config has algo_log_name in algo section."""
-    cfg = _offpolicy_cfg(algo="td3")
-    assert cfg.algo.algo_log_name == "fast_td3"
-    assert cfg.algo.load_run == "-1"
-
-
 def test_offpolicy_flashsac_hydra_algo_log_name():
     cfg = _offpolicy_cfg(["task=g1_walk_flat/mujoco"], algo="flashsac")
     assert cfg.algo.algo_log_name == "flash_sac"
@@ -2607,7 +2535,7 @@ def test_play_interactive_parses_explicit_cli():
     assert parsed.overrides == ["task=go2_joystick_flat/mujoco"]
 
 
-@pytest.mark.parametrize("algo", ["appo", "sac", "td3"])
+@pytest.mark.parametrize("algo", ["appo", "sac"])
 def test_play_interactive_parses_feature_algo_flags(algo: str):
     mod = _play_interactive()
 
@@ -2664,12 +2592,10 @@ def test_play_interactive_dynamic_compose_supports_algo_roots():
     ppo_cfg = mod._compose_interactive_config("ppo", ["task=go2_joystick_flat/mujoco"])
     appo_cfg = mod._compose_interactive_config("appo", ["task=allegro_inhand/mujoco"])
     sac_cfg = mod._compose_interactive_config("sac", ["task=g1_walk_flat/mujoco"])
-    td3_cfg = mod._compose_interactive_config("td3", ["task=g1_walk_flat/mujoco"])
 
     assert ppo_cfg.algo.algo == "ppo"
     assert appo_cfg.algo.algo == "appo"
     assert sac_cfg.algo.algo == "sac"
-    assert td3_cfg.algo.algo == "td3"
 
 
 def test_play_interactive_sac_overrides_pass_through():
