@@ -568,8 +568,14 @@ def test_isaacsim_worker_timeout_has_backend_diagnostic(
     scene_file: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("UNILAB_ISAACGYM_MOCK_BEHAVIOR", "hang_on_step")
-    backend = _make_backend(scene_file, worker_timeout_s=0.2)
+    # The tight 0.2 s budget targets the hanging STEP only: the INIT
+    # handshake includes the worker's cold Python spawn, which exceeds 0.2 s
+    # on loaded CI runners (ubuntu-slim) and flaked the test before it
+    # reached the step under test.  Materialize with the default timeout,
+    # then shrink the budget for the STEP probe.
+    backend = _make_backend(scene_file)
     backend.materialize()
+    backend._worker_timeout_s = 0.2
     try:
         with pytest.raises(IsaacSimWorkerError, match="isaacsim worker did not answer STEP"):
             backend.step(np.zeros((NUM_ENVS, 3), dtype=np.float32))
