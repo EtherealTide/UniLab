@@ -25,7 +25,6 @@ DEFAULT_ALGO_LOG_NAMES = {
     "ppo": "rsl_rl_ppo",
     "appo": "appo",
     "sac": "fast_sac",
-    "td3": "fast_td3",
     "flashsac": "flash_sac",
 }
 COMPLETION_BLOCK_START = "# >>> unilab completion >>>"
@@ -151,7 +150,6 @@ def _task_entries(root: Path) -> tuple[TaskCompletionEntry, ...]:
         *_task_entries_for_group(root, "ppo", ("ppo",)),
         *_task_entries_for_group(root, "appo", ("appo",)),
         *_task_entries_for_group(root, "sac", ("sac",)),
-        *_task_entries_for_group(root, "td3", ("td3",)),
         *_task_entries_for_group(root, "flashsac", ("flashsac",)),
     ]
     return tuple(

@@ -267,9 +267,9 @@ def test_eval_mujoco_interactive_honors_profile_and_render_override(
 ) -> None:
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir(parents=True)
-    (scripts_dir / "train_td3.py").write_text("", encoding="utf-8")
+    (scripts_dir / "train_sac.py").write_text("", encoding="utf-8")
     (scripts_dir / "play_interactive.py").write_text("", encoding="utf-8")
-    owner_dir = tmp_path / "conf" / "td3" / "task" / "g1_walk_flat"
+    owner_dir = tmp_path / "conf" / "sac" / "task" / "g1_walk_flat"
     owner_dir.mkdir(parents=True)
     (owner_dir / "mujoco_nodr.yaml").write_text(
         "training:\n  sim_backend: mujoco\n", encoding="utf-8"
@@ -282,7 +282,7 @@ def test_eval_mujoco_interactive_honors_profile_and_render_override(
 
     command = cli.build_command(
         mode="eval",
-        algo="td3",
+        algo="sac",
         task="g1_walk_flat",
         sim="mujoco",
         profile="nodr",
@@ -296,7 +296,7 @@ def test_eval_mujoco_interactive_honors_profile_and_render_override(
         sys.executable,
         str(scripts_dir / "play_interactive.py"),
         "--algo",
-        "td3",
+        "sac",
         "--task",
         "g1_walk_flat",
         "--sim",
@@ -1282,7 +1282,7 @@ def test_unknown_algo_error_lists_builtin_and_discovered_algos(tmp_path: Path) -
 
     message = str(excinfo.value)
     assert "Unsupported algo='dqn'" in message
-    for builtin in ("ppo", "appo", "sac", "td3", "flashsac"):
+    for builtin in ("ppo", "appo", "sac", "flashsac"):
         assert builtin in message
     assert "dreamer" in message
 

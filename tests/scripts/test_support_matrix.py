@@ -59,7 +59,6 @@ def test_support_matrix_marks_g1_isaacgym_owners_by_validation():
     assert ppo_row.cells["isaacgym"].level == EvidenceLevel.CONFIGURED
     for entrypoint_label in (
         "APPO (torch)",
-        "TD3 (torch)",
         "FlashSAC (torch)",
     ):
         row = _row(entrypoint_label, "g1_walk_flat")
@@ -74,7 +73,7 @@ def test_support_matrix_marks_g1_isaacsim_owners_by_checked_in_scope():
     sac_row = _row("SAC (torch)", "g1_walk_flat")
     assert ppo_row.cells["isaacsim"].level == EvidenceLevel.CONFIGURED
     assert sac_row.cells["isaacsim"].level == EvidenceLevel.CONFIGURED
-    for entrypoint_label in ("APPO (torch)", "TD3 (torch)", "FlashSAC (torch)"):
+    for entrypoint_label in ("APPO (torch)", "FlashSAC (torch)"):
         row = _row(entrypoint_label, "g1_walk_flat")
         assert row.cells["isaacsim"].level == EvidenceLevel.REGISTERED
 
@@ -85,7 +84,7 @@ def test_support_matrix_marks_g1_newton_owner_sac_tested_ppo_configured():
     assert row.cells["newton"].level == EvidenceLevel.TESTED
     row = _row("PPO (torch)", "g1_walk_flat")
     assert row.cells["newton"].level == EvidenceLevel.CONFIGURED
-    for entrypoint_label in ("APPO (torch)", "TD3 (torch)", "FlashSAC (torch)"):
+    for entrypoint_label in ("APPO (torch)", "FlashSAC (torch)"):
         row = _row(entrypoint_label, "g1_walk_flat")
         # Registration is per task+backend, not per algo tree: without an
         # owner YAML these stay at REGISTERED instead of CONFIGURED.
@@ -126,7 +125,6 @@ def test_support_matrix_marks_g1_genesis_owner_configured_only():
     assert row.cells["genesis"].level == EvidenceLevel.CONFIGURED
     for entrypoint_label in (
         "APPO (torch)",
-        "TD3 (torch)",
         "FlashSAC (torch)",
     ):
         row = _row(entrypoint_label, "g1_walk_flat")

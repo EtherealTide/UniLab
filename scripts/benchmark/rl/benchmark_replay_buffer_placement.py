@@ -55,7 +55,7 @@ except Exception:
 DEFAULT_OUTPUT_JSON = (
     ROOT_DIR / "scripts" / "benchmark" / "outputs" / "replay_buffer_placement" / "results.json"
 )
-DEFAULT_ALGOS = ("sac", "flashsac", "td3")
+DEFAULT_ALGOS = ("sac", "flashsac")
 DEFAULT_TASKS_ARG = "auto"
 DEFAULT_SIM = "mujoco"
 FLOAT_BYTES = 4

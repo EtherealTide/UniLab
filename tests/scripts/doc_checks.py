@@ -286,7 +286,6 @@ def check_argparse_vs_hydra(content: str, doc_path: Path, root: Path) -> list[st
         "train_rsl_rl.py",
         "train_appo.py",
         "train_sac.py",
-        "train_td3.py",
         "train_flashsac.py",
     ]
 

@@ -91,7 +91,7 @@ def test_non_one_tick_prefetch_is_rejected_before_dispatch(mode: str):
         _offpolicy().build_runner("sac", cfg)
 
 
-@pytest.mark.parametrize("algo", ["sac", "td3", "flashsac"])
+@pytest.mark.parametrize("algo", ["sac", "flashsac"])
 @pytest.mark.parametrize("device", ["cpu", "xpu"])
 def test_non_cuda_training_devices_fail_before_env_materialization(
     monkeypatch: pytest.MonkeyPatch,
@@ -201,75 +201,6 @@ def test_sac_owner_custom_runtime_can_override_base_learner_kwargs(
     assert runner.kwargs["learner"].kwargs["gamma"] == pytest.approx(0.123)
     assert runner.kwargs["learner"].kwargs["critic_obs_dim"] == 17
     assert runner.kwargs["learner"].kwargs["tau"] == cfg.algo.tau
-
-
-def test_td3_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPatch):
-    module = _offpolicy()
-    cfg = _offpolicy_cfg(algo="td3")
-
-    import uni_rl.algos.fast_td3.double_buffer as owner_module
-
-    monkeypatch.setattr(owner_module, "get_env_dims", lambda *args, **kwargs: (4, 2, 6))
-    monkeypatch.setattr(owner_module, "FastTD3Learner", _FakeLearner)
-    monkeypatch.setattr(owner_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
-
-    runner = module.build_runner("td3", cfg)
-    assert isinstance(runner, _FakeRunner)
-    assert runner.kwargs["algo_type"] == "td3"
-    assert runner.kwargs["device"] == "cuda:0"
-    assert runner.kwargs["replay_prefetch_mode"] == "one_tick"
-    nan_guard_cfg = runner.kwargs["nan_guard_cfg"]
-    assert nan_guard_cfg.enabled is True
-    assert nan_guard_cfg.buffer_size == cfg.training.nan_guard.buffer_size
-    assert nan_guard_cfg.max_envs_to_dump == cfg.training.nan_guard.max_envs_to_dump
-    assert nan_guard_cfg.output_dir == cfg.training.nan_guard.output_dir
-    assert runner.kwargs["torch_thread_runtime"] is not None
-    assert runner.kwargs["collector_cpu_ids"] is None
-    assert runner.kwargs["dp_sync"] is None
-    assert runner.kwargs["learner"].kwargs == {
-        "obs_dim": 4,
-        "action_dim": 2,
-        "critic_obs_dim": 6,
-        "num_envs": cfg.algo.num_envs,
-        "device": "cuda:0",
-        "gamma": cfg.algo.gamma,
-        "tau": cfg.algo.tau,
-        "actor_lr": cfg.algo.actor_lr,
-        "critic_lr": cfg.algo.critic_lr,
-        "actor_hidden_dim": cfg.algo.actor_hidden_dim,
-        "critic_hidden_dim": cfg.algo.critic_hidden_dim,
-        "num_atoms": cfg.algo.num_atoms,
-        "v_min": cfg.algo.algo_params.v_min,
-        "v_max": cfg.algo.algo_params.v_max,
-        "init_scale": cfg.algo.algo_params.init_scale,
-        "log_std_min": cfg.algo.algo_params.log_std_min,
-        "log_std_max": cfg.algo.algo_params.log_std_max,
-        "weight_decay": cfg.algo.algo_params.weight_decay,
-        "use_cdq": cfg.algo.algo_params.use_cdq,
-        "policy_noise": cfg.algo.algo_params.policy_noise,
-        "noise_clip": cfg.algo.algo_params.noise_clip,
-        "policy_frequency": cfg.algo.policy_frequency,
-        "obs_normalization": cfg.algo.obs_normalization,
-    }
-
-    nan_guard = MagicMock()
-    thread_runtime = {"marker": "threads"}
-    dp_sync = MagicMock()
-    forwarded = owner_module.build_td3_double_buffer_runner(
-        cfg,
-        env_factory=_fake_env_factory,
-        env_cfg_override={},
-        replay_prefetch_mode="one_tick",
-        device="cuda:0",
-        nan_guard_cfg=nan_guard,
-        torch_thread_runtime=thread_runtime,
-        collector_cpu_ids=[2, 3],
-        dp_sync=dp_sync,
-    )
-    assert forwarded.kwargs["nan_guard_cfg"] is nan_guard
-    assert forwarded.kwargs["torch_thread_runtime"] is thread_runtime
-    assert forwarded.kwargs["collector_cpu_ids"] == [2, 3]
-    assert forwarded.kwargs["dp_sync"] is dp_sync
 
 
 def test_flashsac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPatch):

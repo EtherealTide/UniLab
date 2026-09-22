@@ -276,19 +276,6 @@ _OWNER_CASES = (
         id="sac-isaacsim",
     ),
     pytest.param(
-        "td3",
-        ("task=g1_walk_flat/mujoco",),
-        "G1WalkFlat",
-        "mujoco",
-        29,
-        1.0,
-        "scene_flat.xml",
-        _OFFPOLICY_REWARDS,
-        (*_RESET_EVENTS, "pd_gains"),
-        True,
-        id="td3-mujoco",
-    ),
-    pytest.param(
         "flashsac",
         ("task=g1_walk_flat/mujoco",),
         "G1WalkFlat",
@@ -312,7 +299,6 @@ _WALK_PROFILE_IDS = {
     "sac-isaacsim",
     "sac-rough-mujoco",
     "sac-rough-motrix",
-    "td3-mujoco",
     "flashsac-mujoco",
 }
 
@@ -769,12 +755,6 @@ _PENALTY_CURRICULUM_CASES = (
         ("task=g1_walk_flat/mujoco",),
         "G1WalkFlat",
         id="sac-walk-flat",
-    ),
-    pytest.param(
-        "td3",
-        ("task=g1_walk_flat/mujoco",),
-        "G1WalkFlat",
-        id="td3-walk-flat",
     ),
     pytest.param(
         "flashsac",

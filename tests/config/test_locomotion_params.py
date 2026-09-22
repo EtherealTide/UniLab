@@ -63,16 +63,6 @@ def test_sac_config_defaults():
     assert cfg.algo_params.use_compile is True
 
 
-def test_td3_config_defaults():
-    from unilab.structured_configs import TD3Config
-
-    cfg = TD3Config()
-    assert cfg.algo == "td3"
-    assert cfg.num_envs == 4096
-    assert cfg.use_layer_norm is False
-    assert cfg.algo_params.weight_decay == 0.1
-
-
 def test_flashsac_config_defaults():
     from unilab.structured_configs import FlashSACAlgoParams, FlashSACConfig
 
@@ -155,22 +145,6 @@ def test_offpolicy_sac_g1_task_overrides():
     assert cfg.env.events.reset_root_state_uniform.params.velocity_range.x == [-0.5, 0.5]
 
 
-def test_offpolicy_td3_defaults():
-    from hydra import compose, initialize_config_dir
-    from hydra.core.global_hydra import GlobalHydra
-
-    GlobalHydra.instance().clear()
-    with initialize_config_dir(config_dir=str(CONF_DIR / "td3"), version_base="1.3"):
-        cfg = compose("config")
-    assert cfg.algo.algo == "td3"
-    assert cfg.algo.use_layer_norm is False
-    assert cfg.algo.algo_params.weight_decay == pytest.approx(0.1)
-    assert cfg.algo.tau == pytest.approx(0.1)
-    assert cfg.algo.algo_params.policy_noise == pytest.approx(0.2)
-    assert cfg.algo.algo_params.noise_clip == pytest.approx(0.5)
-    assert cfg.algo.algo_params.log_std_min == pytest.approx(-1.6)
-
-
 def test_offpolicy_flashsac_g1_task_overrides():
     from hydra import compose, initialize_config_dir
     from hydra.core.global_hydra import GlobalHydra
@@ -231,7 +205,6 @@ def test_g1_task_owner_yamls_preserve_legacy_and_walk_observation_profiles():
     assert uses_walk_profile("appo", ["task=g1_walk_flat/mujoco"]) is False
     assert uses_walk_profile("sac", ["task=g1_walk_flat/mujoco"]) is True
     assert uses_walk_profile("sac", ["task=g1_walk_flat/motrix"]) is True
-    assert uses_walk_profile("td3", ["task=g1_walk_flat/mujoco"]) is True
     assert uses_walk_profile("flashsac", ["task=g1_walk_flat/mujoco"]) is True
 
 

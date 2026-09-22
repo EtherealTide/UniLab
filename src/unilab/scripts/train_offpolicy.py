@@ -1,7 +1,7 @@
-"""Shared off-policy (SAC/TD3/FlashSAC) train/play implementation.
+"""Shared off-policy (SAC/FlashSAC) train/play implementation.
 
 This module is no longer runnable directly; use the per-algorithm entry
-scripts instead: ``unilab/scripts/train_sac.py``, ``unilab/scripts/train_td3.py``, and
+scripts instead: ``unilab/scripts/train_sac.py`` and
 ``unilab/scripts/train_flashsac.py``.
 """
 
@@ -273,12 +273,6 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
             )
 
             runner = build_sac_double_buffer_runner(cfg, **builder_kwargs)
-        elif algo_name == "td3":
-            from uni_rl.algos.fast_td3.double_buffer import (
-                build_td3_double_buffer_runner,
-            )
-
-            runner = build_td3_double_buffer_runner(cfg, **builder_kwargs)
         elif algo_name == "flashsac":
             from uni_rl.algos.flash_sac.double_buffer import (
                 build_flashsac_double_buffer_runner,
@@ -531,6 +525,6 @@ def main(cfg: DictConfig) -> None:
 if __name__ == "__main__":
     raise SystemExit(
         "unilab/scripts/train_offpolicy.py is a shared implementation module and is no "
-        "longer runnable directly. Use unilab/scripts/train_sac.py, "
-        "unilab/scripts/train_td3.py, or unilab/scripts/train_flashsac.py instead."
+        "longer runnable directly. Use unilab/scripts/train_sac.py or "
+        "unilab/scripts/train_flashsac.py instead."
     )
