@@ -2016,17 +2016,15 @@ def _play_interactive():
 
 
 def test_play_wrapper_imports_shared_implementation():
-    """play_interactive keeps the uni_rl wrapper for the APPO branch only."""
-    from uni_rl.algos.rsl_rl import RslRlVecEnvWrapper as AppoWrapper
-
-    from unilab.rl import RslRlVecEnvAdapter
-
+    """PPO and APPO playback both use the UniLab-owned VecEnv adapter."""
     mod = _play_interactive()
-    # The uni_rl wrapper is imported lazily inside the APPO playback branch,
-    # so the module no longer exposes it at top level; the PPO playback
-    # session defaults to the UniLab-owned adapter instead.
+    # uni_rl's RslRlVecEnvWrapper is no longer referenced: the PPO playback
+    # session defaults to the UniLab-owned adapter and the APPO branch passes
+    # it explicitly.
     assert not hasattr(mod, "RslRlVecEnvWrapper")
-    assert RslRlVecEnvAdapter is not AppoWrapper
+    source = Path(mod.__file__).read_text(encoding="utf-8")
+    assert "uni_rl.algos.rsl_rl" not in source
+    assert "wrapper_cls=RslRlVecEnvAdapter" in source
 
 
 def test_play_wrapper_uses_current_reset_contract():
@@ -3001,7 +2999,7 @@ def test_play_appo_uses_shared_playback_session_factory(
     assert factory_kwargs["cfg"] is cfg
     assert factory_kwargs["rl_cfg"] is rl_cfg
     assert factory_kwargs["root_dir"] == Path.cwd()
-    assert factory_kwargs["wrapper_cls"] is mod.RslRlVecEnvWrapper
+    assert factory_kwargs["wrapper_cls"] is mod.RslRlVecEnvAdapter
     assert "onnx_export" in captured
     assert fake_session.reset_calls == 1
     assert fake_session.step_calls == 1

@@ -870,7 +870,7 @@ def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = 
         elif algo == "appo":
             if cfg is None:
                 raise ValueError("APPO interactive playback requires a composed Hydra config.")
-            from uni_rl.algos.rsl_rl import RslRlVecEnvWrapper
+            from unilab.rl import RslRlVecEnvAdapter
 
             session = create_appo_playback_session(
                 playback_cfg=playback_cfg,
@@ -879,7 +879,7 @@ def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = 
                 env_factory=_create_env,
                 root_dir=Path.cwd(),
                 device=device,
-                wrapper_cls=RslRlVecEnvWrapper,
+                wrapper_cls=RslRlVecEnvAdapter,
                 log=lambda message: print(f"[play_interactive] {message}"),
             )
         elif algo in _OFFPOLICY_INTERACTIVE_ALGOS:

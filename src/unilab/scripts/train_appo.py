@@ -12,7 +12,6 @@ import hydra
 import torch
 from omegaconf import DictConfig, OmegaConf
 from uni_rl.algos.appo.runtime import resolve_appo_runtime
-from uni_rl.algos.rsl_rl import RslRlVecEnvWrapper
 from unisim.backend.base import log_playback_plan
 
 from unilab.base.config_adapter import (
@@ -25,6 +24,7 @@ from unilab.base.process_device import (
     configure_backend_process_device,
     pin_genesis_device_before_cuda_init,
 )
+from unilab.rl import RslRlVecEnvAdapter
 from unilab.training import (
     algo_config_dict,
     build_run_dir_name,
@@ -239,7 +239,7 @@ def play_appo(
         ),
         root_dir=Path.cwd(),
         device=device,
-        wrapper_cls=RslRlVecEnvWrapper,
+        wrapper_cls=RslRlVecEnvAdapter,
     )
     env = session.env
     actor = session.actor
