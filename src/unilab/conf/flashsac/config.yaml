@@ -137,6 +137,12 @@ interactive:
   keyboard_step_lin: 0.1
   keyboard_step_ang: 0.2
 
+viser:
+  port: 8080
+  env_idx: 0
+  display_mode: all
+  max_envs: 16
+
 hydra:
   run:
     dir: .

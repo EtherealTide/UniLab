@@ -776,23 +776,33 @@ def _print_keyboard_legend(args) -> None:
         print("  NOTE: action_mode is not 'policy'; commands will not drive the robot.")
 
 
-def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = None):
-    device = _select_playback_device(cfg)
-    print(f"[play_interactive] Device: {device}")
-    algo = str(algo or getattr(args, "algo", "ppo"))
+def create_playback_session(
+    args,
+    cfg: DictConfig | None,
+    *,
+    algo: str,
+    num_envs: int = 1,
+    log=lambda message: print(message),
+) -> Any | None:
+    """Create the algo-specific playback session shared by the viewer scripts.
 
-    # Always use a single env for interactive view
+    Returns the session tuple (playback session at index 0), or ``None`` when
+    the task does not support the requested backend.
+    """
+    device = _select_playback_device(cfg)
+    log(f"Device: {device}")
+
     # Keep programmatic callers that construct the pre-Drake argument shape
     # working; the CLI builder always supplies ``sim`` explicitly.
     sim_backend = str(getattr(args, "sim", "mujoco"))
     available_backends = available_backends_for_task(args.task)
     if available_backends and sim_backend not in available_backends:
-        print(
-            "[play_interactive] Task does not support requested simulation backend: "
+        log(
+            "Task does not support requested simulation backend: "
             f"{args.task}. Available backends: {available_backends or ('<none>',)}. "
             "MuJoCo is used only as the renderer."
         )
-        return
+        return None
 
     # mjwarp requires an active CUDA Warp device; bind it process-wide before
     # any env is constructed (same pattern as the offpolicy train entrypoint).
@@ -844,8 +854,8 @@ def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = 
             )
         except ValueError as exc:
             if f"does not support simulation backend '{sim_backend}'" in str(exc):
-                print(
-                    "[play_interactive] Task does not support requested simulation backend: "
+                log(
+                    "Task does not support requested simulation backend: "
                     f"{args.task}. Available backends: {available_backends or ('<none>',)}. "
                     "MuJoCo is used only as the renderer."
                 )
@@ -853,7 +863,7 @@ def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = 
             raise
 
     try:
-        playback_cfg = build_playback_config(args, num_envs=1)
+        playback_cfg = build_playback_config(args, num_envs=num_envs)
         if algo == "ppo":
             session: Any = create_rsl_rl_playback_session(
                 playback_cfg=playback_cfg,
@@ -865,7 +875,7 @@ def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = 
                 checkpoint_input_dim_reader=infer_checkpoint_actor_input_dim,
                 entrypoint_log_root=get_entrypoint_log_root,
                 sim2sim_preflight=make_sim2sim_preflight(cfg, algo_name="ppo"),
-                log=lambda message: print(f"[play_interactive] {message}"),
+                log=log,
             )
         elif algo == "appo":
             if cfg is None:
@@ -880,7 +890,7 @@ def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = 
                 root_dir=Path.cwd(),
                 device=device,
                 wrapper_cls=RslRlVecEnvAdapter,
-                log=lambda message: print(f"[play_interactive] {message}"),
+                log=log,
             )
         elif algo in _OFFPOLICY_INTERACTIVE_ALGOS:
             if cfg is None:
@@ -892,14 +902,29 @@ def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = 
                 root_dir=Path.cwd(),
                 device=device,
                 algo_name=algo,
-                log=lambda message: print(f"[play_interactive] {message}"),
+                log=log,
             )
         else:
             raise ValueError(f"Unsupported interactive playback algo: {algo}")
     except RuntimeError as exc:
         if str(exc) == _PLAYBACK_ENV_UNAVAILABLE:
-            return
+            return None
         raise
+    return session
+
+
+def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = None):
+    algo = str(algo or getattr(args, "algo", "ppo"))
+
+    session = create_playback_session(
+        args,
+        cfg,
+        algo=algo,
+        num_envs=1,
+        log=lambda message: print(f"[play_interactive] {message}"),
+    )
+    if session is None:
+        return
     playback_session = session[0]
     env = playback_session.env
 
