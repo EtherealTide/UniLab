@@ -27,7 +27,7 @@ SUPPORTED_SIMS = (
     "newton",
     "superdex",
 )
-SUPPORTED_RENDER_MODES = ("auto", "interactive", "record", "none")
+SUPPORTED_RENDER_MODES = ("auto", "interactive", "record", "viser", "none")
 OFFPOLICY_ALGOS = {"sac", "flashsac"}
 # Built-in algos whose entrypoint script does not follow the train_<algo>.py
 # naming convention.
@@ -397,6 +397,25 @@ def _uses_mujoco_interactive_play(
     return selected_mode is not None and selected_mode.strip().lower() == "interactive"
 
 
+def _uses_mujoco_viser_play(
+    *,
+    mode: str,
+    algo: str,
+    sim: str,
+    render_mode: str | None,
+    overrides: Sequence[str],
+) -> bool:
+    """Return whether eval should use the browser-based viser viewer script."""
+    if (
+        mode != "eval"
+        or sim not in MUJOCO_VIEWER_PHYSICS_SIMS
+        or algo not in INTERACTIVE_PLAY_ALGOS
+    ):
+        return False
+    selected_mode = _override_value(overrides, "training.play_render_mode") or render_mode
+    return selected_mode is not None and selected_mode.strip().lower() == "viser"
+
+
 def build_command(
     *,
     mode: str,
@@ -423,15 +442,51 @@ def build_command(
         render_mode=render_mode,
         overrides=overrides,
     )
+    use_viser_play = _uses_mujoco_viser_play(
+        mode=mode,
+        algo=algo,
+        sim=sim,
+        render_mode=render_mode,
+        overrides=overrides,
+    )
+    selected_mode = _override_value(overrides, "training.play_render_mode") or render_mode
+    if (
+        selected_mode is not None
+        and selected_mode.strip().lower() == "viser"
+        and not use_viser_play
+    ):
+        raise SystemExit(
+            "render mode 'viser' is only supported for eval with a browser-renderable "
+            f"physics owner (--sim mujoco or --sim mjwarp); got mode={mode}, sim={sim}, "
+            f"algo={algo}."
+        )
     if use_interactive_play and find_spec("mujoco") is None:
         raise SystemExit(
             "interactive eval renders through the MuJoCo viewer and requires the MuJoCo "
             "extra. Install it with `pip install unilab[mujoco]` (or `uv sync --extra "
             "mujoco` in a source checkout)."
         )
+    if use_viser_play:
+        if find_spec("mujoco") is None:
+            raise SystemExit(
+                "viser eval renders MuJoCo playback models and requires the MuJoCo "
+                "extra. Install it with `pip install unilab[mujoco]` (or `uv sync "
+                "--extra mujoco` in a source checkout)."
+            )
+        if find_spec("viser") is None:
+            raise SystemExit(
+                "viser eval serves the rollout through a browser-based viser viewer and "
+                "requires the viser extra. Install it with `pip install unilab[viser]` "
+                "(or `uv sync --extra viser` in a source checkout)."
+            )
+    viewer_script_name: str | None = None
+    if use_interactive_play:
+        viewer_script_name = "play_interactive.py"
+    elif use_viser_play:
+        viewer_script_name = "play_viser.py"
     script = (
-        selected_root / "scripts" / "play_interactive.py"
-        if use_interactive_play
+        selected_root / "scripts" / viewer_script_name
+        if viewer_script_name is not None
         else _script_path(route, selected_root)
     )
     if not script.is_file():
@@ -465,23 +520,23 @@ def build_command(
             file=sys.stderr,
         )
 
-    generated = [] if use_interactive_play else list(route.generated_overrides)
+    use_viewer_play = use_interactive_play or use_viser_play
+    generated = [] if use_viewer_play else list(route.generated_overrides)
     if sim_backend_override is not None:
         generated.append(f"training.sim_backend={sim_backend_override}")
     if render_mode is not None and _override_value(overrides, "training.play_render_mode") is None:
         generated.append(f"training.play_render_mode={render_mode}")
-    selected_render_mode = _override_value(overrides, "training.play_render_mode") or render_mode
     if (
         mode == "eval"
         and sim == "superdex"
-        and selected_render_mode is not None
-        and selected_render_mode.strip().lower() == "interactive"
+        and selected_mode is not None
+        and selected_mode.strip().lower() == "interactive"
         and _override_value(overrides, "training.play_env_num") is None
     ):
         # Native superdex interactive rendering draws exactly one scene; the
         # owner layer also switches the env to the serial executor.
         generated.append("training.play_env_num=1")
-    if use_interactive_play and _override_value(overrides, "interactive.action_mode") is None:
+    if use_viewer_play and _override_value(overrides, "interactive.action_mode") is None:
         # The low-level viewer defaults to zero actions for debugging, while
         # eval must preserve the policy-control behavior of the train scripts.
         generated.append("interactive.action_mode=policy")
@@ -496,7 +551,7 @@ def build_command(
     executable = _python_executable_for_route(mode, sim, (*generated, *overrides))
     if use_interactive_play and platform.system() == "Darwin":
         executable = _interactive_mujoco_executable()
-    if use_interactive_play:
+    if use_viewer_play:
         return [
             executable,
             str(script),
