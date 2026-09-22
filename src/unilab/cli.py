@@ -259,6 +259,56 @@ def _mxpython_executable() -> str:
     )
 
 
+def _mujoco_package_dir() -> Path:
+    spec = find_spec("mujoco")
+    if spec is None or spec.origin is None:
+        raise SystemExit("macOS MuJoCo interactive rendering requires the official mujoco package.")
+    return Path(spec.origin).resolve().parent
+
+
+def _mujoco_mjpython_app() -> Path:
+    return _mujoco_package_dir() / "MuJoCo_(mjpython).app"
+
+
+def _ensure_mujoco_mjpython_app() -> None:
+    app = _mujoco_mjpython_app()
+    if (app / "Contents" / "MacOS" / "mjpython").is_file():
+        return
+    raise SystemExit(
+        "macOS MuJoCo interactive rendering requires the MuJoCo_(mjpython).app "
+        f"bundled with the official mujoco wheel, but it is missing at {app}."
+    )
+
+
+def _mjpython_executable() -> str:
+    if Path(sys.executable).name == "mjpython":
+        return sys.executable
+
+    venv_mjpython = Path(sys.executable).with_name("mjpython")
+    if venv_mjpython.is_file():
+        return str(venv_mjpython)
+
+    mjpython = shutil.which("mjpython")
+    if mjpython is not None:
+        return mjpython
+
+    raise SystemExit(
+        "macOS MuJoCo interactive rendering must run under `mjpython` (the Cocoa "
+        "launcher bundled with the mujoco wheel). Install the MuJoCo extra so "
+        "`mjpython` is on PATH, or use `--render-mode record` for offscreen rendering."
+    )
+
+
+def _interactive_mujoco_executable() -> str:
+    """Resolve the macOS interpreter for the MuJoCo viewer route.
+
+    The glfw-based MuJoCo viewer requires `mjpython` so Cocoa owns the main
+    thread; fail closed with an install hint when it is unavailable.
+    """
+    _ensure_mujoco_mjpython_app()
+    return _mjpython_executable()
+
+
 def available_algos(root: Path | None = None) -> tuple[str, ...]:
     """Return routable algo names: built-ins plus convention-discovered ones.
 
@@ -444,6 +494,8 @@ def build_command(
             generated.append(f"algo.load_run={load_run}")
 
     executable = _python_executable_for_route(mode, sim, (*generated, *overrides))
+    if use_interactive_play and platform.system() == "Darwin":
+        executable = _interactive_mujoco_executable()
     if use_interactive_play:
         return [
             executable,

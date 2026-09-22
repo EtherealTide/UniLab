@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import platform
 import shutil
@@ -128,40 +127,16 @@ def _play_interactive_command_prefix() -> list[str]:
     return [_current_env_mjpython()]
 
 
-def _mujoco_package_dir() -> Path:
-    spec = importlib.util.find_spec("mujoco")
-    if spec is None or spec.origin is None:
-        raise SystemExit("macOS MuJoCo demos require the official mujoco package.")
-    return Path(spec.origin).resolve().parent
-
-
-def _mujoco_mjpython_app() -> Path:
-    return _mujoco_package_dir() / "MuJoCo_(mjpython).app"
-
-
 def _ensure_mujoco_mjpython_app() -> None:
-    app = _mujoco_mjpython_app()
-    if (app / "Contents" / "MacOS" / "mjpython").is_file():
-        return
-    raise SystemExit(
-        "macOS MuJoCo demos require the MuJoCo_(mjpython).app bundled with the "
-        f"official mujoco wheel, but it is missing at {app}."
-    )
+    from unilab.cli import _ensure_mujoco_mjpython_app as ensure_app
+
+    ensure_app()
 
 
 def _current_env_mjpython() -> str:
-    if Path(sys.executable).name == "mjpython":
-        return sys.executable
+    from unilab.cli import _mjpython_executable as resolve_mjpython
 
-    venv_mjpython = Path(sys.executable).with_name("mjpython")
-    if venv_mjpython.is_file():
-        return str(venv_mjpython)
-
-    mjpython = shutil.which("mjpython")
-    if mjpython is not None:
-        return mjpython
-
-    raise SystemExit("macOS MuJoCo demos require `mjpython` in the active environment.")
+    return resolve_mjpython()
 
 
 def build_demo_command(
