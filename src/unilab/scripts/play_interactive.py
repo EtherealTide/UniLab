@@ -27,6 +27,7 @@ Camera controls (MuJoCo viewer):
 # pyright: reportAttributeAccessIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false, reportOptionalSubscript=false
 
 import argparse
+import os
 import sys
 import tempfile
 import time
@@ -1180,10 +1181,27 @@ def _build_play_args(cfg: DictConfig, *, algo: str = "ppo") -> PlayInteractiveAr
     )
 
 
+def _exit_if_mjpython() -> None:
+    """Force process exit when running under mjpython on macOS.
+
+    After the viewer closes, interpreter teardown can deadlock on
+    free-threaded CPython 3.13 while deallocating closures that hold torch
+    modules (the main thread parks in ``take_gil`` -> ``PyThread_hang_thread``
+    and never resumes), leaving the mjpython process alive until SIGINT.
+    Playback is complete at this point, so skip finalization entirely.
+    """
+    if sys.platform != "darwin" or "MJPYTHON_BIN" not in os.environ:
+        return
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
+
+
 def main(argv: list[str] | None = None) -> None:
     parsed = _parse_interactive_cli(sys.argv[1:] if argv is None else argv)
     cfg = _compose_interactive_config(parsed.algo, parsed.overrides)
     play_interactive(_build_play_args(cfg, algo=parsed.algo), cfg)
+    _exit_if_mjpython()
 
 
 if __name__ == "__main__":

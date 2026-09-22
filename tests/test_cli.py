@@ -233,6 +233,7 @@ def test_eval_mujoco_interactive_routes_to_dedicated_viewer(
         "find_spec",
         lambda name: ModuleSpec(name, loader=None) if name in {"mujoco", "mjbatch"} else None,
     )
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
 
     command = cli.build_command(
         mode="eval",
@@ -279,6 +280,7 @@ def test_eval_mujoco_interactive_honors_profile_and_render_override(
         "find_spec",
         lambda name: ModuleSpec(name, loader=None) if name in {"mujoco", "mjbatch"} else None,
     )
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
 
     command = cli.build_command(
         mode="eval",
@@ -407,6 +409,7 @@ def test_eval_mujoco_interactive_preserves_explicit_action_mode(
         "find_spec",
         lambda name: ModuleSpec(name, loader=None) if name in {"mujoco", "mjbatch"} else None,
     )
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
 
     command = cli.build_command(
         mode="eval",
@@ -563,6 +566,7 @@ def test_eval_mujoco_interactive_falls_back_to_sibling_owner(
         "find_spec",
         lambda name: ModuleSpec(name, loader=None) if name in {"mujoco", "mjbatch"} else None,
     )
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
 
     command = cli.build_command(
         mode="eval",
@@ -616,6 +620,7 @@ def test_eval_mjwarp_interactive_routes_to_dedicated_viewer(
 ) -> None:
     scripts_dir = _make_mjwarp_checkout(tmp_path)
     _pretend_mjwarp_is_installed(monkeypatch)
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
 
     command = cli.build_command(
         mode="eval",
@@ -684,6 +689,131 @@ def test_eval_mjwarp_interactive_requires_mujoco_viewer_package(
             render_mode="interactive",
             root=tmp_path,
         )
+
+
+def _make_appo_mujoco_checkout(root: Path) -> Path:
+    scripts_dir = root / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "train_appo.py").write_text("", encoding="utf-8")
+    (scripts_dir / "play_interactive.py").write_text("", encoding="utf-8")
+    owner_dir = root / "conf" / "appo" / "task" / "go2_joystick_flat"
+    owner_dir.mkdir(parents=True)
+    (owner_dir / "mujoco.yaml").write_text("training:\n  sim_backend: mujoco\n", encoding="utf-8")
+    return scripts_dir
+
+
+def _pretend_mujoco_is_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        cli,
+        "find_spec",
+        lambda name: ModuleSpec(name, loader=None) if name in {"mujoco", "mjbatch"} else None,
+    )
+
+
+def test_macos_mujoco_interactive_eval_uses_mjpython(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scripts_dir = _make_appo_mujoco_checkout(tmp_path)
+    _pretend_mujoco_is_installed(monkeypatch)
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    fake_python = venv_bin / "python"
+    fake_mjpython = venv_bin / "mjpython"
+    fake_python.write_text("", encoding="utf-8")
+    fake_mjpython.write_text("", encoding="utf-8")
+    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(cli.sys, "executable", str(fake_python))
+    monkeypatch.setattr(cli, "_ensure_mujoco_mjpython_app", lambda: None)
+
+    command = cli.build_command(
+        mode="eval",
+        algo="appo",
+        task="go2_joystick_flat",
+        sim="mujoco",
+        overrides=[],
+        load_run="-1",
+        render_mode="interactive",
+        root=tmp_path,
+    )
+
+    assert command[0] == str(fake_mjpython)
+    assert command[1] == str(scripts_dir / "play_interactive.py")
+
+
+def test_macos_mujoco_interactive_eval_requires_mjpython(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _make_appo_mujoco_checkout(tmp_path)
+    _pretend_mujoco_is_installed(monkeypatch)
+    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(cli.sys, "executable", str(tmp_path / "python"))
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    monkeypatch.setattr(cli, "_ensure_mujoco_mjpython_app", lambda: None)
+
+    with pytest.raises(SystemExit, match="mjpython"):
+        cli.build_command(
+            mode="eval",
+            algo="appo",
+            task="go2_joystick_flat",
+            sim="mujoco",
+            overrides=[],
+            load_run="-1",
+            render_mode="interactive",
+            root=tmp_path,
+        )
+
+
+def test_macos_mujoco_interactive_eval_requires_mjpython_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _make_appo_mujoco_checkout(tmp_path)
+    fake_package = tmp_path / "site-packages" / "mujoco"
+    fake_package.mkdir(parents=True)
+    monkeypatch.setattr(
+        cli,
+        "find_spec",
+        lambda name: (
+            ModuleSpec(name, loader=None, origin=str(fake_package / "__init__.py"))
+            if name in {"mujoco", "mjbatch"}
+            else None
+        ),
+    )
+    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
+
+    with pytest.raises(SystemExit, match=r"MuJoCo_\(mjpython\)\.app"):
+        cli.build_command(
+            mode="eval",
+            algo="appo",
+            task="go2_joystick_flat",
+            sim="mujoco",
+            overrides=[],
+            load_run="-1",
+            render_mode="interactive",
+            root=tmp_path,
+        )
+
+
+def test_macos_mujoco_record_eval_uses_current_python(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _make_appo_mujoco_checkout(tmp_path)
+    _pretend_mujoco_is_installed(monkeypatch)
+    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+
+    command = cli.build_command(
+        mode="eval",
+        algo="appo",
+        task="go2_joystick_flat",
+        sim="mujoco",
+        overrides=[],
+        load_run="-1",
+        render_mode="record",
+        root=tmp_path,
+    )
+
+    assert command[0] == sys.executable
+    assert command[1] == str(tmp_path / "scripts" / "train_appo.py")
 
 
 def test_macos_motrix_render_mode_none_does_not_require_mxpython(
