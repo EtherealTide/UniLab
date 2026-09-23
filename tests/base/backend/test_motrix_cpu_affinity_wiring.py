@@ -31,6 +31,12 @@ _NUM_ENVS = 4
 _BASE_NAME = "cart"
 
 
+def _cpu_block() -> list[int]:
+    """CPU ids usable by this process; slim CI runners may expose only one."""
+    get = getattr(os, "sched_getaffinity", None)
+    return sorted(get(0))[:2] if get is not None else [0, 1]
+
+
 def test_env_backend_kwargs_maps_cpu_ids():
     cfg = EnvCfg(cpu_ids=[2, 3])
     assert env_backend_kwargs(cfg)["cpu_ids"] == [2, 3]
@@ -38,6 +44,7 @@ def test_env_backend_kwargs_maps_cpu_ids():
 
 
 def test_create_backend_routes_cpu_ids_to_motrix():
+    ids = _cpu_block()
     with mock.patch.object(motrixsim, "init_thread_pool") as init:
         backend = create_backend(
             "motrix",
@@ -45,18 +52,19 @@ def test_create_backend_routes_cpu_ids_to_motrix():
             _NUM_ENVS,
             0.01,
             base_name=_BASE_NAME,
-            cpu_ids=[0, 1],
+            cpu_ids=ids,
         )
     try:
         assert isinstance(backend, MotrixBackend)
-        assert backend.cpu_ids == (0, 1)
-        init.assert_called_once_with(core_ids=[0, 1])
+        assert backend.cpu_ids == tuple(ids)
+        init.assert_called_once_with(core_ids=ids)
     finally:
         backend.close()
 
 
 def test_create_backend_routes_cpu_ids_from_env_cfg():
-    cfg = EnvCfg(cpu_ids=[0, 1])
+    ids = _cpu_block()
+    cfg = EnvCfg(cpu_ids=ids)
     with mock.patch.object(motrixsim, "init_thread_pool") as init:
         backend = create_backend(
             "motrix",
@@ -67,8 +75,8 @@ def test_create_backend_routes_cpu_ids_from_env_cfg():
             **env_backend_kwargs(cfg),
         )
     try:
-        assert backend.cpu_ids == (0, 1)
-        init.assert_called_once_with(core_ids=[0, 1])
+        assert backend.cpu_ids == tuple(ids)
+        init.assert_called_once_with(core_ids=ids)
     finally:
         backend.close()
 
