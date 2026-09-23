@@ -10,7 +10,9 @@ import pytest
 from unilab import cli, demo
 
 
-def test_eval_returns_standard_interrupt_code_without_traceback(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_eval_returns_standard_interrupt_code_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(cli, "build_command", lambda **_kwargs: ["child"])
 
     def raise_interrupt(*_args, **_kwargs):
@@ -18,7 +20,9 @@ def test_eval_returns_standard_interrupt_code_without_traceback(monkeypatch: pyt
 
     monkeypatch.setattr(cli.subprocess, "run", raise_interrupt)
 
-    assert cli.eval_main(["--algo", "appo", "--task", "go2_joystick_flat", "--sim", "mujoco"]) == 130
+    assert (
+        cli.eval_main(["--algo", "appo", "--task", "go2_joystick_flat", "--sim", "mujoco"]) == 130
+    )
 
 
 def _make_minimal_checkout(

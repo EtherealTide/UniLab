@@ -323,7 +323,10 @@ def play_viser(args: PlayInteractiveArgs, cfg: DictConfig, *, algo: str = "ppo")
                 for entry in scene_entries["value"]:
                     if entry.get("batch", False):
                         for runtime_idx, model, data in zip(
-                            entry["runtime_env_indices"], entry["models"], entry["data"], strict=True
+                            entry["runtime_env_indices"],
+                            entry["models"],
+                            entry["data"],
+                            strict=True,
                         ):
                             phys = physics_batch[int(runtime_idx)].astype(np.float64)
                             mujoco.mj_setState(model, data, phys, state_spec)
