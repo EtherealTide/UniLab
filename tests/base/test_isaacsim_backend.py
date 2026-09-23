@@ -164,6 +164,10 @@ def test_env_cfg_rejects_invalid_isaacsim_render_settings(
         ({"isaacsim_contact_offset": "0.002"}, "contact_offset"),
         ({"isaacsim_rest_offset": True}, "rest_offset"),
         ({"isaacsim_max_depenetration_velocity": -1.0}, "max_depenetration_velocity"),
+        ({"isaacsim_gpu_max_rigid_contact_count": 0}, "gpu_max_rigid_contact_count"),
+        ({"isaacsim_gpu_max_rigid_contact_count": 1.5}, "gpu_max_rigid_contact_count"),
+        ({"isaacsim_gpu_max_rigid_patch_count": -1}, "gpu_max_rigid_patch_count"),
+        ({"isaacsim_gpu_max_rigid_patch_count": True}, "gpu_max_rigid_patch_count"),
     ],
 )
 def test_env_cfg_rejects_invalid_isaacsim_solver_settings(
@@ -184,6 +188,8 @@ def test_env_backend_kwargs_forwards_isaacsim_solver_knobs() -> None:
         "isaacsim_contact_offset": 0.002,
         "isaacsim_rest_offset": 0.0,
         "isaacsim_max_depenetration_velocity": 1000.0,
+        "isaacsim_gpu_max_rigid_contact_count": 2**24,
+        "isaacsim_gpu_max_rigid_patch_count": 2**23,
     }
     kwargs = env_backend_kwargs(EnvCfg(**solver))
     for name, value in solver.items():
@@ -191,8 +197,13 @@ def test_env_backend_kwargs_forwards_isaacsim_solver_knobs() -> None:
 
     defaults = env_backend_kwargs(EnvCfg())
     for name in solver:
-        # ``None`` keeps the PhysX scene defaults on the UniSim side.
-        assert defaults[name] is None
+        if name.startswith("isaacsim_gpu_"):
+            # Omitted entirely so unisim-core releases without the
+            # unilabsim/unisim#292 knobs never see unknown keys.
+            assert name not in defaults
+        else:
+            # ``None`` keeps the PhysX scene defaults on the UniSim side.
+            assert defaults[name] is None
 
 
 def test_dependencies_resolve_default_layout(
