@@ -239,3 +239,42 @@ def test_play_capabilities_forward_supports_interactive_debug_overlay() -> None:
     )
     assert env.play_capabilities.supports_interactive_debug_overlay is True
     assert EnvPlayCapabilities().supports_interactive_debug_overlay is False
+
+
+def test_play_capabilities_fail_closed_on_mocap_without_backend_declaration() -> None:
+    env = _PlaybackStubEnv()
+    assert env.play_capabilities.supports_mocap_playback is False
+    assert EnvPlayCapabilities().supports_mocap_playback is False
+
+
+def test_play_capabilities_forward_supports_mocap_playback() -> None:
+    capabilities = BackendPlayCapabilities(supports_mocap_playback=True)
+    env = _PlaybackStubEnv(capabilities=capabilities)
+    assert env.play_capabilities.supports_mocap_playback is True
+
+
+def test_get_physics_state_layout_delegates_to_backend() -> None:
+    env = _PlaybackStubEnv()
+    layout = env.get_physics_state_layout()
+    assert layout is env._backend.get_physics_state_layout.return_value
+
+
+def test_get_playback_mocap_state_gated_on_capability() -> None:
+    env = _PlaybackStubEnv()
+    with pytest.raises(NotImplementedError, match="mocap playback"):
+        env.get_playback_mocap_state(0)
+    env._backend.get_playback_mocap_state.assert_not_called()
+
+
+def test_get_playback_mocap_state_returns_detached_copies() -> None:
+    env = _PlaybackStubEnv(capabilities=BackendPlayCapabilities(supports_mocap_playback=True))
+    mocap_pos = np.zeros((1, 3))
+    mocap_quat = np.zeros((1, 4))
+    env._backend.get_playback_mocap_state.return_value = (mocap_pos, mocap_quat)
+
+    out_pos, out_quat = env.get_playback_mocap_state(2)
+
+    env._backend.get_playback_mocap_state.assert_called_once_with(2)
+    assert out_pos.dtype == np.float64 and out_quat.dtype == np.float64
+    out_pos[:] = 1.0
+    assert mocap_pos.sum() == 0.0

@@ -614,6 +614,7 @@ class NpEnv(ABEnv):
             supports_native_video_capture=capabilities.supports_native_video_capture,
             supports_debug_overlay=capabilities.supports_debug_overlay,
             supports_interactive_debug_overlay=capabilities.supports_interactive_debug_overlay,
+            supports_mocap_playback=capabilities.supports_mocap_playback,
         )
 
     def get_playback_model(self, env_index: int | None = None) -> Any:
@@ -626,6 +627,28 @@ class NpEnv(ABEnv):
             The backend-specific playback model.
         """
         return self._backend.get_playback_model(env_index)
+
+    def get_physics_state_layout(self) -> Any:
+        """Return the backend physics-state layout contract.
+
+        The layout describes the ``get_physics_state_snapshot`` columns as
+        ``[time, qpos, qvel, (mocap_pos, mocap_quat)?]`` so render frontends
+        can split snapshots without hardcoding ``1 + nq + nv``.  The SimBackend
+        default fails closed for backends without playback support.
+        """
+        return self._backend.get_physics_state_layout()
+
+    def get_playback_mocap_state(self, env_index: int = 0) -> tuple[np.ndarray, np.ndarray]:
+        """Return detached ``(mocap_pos, mocap_quat)`` playback state for one env."""
+        if not self.play_capabilities.supports_mocap_playback:
+            raise NotImplementedError(
+                f"{self._backend.__class__.__name__} does not support mocap playback"
+            )
+        mocap_pos, mocap_quat = self._backend.get_playback_mocap_state(env_index)
+        return (
+            np.asarray(mocap_pos, dtype=np.float64).copy(),
+            np.asarray(mocap_quat, dtype=np.float64).copy(),
+        )
 
     def get_scene_visual_model_file(self) -> str | None:
         """Return the backend scene visual model file on the cold path, when available."""
