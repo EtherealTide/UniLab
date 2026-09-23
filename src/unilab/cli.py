@@ -610,7 +610,13 @@ def _run_train_eval(mode: str, argv: Sequence[str] | None = None) -> int:
         load_run=getattr(args, "load_run", None),
         render_mode=args.render_mode,
     )
-    return subprocess.run(command, check=False).returncode
+    try:
+        return subprocess.run(command, check=False).returncode
+    except KeyboardInterrupt:
+        # Ctrl+C is delivered to both this routing process and the child
+        # playback/training process.  The child owns its renderer cleanup;
+        # keep the wrapper quiet and use the conventional shell exit code.
+        return 130
 
 
 def train_main(argv: Sequence[str] | None = None) -> int:

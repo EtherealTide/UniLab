@@ -35,6 +35,7 @@ from unilab.visualization.interactive_playback import PlaybackControls, PlayInte
 from unilab.visualization.render_many import get_grid_offsets
 from unilab.visualization.viser_scene import (
     VISER_AVAILABLE,
+    MujocoViserBatchScene,
     MujocoViserScene,
     build_visible_env_indices,
 )
@@ -102,9 +103,48 @@ def _build_scene_entries(
         return entries
 
     offsets = get_grid_offsets(len(visible_env_indices), spacing=spacing)
+    models: list[mujoco.MjModel] = []
+    data: list[mujoco.MjData] = []
+    for env_idx in visible_env_indices:
+        model = _load_env_playback_model(env, int(env_idx))
+        models.append(model)
+        data.append(mujoco.MjData(model))
+
+    # MuJoCo task instances normally share one model.  Viser can then render
+    # each geom as a batched mesh, reducing per-frame messages from
+    # O(environments * geoms) to O(geoms).  Keep the old scene-per-env path for
+    # heterogeneous playback models, which cannot share batched geometry.
+    matching_models = all(
+        model.ngeom == models[0].ngeom
+        and np.array_equal(model.geom_type, models[0].geom_type)
+        and np.array_equal(model.geom_size, models[0].geom_size)
+        and np.array_equal(model.geom_dataid, models[0].geom_dataid)
+        and np.array_equal(model.geom_rgba, models[0].geom_rgba)
+        for model in models[1:]
+    )
+    if matching_models:
+        return [
+            {
+                "batch": True,
+                "runtime_env_indices": visible_env_indices.copy(),
+                "models": models,
+                "model": models[0],
+                "data": data,
+                "scene": MujocoViserBatchScene(
+                    server,
+                    models,
+                    name_prefix="/mujoco/batch",
+                    position_offsets=np.column_stack(
+                        (np.asarray(offsets, dtype=np.float64), np.zeros(len(offsets)))
+                    ),
+                    render_plane=True,
+                ),
+            }
+        ]
+
     for local_idx, env_idx in enumerate(visible_env_indices):
         env_idx = int(env_idx)
-        mj_model = _load_env_playback_model(env, env_idx)
+        mj_model = models[local_idx]
         entries.append(
             {
                 "slot_idx": local_idx,
@@ -281,6 +321,15 @@ def play_viser(args: PlayInteractiveArgs, cfg: DictConfig, *, algo: str = "ppo")
 
                 physics_batch = playback_session.physics_state()
                 for entry in scene_entries["value"]:
+                    if entry.get("batch", False):
+                        for runtime_idx, model, data in zip(
+                            entry["runtime_env_indices"], entry["models"], entry["data"], strict=True
+                        ):
+                            phys = physics_batch[int(runtime_idx)].astype(np.float64)
+                            mujoco.mj_setState(model, data, phys, state_spec)
+                            mujoco.mj_forward(model, data)
+                        entry["scene"].update(entry["data"])
+                        continue
                     phys = physics_batch[int(entry["runtime_env_idx"])].astype(np.float64)
                     mujoco.mj_setState(entry["model"], entry["data"], phys, state_spec)
                     mujoco.mj_forward(entry["model"], entry["data"])
