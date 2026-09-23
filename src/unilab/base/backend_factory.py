@@ -58,6 +58,14 @@ def env_backend_kwargs(cfg: "EnvCfg") -> dict[str, Any]:
         "isaacsim_max_depenetration_velocity": cfg.isaacsim_max_depenetration_velocity,
         "superdex_execution_mode": cfg.superdex_execution_mode,
     }
+    # Forward the GPU buffer capacities only when set: unisim-core releases
+    # before unilabsim/unisim#292 do not pop these keys, and forwarding None
+    # would leak them into other backends' constructors; setting them against
+    # an older unisim-core fails closed at the factory.
+    if cfg.isaacsim_gpu_max_rigid_contact_count is not None:
+        result["isaacsim_gpu_max_rigid_contact_count"] = cfg.isaacsim_gpu_max_rigid_contact_count
+    if cfg.isaacsim_gpu_max_rigid_patch_count is not None:
+        result["isaacsim_gpu_max_rigid_patch_count"] = cfg.isaacsim_gpu_max_rigid_patch_count
     # Forward the explicit Genesis device id only when a rank selected one;
     # when absent, unisim-core's factory default applies and Genesis picks
     # its own device.

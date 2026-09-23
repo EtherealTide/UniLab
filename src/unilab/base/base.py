@@ -112,6 +112,12 @@ class EnvCfg:
     isaacsim_contact_offset: Optional[float] = None
     isaacsim_rest_offset: Optional[float] = None
     isaacsim_max_depenetration_velocity: Optional[float] = None
+    # GPU rigid contact/patch stream buffer capacities (unilabsim/unisim#292).
+    # They are PhysX carb settings with no USD attribute, so the backend
+    # reports the authored value instead of an engine readback; the IsaacLab
+    # defaults overflow at large environment counts (patch buffer overflow).
+    isaacsim_gpu_max_rigid_contact_count: Optional[int] = None
+    isaacsim_gpu_max_rigid_patch_count: Optional[int] = None
 
     @property
     def max_episode_steps(self) -> Optional[int]:
@@ -285,6 +291,16 @@ class EnvCfg:
                 "isaacsim_solver_velocity_iteration_count",
                 self.isaacsim_solver_velocity_iteration_count,
                 0,
+            ),
+            (
+                "isaacsim_gpu_max_rigid_contact_count",
+                self.isaacsim_gpu_max_rigid_contact_count,
+                1,
+            ),
+            (
+                "isaacsim_gpu_max_rigid_patch_count",
+                self.isaacsim_gpu_max_rigid_patch_count,
+                1,
             ),
         ):
             if value is not None and (
