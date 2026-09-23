@@ -104,8 +104,21 @@ def apply_env_nan_guard(env: Any, training_cfg: Any) -> None:
     )
 
 
+def is_viser_play_render_mode(play_render_mode: str | None) -> bool:
+    """Return whether the configured mode selects the browser-based viser viewer.
+
+    ``viser`` is a UniLab-level playback mode layered on top of the unisim
+    ``PLAY_RENDER_MODES`` contract; it renders through the shared MuJoCo
+    playback shell instead of a backend-native renderer, so it never reaches
+    ``SimBackend.resolve_play_render_plan``.
+    """
+    return play_render_mode is not None and str(play_render_mode).strip().lower() == "viser"
+
+
 def should_run_playback(*, play_only: bool, no_play: bool, play_render_mode: str | None) -> bool:
     """Return whether train/eval should enter playback for the configured mode."""
+    if is_viser_play_render_mode(play_render_mode):
+        return bool(play_only) or not bool(no_play)
     if normalize_play_render_mode(play_render_mode) == "none":
         return False
     return bool(play_only) or not bool(no_play)

@@ -36,6 +36,11 @@ INTERACTIVE_PLAY_ALGOS = {"ppo", "appo", "sac", "flashsac"}
 # Physics backends whose interactive eval runs through the dedicated MuJoCo
 # viewer script: the selected backend owns the rollout while MuJoCo renders.
 MUJOCO_VIEWER_PHYSICS_SIMS = frozenset({"mujoco", "mjwarp"})
+# Backends whose upstream unisim adapter does not implement the physics-state
+# playback contract the viser viewer renders from (they expose native
+# renderers instead). Supporting viser there requires upstream unisim
+# capability work, so these sims fail closed with an actionable message.
+VISER_UNSUPPORTED_SIMS = frozenset({"motrix", "genesis", "isaacgym", "isaacsim"})
 RESERVED_OVERRIDE_KEYS = {
     "algo",
     "task",
@@ -397,7 +402,7 @@ def _uses_mujoco_interactive_play(
     return selected_mode is not None and selected_mode.strip().lower() == "interactive"
 
 
-def _uses_mujoco_viser_play(
+def _uses_viser_play(
     *,
     mode: str,
     algo: str,
@@ -405,12 +410,15 @@ def _uses_mujoco_viser_play(
     render_mode: str | None,
     overrides: Sequence[str],
 ) -> bool:
-    """Return whether eval should use the browser-based viser viewer script."""
-    if (
-        mode != "eval"
-        or sim not in MUJOCO_VIEWER_PHYSICS_SIMS
-        or algo not in INTERACTIVE_PLAY_ALGOS
-    ):
+    """Return whether eval should use the browser-based viser viewer script.
+
+    Any physics owner whose backend declares physics-state playback is
+    routable; :data:`VISER_UNSUPPORTED_SIMS` sims are rejected earlier with a
+    targeted message, and the viewer itself fails closed on the runtime
+    capability check.
+    """
+    del sim  # routing is sim-agnostic; capability gating happens at runtime
+    if mode != "eval" or algo not in INTERACTIVE_PLAY_ALGOS:
         return False
     selected_mode = _override_value(overrides, "training.play_render_mode") or render_mode
     return selected_mode is not None and selected_mode.strip().lower() == "viser"
@@ -442,7 +450,7 @@ def build_command(
         render_mode=render_mode,
         overrides=overrides,
     )
-    use_viser_play = _uses_mujoco_viser_play(
+    use_viser_play = _uses_viser_play(
         mode=mode,
         algo=algo,
         sim=sim,
@@ -450,15 +458,17 @@ def build_command(
         overrides=overrides,
     )
     selected_mode = _override_value(overrides, "training.play_render_mode") or render_mode
-    if (
-        selected_mode is not None
-        and selected_mode.strip().lower() == "viser"
-        and not use_viser_play
-    ):
+    viser_mode_requested = selected_mode is not None and selected_mode.strip().lower() == "viser"
+    if viser_mode_requested and sim in VISER_UNSUPPORTED_SIMS:
         raise SystemExit(
-            "render mode 'viser' is only supported for eval with a browser-renderable "
-            f"physics owner (--sim mujoco or --sim mjwarp); got mode={mode}, sim={sim}, "
-            f"algo={algo}."
+            f"render mode 'viser' renders through the physics-state playback contract, "
+            f"which the {sim} backend does not implement in upstream unisim; "
+            "use --render-mode interactive or record for its native renderer."
+        )
+    if viser_mode_requested and mode == "eval" and not use_viser_play:
+        raise SystemExit(
+            f"render mode 'viser' eval requires one of the interactive play algos "
+            f"({', '.join(sorted(INTERACTIVE_PLAY_ALGOS))}); got algo={algo}."
         )
     if use_interactive_play and find_spec("mujoco") is None:
         raise SystemExit(
@@ -466,19 +476,12 @@ def build_command(
             "extra. Install it with `pip install unilab[mujoco]` (or `uv sync --extra "
             "mujoco` in a source checkout)."
         )
-    if use_viser_play:
-        if find_spec("mujoco") is None:
-            raise SystemExit(
-                "viser eval renders MuJoCo playback models and requires the MuJoCo "
-                "extra. Install it with `pip install unilab[mujoco]` (or `uv sync "
-                "--extra mujoco` in a source checkout)."
-            )
-        if find_spec("viser") is None:
-            raise SystemExit(
-                "viser eval serves the rollout through a browser-based viser viewer and "
-                "requires the viser extra. Install it with `pip install unilab[viser]` "
-                "(or `uv sync --extra viser` in a source checkout)."
-            )
+    if viser_mode_requested and find_spec("mujoco") is None:
+        raise SystemExit(
+            "viser playback renders MuJoCo playback models and requires the MuJoCo "
+            "package. Install it with `pip install unilab[mujoco]` (or `uv sync "
+            "--extra mujoco` in a source checkout)."
+        )
     viewer_script_name: str | None = None
     if use_interactive_play:
         viewer_script_name = "play_interactive.py"

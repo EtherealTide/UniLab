@@ -4,10 +4,8 @@ from contextlib import nullcontext
 
 import mujoco
 import numpy as np
-import pytest
 
 from unilab.visualization.viser_scene import (
-    VISER_AVAILABLE,
     MujocoViserBatchScene,
     MujocoViserScene,
     build_visible_env_indices,
@@ -76,7 +74,6 @@ class _FakeServer:
         return nullcontext()
 
 
-@pytest.mark.skipif(not VISER_AVAILABLE, reason="viser optional dependency is not installed")
 def test_mujoco_viser_scene_applies_position_offset_and_close() -> None:
     xml = """
     <mujoco>
@@ -120,7 +117,6 @@ def test_build_visible_env_indices_spreads_slots_across_full_batch() -> None:
     np.testing.assert_array_equal(indices, np.arange(0, 64, 4, dtype=np.int32))
 
 
-@pytest.mark.skipif(not VISER_AVAILABLE, reason="viser optional dependency is not installed")
 def test_mujoco_viser_batch_scene_updates_instances() -> None:
     xml = """
     <mujoco>
@@ -157,3 +153,51 @@ def test_mujoco_viser_batch_scene_updates_instances() -> None:
 
     scene.close()
     assert handle.removed is True
+
+
+def _grouped_geoms_xml() -> str:
+    return """
+    <mujoco>
+      <worldbody>
+        <body name="body" pos="0 0 0.5">
+          <geom name="visual" type="box" size="0.1 0.1 0.1" group="2"/>
+          <geom name="collision_marker" type="box" size="0.2 0.2 0.2" group="3"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+
+
+def test_mujoco_viser_scene_hides_geom_groups_beyond_mujoco_default() -> None:
+    # MuJoCo's default mjvOption.geomgroup enables groups 0-2 only; the viser
+    # scene must match so group-3 collision markers stay hidden.
+    model = mujoco.MjModel.from_xml_string(_grouped_geoms_xml())  # pyright: ignore[reportAttributeAccessIssue]
+
+    server = _FakeServer()
+    scene = MujocoViserScene(server, model, render_plane=False)
+
+    assert model.geom_group.tolist() == [2, 3]
+    assert list(scene._handles) == [0]
+    assert len(server.scene.handles) == 1
+
+
+def test_mujoco_viser_scene_visible_geom_groups_override() -> None:
+    model = mujoco.MjModel.from_xml_string(_grouped_geoms_xml())  # pyright: ignore[reportAttributeAccessIssue]
+
+    server = _FakeServer()
+    scene = MujocoViserScene(server, model, render_plane=False, visible_geom_groups=(0, 1, 2, 3))
+
+    assert list(scene._handles) == [0, 1]
+
+
+def test_mujoco_viser_batch_scene_hides_geom_groups_beyond_mujoco_default() -> None:
+    models = [
+        mujoco.MjModel.from_xml_string(_grouped_geoms_xml()),  # pyright: ignore[reportAttributeAccessIssue]
+        mujoco.MjModel.from_xml_string(_grouped_geoms_xml()),  # pyright: ignore[reportAttributeAccessIssue]
+    ]
+
+    server = _FakeServer()
+    scene = MujocoViserBatchScene(server, models, render_plane=False)
+
+    assert list(scene._handles) == [0]
+    assert len(server.scene.handles) == 1

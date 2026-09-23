@@ -44,6 +44,7 @@ from unilab.training import (
     build_run_dir_name,
     ensure_registries,
     get_log_root,
+    is_viser_play_render_mode,
     resolve_nan_guard_cfg,
     should_run_playback,
 )
@@ -383,6 +384,17 @@ def play_offpolicy(algo_name: str, cfg: DictConfig) -> str | None:
         verify_policy_onnx(export_module, onnx_path, verify_inputs, input_names=input_names)
     elif load_path_dir is not None:
         print("Skipping ONNX export because training.export_onnx=false.")
+
+    if is_viser_play_render_mode(getattr(cfg.training, "play_render_mode", "auto")):
+        # Browser-based viser playback renders through the shared MuJoCo
+        # playback shell; it replaces backend-native playback and records no
+        # video. Blocks until Ctrl+C. Imported lazily: the viser scene module
+        # binds the optional `mujoco` package, which non-MuJoCo-shell training
+        # environments do not install.
+        from unilab.visualization.viser_playback import run_viser_playback_from_cfg
+
+        run_viser_playback_from_cfg(session, cfg, entrypoint=f"train_{algo_name} play")
+        return None
 
     with torch.inference_mode():
         play_video_path = env.run_playback_mode(

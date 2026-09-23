@@ -45,6 +45,7 @@ from unilab.training import (
     ensure_registries,
     format_play_checkpoint_error,
     get_log_root,
+    is_viser_play_render_mode,
     parse_checkpoint_path,
     should_run_playback,
 )
@@ -375,6 +376,16 @@ def play_rsl_rl(cfg: DictConfig, device: str) -> str | None:
         assert runner is not None
         runner.export_policy_to_onnx(path=str(load_path_dir))
         runner.export_policy_to_jit(path=str(load_path_dir))
+    if is_viser_play_render_mode(getattr(cfg.training, "play_render_mode", "auto")):
+        # Browser-based viser playback renders through the shared MuJoCo
+        # playback shell; it replaces backend-native playback and records no
+        # video. Blocks until Ctrl+C. Imported lazily: the viser scene module
+        # binds the optional `mujoco` package, which non-MuJoCo-shell training
+        # environments do not install.
+        from unilab.visualization.viser_playback import run_viser_playback_from_cfg
+
+        run_viser_playback_from_cfg(session, cfg, entrypoint="train_rsl_rl play")
+        return None
     num_steps = _resolve_play_num_steps(cfg)
     output_video = Path(load_path_dir) / "play_video.mp4"
     playback_mode: str | None = None
