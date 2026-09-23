@@ -13,6 +13,7 @@ Usage (from ``scripts/play_viser.py``)::
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import Any
 
 import mujoco
@@ -93,6 +94,31 @@ def _extract_mesh(model: mujoco.MjModel, geom_dataid: int) -> tuple[np.ndarray, 
     vertices = model.mesh_vert[vert_adr : vert_adr + vert_num].copy()
     faces = model.mesh_face[face_adr : face_adr + face_num].copy()
     return vertices, faces
+
+
+def _geom_mesh(model: mujoco.MjModel, geom_index: int) -> tuple[np.ndarray, np.ndarray] | None:
+    """Return a local mesh for a MuJoCo geom that can be batched by Viser."""
+    geom_type = model.geom_type[geom_index]
+    size = model.geom_size[geom_index]
+    if geom_type == mujoco.mjtGeom.mjGEOM_SPHERE:
+        mesh = trimesh.creation.icosphere(subdivisions=2, radius=float(size[0]))
+    elif geom_type == mujoco.mjtGeom.mjGEOM_CAPSULE:
+        mesh = trimesh.creation.capsule(height=float(size[1]) * 2.0, radius=float(size[0]))
+    elif geom_type == mujoco.mjtGeom.mjGEOM_ELLIPSOID:
+        mesh = trimesh.creation.icosphere(subdivisions=2, radius=1.0)
+        mesh.vertices *= np.asarray(size[:3], dtype=np.float64)
+    elif geom_type == mujoco.mjtGeom.mjGEOM_CYLINDER:
+        mesh = trimesh.creation.cylinder(radius=float(size[0]), height=float(size[1]) * 2.0)
+    elif geom_type == mujoco.mjtGeom.mjGEOM_BOX:
+        mesh = trimesh.creation.box(extents=np.asarray(size[:3], dtype=np.float64) * 2.0)
+    elif geom_type == mujoco.mjtGeom.mjGEOM_MESH:
+        dataid = int(model.geom_dataid[geom_index])
+        if dataid < 0:
+            return None
+        return _extract_mesh(model, dataid)
+    else:
+        return None
+    return np.asarray(mesh.vertices), np.asarray(mesh.faces)
 
 
 def build_visible_env_indices(num_envs: int, visible_envs: int) -> np.ndarray:
@@ -279,3 +305,114 @@ class MujocoViserScene:
 
                 handle.position = (float(xpos[0]), float(xpos[1]), float(xpos[2]))
                 handle.wxyz = _rotmat_to_wxyz(xmat)
+
+
+class MujocoViserBatchScene:
+    """Render matching MuJoCo models as batched Viser mesh instances.
+
+    One Viser batched mesh is created for each geom index.  This keeps the
+    geometry immutable while updating all visible environment transforms in a
+    single array assignment per geom, instead of creating one scene node per
+    environment and sending two messages per geom instance.
+    """
+
+    def __init__(
+        self,
+        server: Any,
+        models: Sequence[mujoco.MjModel],
+        *,
+        name_prefix: str = "/mujoco/batch",
+        position_offsets: np.ndarray | Sequence[Sequence[float]] | None = None,
+        render_plane: bool = True,
+    ) -> None:
+        if not VISER_AVAILABLE:
+            raise ImportError("viser is not installed. Install with: uv sync --extra viser")
+        if not models:
+            raise ValueError("MujocoViserBatchScene requires at least one model")
+        first = models[0]
+        if any(model.ngeom != first.ngeom for model in models[1:]):
+            raise ValueError("Batched MuJoCo models must have the same number of geoms")
+        for model in models[1:]:
+            if not (
+                np.array_equal(model.geom_type, first.geom_type)
+                and np.array_equal(model.geom_size, first.geom_size)
+                and np.array_equal(model.geom_dataid, first.geom_dataid)
+                and np.array_equal(model.geom_rgba, first.geom_rgba)
+            ):
+                raise ValueError("Batched MuJoCo models must have matching geom geometry")
+
+        self._server: viser.ViserServer = server
+        self._models = tuple(models)
+        self._name_prefix = name_prefix.rstrip("/") or "/mujoco/batch"
+        self._position_offsets = np.zeros((len(models), 3), dtype=np.float64)
+        if position_offsets is not None:
+            offsets = np.asarray(position_offsets, dtype=np.float64)
+            if offsets.shape != self._position_offsets.shape:
+                raise ValueError(
+                    f"position_offsets must have shape {self._position_offsets.shape}, got {offsets.shape}"
+                )
+            self._position_offsets[:] = offsets
+        self._render_plane = bool(render_plane)
+        self._handles: dict[int, Any] = {}
+        self._grid_handles: list[Any] = []
+        self._build()
+
+    def _build(self) -> None:
+        model = self._models[0]
+        self._server.scene.set_up_direction("+z")
+        for geom_index in range(model.ngeom):
+            geom_type = model.geom_type[geom_index]
+            size = model.geom_size[geom_index]
+            rgba = model.geom_rgba[geom_index]
+            name = f"{self._name_prefix}/geom/{geom_index}"
+            if geom_type == mujoco.mjtGeom.mjGEOM_PLANE:
+                if self._render_plane and not self._grid_handles:
+                    plane_size = float(size[0]) if size[0] > 0 else 10.0
+                    grid = self._server.scene.add_grid(
+                        f"{self._name_prefix}/ground",
+                        width=plane_size * 2,
+                        height=plane_size * 2,
+                        cell_size=0.5,
+                    )
+                    grid.position = tuple(self._position_offsets[0])
+                    self._grid_handles.append(grid)
+                continue
+            mesh_data = _geom_mesh(model, geom_index)
+            if mesh_data is None:
+                continue
+            vertices, faces = mesh_data
+            count = len(self._models)
+            positions = np.zeros((count, 3), dtype=np.float32)
+            orientations = np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), (count, 1))
+            handle = self._server.scene.add_batched_meshes_simple(
+                name,
+                vertices=vertices.astype(np.float32),
+                faces=faces.astype(np.int32),
+                batched_wxyzs=orientations,
+                batched_positions=positions,
+                batched_colors=_rgba_to_color(rgba),
+                opacity=_rgba_to_opacity(rgba),
+            )
+            self._handles[geom_index] = handle
+
+    def update(self, data: Sequence[mujoco.MjData]) -> None:
+        """Update all visible environment instances in one atomic batch."""
+        if len(data) != len(self._models):
+            raise ValueError(f"Expected {len(self._models)} MuJoCo data objects, got {len(data)}")
+        with self._server.atomic():
+            for geom_index, handle in self._handles.items():
+                positions = np.empty((len(data), 3), dtype=np.float32)
+                orientations = np.empty((len(data), 4), dtype=np.float32)
+                for env_index, env_data in enumerate(data):
+                    positions[env_index] = (
+                        env_data.geom_xpos[geom_index] + self._position_offsets[env_index]
+                    )
+                    orientations[env_index] = _rotmat_to_wxyz(env_data.geom_xmat[geom_index])
+                handle.batched_positions = positions
+                handle.batched_wxyzs = orientations
+
+    def close(self) -> None:
+        for handle in (*self._handles.values(), *self._grid_handles):
+            handle.remove()
+        self._handles.clear()
+        self._grid_handles.clear()
