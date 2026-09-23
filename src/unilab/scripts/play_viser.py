@@ -32,6 +32,10 @@ from omegaconf import DictConfig, OmegaConf
 
 from unilab.training import ensure_registries
 from unilab.visualization.interactive_playback import PlaybackControls, PlayInteractiveArgs
+from unilab.visualization.playback_state import (
+    PhysicsStateApplier,
+    assert_physics_state_playback_supported,
+)
 from unilab.visualization.render_many import get_grid_offsets
 from unilab.visualization.viser_scene import (
     VISER_AVAILABLE,
@@ -97,6 +101,7 @@ def _build_scene_entries(
                 "runtime_env_idx": env_idx,
                 "model": mj_model,
                 "data": mujoco.MjData(mj_model),
+                "applier": PhysicsStateApplier(env, mj_model, env_index=env_idx),
                 "scene": MujocoViserScene(server, mj_model, name_prefix="/mujoco/single"),
             }
         )
@@ -105,10 +110,12 @@ def _build_scene_entries(
     offsets = get_grid_offsets(len(visible_env_indices), spacing=spacing)
     models: list[mujoco.MjModel] = []
     data: list[mujoco.MjData] = []
+    appliers: list[PhysicsStateApplier] = []
     for env_idx in visible_env_indices:
         model = _load_env_playback_model(env, int(env_idx))
         models.append(model)
         data.append(mujoco.MjData(model))
+        appliers.append(PhysicsStateApplier(env, model, env_index=int(env_idx)))
 
     # MuJoCo task instances normally share one model.  Viser can then render
     # each geom as a batched mesh, reducing per-frame messages from
@@ -130,6 +137,7 @@ def _build_scene_entries(
                 "models": models,
                 "model": models[0],
                 "data": data,
+                "appliers": appliers,
                 "scene": MujocoViserBatchScene(
                     server,
                     models,
@@ -151,6 +159,7 @@ def _build_scene_entries(
                 "runtime_env_idx": env_idx,
                 "model": mj_model,
                 "data": mujoco.MjData(mj_model),
+                "applier": appliers[local_idx],
                 "scene": MujocoViserScene(
                     server,
                     mj_model,
@@ -184,6 +193,7 @@ def play_viser(args: PlayInteractiveArgs, cfg: DictConfig, *, algo: str = "ppo")
         return
     playback_session = session[0]
     env = playback_session.env
+    assert_physics_state_playback_supported(env, entrypoint="play_viser")
 
     # --- GUI controls --------------------------------------------------------
     max_visible_envs = min(int(OmegaConf.select(cfg, "viser.max_envs", default=16) or 16), num_envs)
@@ -195,7 +205,6 @@ def play_viser(args: PlayInteractiveArgs, cfg: DictConfig, *, algo: str = "ppo")
         initial_mode = "all"
     visible_env_indices = build_visible_env_indices(num_envs, max_visible_envs)
 
-    state_spec = mujoco.mjtState.mjSTATE_FULLPHYSICS
     ctrl_dt = env.cfg.ctrl_dt
     render_spacing = float(
         OmegaConf.select(cfg, "training.render_spacing") or getattr(env.cfg, "render_spacing", 1.0)
@@ -322,20 +331,18 @@ def play_viser(args: PlayInteractiveArgs, cfg: DictConfig, *, algo: str = "ppo")
                 physics_batch = playback_session.physics_state()
                 for entry in scene_entries["value"]:
                     if entry.get("batch", False):
-                        for runtime_idx, model, data in zip(
+                        for runtime_idx, applier, data in zip(
                             entry["runtime_env_indices"],
-                            entry["models"],
+                            entry["appliers"],
                             entry["data"],
                             strict=True,
                         ):
-                            phys = physics_batch[int(runtime_idx)].astype(np.float64)
-                            mujoco.mj_setState(model, data, phys, state_spec)
-                            mujoco.mj_forward(model, data)
+                            applier.apply(physics_batch[int(runtime_idx)], data)
                         entry["scene"].update(entry["data"])
                         continue
-                    phys = physics_batch[int(entry["runtime_env_idx"])].astype(np.float64)
-                    mujoco.mj_setState(entry["model"], entry["data"], phys, state_spec)
-                    mujoco.mj_forward(entry["model"], entry["data"])
+                    entry["applier"].apply(
+                        physics_batch[int(entry["runtime_env_idx"])], entry["data"]
+                    )
                     entry["scene"].update(entry["data"])
 
                 # Real-time pacing

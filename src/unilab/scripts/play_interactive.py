@@ -78,6 +78,10 @@ from unilab.visualization.interactive_playback import (
     prepare_motion_overlay_selection,
     select_torch_device,
 )
+from unilab.visualization.playback_state import (
+    PhysicsStateApplier,
+    assert_physics_state_playback_supported,
+)
 
 _KEY_ENTER, _KEY_KP_ENTER = 257, 335
 _KEY_BACKSPACE = 259
@@ -927,6 +931,7 @@ def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = 
         return
     playback_session = session[0]
     env = playback_session.env
+    assert_physics_state_playback_supported(env, entrypoint="play_interactive")
 
     # Discover task-owned playback overlays (command terms implementing
     # playback_debug_overlay_getter()); None when the env provides none.
@@ -966,7 +971,7 @@ def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = 
     mj_model = _load_viewer_model(env, use_env_visual_model=use_env_visual_model)
 
     viz_data = mujoco.MjData(mj_model)
-    state_spec = mujoco.mjtState.mjSTATE_FULLPHYSICS
+    state_applier = PhysicsStateApplier(env, mj_model, env_index=0)
     ctrl_dt = env.cfg.ctrl_dt
 
     playback_session.reset()
@@ -1052,9 +1057,8 @@ def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = 
 
             # Use the reset pose for the initial target only.  Updating this
             # in the loop would override the user's manual camera movement.
-            initial_phys = playback_session.physics_state()[0].astype(np.float64)
-            mujoco.mj_setState(mj_model, viz_data, initial_phys, state_spec)
-            mujoco.mj_forward(mj_model, viz_data)
+            initial_phys = playback_session.physics_state()[0]
+            state_applier.apply(initial_phys, viz_data)
             if bool(getattr(args, "camera_follow_body", True)):
                 base_pos = viz_data.xpos[focus_body_id]
                 viewer.cam.lookat[0] = float(base_pos[0])
@@ -1074,9 +1078,8 @@ def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = 
                 playback_session.advance(controls)
 
                 # Push env state[0] into viz_data and refresh scene
-                phys = playback_session.physics_state()[0].astype(np.float64)
-                mujoco.mj_setState(mj_model, viz_data, phys, state_spec)
-                mujoco.mj_forward(mj_model, viz_data)
+                phys = playback_session.physics_state()[0]
+                state_applier.apply(phys, viz_data)
 
                 primitives: list[DebugPrimitive] = []
                 if overlay.enabled:

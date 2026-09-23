@@ -24,6 +24,7 @@ class EnvPlayCapabilities:
     supports_native_video_capture: bool = False
     supports_debug_overlay: bool = False
     supports_interactive_debug_overlay: bool = False
+    supports_mocap_playback: bool = False
 
 
 @dataclass
