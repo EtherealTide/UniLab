@@ -2,12 +2,13 @@
 """MuJoCo-to-viser scene adapter for interactive web-based 3D visualization.
 
 This module renders MuJoCo scenes via a viser web server, providing browser-based
-interactive 3D viewing without requiring a local display or GLFW.  It is gated
-behind the ``viser`` optional-dependency group and is **not** imported by default.
+interactive 3D viewing without requiring a local display or GLFW.  viser is a
+required UniLab dependency; this module is only imported on playback paths,
+which also require the optional ``mujoco`` package for the playback shell.
 
 Usage (from ``scripts/play_viser.py``)::
 
-    from unilab.visualization.viser_scene import MujocoViserScene, VISER_AVAILABLE
+    from unilab.visualization.viser_scene import MujocoViserScene
 """
 
 from __future__ import annotations
@@ -18,15 +19,8 @@ from typing import Any
 
 import mujoco
 import numpy as np
-
-try:
-    import trimesh
-    import viser
-
-    VISER_AVAILABLE = True
-except ImportError:
-    VISER_AVAILABLE = False
-
+import trimesh
+import viser
 
 # --------------------------------------------------------------------------- #
 # Rotation helpers (pure numpy, no scipy dependency)                          #
@@ -121,6 +115,12 @@ def _geom_mesh(model: mujoco.MjModel, geom_index: int) -> tuple[np.ndarray, np.n
     return np.asarray(mesh.vertices), np.asarray(mesh.faces)
 
 
+# MuJoCo's default scene option (mjvOption.geomgroup) enables geom groups
+# 0-2 and hides groups 3-5; match that default so auxiliary geoms such as
+# collision-only markers stay hidden.
+DEFAULT_VISIBLE_GEOM_GROUPS: tuple[int, ...] = (0, 1, 2)
+
+
 def build_visible_env_indices(num_envs: int, visible_envs: int) -> np.ndarray:
     """Select a stable subset of env indices spread across the full batch.
 
@@ -158,14 +158,14 @@ class MujocoViserScene:
         name_prefix: str = "/mujoco",
         position_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
         render_plane: bool = True,
+        visible_geom_groups: Sequence[int] = DEFAULT_VISIBLE_GEOM_GROUPS,
     ) -> None:
-        if not VISER_AVAILABLE:
-            raise ImportError("viser is not installed. Install with: uv sync --extra viser")
         self._server: viser.ViserServer = server
         self._model = model
         self._name_prefix = name_prefix.rstrip("/") or "/mujoco"
         self._position_offset = np.asarray(position_offset, dtype=np.float64)
         self._render_plane = bool(render_plane)
+        self._visible_geom_groups = frozenset(int(g) for g in visible_geom_groups)
         self._handles: dict[int, Any] = {}
         self._build()
 
@@ -205,13 +205,15 @@ class MujocoViserScene:
     # ------------------------------------------------------------------ #
 
     def _build(self) -> None:
-        """Create viser scene nodes for every MuJoCo geom."""
+        """Create viser scene nodes for every geom in a visible geom group."""
         model = self._model
         server = self._server
 
         server.scene.set_up_direction("+z")
 
         for i in range(model.ngeom):
+            if int(model.geom_group[i]) not in self._visible_geom_groups:
+                continue
             geom_type = model.geom_type[i]
             size = model.geom_size[i]
             rgba = model.geom_rgba[i]
@@ -324,9 +326,8 @@ class MujocoViserBatchScene:
         name_prefix: str = "/mujoco/batch",
         position_offsets: np.ndarray | Sequence[Sequence[float]] | None = None,
         render_plane: bool = True,
+        visible_geom_groups: Sequence[int] = DEFAULT_VISIBLE_GEOM_GROUPS,
     ) -> None:
-        if not VISER_AVAILABLE:
-            raise ImportError("viser is not installed. Install with: uv sync --extra viser")
         if not models:
             raise ValueError("MujocoViserBatchScene requires at least one model")
         first = models[0]
@@ -338,6 +339,7 @@ class MujocoViserBatchScene:
                 and np.array_equal(model.geom_size, first.geom_size)
                 and np.array_equal(model.geom_dataid, first.geom_dataid)
                 and np.array_equal(model.geom_rgba, first.geom_rgba)
+                and np.array_equal(model.geom_group, first.geom_group)
             ):
                 raise ValueError("Batched MuJoCo models must have matching geom geometry")
 
@@ -353,6 +355,7 @@ class MujocoViserBatchScene:
                 )
             self._position_offsets[:] = offsets
         self._render_plane = bool(render_plane)
+        self._visible_geom_groups = frozenset(int(g) for g in visible_geom_groups)
         self._handles: dict[int, Any] = {}
         self._grid_handles: list[Any] = []
         self._build()
@@ -361,6 +364,8 @@ class MujocoViserBatchScene:
         model = self._models[0]
         self._server.scene.set_up_direction("+z")
         for geom_index in range(model.ngeom):
+            if int(model.geom_group[geom_index]) not in self._visible_geom_groups:
+                continue
             geom_type = model.geom_type[geom_index]
             size = model.geom_size[geom_index]
             rgba = model.geom_rgba[geom_index]

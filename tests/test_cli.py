@@ -608,10 +608,8 @@ def test_eval_mujoco_interactive_falls_back_to_sibling_owner(
     assert "training.play_only=true" in command
 
 
-def _pretend_viser_is_installed(
-    monkeypatch: pytest.MonkeyPatch, *, with_viser: bool = True
-) -> None:
-    installed = {"mujoco", "mjbatch"} | ({"viser"} if with_viser else set())
+def _pretend_mujoco_is_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    installed = {"mujoco", "mjbatch"}
     monkeypatch.setattr(
         cli,
         "find_spec",
@@ -635,7 +633,7 @@ def test_eval_mujoco_viser_routes_to_viser_viewer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     scripts_dir = _make_mujoco_viser_checkout(tmp_path)
-    _pretend_viser_is_installed(monkeypatch)
+    _pretend_mujoco_is_installed(monkeypatch)
 
     command = cli.build_command(
         mode="eval",
@@ -669,7 +667,7 @@ def test_eval_mujoco_viser_via_passthrough_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     scripts_dir = _make_mujoco_viser_checkout(tmp_path)
-    _pretend_viser_is_installed(monkeypatch)
+    _pretend_mujoco_is_installed(monkeypatch)
 
     command = cli.build_command(
         mode="eval",
@@ -685,23 +683,44 @@ def test_eval_mujoco_viser_via_passthrough_override(
     assert "training.play_render_mode=viser" in command
 
 
-def test_eval_mujoco_viser_requires_viser_package(
+def test_eval_newton_viser_routes_to_viser_viewer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _make_mujoco_viser_checkout(tmp_path)
-    _pretend_viser_is_installed(monkeypatch, with_viser=False)
+    """viser eval is not limited to mujoco/mjwarp: any physics-state-playback
+    backend routes to the viser viewer script."""
+    scripts_dir = _make_mujoco_viser_checkout(tmp_path)
+    owner_dir = tmp_path / "conf" / "ppo" / "task" / "go2_joystick_flat"
+    (owner_dir / "newton.yaml").write_text("training:\n  sim_backend: newton\n", encoding="utf-8")
+    installed = {"newton", "mujoco_warp", "warp", "mujoco", "mjbatch"}
+    monkeypatch.setattr(
+        cli,
+        "find_spec",
+        lambda name: ModuleSpec(name, loader=None) if name in installed else None,
+    )
 
-    with pytest.raises(SystemExit, match="viser"):
-        cli.build_command(
-            mode="eval",
-            algo="ppo",
-            task="go2_joystick_flat",
-            sim="mujoco",
-            overrides=[],
-            load_run="-1",
-            render_mode="viser",
-            root=tmp_path,
-        )
+    command = cli.build_command(
+        mode="eval",
+        algo="ppo",
+        task="go2_joystick_flat",
+        sim="newton",
+        overrides=[],
+        load_run="-1",
+        render_mode="viser",
+        root=tmp_path,
+    )
+
+    assert command[1] == str(scripts_dir / "play_viser.py")
+    assert command[:8] == [
+        sys.executable,
+        str(scripts_dir / "play_viser.py"),
+        "--algo",
+        "ppo",
+        "--task",
+        "go2_joystick_flat",
+        "--sim",
+        "newton",
+    ]
+    assert "training.play_render_mode=viser" in command
 
 
 def test_eval_mjwarp_viser_routes_to_viser_viewer(
@@ -749,7 +768,7 @@ def test_macos_mujoco_viser_eval_uses_current_python(
 ) -> None:
     # The viser viewer is browser-based: no GLFW/Cocoa, so no mjpython.
     _make_mujoco_viser_checkout(tmp_path)
-    _pretend_viser_is_installed(monkeypatch)
+    _pretend_mujoco_is_installed(monkeypatch)
     monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
 
     command = cli.build_command(
@@ -785,20 +804,45 @@ def test_eval_viser_render_mode_rejected_for_motrix(
         )
 
 
-def test_train_viser_render_mode_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _make_mujoco_viser_checkout(tmp_path)
-    _pretend_viser_is_installed(monkeypatch)
+def test_train_viser_render_mode_rejected_for_motrix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _make_minimal_checkout(tmp_path)
+    _pretend_motrix_is_installed(monkeypatch)
 
     with pytest.raises(SystemExit, match="viser"):
         cli.build_command(
             mode="train",
             algo="ppo",
             task="go2_joystick_flat",
-            sim="mujoco",
+            sim="motrix",
             overrides=[],
             render_mode="viser",
             root=tmp_path,
         )
+
+
+def test_train_viser_render_mode_routes_to_train_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Train-mode viser playback runs inside the train script's post-training
+    playback: the CLI forwards training.play_render_mode=viser unchanged."""
+    scripts_dir = _make_mujoco_viser_checkout(tmp_path)
+    _pretend_mujoco_is_installed(monkeypatch)
+
+    command = cli.build_command(
+        mode="train",
+        algo="ppo",
+        task="go2_joystick_flat",
+        sim="mujoco",
+        overrides=[],
+        render_mode="viser",
+        root=tmp_path,
+    )
+
+    assert command[1] == str(scripts_dir / "train_rsl_rl.py")
+    assert "task=go2_joystick_flat/mujoco" in command
+    assert "training.play_render_mode=viser" in command
 
 
 def _pretend_mjwarp_is_installed(

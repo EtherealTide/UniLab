@@ -2,11 +2,7 @@
 
 Thin wrapper around the packaged viewer ``unilab.scripts.play_viser``; the
 playback loop, session dispatch, and scene code live there. This script keeps
-the direct Hydra entry for source checkouts.
-
-Prerequisites::
-
-    uv sync --extra viser
+the direct Hydra entry for source checkouts. viser is a required dependency.
 
 Usage::
 

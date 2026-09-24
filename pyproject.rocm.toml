@@ -23,18 +23,7 @@ classifiers = [
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "numpy",
-    # Physics implementations are provided by the independently released
-    # unisim-core package. Version 1.5.0 provides the M2 physical entity,
-    # immutable variant, layout and selected-reset contracts; 1.6.0 adds
-    # Newton CUDA graph execution; 1.7.2 adds SuperDex physical
-    # kinematic roots to the portable MJCF profile; and 1.7.3 adds IsaacSim
-    # mapped-scene contact sensors, bounded PhysX solver configuration and
-    # mapped reset domain randomization.
     "unisim-core>=1.7.3",
-    # RL algorithms and async runtimes live in the independently released
-    # uni-rl package (distribution name ``unilab-rl``); see pyproject.toml.
-    # Optional: only APPO, off-policy algorithms, and multi-GPU PPO need it
-    # (extra ``uni_rl``); the dev group below keeps it installed for CI.
     "torch==2.11.0",
     "triton-rocm==3.6.0 ; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "gymnasium",
@@ -57,6 +46,8 @@ dependencies = [
     "huggingface_hub>=0.25",
     "ninja ; sys_platform == 'linux'",
     "imageio-ffmpeg>=0.6.0",
+    "viser>=1.0.26",
+    "trimesh>=3.21.7",
 ]
 
 [project.scripts]
@@ -72,36 +63,20 @@ unilab-pull-assets = "unilab.assets.pull:main"
 drake = [
     "drake-uni==0.1.0",
 ]
+# mjbatch is built and version-checked against mujoco==3.11.0; switching
+# MuJoCo versions requires an mjbatch rebuild.
 mujoco = [
-    # MuJoCo 3.11 alignment (unilabsim/UniLab#1515): the bound is a
-    # compatible-release specifier; uv.rocm.lock pins the exact MuJoCo
-    # version. The MuJoCo physics backend (unisim.backend.mujoco.backend)
-    # executes on the mjbatch native batch engine, which is built and
-    # version-checked against mujoco==3.11.0 — switching MuJoCo versions
-    # requires an mjbatch rebuild, not a UniLab config change. The batch
-    # engine is the unilabsim mjbatch fork, published on PyPI as
-    # mjbatch-uni (#1552); its build backend pins mujoco==3.11.0 at build
-    # time, so isolated builds are correct and no compiler preflight is
-    # needed.
     "mujoco~=3.11.0",
     "mjbatch-uni~=0.2.1",
 ]
-# The Motrix runtime pin lives in the unisim-core ``motrix`` extra, so
-# the consumed runtime always matches the version the
-# unisim.backend.motrix adapter is tested against.
 motrix = ["unisim-core[motrix]>=1.7.3"]
-viser = ["viser>=1.0.26", "trimesh>=3.21.7"]
-# APPO / off-policy (SAC) runners, collectors, IPC, and multi-GPU
-# data-parallel PPO launches require the optional uni-rl runtime. PPO
-# single-process training and playback run directly on rsl-rl-lib.
 uni_rl = ["unilab-rl==1.3.2"]
 
 [dependency-groups]
-# Repo development and CI exercise the APPO/off-policy/multi-GPU paths, so
-# the dev environment keeps the optional unilab-rl runtime installed.
+# Dev/CI exercises the APPO/off-policy/multi-GPU paths, so the optional
+# unilab-rl runtime stays installed in the dev environment.
 dev = ["pytest", "pytest-cov", "ruff", "mypy", "pyright>=1.1.408", "unilab-rl==1.3.2"]
 
-# ========== ROCm 索引配置 ==========
 [[tool.uv.index]]
 name = "pytorch-rocm72"
 url = "https://download.pytorch.org/whl/rocm7.2"
@@ -175,7 +150,7 @@ venv = ".venv"
 include = ["src/unilab"]
 exclude = [
     "src/unilab/envs/",                     # lazy optional `mujoco` import; not installed in the pyright env
-    "src/unilab/visualization/",            # direct mujoco C bindings + optional viser deps
+    "src/unilab/visualization/",            # direct mujoco C bindings; not installed in the pyright env
 ]
 reportMissingImports = "warning"
 reportMissingModuleSource = "none"
