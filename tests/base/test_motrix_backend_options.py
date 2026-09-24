@@ -247,6 +247,16 @@ def _install_fake_motrix(monkeypatch, tmp_path):
         "_materialize_motrix_scene_with_sensor_names",
         lambda **kwargs: (fake_model, ()),
     )
+    # These tests exercise override caches and terrain plumbing with a fake
+    # native model; unisim-core 1.7.6 validates the whole-MJCF joint order
+    # against the real source file at construction (covered upstream), which
+    # has no meaning for the fake model and only reads "source.xml" from disk.
+    monkeypatch.setattr(
+        mod.MotrixBackend,
+        "_validate_non_portable_joint_order",
+        lambda self, model_file: None,
+        raising=False,
+    )
     return mod, fake_model
 
 

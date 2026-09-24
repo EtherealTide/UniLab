@@ -299,6 +299,8 @@ def _fake_motrix_backend(pre_step_control_fn=None):
         actuator_ctrls=np.zeros((1, 2), dtype=np.float32),
         sensor_value=0.0,
     )
+    backend._sim_dt = 0.002
+    backend._time_view = np.zeros((1,), dtype=np.float32)
     backend._refresh_link_pose_cache = lambda: None
     return backend
 
