@@ -40,7 +40,7 @@ MUJOCO_VIEWER_PHYSICS_SIMS = frozenset({"mujoco", "mjwarp"})
 # playback contract the viser viewer renders from (they expose native
 # renderers instead). Supporting viser there requires upstream unisim
 # capability work, so these sims fail closed with an actionable message.
-VISER_UNSUPPORTED_SIMS = frozenset({"motrix", "genesis", "isaacgym", "isaacsim"})
+VISER_UNSUPPORTED_SIMS = frozenset({"genesis", "isaacgym", "isaacsim"})
 RESERVED_OVERRIDE_KEYS = {
     "algo",
     "task",
@@ -229,7 +229,11 @@ def _needs_motrix_renderer(mode: str, sim: str, overrides: Sequence[str]) -> boo
     if sim != "motrix":
         return False
     play_render_mode = _override_value(overrides, "training.play_render_mode")
-    if play_render_mode is not None and play_render_mode.strip().lower() in {"none", "record"}:
+    if play_render_mode is not None and play_render_mode.strip().lower() in {
+        "none",
+        "record",
+        "viser",
+    }:
         return False
     if mode == "eval":
         return True

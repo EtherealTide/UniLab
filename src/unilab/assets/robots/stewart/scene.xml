@@ -62,8 +62,8 @@
                 <geom type="box" pos="0.02 0.0 0.03" size="0.005 0.01  0.03"/>
                 <geom type="cylinder" pos="0 0 0.05" size="0.005 0.02" axisangle="0 1 0 90"/>
                 <body name="leg00" pos="0 0 0.05" euler="-30 20 0">
-                    <joint type="hinge" axis="0 1 0"/>
-                    <joint type="hinge" axis="1 0 0"/>
+                    <joint name="leg00_hinge_y" type="hinge" axis="0 1 0"/>
+                    <joint name="leg00_hinge_x" type="hinge" axis="1 0 0"/>
                     <geom type="cylinder" size="0.005 0.03" axisangle="1 0 0 90"/>
                     <geom type="box" pos="0 -0.03 0.03" size="0.02 0.005 0.04"/>
                     <geom type="box" pos="0 0.03 0.03" size="0.02 0.005 0.04"/>
@@ -82,8 +82,8 @@
                 <geom type="box" pos="0.02 0.0 0.03" size="0.005 0.01  0.03"/>
                 <geom type="cylinder" pos="0 0 0.05" size="0.005 0.02" axisangle="0 1 0 90"/>
                 <body name="leg10" pos="0 0 0.05" euler="-30 -20 0">
-                    <joint type="hinge" axis="0 1 0"/>
-                    <joint type="hinge" axis="1 0 0"/>
+                    <joint name="leg10_hinge_y" type="hinge" axis="0 1 0"/>
+                    <joint name="leg10_hinge_x" type="hinge" axis="1 0 0"/>
                     <geom type="cylinder" size="0.005 0.03" axisangle="1 0 0 90"/>
                     <geom type="box" pos="0 -0.03 0.03" size="0.02 0.005 0.04"/>
                     <geom type="box" pos="0 0.03 0.03" size="0.02 0.005 0.04"/>
@@ -102,8 +102,8 @@
                 <geom type="box" pos="0.02 0.0 0.03" size="0.005 0.01  0.03"/>
                 <geom type="cylinder" pos="0 0 0.05" size="0.005 0.02" axisangle="0 1 0 90"/>
                 <body name="leg01" pos="0 0 0.05" euler="-30 20 0">
-                    <joint type="hinge" axis="0 1 0"/>
-                    <joint type="hinge" axis="1 0 0"/>
+                    <joint name="leg01_hinge_y" type="hinge" axis="0 1 0"/>
+                    <joint name="leg01_hinge_x" type="hinge" axis="1 0 0"/>
                     <geom type="cylinder" size="0.005 0.03" axisangle="1 0 0 90"/>
                     <geom type="box" pos="0 -0.03 0.03" size="0.02 0.005 0.04"/>
                     <geom type="box" pos="0 0.03 0.03" size="0.02 0.005 0.04"/>
@@ -122,8 +122,8 @@
                 <geom type="box" pos="0.02 0.0 0.03" size="0.005 0.01  0.03"/>
                 <geom type="cylinder" pos="0 0 0.05" size="0.005 0.02" axisangle="0 1 0 90"/>
                 <body name="leg11" pos="0 0 0.05" euler="-30 -20 0">
-                    <joint type="hinge" axis="0 1 0"/>
-                    <joint type="hinge" axis="1 0 0"/>
+                    <joint name="leg11_hinge_y" type="hinge" axis="0 1 0"/>
+                    <joint name="leg11_hinge_x" type="hinge" axis="1 0 0"/>
                     <geom type="cylinder" size="0.005 0.03" axisangle="1 0 0 90"/>
                     <geom type="box" pos="0 -0.03 0.03" size="0.02 0.005 0.04"/>
                     <geom type="box" pos="0 0.03 0.03" size="0.02 0.005 0.04"/>
@@ -142,8 +142,8 @@
                 <geom type="box" pos="0.02 0.0 0.03" size="0.005 0.01  0.03"/>
                 <geom type="cylinder" pos="0 0 0.05" size="0.005 0.02" axisangle="0 1 0 90"/>
                 <body name="leg02" pos="0 0 0.05" euler="-30 20 0">
-                    <joint type="hinge" axis="0 1 0"/>
-                    <joint type="hinge" axis="1 0 0"/>
+                    <joint name="leg02_hinge_y" type="hinge" axis="0 1 0"/>
+                    <joint name="leg02_hinge_x" type="hinge" axis="1 0 0"/>
                     <geom type="cylinder" size="0.005 0.03" axisangle="1 0 0 90"/>
                     <geom type="box" pos="0 -0.03 0.03" size="0.02 0.005 0.04"/>
                     <geom type="box" pos="0 0.03 0.03" size="0.02 0.005 0.04"/>
@@ -162,8 +162,8 @@
                 <geom type="box" pos="0.02 0.0 0.03" size="0.005 0.01  0.03"/>
                 <geom type="cylinder" pos="0 0 0.05" size="0.005 0.02" axisangle="0 1 0 90"/>
                 <body name="leg12" pos="0 0 0.05" euler="-30 -20 0">
-                    <joint type="hinge" axis="0 1 0"/>
-                    <joint type="hinge" axis="1 0 0"/>
+                    <joint name="leg12_hinge_y" type="hinge" axis="0 1 0"/>
+                    <joint name="leg12_hinge_x" type="hinge" axis="1 0 0"/>
                     <geom type="cylinder" size="0.005 0.03" axisangle="1 0 0 90"/>
                     <geom type="box" pos="0 -0.03 0.03" size="0.02 0.005 0.04"/>
                     <geom type="box" pos="0 0.03 0.03" size="0.02 0.005 0.04"/>

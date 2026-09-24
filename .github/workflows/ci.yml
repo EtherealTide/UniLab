@@ -215,6 +215,12 @@ jobs:
         with:
           path: src/unilab/assets/robots
           key: ${{ runner.os }}-robot-assets-v1-${{ hashFiles('src/unilab/assets/hub.py') }}
+      - name: Keep git-tracked assets at the checked-out commit
+        # The robots cache persists HF-downloaded meshes across runs, but it
+        # also snapshots git-tracked scene XMLs and would silently roll them
+        # back to the cached revision. Restore tracked files from the index;
+        # untracked downloads stay untouched.
+        run: git restore --worktree -- src/unilab/assets/robots
       - name: Pull robot assets
         run: uv run --no-sync unilab-pull-assets --robot all
       - name: Test with coverage
