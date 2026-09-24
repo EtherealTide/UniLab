@@ -45,6 +45,7 @@ algo:
     n_step: 1
     amp_dtype: auto
     use_compile: true
+    compile_full_objectives: true
     use_cuda_graph_critic: false
     use_cuda_graph_actor: false
     use_cuda_graph_critic_packed_staging: false
