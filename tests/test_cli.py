@@ -785,18 +785,74 @@ def test_macos_mujoco_viser_eval_uses_current_python(
     assert command[0] == sys.executable
 
 
-def test_eval_viser_render_mode_rejected_for_motrix(
+def test_eval_viser_render_mode_routes_to_play_viser_for_motrix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _make_minimal_checkout(tmp_path)
+    (tmp_path / "scripts" / "play_viser.py").write_text("", encoding="utf-8")
+    _pretend_motrix_is_installed(monkeypatch)
+    # The viser viewer renders MuJoCo playback models, so the CLI also
+    # requires the mujoco package regardless of the physics backend.
+    monkeypatch.setattr(
+        cli,
+        "find_spec",
+        lambda name: ModuleSpec(name, loader=None) if name in {"motrixsim", "mujoco"} else None,
+    )
+
+    command = cli.build_command(
+        mode="eval",
+        algo="ppo",
+        task="go2_joystick_flat",
+        sim="motrix",
+        overrides=[],
+        load_run="-1",
+        render_mode="viser",
+        root=tmp_path,
+    )
+
+    assert command[1] == str(tmp_path / "scripts" / "play_viser.py")
+    assert "--sim" in command and "motrix" in command
+
+
+def test_train_viser_render_mode_routes_to_train_script_for_motrix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _make_minimal_checkout(tmp_path)
     _pretend_motrix_is_installed(monkeypatch)
+    monkeypatch.setattr(
+        cli,
+        "find_spec",
+        lambda name: ModuleSpec(name, loader=None) if name in {"motrixsim", "mujoco"} else None,
+    )
+
+    command = cli.build_command(
+        mode="train",
+        algo="ppo",
+        task="go2_joystick_flat",
+        sim="motrix",
+        overrides=[],
+        render_mode="viser",
+        root=tmp_path,
+    )
+
+    assert command[1] == str(tmp_path / "scripts" / "train_rsl_rl.py")
+    assert "training.play_render_mode=viser" in command
+
+
+def test_eval_viser_render_mode_rejected_for_genesis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner_dir = tmp_path / "conf" / "ppo" / "task" / "go2_joystick_flat"
+    owner_dir.mkdir(parents=True)
+    (owner_dir / "genesis.yaml").write_text("training:\n  sim_backend: genesis\n", encoding="utf-8")
+    _pretend_genesis_runtime(monkeypatch, available=True)
 
     with pytest.raises(SystemExit, match="viser"):
         cli.build_command(
             mode="eval",
             algo="ppo",
             task="go2_joystick_flat",
-            sim="motrix",
+            sim="genesis",
             overrides=[],
             load_run="-1",
             render_mode="viser",
@@ -804,18 +860,20 @@ def test_eval_viser_render_mode_rejected_for_motrix(
         )
 
 
-def test_train_viser_render_mode_rejected_for_motrix(
+def test_train_viser_render_mode_rejected_for_genesis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _make_minimal_checkout(tmp_path)
-    _pretend_motrix_is_installed(monkeypatch)
+    owner_dir = tmp_path / "conf" / "ppo" / "task" / "go2_joystick_flat"
+    owner_dir.mkdir(parents=True)
+    (owner_dir / "genesis.yaml").write_text("training:\n  sim_backend: genesis\n", encoding="utf-8")
+    _pretend_genesis_runtime(monkeypatch, available=True)
 
     with pytest.raises(SystemExit, match="viser"):
         cli.build_command(
             mode="train",
             algo="ppo",
             task="go2_joystick_flat",
-            sim="motrix",
+            sim="genesis",
             overrides=[],
             render_mode="viser",
             root=tmp_path,
