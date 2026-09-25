@@ -292,15 +292,21 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
     return runner
 
 
-def play_offpolicy(algo_name: str, cfg: DictConfig) -> str | None:
+def play_offpolicy(
+    algo_name: str,
+    cfg: DictConfig,
+    *,
+    load_run: str | None = None,
+) -> str | None:
     """Play pipeline for off-policy algorithms."""
     import torch
 
+    selected_load_run = str(cfg.algo.load_run if load_run is None else load_run)
     load_path, load_path_dir = resolve_checkpoint_path(
         Path.cwd(),
         cfg.algo.algo_log_name,
         cfg.training.task_name,
-        cfg.algo.load_run,
+        selected_load_run,
     )
     if not load_path or not os.path.exists(load_path):
         print(f"Could not find checkpoint. load_path={load_path}")
@@ -341,7 +347,7 @@ def play_offpolicy(algo_name: str, cfg: DictConfig) -> str | None:
 
     playback_cfg = RslRlPlaybackConfig(
         task=str(cfg.training.task_name),
-        load_run=str(cfg.algo.load_run),
+        load_run=selected_load_run,
         checkpoint=None,
         action_mode="policy",
         policy_obs_mode="actor",
@@ -532,7 +538,11 @@ def main(cfg: DictConfig) -> None:
                 play_render_mode=getattr(cfg.training, "play_render_mode", "auto"),
             ):
                 print("@" * 50)
-                play_video_path = play_offpolicy(algo_name, cfg)
+                play_video_path = play_offpolicy(
+                    algo_name,
+                    cfg,
+                    load_run=None if cfg.training.play_only else str(Path(log_dir).resolve()),
+                )
                 if tracker is not None:
                     tracker.log_video(play_video_path)
     finally:

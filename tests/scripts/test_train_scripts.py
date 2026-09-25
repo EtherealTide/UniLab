@@ -3009,19 +3009,22 @@ def test_play_offpolicy_uses_shared_playback_session_factory(
         return fake_session, "actor", str(checkpoint)
 
     monkeypatch.setattr(mod, "default_device", lambda torch_module, preferred=None: "cpu")
-    monkeypatch.setattr(
-        mod,
-        "resolve_checkpoint_path",
-        lambda *args, **kwargs: (str(checkpoint), str(run_dir)),
-    )
+
+    def fake_resolve_checkpoint_path(_root, _algo, _task, selected_run):
+        captured["selected_run"] = selected_run
+        return str(checkpoint), str(run_dir)
+
+    monkeypatch.setattr(mod, "resolve_checkpoint_path", fake_resolve_checkpoint_path)
     monkeypatch.setattr(mod, "create_sac_playback_session", fake_create_session)
 
-    result = mod.play_offpolicy("sac", cfg)
+    result = mod.play_offpolicy("sac", cfg, load_run=str(run_dir))
 
     assert result == str(run_dir / "play_video.mp4")
+    assert captured["selected_run"] == str(run_dir)
     factory_kwargs = captured["factory_kwargs"]
     playback_cfg = factory_kwargs["playback_cfg"]
     assert playback_cfg.task == cfg.training.task_name
+    assert playback_cfg.load_run == str(run_dir)
     assert playback_cfg.action_mode == "policy"
     assert playback_cfg.policy_obs_mode == "actor"
     assert playback_cfg.algo_log_name == cfg.algo.algo_log_name

@@ -16,6 +16,7 @@ algo:
   tau: 0.05
   updates_per_step: 4
   policy_frequency: 2
-  # The shorter replay horizon keeps age bias local to each motion regime.
-  decay_step: 2048
+  # Uniform replay outperformed recent-biased profiles during 10.2M-step
+  # mjwarp tuning and preserves coverage of the full motion clip history.
+  decay_step: 0
   replay_min_weight: 0.05
