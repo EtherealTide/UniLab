@@ -182,7 +182,7 @@ def test_offpolicy_warpsac_g1_task_overrides():
         cfg = compose(
             "config",
             overrides=["task=g1_walk_flat/mujoco"],
-    )
+        )
     assert cfg.algo.algo == "warpsac"
     assert cfg.algo.num_envs == 4096
     assert cfg.algo.max_iterations == 5000

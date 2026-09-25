@@ -971,12 +971,12 @@ def create_sac_playback_session(
             Path(root_dir),
             cfg.algo.algo_log_name,
             cfg.training.task_name,
-            cfg.algo.load_run,
+            playback_cfg.load_run,
         )
         if checkpoint_path is None or not os.path.exists(checkpoint_path):
             log(
                 f"WARNING: no {algo_name} checkpoint found for "
-                f"load_run={cfg.algo.load_run} - falling back to zero actions."
+                f"load_run={playback_cfg.load_run} - falling back to zero actions."
             )
             actor = None
         else:

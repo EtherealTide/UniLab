@@ -119,10 +119,28 @@ class WarpSACAlgoParams(FlashSACAlgoParams):
 
 
 @dataclass
-class WarpSACConfig(FlashSACConfig):
+class WarpSACConfig(BaseConfig):
     algo: str = "warpsac"
     algo_log_name: str = "warp_sac"
+    seed: int = 1
+    num_envs: int = 1024
+    batch_size: int = 2048
+    replay_buffer_n: int = 512
+    updates_per_step: int = 2
+    learning_starts: int = 98
+    policy_frequency: int = 2
     target_frequency: int = 1
+    max_iterations: int = 5000
+    save_interval: int = 1000
+    gamma: float = 0.97
+    tau: float = 0.01
+    actor_lr: float = 3e-4
+    critic_lr: float = 3e-4
+    actor_hidden_dim: int = 128
+    critic_hidden_dim: int = 256
+    num_atoms: int = 101
+    obs_normalization: bool = False
+    use_layer_norm: bool = False
     decay_step: int = 512
     replay_min_weight: float = 0.05
     replay_num_buckets: int = 2000
