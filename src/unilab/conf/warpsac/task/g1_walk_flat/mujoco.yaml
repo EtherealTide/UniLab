@@ -18,10 +18,12 @@ algo:
   replay_buffer_n: 256
   tau: 0.05
   policy_frequency: 2
-  # Favor recent transitions while retaining 5% coverage of older samples.
-  # The 1024-step span is one quarter of the 4096-environment replay ring.
-  decay_step: 1024
-  replay_min_weight: 0.05
+  # The 2048-step recent bias and disabled parameter normalization were the
+  # strongest 6.2M-step tuning profile on both MuJoCo and mjwarp.
+  decay_step: 2048
+  replay_min_weight: 0.10
+  actor_normalize_parameters: false
+  critic_normalize_parameters: false
 reward:
   penalty_action_rate:
     weight: -5.0

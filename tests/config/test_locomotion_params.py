@@ -182,11 +182,18 @@ def test_offpolicy_warpsac_g1_task_overrides():
         cfg = compose(
             "config",
             overrides=["task=g1_walk_flat/mujoco"],
-        )
+    )
     assert cfg.algo.algo == "warpsac"
-    assert cfg.algo.num_envs == 2048
+    assert cfg.algo.num_envs == 4096
     assert cfg.algo.max_iterations == 5000
-    assert cfg.algo.decay_step == 1024
+    assert cfg.algo.learning_starts == 49
+    assert cfg.algo.updates_per_step == 8
+    assert cfg.algo.replay_buffer_n == 256
+    assert cfg.algo.tau == pytest.approx(0.05)
+    assert cfg.algo.decay_step == 2048
+    assert cfg.algo.replay_min_weight == pytest.approx(0.10)
+    assert cfg.algo.actor_normalize_parameters is False
+    assert cfg.algo.critic_normalize_parameters is False
     assert cfg.algo.algo_params.n_step == 1
     assert cfg.training.task_name == "G1WalkFlat"
     assert cfg.training.task_name == "G1WalkFlat"
