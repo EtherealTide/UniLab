@@ -4,6 +4,7 @@ from pathlib import Path
 
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
+from omegaconf import OmegaConf
 
 CONF_DIR = Path(__file__).parents[2] / "src" / "unilab" / "conf"
 
@@ -11,6 +12,12 @@ CONF_DIR = Path(__file__).parents[2] / "src" / "unilab" / "conf"
 def _compose_sac(task: str):
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=str(CONF_DIR / "sac"), version_base="1.3"):
+        return compose("config", overrides=[f"task={task}"])
+
+
+def _compose_warpsac(task: str):
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(config_dir=str(CONF_DIR / "warpsac"), version_base="1.3"):
         return compose("config", overrides=[f"task={task}"])
 
 
@@ -136,3 +143,27 @@ def test_sac_g1_motion_tracking_isaacsim_disables_unsupported_dr() -> None:
 def test_sac_g1_flip_tracking_stays_dr_free() -> None:
     cfg = _compose_sac("g1_flip_tracking/mujoco")
     assert all(term is None for term in cfg.env.events.values())
+
+
+def test_warpsac_g1_motion_tracking_owners_share_policy_contract() -> None:
+    mujoco_cfg = _compose_warpsac("g1_motion_tracking/mujoco")
+    mjwarp_cfg = _compose_warpsac("g1_motion_tracking/mjwarp")
+
+    assert mujoco_cfg.training.task_name == "G1MotionTrackingSAC"
+    assert mujoco_cfg.training.sim_backend == "mujoco"
+    assert mjwarp_cfg.training.sim_backend == "mjwarp"
+    assert mjwarp_cfg.training.play_render_mode == "record"
+    assert mujoco_cfg.algo.num_envs == 2048
+    assert mujoco_cfg.algo.max_iterations == 25000
+    assert mujoco_cfg.algo.updates_per_step == 4
+    assert mujoco_cfg.algo.gamma == 0.99
+    assert mujoco_cfg.algo.tau == 0.05
+    assert mujoco_cfg.algo.decay_step == 0
+    assert mujoco_cfg.algo.replay_min_weight == 0.05
+    assert mujoco_cfg.algo.algo_params.n_step == 1
+    assert mujoco_cfg.training.replay_prefetch_mode == "one_tick"
+
+    for section in ("env", "reward", "algo"):
+        assert OmegaConf.to_container(mjwarp_cfg[section]) == OmegaConf.to_container(
+            mujoco_cfg[section]
+        )

@@ -31,6 +31,8 @@ _MAINTAINER_VALIDATED_MJWARP_ENTRYPOINT_TASKS = frozenset(
     {
         ("ppo_torch", "g1_walk_flat"),
         ("sac_torch", "g1_walk_flat"),
+        ("warpsac_torch", "g1_walk_flat"),
+        ("warpsac_torch", "g1_motion_tracking"),
     }
 )
 
@@ -358,8 +360,9 @@ def render_support_matrix(root: Path | None = None) -> str:
         "`Tested` 只描述仓库中已有自动化覆盖或显式 maintainer 训练验证，不代表该组合具备同名 MuJoCo "
         "owner 的全部 backend capability；例如 phase-1 Motrix owner 可能只覆盖训练 smoke 和明确启用的 DR 子集。",
         "",
-        "`mjwarp` 完成训练验证的只有 `g1_walk_flat` host adapter：PPO (torch) 与 SAC (torch) owner "
-        "已完成训练验证，并有 backend、contract 与 playback 自动化覆盖，因此标记为 `Tested`。"
+        "`mjwarp` 完成训练验证的是 `g1_walk_flat` host adapter 的 PPO (torch)、SAC (torch) 与 "
+        "WarpSAC (torch)，以及 `g1_motion_tracking` 的 WarpSAC (torch)；这些 owner 有 backend、"
+        "contract 与 playback 自动化覆盖，因此标记为 `Tested`。"
         "mjwarp playback 默认仅支持显式、有限步数的 `record` 并复用 MuJoCo 离线 renderer；"
         "`uv run eval --sim mjwarp --render-mode interactive` 路由到 MuJoCo 交互 viewer"
         "（mjwarp 跑物理、MuJoCo 渲染 env[0]，强制单 env）；不支持 `auto` 或 native playback。"
