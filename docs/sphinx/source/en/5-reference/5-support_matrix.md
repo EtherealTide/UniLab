@@ -104,6 +104,8 @@ rendering/playback paths remain unsupported.
 | FlashSAC (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | - | Registered | - | - | - | - | Registered |
 | FlashSAC (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Configured | Tested | Registered | Registered | Registered | Registered | - |
 | FlashSAC (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Configured | Tested | Registered | Configured | Registered | Configured | - |
+| WarpSAC (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Configured | Registered | Registered | Registered | Registered | Registered | - |
+| WarpSAC (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Configured | Registered | Registered | Registered | Registered | Registered | - |
 
 ## Source Index
 

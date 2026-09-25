@@ -1,0 +1,11 @@
+# @package _global_
+# WarpSAC mjwarp owner. It inherits the MuJoCo policy/reward contract and uses
+# MuJoCo for offline playback rendering.
+defaults:
+  - /task/g1_motion_tracking/mujoco
+  - _self_
+
+training:
+  task_name: G1MotionTrackingSAC
+  sim_backend: mjwarp
+  play_render_mode: record

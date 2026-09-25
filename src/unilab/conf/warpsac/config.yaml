@@ -3,47 +3,59 @@ defaults:
   - task: g1_walk_flat/mujoco
 
 algo:
-  algo: sac
-  algo_log_name: fast_sac
-  runtime_impl: null
-  runtime_resolver: null
+  algo: warpsac
+  algo_log_name: warp_sac
   load_run: "-1"
   seed: 1
-  num_envs: 4096
-  # Learner batch size for one SAC update.
-  batch_size: 8192
+  num_envs: 1024
+  batch_size: 2048
   replay_buffer_n: 512
-  updates_per_step: 4
-  learning_starts: 1
-  policy_frequency: 4
-  max_iterations: 500
-  save_interval: 500
+  updates_per_step: 2
+  learning_starts: 98
+  policy_frequency: 2
+  target_frequency: 1
+  max_iterations: 5000
+  save_interval: 1000
   gamma: 0.97
-  tau: 0.125
+  tau: 0.01
   actor_lr: 3.0e-4
   critic_lr: 3.0e-4
-  actor_hidden_dim: 512
-  critic_hidden_dim: 768
+  actor_hidden_dim: 128
+  critic_hidden_dim: 256
   num_atoms: 101
   obs_normalization: false
-  use_layer_norm: true
-  actor: {}
+  use_layer_norm: false
+  decay_step: 512
+  replay_min_weight: 0.05
+  replay_num_buckets: 2000
+  actor_normalize_parameters: true
+  critic_normalize_parameters: true
   algo_params:
-    alpha_lr: 3.0e-4
-    alpha_init: 0.01
-    target_entropy_ratio: 0.0
-    max_grad_norm: 0.0
+    normalize_reward: true
+    normalized_g_max: 5.0
+    actor_num_blocks: 2
+    critic_num_blocks: 2
+    actor_bc_alpha: 0.0
+    actor_noise_zeta_mu: 2.0
+    actor_noise_zeta_max: 16
+    critic_min_v: -5.0
+    critic_max_v: 5.0
+    temp_initial_value: 0.01
+    temp_target_sigma: 0.15
+    temp_target_entropy: null
+    learning_rate_init: 3.0e-4
+    learning_rate_peak: 3.0e-4
+    learning_rate_end: 1.5e-4
+    learning_rate_warmup_steps: 0
+    learning_rate_decay_steps: 500000
+    n_step: 1
     amp_dtype: auto
     use_compile: true
+    compile_full_objectives: true
 
 training:
   task_name: G1WalkFlat
-  # list[int] | null; null/[] = auto-selected single-device behavior;
-  # [d0] = explicit single CUDA device; [d0..dN-1] = N-way data parallel,
-  # rank i trains on cuda:devices[i].
   devices: null
-  # list[list[int]] | null; one CPU-id segment per rank for the collector's
-  # MuJoCo pool; null = auto partition of cpu_count // world_size per rank.
   dp_collector_cpu_ids: null
   logger: tensorboard
   wandb_project: unilab
@@ -74,8 +86,6 @@ training:
   log_root: null
   log_dir: null
   env_steps_per_sync: 1
-  # Seconds the learner waits for each collector inference tick after the
-  # collector-ready handshake.
   inference_request_timeout_sec: 30.0
   trace_enabled: false
   trace_output_dir: null
@@ -85,8 +95,6 @@ training:
   replay_prefetch_mode: one_tick
   torch_threads:
     enabled: true
-    # "auto" resolves per process role from host CPU count with conservative caps.
-    # Override these from Hydra when benchmarking a specific machine.
     learner_num_threads: auto
     collector_num_threads: auto
     learner_num_interop_threads: 1

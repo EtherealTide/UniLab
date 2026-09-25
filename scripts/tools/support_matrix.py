@@ -170,6 +170,13 @@ ENTRYPOINT_SPECS: tuple[EntrypointSpec, ...] = (
         task_glob="*/*.yaml",
         generic_tested=True,
     ),
+    EntrypointSpec(
+        entrypoint_id="warpsac_torch",
+        label="WarpSAC (torch)",
+        config_dir="src/unilab/conf/warpsac/task",
+        task_glob="*/*.yaml",
+        generic_tested=True,
+    ),
 )
 
 
@@ -343,7 +350,7 @@ def render_support_matrix(root: Path | None = None) -> str:
         "| 等级 | 仓库事实来源 |",
         "|------|--------------|",
         "| `Registered` | `ensure_registries()` 导入后的 `registry.list_registered_envs()` 中存在该 env/backend。 |",
-        "| `Configured` | 存在对应的 owner YAML：`src/unilab/conf/{ppo,appo,sac,flashsac}/task/...`。 |",
+        "| `Configured` | 存在对应的 owner YAML：`src/unilab/conf/{ppo,appo,sac,flashsac,warpsac}/task/...`。 |",
         "| `Tested` | `tests/` 中有自动化覆盖该 entrypoint/task owner/backend 组合，或存在显式 maintainer 完整训练验证并具备近风险自动化测试。这里的 `Tested` 不等同于默认推荐路径。 |",
         "| `Benchmarked` | 存在与该组合绑定的已提交 benchmark manifest。 |",
         "| `Recommended` | 仓库中存在显式 recommendation 元数据。 |",
@@ -415,7 +422,7 @@ def render_support_matrix(root: Path | None = None) -> str:
             "### Source Index",
             "",
             "- Registry bootstrap: `src/unilab/envs/**` decorators via `unilab.base.registry.ensure_registries()`.",
-            "- Owner YAML scan: `src/unilab/conf/ppo/task/**`, `src/unilab/conf/appo/task/**`, `src/unilab/conf/sac/task/**`, `src/unilab/conf/flashsac/task/**`.",
+            "- Owner YAML scan: `src/unilab/conf/ppo/task/**`, `src/unilab/conf/appo/task/**`, `src/unilab/conf/sac/task/**`, `src/unilab/conf/flashsac/task/**`, `src/unilab/conf/warpsac/task/**`.",
             "- Generic compose coverage: `tests/config/test_config_system.py::test_supported_task_composes`.",
             "- SuperDex remains `Configured`: FR3 has optional CPU rollout/spawn coverage in `tests/envs/test_fr3_superdex.py`; the Go2 research profile has policy-contract/rollout/checkpoint coverage in `tests/envs/test_go2_superdex.py`. Neither profile claims full-training performance or cross-platform support.",
             "- Validated mjwarp entrypoints are explicitly recorded in `_MAINTAINER_VALIDATED_MJWARP_ENTRYPOINT_TASKS`; near-risk coverage lives in `tests/base/test_mjwarp_backend.py`, `tests/base/test_backend_conformance.py`, `tests/base/test_mjwarp_differential.py`, and `tests/base/test_mjwarp_playback.py`.",

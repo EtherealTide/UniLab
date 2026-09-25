@@ -3,12 +3,13 @@
 For every task with >=2 backend YAMLs, hydra-composes each backend's effective config
 and compares the DENYLIST / WARNING_LIST fields from ``unilab.utils.sim2sim``.
 Off-policy owners now live in separate per-algorithm trees (``sac``,
-``flashsac``), so SAC and FlashSAC are never compared with one another.
+``flashsac``, and ``warpsac``), so different algorithms are never compared
+with one another.
 
 Read-only.
 
     uv run scripts/audit_sim2sim_contracts.py
-    uv run scripts/audit_sim2sim_contracts.py --trees ppo appo sac flashsac
+    uv run scripts/audit_sim2sim_contracts.py --trees ppo appo sac flashsac warpsac
     uv run scripts/audit_sim2sim_contracts.py --json
 """
 

@@ -1,8 +1,8 @@
-"""Shared off-policy (SAC/FlashSAC) train/play implementation.
+"""Shared off-policy (SAC/FlashSAC/WarpSAC) train/play implementation.
 
 This module is no longer runnable directly; use the per-algorithm entry
-scripts instead: ``unilab/scripts/train_sac.py`` and
-``unilab/scripts/train_flashsac.py``.
+scripts instead: ``unilab/scripts/train_sac.py``,
+``unilab/scripts/train_flashsac.py``, and ``unilab/scripts/train_warpsac.py``.
 """
 
 from __future__ import annotations
@@ -280,6 +280,12 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
             )
 
             runner = build_flashsac_double_buffer_runner(cfg, **builder_kwargs)
+        elif algo_name == "warpsac":
+            from uni_rl.algos.warp_sac.double_buffer import (
+                build_warpsac_double_buffer_runner,
+            )
+
+            runner = build_warpsac_double_buffer_runner(cfg, **builder_kwargs)
         else:
             raise ValueError(f"Unsupported algo: {algo_name}")
 
@@ -368,7 +374,7 @@ def play_offpolicy(algo_name: str, cfg: DictConfig) -> str | None:
             if normalizer:
                 dummy_input = normalizer(dummy_input, update=False)
             assert actor is not None
-            if algo_name in ("sac", "flashsac"):
+            if algo_name in ("sac", "flashsac", "warpsac"):
                 export_module = actor.as_export_module()
             else:
                 export_module = actor

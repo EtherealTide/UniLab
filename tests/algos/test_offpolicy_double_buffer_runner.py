@@ -91,7 +91,7 @@ def test_non_one_tick_prefetch_is_rejected_before_dispatch(mode: str):
         _offpolicy().build_runner("sac", cfg)
 
 
-@pytest.mark.parametrize("algo", ["sac", "flashsac"])
+@pytest.mark.parametrize("algo", ["sac", "flashsac", "warpsac"])
 @pytest.mark.parametrize("device", ["cpu", "xpu"])
 def test_non_cuda_training_devices_fail_before_env_materialization(
     monkeypatch: pytest.MonkeyPatch,
@@ -150,14 +150,6 @@ def test_sac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPatch):
         "amp_dtype": cfg.algo.algo_params.amp_dtype,
         "use_compile": cfg.algo.algo_params.use_compile,
         "obs_normalization": cfg.algo.obs_normalization,
-        "use_cuda_graph_critic": cfg.algo.algo_params.use_cuda_graph_critic,
-        "use_cuda_graph_actor": cfg.algo.algo_params.use_cuda_graph_actor,
-        "use_cuda_graph_critic_packed_staging": (
-            cfg.algo.algo_params.use_cuda_graph_critic_packed_staging
-        ),
-        "use_cuda_graph_actor_packed_staging": (
-            cfg.algo.algo_params.use_cuda_graph_actor_packed_staging
-        ),
         "nvtx_profile_ranges": cfg.training.nvtx_profile_ranges,
         "critic_obs_dim": 6,
     }
@@ -218,6 +210,28 @@ def test_flashsac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPa
     assert runner.kwargs["algo_type"] == "flashsac"
     assert runner.kwargs["device"] == "cuda:0"
     assert runner.kwargs["replay_prefetch_mode"] == "one_tick"
+
+
+def test_warpsac_dispatch_constructs_regime_aware_runner(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    module = _offpolicy()
+    cfg = _offpolicy_cfg(algo="warpsac")
+
+    import uni_rl.algos.warp_sac.double_buffer as warp_module
+
+    monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
+    monkeypatch.setattr(warp_module, "WarpSACLearner", _FakeLearner)
+    monkeypatch.setattr(warp_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
+
+    runner = module.build_runner("warpsac", cfg)
+    assert isinstance(runner, _FakeRunner)
+    assert runner.kwargs["algo_type"] == "warpsac"
+    assert runner.kwargs["replay_pipeline_factory"].keywords == {
+        "decay_step": cfg.algo.decay_step,
+        "min_weight": cfg.algo.replay_min_weight,
+        "num_buckets": cfg.algo.replay_num_buckets,
+    }
 
 
 def test_flashsac_n_step_is_rejected():

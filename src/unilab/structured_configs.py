@@ -27,10 +27,6 @@ class SACAlgoParams:
     max_grad_norm: float = 0.0
     amp_dtype: str = "auto"
     use_compile: bool = True
-    use_cuda_graph_critic: bool = False
-    use_cuda_graph_actor: bool = False
-    use_cuda_graph_critic_packed_staging: bool = False
-    use_cuda_graph_actor_packed_staging: bool = False
 
 
 @dataclass
@@ -87,10 +83,6 @@ class FlashSACAlgoParams:
     n_step: int = 1
     amp_dtype: str = "auto"
     use_compile: bool = True
-    use_cuda_graph_critic: bool = False
-    use_cuda_graph_actor: bool = False
-    use_cuda_graph_critic_packed_staging: bool = False
-    use_cuda_graph_actor_packed_staging: bool = False
 
 
 @dataclass
@@ -116,6 +108,27 @@ class FlashSACConfig(BaseConfig):
     obs_normalization: bool = False
     use_layer_norm: bool = False
     algo_params: FlashSACAlgoParams = field(default_factory=FlashSACAlgoParams)
+
+
+# ── Off-policy: WarpSAC ──────────────────────────────────────────────────────
+
+
+@dataclass
+class WarpSACAlgoParams(FlashSACAlgoParams):
+    compile_full_objectives: bool = True
+
+
+@dataclass
+class WarpSACConfig(FlashSACConfig):
+    algo: str = "warpsac"
+    algo_log_name: str = "warp_sac"
+    target_frequency: int = 1
+    decay_step: int = 512
+    replay_min_weight: float = 0.05
+    replay_num_buckets: int = 2000
+    actor_normalize_parameters: bool = True
+    critic_normalize_parameters: bool = True
+    algo_params: WarpSACAlgoParams = field(default_factory=WarpSACAlgoParams)
 
 
 # ── APPO ─────────────────────────────────────────────────────────────────────

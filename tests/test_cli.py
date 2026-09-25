@@ -1722,7 +1722,7 @@ def test_unknown_algo_error_lists_builtin_and_discovered_algos(tmp_path: Path) -
 
     message = str(excinfo.value)
     assert "Unsupported algo='dqn'" in message
-    for builtin in ("ppo", "appo", "sac", "flashsac"):
+    for builtin in ("ppo", "appo", "sac", "flashsac", "warpsac"):
         assert builtin in message
     assert "dreamer" in message
 
