@@ -1,0 +1,18 @@
+# @package _global_
+# WarpSAC mjwarp owner. It preserves the MuJoCo task and hyperparameters so
+# backend differences remain isolated to sim_backend and playback rendering.
+defaults:
+  - /task/g1_walk_flat/mujoco
+  - _self_
+
+training:
+  task_name: G1WalkFlat
+  sim_backend: mjwarp
+  play_render_mode: record
+env:
+  mjwarp_nconmax: 128
+  mjwarp_njmax: 256
+  render_spacing: 2.0
+  events:
+    # Match the FlashSAC mjwarp owner and disable unsupported gain DR.
+    pd_gains: null

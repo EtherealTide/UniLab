@@ -1,0 +1,37 @@
+# @package _global_
+# WarpSAC MuJoCo owner for G1 walking. The task declaration is shared with
+# FlashSAC so policy I/O, rewards, and the sim2sim contract remain directly
+# comparable across algorithms.
+defaults:
+  - /task/g1_walk_flat/base
+  - _self_
+
+training:
+  task_name: G1WalkFlat
+  sim_backend: mujoco
+algo:
+  num_envs: 4096
+  learning_starts: 49
+  max_iterations: 5000
+  save_interval: 1000
+  updates_per_step: 8
+  replay_buffer_n: 256
+  tau: 0.05
+  policy_frequency: 2
+  # The 2048-step recent bias and disabled parameter normalization were the
+  # strongest 6.2M-step tuning profile on both MuJoCo and mjwarp.
+  decay_step: 2048
+  replay_min_weight: 0.10
+  actor_normalize_parameters: false
+  critic_normalize_parameters: false
+reward:
+  penalty_action_rate:
+    weight: -5.0
+  penalty_feet_ori:
+    weight: -25.0
+  feet_phase:
+    params:
+      tracking_sigma: 0.005
+  pose:
+    params:
+      pose_weights: [0.01, 2.0, 5.0, 0.01, 5.0, 5.0, 0.01, 2.0, 5.0, 0.01, 5.0, 5.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]

@@ -828,9 +828,9 @@ def build_play_actor(
             device,
             **actor_kwargs,
         )
-    elif algo_name == "flashsac":
+    elif algo_name in ("flashsac", "warpsac"):
         actor = build_actor(
-            "flashsac",
+            algo_name,
             obs_dim,
             action_dim,
             cfg.algo.actor_hidden_dim,
@@ -858,7 +858,7 @@ def load_play_actor(
     checkpoint: dict[str, Any],
 ) -> None:
     """Restore an off-policy play actor and its optional observation normalizer."""
-    if algo_name in ("sac", "flashsac"):
+    if algo_name in ("sac", "flashsac", "warpsac"):
         actor.load_state_dict(checkpoint["actor"])
     else:
         raise ValueError(f"Unsupported algo: {algo_name}")
@@ -940,7 +940,7 @@ def create_sac_playback_session(
         obs_dim=obs_dim,
         critic_obs_dim=critic_obs_dim,
     )
-    if algo_name == "flashsac":
+    if algo_name in ("flashsac", "warpsac"):
         actor_kwargs.update(
             {
                 "actor_num_blocks": cfg.algo.algo_params.actor_num_blocks,
@@ -971,12 +971,12 @@ def create_sac_playback_session(
             Path(root_dir),
             cfg.algo.algo_log_name,
             cfg.training.task_name,
-            cfg.algo.load_run,
+            playback_cfg.load_run,
         )
         if checkpoint_path is None or not os.path.exists(checkpoint_path):
             log(
                 f"WARNING: no {algo_name} checkpoint found for "
-                f"load_run={cfg.algo.load_run} - falling back to zero actions."
+                f"load_run={playback_cfg.load_run} - falling back to zero actions."
             )
             actor = None
         else:

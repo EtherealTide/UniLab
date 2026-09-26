@@ -314,6 +314,7 @@ def test_sac_playback_session_runs_sim2sim_preflight(
     checkpoint = tmp_path / "model_10.pt"
     torch.save({"actor": {}}, checkpoint)
     preflight_calls: list[tuple[Any, str]] = []
+    resolved_runs: list[object] = []
 
     class FakeActor:
         def eval(self):
@@ -340,7 +341,7 @@ def test_sac_playback_session_runs_sim2sim_preflight(
             "training": {"task_name": "Task", "device": None},
             "algo": {
                 "algo_log_name": "sac",
-                "load_run": "run",
+                "load_run": "stale_algo_run",
                 "actor_hidden_dim": 16,
                 "use_layer_norm": False,
             },
@@ -366,7 +367,10 @@ def test_sac_playback_session_runs_sim2sim_preflight(
     monkeypatch.setattr(
         checkpoint_utils,
         "resolve_offpolicy_checkpoint_path",
-        lambda *args, **kwargs: (str(checkpoint), str(tmp_path)),
+        lambda root, algo_log_name, task_name, selected_run: (
+            resolved_runs.append(selected_run),
+            (str(checkpoint), str(tmp_path)),
+        )[1],
     )
     monkeypatch.setattr(actor_factory, "build_actor", lambda *args, **kwargs: FakeActor())
 
@@ -388,6 +392,7 @@ def test_sac_playback_session_runs_sim2sim_preflight(
     )
 
     assert resolved == str(checkpoint)
+    assert resolved_runs == ["run"]
     assert preflight_calls == [(str(tmp_path), "sac")]
 
 

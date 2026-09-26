@@ -51,7 +51,7 @@ learner，而无需重写任务的 environment 生命周期。
   不必先变成 CUDA-resident simulator，也可以向 accelerator learner 提供数据；learner
   可以运行在 CUDA、ROCm、MPS 或 XPU 上。每个 backend/task 组合的证据等级请查看
   [支持矩阵](https://unilabsim.github.io/UniLab-doc/zh_CN/5-reference/5-support_matrix.html)。
-- **加速 replay-based off-policy 训练。** FastSAC/FlashSAC 让仿真数据采集与 learner
+- **加速 replay-based off-policy 训练。** FastSAC/FlashSAC/WarpSAC 让仿真数据采集与 learner
   update 重叠。论文在代表性配置上报告了 3–10 倍端到端收益；测量范围和限制见
   [为什么选择 UniLab](https://unilabsim.github.io/UniLab-doc/zh_CN/why_unilab.html)。
 

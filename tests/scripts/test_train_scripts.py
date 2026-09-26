@@ -101,8 +101,8 @@ except ImportError:
     _HAS_MUJOCO = False
 
 # ---------------------------------------------------------------------------
-# train_sac.py / train_flashsac.py — Hydra config defaults
-# (composed from the per-algo trees conf/sac, conf/flashsac)
+# train_sac.py / train_flashsac.py / train_warpsac.py — Hydra config defaults
+# (composed from the per-algo trees conf/sac, conf/flashsac, conf/warpsac)
 # ---------------------------------------------------------------------------
 
 
@@ -1734,7 +1734,7 @@ def test_offpolicy_build_play_actor_preserves_flashsac_model_kwargs(
     assert captured["actor_eval"] is True
 
 
-@pytest.mark.parametrize("algo_name", ["sac", "flashsac"])
+@pytest.mark.parametrize("algo_name", ["sac", "flashsac", "warpsac"])
 def test_offpolicy_load_play_actor_keeps_sac_state_dict_strict(algo_name: str):
     from unilab.visualization.interactive_playback import load_play_actor
 
@@ -2195,6 +2195,17 @@ def test_offpolicy_flashsac_g1_motion_tracking_task_composes(backend: str) -> No
     assert cfg.algo.max_iterations == 25000
     if backend == "newton":
         assert cfg.env.newton_use_cuda_graph is True
+
+
+@pytest.mark.parametrize("backend", ["mujoco", "mjwarp"])
+@pytest.mark.parametrize("task", ["g1_walk_flat", "g1_motion_tracking"])
+def test_offpolicy_warpsac_g1_task_owner_composes(task: str, backend: str) -> None:
+    cfg = _offpolicy_cfg([f"task={task}/{backend}"], algo="warpsac")
+    expected_task = "G1WalkFlat" if task == "g1_walk_flat" else "G1MotionTrackingSAC"
+    assert cfg.algo.algo == "warpsac"
+    assert cfg.training.task_name == expected_task
+    assert cfg.training.sim_backend == backend
+    assert cfg.algo.algo_params.n_step == 1
 
 
 def test_offpolicy_rejects_algo_argument_mismatch():
@@ -2998,19 +3009,22 @@ def test_play_offpolicy_uses_shared_playback_session_factory(
         return fake_session, "actor", str(checkpoint)
 
     monkeypatch.setattr(mod, "default_device", lambda torch_module, preferred=None: "cpu")
-    monkeypatch.setattr(
-        mod,
-        "resolve_checkpoint_path",
-        lambda *args, **kwargs: (str(checkpoint), str(run_dir)),
-    )
+
+    def fake_resolve_checkpoint_path(_root, _algo, _task, selected_run):
+        captured["selected_run"] = selected_run
+        return str(checkpoint), str(run_dir)
+
+    monkeypatch.setattr(mod, "resolve_checkpoint_path", fake_resolve_checkpoint_path)
     monkeypatch.setattr(mod, "create_sac_playback_session", fake_create_session)
 
-    result = mod.play_offpolicy("sac", cfg)
+    result = mod.play_offpolicy("sac", cfg, load_run=str(run_dir))
 
     assert result == str(run_dir / "play_video.mp4")
+    assert captured["selected_run"] == str(run_dir)
     factory_kwargs = captured["factory_kwargs"]
     playback_cfg = factory_kwargs["playback_cfg"]
     assert playback_cfg.task == cfg.training.task_name
+    assert playback_cfg.load_run == str(run_dir)
     assert playback_cfg.action_mode == "policy"
     assert playback_cfg.policy_obs_mode == "actor"
     assert playback_cfg.algo_log_name == cfg.algo.algo_log_name

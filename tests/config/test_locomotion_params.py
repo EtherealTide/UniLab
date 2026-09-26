@@ -79,6 +79,21 @@ def test_flashsac_config_defaults():
     assert cfg.algo_params.use_compile is True
 
 
+def test_warpsac_config_defaults():
+    from unilab.structured_configs import WarpSACAlgoParams, WarpSACConfig
+
+    cfg = WarpSACConfig()
+    assert cfg.algo == "warpsac"
+    assert cfg.algo_log_name == "warp_sac"
+    assert cfg.decay_step == 512
+    assert cfg.replay_min_weight == pytest.approx(0.05)
+    assert cfg.replay_num_buckets == 2000
+    assert cfg.actor_normalize_parameters is True
+    assert cfg.critic_normalize_parameters is True
+    assert isinstance(cfg.algo_params, WarpSACAlgoParams)
+    assert cfg.algo_params.n_step == 1
+
+
 def test_ppo_config_defaults():
     from unilab.structured_configs import PPOConfig
 
@@ -156,6 +171,31 @@ def test_offpolicy_flashsac_g1_task_overrides():
             overrides=["task=g1_walk_flat/mujoco"],
         )
     assert cfg.algo.algo == "flashsac"
+
+
+def test_offpolicy_warpsac_g1_task_overrides():
+    from hydra import compose, initialize_config_dir
+    from hydra.core.global_hydra import GlobalHydra
+
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(config_dir=str(CONF_DIR / "warpsac"), version_base="1.3"):
+        cfg = compose(
+            "config",
+            overrides=["task=g1_walk_flat/mujoco"],
+        )
+    assert cfg.algo.algo == "warpsac"
+    assert cfg.algo.num_envs == 4096
+    assert cfg.algo.max_iterations == 5000
+    assert cfg.algo.learning_starts == 49
+    assert cfg.algo.updates_per_step == 8
+    assert cfg.algo.replay_buffer_n == 256
+    assert cfg.algo.tau == pytest.approx(0.05)
+    assert cfg.algo.decay_step == 2048
+    assert cfg.algo.replay_min_weight == pytest.approx(0.10)
+    assert cfg.algo.actor_normalize_parameters is False
+    assert cfg.algo.critic_normalize_parameters is False
+    assert cfg.algo.algo_params.n_step == 1
+    assert cfg.training.task_name == "G1WalkFlat"
     assert cfg.training.task_name == "G1WalkFlat"
     assert cfg.training.sim_backend == "mujoco"
     assert cfg.algo.algo_params.actor_num_blocks == 2
@@ -206,6 +246,7 @@ def test_g1_task_owner_yamls_preserve_legacy_and_walk_observation_profiles():
     assert uses_walk_profile("sac", ["task=g1_walk_flat/mujoco"]) is True
     assert uses_walk_profile("sac", ["task=g1_walk_flat/motrix"]) is True
     assert uses_walk_profile("flashsac", ["task=g1_walk_flat/mujoco"]) is True
+    assert uses_walk_profile("warpsac", ["task=g1_walk_flat/mujoco"]) is True
 
 
 # ---------------------------------------------------------------------------

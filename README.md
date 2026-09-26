@@ -57,7 +57,7 @@ rewriting the task's environment lifecycle.
   becoming a CUDA-resident simulator. The learner can run on CUDA, ROCm, MPS,
   or XPU; the [support matrix](https://unilabsim.github.io/UniLab-doc/en/5-reference/5-support_matrix.html)
   records the evidence level of each backend/task combination.
-- **Accelerate replay-based off-policy training.** FastSAC/FlashSAC lets
+- **Accelerate replay-based off-policy training.** FastSAC/FlashSAC/WarpSAC lets
   simulation data collection overlap with learner updates. The paper reports
   3–10× end-to-end gains on representative configurations; see [Why UniLab](https://unilabsim.github.io/UniLab-doc/en/why_unilab.html)
   for scope and measurements.

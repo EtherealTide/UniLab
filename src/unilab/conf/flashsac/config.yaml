@@ -46,10 +46,6 @@ algo:
     amp_dtype: auto
     use_compile: true
     compile_full_objectives: true
-    use_cuda_graph_critic: false
-    use_cuda_graph_actor: false
-    use_cuda_graph_critic_packed_staging: false
-    use_cuda_graph_actor_packed_staging: false
 
 training:
   task_name: G1WalkFlat

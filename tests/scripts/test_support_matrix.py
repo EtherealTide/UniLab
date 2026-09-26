@@ -157,6 +157,8 @@ def test_support_matrix_does_not_promote_unvalidated_mjwarp_entries():
     assert tested == {
         ("PPO (torch)", "g1_walk_flat"),
         ("SAC (torch)", "g1_walk_flat"),
+        ("WarpSAC (torch)", "g1_walk_flat"),
+        ("WarpSAC (torch)", "g1_motion_tracking"),
     }
     appo_row = _row("APPO (torch)", "g1_walk_flat")
     assert appo_row.cells["mjwarp"].level == EvidenceLevel.REGISTERED
