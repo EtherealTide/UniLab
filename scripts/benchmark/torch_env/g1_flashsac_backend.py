@@ -82,7 +82,7 @@ _TRANSFER_BOUNDARY_INVENTORY: tuple[dict[str, object], ...] = (
         "phase": "cpu_physics",
         "direction": "none",
         "semantic_limit_per_control_step": 0,
-        "implementation": "MJBatch CPU physics remains authoritative",
+        "implementation": "the selected CPU physics backend remains authoritative",
     },
     {
         "phase": "update_state_full_read",
@@ -587,6 +587,10 @@ def _run(backend: str, num_envs: int, warmup: int, iters: int) -> dict[str, Any]
     return {
         "backend": backend,
         "tensor_execution": mode,
+        "tensor_process_topology": capabilities.process_topology.value,
+        "tensor_data_plane": capabilities.data_plane.value,
+        "tensor_stream_event_ownership": capabilities.stream_event_ownership,
+        "tensor_torch_devices": list(capabilities.torch_devices),
         "num_envs": num_envs,
         "physics_substeps_per_control_step": 3,
         "warmup": warmup,
@@ -702,6 +706,10 @@ def main() -> None:
             "mujoco": _package_version("mujoco"),
             "warp_lang": _package_version("warp-lang"),
             "mjbatch_uni": _package_version("mjbatch-uni"),
+            "motrixsim_core": _package_version("motrixsim-core"),
+            "superdex": _package_version("superdex"),
+            "drake": _package_version("drake"),
+            "genesis_world": _package_version("genesis-world"),
         },
         "unisim_source": _package_source_info("unisim"),
         "local_dependencies": {
