@@ -706,10 +706,7 @@ def test_dr_and_pre_step_control_fail_closed(backend: IsaacGymBackend) -> None:
         backend.set_pre_step_control(lambda backend_, ctrl: ctrl)
     backend.set_pre_step_control(None)
 
-    # Physics-state playback export stays unsupported; native rendering has
-    # its own dedicated tests below.
-    with pytest.raises(NotImplementedError, match="physics-state playback"):
-        backend.get_physics_state()
+    # Physics-state playback is covered by the UniSim adapter contract tests.
 
 
 def test_close_reaps_worker_and_unlinks_shm(backend: IsaacGymBackend) -> None:
@@ -850,7 +847,7 @@ def test_play_capabilities_advertise_native_rendering(backend: IsaacGymBackend) 
     caps = backend.get_play_capabilities()
     assert caps.supports_native_interactive_renderer
     assert caps.supports_native_video_capture
-    assert not caps.supports_physics_state_playback
+    assert caps.supports_physics_state_playback
 
 
 def test_normalize_camera_kwargs_maps_mujoco_convention() -> None:

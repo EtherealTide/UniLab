@@ -498,7 +498,6 @@ def test_unsupported_contract_surface_fails_closed(fake_genesis, tiny_model_file
             ),
             "height-field",
         ),
-        (lambda: backend.get_physics_state(), "physics-state playback"),
     ):
         with pytest.raises(NotImplementedError, match=match):
             call()
@@ -511,7 +510,7 @@ def test_play_capabilities_and_plan_modes(
     caps = backend.get_play_capabilities()
     assert caps.supports_native_interactive_renderer is True
     assert caps.supports_native_video_capture is True
-    assert caps.supports_physics_state_playback is False
+    assert caps.supports_physics_state_playback is True
 
     plan = backend.resolve_play_render_plan(
         play_render_mode="none", play_steps=10, output_video=tmp_path / "x.mp4"

@@ -56,6 +56,7 @@ SKIP_PATTERNS = [
     r"(^|/)\.venv(/|$)",
     r"(^|/)__pycache__(/|$)",
     r"(^|/)\.pytest_cache(/|$)",
+    r"(^|/)scripts/benchmark/outputs(/|$)",
 ]
 
 USER_DOC_MIGRATION_PHRASES = [

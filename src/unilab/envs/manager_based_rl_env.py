@@ -88,6 +88,7 @@ class ManagerBasedRlEnvCfg(EnvCfg):
     seed: int | None = None
     is_finite_horizon: bool = False
     auto_reset: bool = True
+    tensor_runtime: bool = False
     scale_rewards_by_dt: bool = True
     policy_observation_group: str = "policy"
     critic_observation_group: str | None = None
@@ -98,6 +99,8 @@ class ManagerBasedRlEnvCfg(EnvCfg):
                 raise TypeError(f"ManagerBasedRlEnvCfg {name} must be a real number")
             if not np.isfinite(value) or value <= 0.0:
                 raise ValueError(f"ManagerBasedRlEnvCfg {name} must be finite and positive")
+        if not isinstance(self.tensor_runtime, bool):
+            raise TypeError("ManagerBasedRlEnvCfg tensor_runtime must be a boolean")
         super().validate()
         ratio = self.ctrl_dt / self.sim_dt
         if not np.isclose(ratio, round(ratio), rtol=0.0, atol=1e-9):

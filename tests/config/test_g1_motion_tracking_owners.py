@@ -21,6 +21,12 @@ def _compose_warpsac(task: str):
         return compose("config", overrides=[f"task={task}"])
 
 
+def _compose_flashsac(task: str):
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(config_dir=str(CONF_DIR / "flashsac"), version_base="1.3"):
+        return compose("config", overrides=[f"task={task}"])
+
+
 def test_sac_g1_motion_tracking_split_keeps_dr_in_backend_owner() -> None:
     base = _compose_sac("g1_motion_tracking/base")
     assert not hasattr(base.env, "events")
@@ -50,6 +56,27 @@ def test_sac_g1_motion_tracking_split_keeps_dr_in_backend_owner() -> None:
     assert events.push_robot.mode == "interval"
     assert events.push_robot.interval_range_s == [1.0, 3.0]
     assert events.push_robot.params.velocity_range.z == [-0.2, 0.2]
+
+
+def test_flashsac_g1_motion_tracking_uses_comparable_dr_free_owner() -> None:
+    mujoco_cfg = _compose_flashsac("g1_motion_tracking/mujoco")
+    mjwarp_cfg = _compose_flashsac("g1_motion_tracking/mjwarp")
+
+    assert not hasattr(mujoco_cfg.env, "events")
+    assert not hasattr(mujoco_cfg.env.scene.entities.robot, "geom_names")
+    assert (
+        mujoco_cfg.env.observations.actor.terms.joint_pos.func
+        == "unilab.tasks.motion_tracking.common.manager_terms.motion_joint_pos_rel"
+    )
+    assert (
+        mujoco_cfg.env.observations.critic.terms.joint_pos.func
+        == "unilab.tasks.motion_tracking.common.manager_terms.motion_joint_pos_rel"
+    )
+    assert mjwarp_cfg.training.sim_backend == "mjwarp"
+    for section in ("env", "reward"):
+        assert OmegaConf.to_container(mjwarp_cfg[section]) == OmegaConf.to_container(
+            mujoco_cfg[section]
+        )
 
 
 def test_sac_g1_motion_tracking_motrix_keeps_supported_dr() -> None:

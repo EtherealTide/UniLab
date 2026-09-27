@@ -292,7 +292,7 @@ def test_play_contract_advertises_native_rendering(
     caps = backend.get_play_capabilities()
     assert caps.supports_native_interactive_renderer
     assert caps.supports_native_video_capture
-    assert not caps.supports_physics_state_playback
+    assert caps.supports_physics_state_playback
 
     plan = backend.resolve_play_render_plan(
         play_render_mode="none", play_steps=3, output_video=tmp_path / "ignored.mp4"

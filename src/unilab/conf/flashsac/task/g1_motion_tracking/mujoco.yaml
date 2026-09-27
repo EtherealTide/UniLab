@@ -11,6 +11,8 @@ defaults:
 training:
   task_name: G1MotionTrackingSAC
   sim_backend: mujoco
+env:
+  tensor_runtime: true
 algo:
   num_envs: 2048
   max_iterations: 25000

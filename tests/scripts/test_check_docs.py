@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests.scripts import doc_checks
+from tests.scripts.doc_checks import find_docs
 
 
 def test_documentation_files_match_current_repo_contracts():
@@ -11,6 +12,14 @@ def test_documentation_files_match_current_repo_contracts():
     assert errors == []
     warnings = doc_checks.collect_doc_warnings(root)
     assert warnings == []
+
+
+def test_find_docs_ignores_generated_benchmark_outputs(tmp_path):
+    generated = tmp_path / "scripts" / "benchmark" / "outputs" / "env_step" / "result.md"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("_num_envs=2, num_steps=3\n", encoding="utf-8")
+
+    assert find_docs(tmp_path) == []
 
 
 def test_check_training_entrypoint_semantics_flags_issue_204_patterns():

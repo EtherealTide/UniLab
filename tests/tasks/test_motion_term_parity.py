@@ -8,11 +8,17 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from numba import config, get_num_threads, threading_layer
 
 from unilab.managers import RewardTermCfg, TerminationTermCfg
 from unilab.tasks.motion_tracking.common import kernels
 from unilab.tasks.motion_tracking.common import manager_terms as mt
+from unilab.tasks.motion_tracking.g1.torch_flashsac_env import (
+    _adaptive_failure_alpha,
+    _adaptive_failure_counts,
+    _gravity_z_in_body,
+)
 from unilab.utils.rotation import (
     np_matrix_first_two_cols_from_quat,
     np_quat_apply_batched,
@@ -31,6 +37,32 @@ def _make_env(command: Any) -> SimpleNamespace:
 def _unit_quat(value: np.ndarray) -> np.ndarray:
     value /= np.linalg.norm(value, axis=-1, keepdims=True)
     return value
+
+
+def test_torch_anchor_orientation_matches_manager_projected_gravity() -> None:
+    quaternions = np.array(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    gravity = np.tile(np.array([0.0, 0.0, -1.0], dtype=np.float32), (len(quaternions), 1))
+    expected = np_quat_apply_inverse_batched(quaternions, gravity)[:, 2]
+    actual = _gravity_z_in_body(torch.from_numpy(quaternions)).numpy()
+    np.testing.assert_allclose(actual, expected, rtol=0.0, atol=2e-7)
+
+
+def test_torch_adaptive_sampler_preserves_counts_without_failure() -> None:
+    bin_indices = torch.tensor([0, 1, 1, 3], dtype=torch.int64)
+    terminated = torch.tensor([True, False, True, False])
+    failures = _adaptive_failure_counts(bin_indices, terminated, n_bins=4)
+    torch.testing.assert_close(failures, torch.tensor([1.0, 1.0, 0.0, 0.0]))
+    torch.testing.assert_close(
+        _adaptive_failure_alpha(torch.zeros_like(terminated), 0.001),
+        torch.tensor(0.0),
+    )
 
 
 @pytest.fixture

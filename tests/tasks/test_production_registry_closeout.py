@@ -38,6 +38,12 @@ CANONICAL_MANAGER_RUNTIME_FACTORIES = (
     # Approved wrapper: cold-path untracked X2 mesh resolution before
     # delegating to the generic factory.
     ("unilab.tasks.motion_tracking.x2", "make_x2_wall_flip_env"),
+    # Approved wrapper: scoped tensor-native G1 FlashSAC runtime selected by
+    # the task owner and still built through the Manager-Based cold path.
+    (
+        "unilab.tasks.motion_tracking.g1.torch_flashsac_env",
+        "make_torch_g1_motion_tracking_flashsac_env",
+    ),
 )
 
 _SNAPSHOT_CODE = textwrap.dedent(
