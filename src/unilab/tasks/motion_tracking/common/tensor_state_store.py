@@ -16,6 +16,7 @@ from unisim.backend.base import (
     SimBackend,
     TensorExecution,
     TensorIOSpec,
+    tensor_device_matches,
 )
 
 
@@ -47,6 +48,25 @@ class TensorDeviceStateStore:
         self.body_names = tuple(body_names)
         self.body_ids = np.asarray(body_ids, dtype=np.intp)
 
+        self.device = torch.device(device)
+        if self.device.type == "cuda":
+            if not torch.cuda.is_available():
+                raise RuntimeError("CUDA tensor state storage requested but CUDA is unavailable")
+            if self.device.index is None:
+                self.device = torch.device("cuda", index=torch.cuda.current_device())
+
+        capabilities = self.backend.get_tensor_capabilities()
+        self._execution = capabilities.execution
+        if self._execution is TensorExecution.UNSUPPORTED:
+            raise RuntimeError(
+                "Tensor state store requires a DEVICE_RESIDENT or HOST_BRIDGE backend"
+            )
+        if not tensor_device_matches(capabilities.torch_devices, self.device):
+            raise RuntimeError(
+                f"backend did not accept Tensor device {str(self.device)!r}; "
+                f"supported devices are {capabilities.torch_devices}"
+            )
+
         joint_shape = (self.num_envs, self.joint_qpos_ids.size)
         body_shape = (self.num_envs, len(self.body_names))
         self.qpos: torch.Tensor | None = None
@@ -61,8 +81,7 @@ class TensorDeviceStateStore:
         self.robot_body_ang_vel = torch.empty_like(self.robot_body_pos)
         self._host_bridge_plan: HostBridgeTransferPlan | None = None
         self.last_backend_result: dict | None = None
-        capabilities = self.backend.get_tensor_capabilities()
-        if capabilities.execution is TensorExecution.HOST_BRIDGE:
+        if self._execution is TensorExecution.HOST_BRIDGE:
             if not capabilities.packed_host_bridge:
                 raise RuntimeError(
                     "Tensor state store requires packed I/O for host-bridge physics backends"
@@ -88,10 +107,10 @@ class TensorDeviceStateStore:
                     device=self.device,
                 )
             )
-        self._mjwarp_state_views: dict[str, torch.Tensor] | None = None
-        self._mjwarp_sensor_views: dict[str, object] | None = None
-        self._mjwarp_linvel_view: torch.Tensor | None = None
-        self._mjwarp_gyro_view: torch.Tensor | None = None
+        self._device_state_views: dict[str, torch.Tensor] | None = None
+        self._device_sensor_views: dict[str, object] | None = None
+        self._device_linvel_view: torch.Tensor | None = None
+        self._device_gyro_view: torch.Tensor | None = None
 
     def _require_qviews(self) -> tuple[torch.Tensor, torch.Tensor]:
         if self.qpos is None or self.qvel is None:
@@ -107,8 +126,16 @@ class TensorDeviceStateStore:
             return None
         if rows.ndim != 1 or rows.device != self.device or rows.dtype != torch.int64:
             raise ValueError("tensor state rows must be a one-dimensional int64 device tensor")
-        if bool((rows < 0).any()) or bool((rows >= self.num_envs).any()):
-            raise IndexError("tensor state rows are outside the environment range")
+        if rows.numel() == 0:
+            return rows
+        minimum_row, maximum_row = (
+            int(value) for value in torch.stack((rows.min(), rows.max())).tolist()
+        )
+        if minimum_row < 0 or maximum_row >= self.num_envs:
+            raise IndexError(
+                "tensor state rows are outside the environment range "
+                f"[0, {self.num_envs}); got [{minimum_row}, {maximum_row}]"
+            )
         return rows
 
     def _validate_qviews(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -126,21 +153,21 @@ class TensorDeviceStateStore:
             raise RuntimeError("backend qpos/qvel views live on the wrong device")
         return qpos, qvel
 
-    def _read_mjwarp(self, rows: torch.Tensor | None) -> None:
-        state_views = self._mjwarp_state_views
-        sensor_views = self._mjwarp_sensor_views
+    def _read_device_resident(self, rows: torch.Tensor | None) -> None:
+        state_views = self._device_state_views
+        sensor_views = self._device_sensor_views
         if state_views is None or sensor_views is None:
             requested_views = self.backend.get_state_views(("qpos", "qvel"), device=self.device)
             qpos = requested_views["qpos"]
             qvel = requested_views["qvel"]
             if not isinstance(qpos, torch.Tensor) or not isinstance(qvel, torch.Tensor):
-                raise TypeError("MJWarp state views did not return tensors")
+                raise TypeError("device-resident state views did not return tensors")
             state_views = {"qpos": qpos, "qvel": qvel}
             sensor_views = {}
             linvel_view = self.backend.get_sensor_view("pelvis_local_linvel", device=self.device)
             gyro_view = self.backend.get_sensor_view("torso_gyro", device=self.device)
             if not isinstance(linvel_view, torch.Tensor) or not isinstance(gyro_view, torch.Tensor):
-                raise TypeError("MJWarp scalar sensor views did not return tensors")
+                raise TypeError("device-resident scalar sensor views did not return tensors")
             sensor_views["linvel"] = linvel_view
             sensor_views["gyro"] = gyro_view
             for prefix in ("track_pos_w", "track_quat_w", "track_linvel_w", "track_angvel_w"):
@@ -148,26 +175,26 @@ class TensorDeviceStateStore:
                     self.backend.get_sensor_view(f"{prefix}_{name}", device=self.device)
                     for name in self.body_names
                 )
-            self._mjwarp_state_views = state_views
-            self._mjwarp_sensor_views = sensor_views
-            self._mjwarp_linvel_view = linvel_view
-            self._mjwarp_gyro_view = gyro_view
+            self._device_state_views = state_views
+            self._device_sensor_views = sensor_views
+            self._device_linvel_view = linvel_view
+            self._device_gyro_view = gyro_view
             self.linvel = linvel_view.clone()
             self.gyro = gyro_view.clone()
         else:
-            assert self._mjwarp_linvel_view is not None
-            assert self._mjwarp_gyro_view is not None
-            # MJWarp's tracked-body refresh also evaluates authored frame sensors
-            # at the final qpos/qvel. Preserve the legacy host-path substep
-            # boundary values for policy sensors while refreshing tracked bodies.
-            self.linvel.copy_(self._mjwarp_linvel_view)
-            self.gyro.copy_(self._mjwarp_gyro_view)
+            assert self._device_linvel_view is not None
+            assert self._device_gyro_view is not None
+            # Some device-resident adapters refresh tracked-body state through
+            # the public sensor lifecycle. Preserve their authored frame-sensor
+            # boundary semantics while refreshing only tracked body views.
+            self.linvel.copy_(self._device_linvel_view)
+            self.gyro.copy_(self._device_gyro_view)
             # Stable views do not negotiate lifecycle state on dereference. One
             # tracked-sensor read refreshes all injected frame sensors.
             self.backend.get_sensor_view(f"track_pos_w_{self.body_names[0]}", device=self.device)
             if rows is not None:
-                self.linvel[rows] = self._mjwarp_linvel_view.index_select(0, rows)
-                self.gyro[rows] = self._mjwarp_gyro_view.index_select(0, rows)
+                self.linvel[rows] = self._device_linvel_view.index_select(0, rows)
+                self.gyro[rows] = self._device_gyro_view.index_select(0, rows)
 
         self.qpos = state_views["qpos"]
         self.qvel = state_views["qvel"]
@@ -184,7 +211,7 @@ class TensorDeviceStateStore:
         for destination, prefix in zip(destinations, prefixes, strict=True):
             views = sensor_views[prefix]
             if not isinstance(views, tuple) or len(views) != len(self.body_names):
-                raise TypeError("MJWarp body sensor views did not match the body layout")
+                raise TypeError("device-resident body sensor views did not match the body layout")
             if rows is None:
                 torch.stack(views, dim=1, out=destination)
             else:
@@ -283,10 +310,14 @@ class TensorDeviceStateStore:
 
     def read(self, rows: torch.Tensor | None = None) -> None:
         selected_rows = self._validate_rows(rows)
-        if self.backend.backend_type == "mjwarp":
-            self._read_mjwarp(selected_rows)
-        else:
+        if selected_rows is not None and selected_rows.numel() == 0:
+            return
+        if self._execution is TensorExecution.DEVICE_RESIDENT:
+            self._read_device_resident(selected_rows)
+        elif self._execution is TensorExecution.HOST_BRIDGE:
             self._read_host_bridge(selected_rows)
+        else:  # Guarded in the constructor; retained for exhaustive dispatch.
+            raise RuntimeError("Tensor state store received an unsupported tensor execution")
 
     def step_tensor(self, ctrl: torch.Tensor, nsteps: int) -> dict | None:
         """Step through the negotiated packed plan when one is available."""

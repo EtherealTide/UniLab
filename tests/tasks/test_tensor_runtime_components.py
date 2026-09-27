@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import torch
 from unisim.backend.base import (
     HostBridgeTransferPlan,
+    TensorDataPlane,
     TensorExecution,
     TensorLifecycleCapabilities,
+    TensorProcessTopology,
 )
 
 from unilab.managers._noise.noise_cfg import UniformNoiseCfg
+from unilab.tasks.motion_tracking.common import tensor_state_store as tensor_state_store_module
 from unilab.tasks.motion_tracking.common.tensor_runtime import (
     TensorEpisodeMetrics,
     TensorObservationNoise,
@@ -16,6 +20,29 @@ from unilab.tasks.motion_tracking.common.tensor_runtime import (
     semantic_fingerprint,
 )
 from unilab.tasks.motion_tracking.common.tensor_state_store import TensorDeviceStateStore
+
+
+class _SyncCountingTensor(torch.Tensor):
+    synchronization_count = 0
+
+    def tolist(self):
+        type(self).synchronization_count += 1
+        return super().tolist()
+
+    def item(self):
+        type(self).synchronization_count += 1
+        return super().item()
+
+
+class _FakeTorch:
+    int64 = torch.int64
+
+    @staticmethod
+    def stack(tensors, *, out=None):
+        result = torch.stack(tensors, out=out)
+        if out is None:
+            result = result.as_subclass(_SyncCountingTensor)
+        return result
 
 
 def test_semantic_fingerprint_rejects_semantic_mutation() -> None:
@@ -80,12 +107,19 @@ def test_tensor_episode_metrics_include_terminal_then_reset() -> None:
 
 
 class _HostBridgeBackend:
-    backend_type = "mujoco"
+    backend_type = "fake-host"
+
+    def __init__(self):
+        self.selected_read_calls = 0
 
     def get_tensor_capabilities(self):
         return TensorLifecycleCapabilities(
             execution=TensorExecution.HOST_BRIDGE,
             packed_host_bridge=True,
+            process_topology=TensorProcessTopology.IN_PROCESS,
+            data_plane=TensorDataPlane.HOST_BRIDGE,
+            stream_event_ownership="caller stream; fake synchronizes at host boundary",
+            torch_devices=("cpu", "cuda"),
         )
 
     def compile_host_bridge_io(self, spec):
@@ -119,6 +153,7 @@ class _HostBridgeBackend:
                 return None
 
             def read_selected_state_sensors(self):
+                backend.selected_read_calls += 1
                 views = self._views()
                 if self._reset is not None:
                     rows, qpos, qvel = self._reset
@@ -214,8 +249,7 @@ def test_tensor_state_store_selected_reset_reads_authoritative_selected_rows() -
         body_ids=np.array([0], dtype=np.intp),
     )
     store.read()
-    qpos_before = store.qpos.clone()
-    qvel_before = store.qvel.clone()
+    qpos_before, qvel_before = store.qviews()
     rows = torch.tensor([0], dtype=torch.int64)
     qpos = torch.full_like(qpos_before, -2.0)
     qvel = torch.full_like(qvel_before, -3.0)
@@ -227,3 +261,150 @@ def test_tensor_state_store_selected_reset_reads_authoritative_selected_rows() -
     torch.testing.assert_close(store.qvel, qvel)
     torch.testing.assert_close(store.joint_pos, qpos[:, 7:])
     torch.testing.assert_close(store.joint_vel, qvel[:, 6:])
+
+
+def test_tensor_state_store_row_validation_uses_one_bounded_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = TensorDeviceStateStore(
+        backend=_HostBridgeBackend(),  # pyright: ignore[reportArgumentType]
+        device=torch.device("cpu"),
+        num_envs=3,
+        joint_qpos_ids=np.array([7], dtype=np.int64),
+        joint_qvel_ids=np.array([6], dtype=np.int64),
+        body_names=("pelvis",),
+        body_ids=np.array([0], dtype=np.intp),
+    )
+    rows = torch.tensor([0, 2], dtype=torch.int64)
+    monkeypatch.setattr(tensor_state_store_module, "torch", _FakeTorch)
+    _SyncCountingTensor.synchronization_count = 0
+
+    assert store._validate_rows(rows) is rows
+    assert _SyncCountingTensor.synchronization_count == 1
+
+
+def test_tensor_state_store_empty_rows_validate_and_read_without_sync_or_backend_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _HostBridgeBackend()
+    store = TensorDeviceStateStore(
+        backend=backend,  # pyright: ignore[reportArgumentType]
+        device=torch.device("cpu"),
+        num_envs=1,
+        joint_qpos_ids=np.array([7], dtype=np.int64),
+        joint_qvel_ids=np.array([6], dtype=np.int64),
+        body_names=("pelvis",),
+        body_ids=np.array([0], dtype=np.intp),
+    )
+    store.read()
+    qpos = store.qpos
+    rows = torch.empty((0,), dtype=torch.int64)
+    monkeypatch.setattr(tensor_state_store_module, "torch", _FakeTorch)
+    _SyncCountingTensor.synchronization_count = 0
+
+    store.read(rows)
+    assert store._validate_rows(rows) is rows
+
+    assert store.qpos is qpos
+    assert _SyncCountingTensor.synchronization_count == 0
+    assert backend.selected_read_calls == 0
+
+
+@pytest.mark.parametrize("rows", [(-1,), (3,), (-1, 3)])
+def test_tensor_state_store_rejects_row_range_with_one_sync(
+    monkeypatch: pytest.MonkeyPatch,
+    rows: tuple[int, ...],
+) -> None:
+    store = TensorDeviceStateStore(
+        backend=_HostBridgeBackend(),  # pyright: ignore[reportArgumentType]
+        device=torch.device("cpu"),
+        num_envs=3,
+        joint_qpos_ids=np.array([7], dtype=np.int64),
+        joint_qvel_ids=np.array([6], dtype=np.int64),
+        body_names=("pelvis",),
+        body_ids=np.array([0], dtype=np.intp),
+    )
+    monkeypatch.setattr(tensor_state_store_module, "torch", _FakeTorch)
+    _SyncCountingTensor.synchronization_count = 0
+
+    with pytest.raises(IndexError, match=r"outside the environment range \[0, 3\)"):
+        store._validate_rows(torch.tensor(rows, dtype=torch.int64))
+
+    assert _SyncCountingTensor.synchronization_count == 1
+
+
+def test_tensor_state_store_rejects_unsupported_backend_before_read() -> None:
+    class UnsupportedBackend:
+        backend_type = "fake-unsupported"
+
+        def get_tensor_capabilities(self):
+            return TensorLifecycleCapabilities(execution=TensorExecution.UNSUPPORTED)
+
+    with pytest.raises(RuntimeError, match="DEVICE_RESIDENT or HOST_BRIDGE"):
+        TensorDeviceStateStore(
+            backend=UnsupportedBackend(),  # pyright: ignore[reportArgumentType]
+            device=torch.device("cpu"),
+            num_envs=1,
+            joint_qpos_ids=np.array([0], dtype=np.int64),
+            joint_qvel_ids=np.array([0], dtype=np.int64),
+            body_names=("pelvis",),
+            body_ids=np.array([0], dtype=np.intp),
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+@pytest.mark.parametrize("exact_device", [False, True])
+def test_tensor_state_store_accepts_cuda_family_and_current_exact_device(exact_device) -> None:
+    class Backend(_HostBridgeBackend):
+        def get_tensor_capabilities(self):
+            torch_devices = ("cuda",)
+            if exact_device:
+                torch_devices = (f"cuda:{torch.cuda.current_device()}",)
+            return TensorLifecycleCapabilities(
+                execution=TensorExecution.HOST_BRIDGE,
+                packed_host_bridge=True,
+                process_topology=TensorProcessTopology.IN_PROCESS,
+                data_plane=TensorDataPlane.HOST_BRIDGE,
+                stream_event_ownership="caller stream; fake synchronizes at host boundary",
+                torch_devices=torch_devices,
+            )
+
+    current = torch.device("cuda", index=torch.cuda.current_device())
+    store = TensorDeviceStateStore(
+        backend=Backend(),  # pyright: ignore[reportArgumentType]
+        device=torch.device("cuda"),
+        num_envs=1,
+        joint_qpos_ids=np.array([7], dtype=np.int64),
+        joint_qvel_ids=np.array([6], dtype=np.int64),
+        body_names=("pelvis",),
+        body_ids=np.array([0], dtype=np.intp),
+    )
+
+    assert store.device == current
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_tensor_state_store_rejects_wrong_exact_cuda_device_before_allocation() -> None:
+    class Backend:
+        backend_type = "fake-wrong-cuda"
+
+        def get_tensor_capabilities(self):
+            wrong_index = (torch.cuda.current_device() + 1) % max(2, torch.cuda.device_count() + 1)
+            return TensorLifecycleCapabilities(
+                execution=TensorExecution.DEVICE_RESIDENT,
+                process_topology=TensorProcessTopology.IN_PROCESS,
+                data_plane=TensorDataPlane.DIRECT,
+                stream_event_ownership="backend completes fake lifecycle",
+                torch_devices=(f"cuda:{wrong_index}",),
+            )
+
+    with pytest.raises(RuntimeError, match="did not accept Tensor device"):
+        TensorDeviceStateStore(
+            backend=Backend(),  # pyright: ignore[reportArgumentType]
+            device=torch.device("cuda"),
+            num_envs=1,
+            joint_qpos_ids=np.array([7], dtype=np.int64),
+            joint_qvel_ids=np.array([6], dtype=np.int64),
+            body_names=("pelvis",),
+            body_ids=np.array([0], dtype=np.intp),
+        )

@@ -17,7 +17,7 @@ from typing import Any, Mapping
 
 import numpy as np
 import torch
-from unisim.backend.base import SimBackend, TensorExecution
+from unisim.backend.base import SimBackend, TensorExecution, tensor_device_matches
 
 from unilab.base.backend_factory import create_backend, env_backend_kwargs
 from unilab.base.base import ABEnv, EnvPlayCapabilities
@@ -313,27 +313,19 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         self._episode_metrics = TensorEpisodeMetrics.create(self._num_envs, self.device)
 
     def _validate_backend(self) -> None:
-        backend_type = self._backend.backend_type
-        if backend_type not in {"mjwarp", "mujoco"}:
-            raise ValueError(
-                "TorchG1MotionTrackingFlashSACEnv supports mjwarp and mujoco only; "
-                f"received {backend_type!r}"
-            )
-        mode = self._backend.tensor_execution()
-        expected = (
-            TensorExecution.DEVICE_RESIDENT
-            if backend_type == "mjwarp"
-            else TensorExecution.HOST_BRIDGE
-        )
-        if mode is not expected:
-            raise RuntimeError(
-                f"backend {backend_type!r} tensor execution is {mode!r}, expected {expected!r}"
-            )
         capabilities = self._backend.get_tensor_capabilities()
-        if capabilities.execution is not expected:
+        execution = capabilities.execution
+        if execution not in {TensorExecution.DEVICE_RESIDENT, TensorExecution.HOST_BRIDGE}:
             raise RuntimeError(
-                "backend tensor capability execution is "
-                f"{capabilities.execution!r}, expected {expected!r}"
+                "Torch G1 FlashSAC runtime requires DEVICE_RESIDENT or HOST_BRIDGE tensor "
+                f"capabilities; received {execution!r}"
+            )
+        if self._backend.tensor_execution() is not execution:
+            raise RuntimeError("backend tensor execution does not match its declared capabilities")
+        if not tensor_device_matches(capabilities.torch_devices, self.device):
+            raise RuntimeError(
+                f"backend did not accept Torch device {str(self.device)!r}; "
+                f"supported devices are {capabilities.torch_devices}"
             )
         if not {"qpos", "qvel"}.issubset(capabilities.state_fields):
             missing = sorted({"qpos", "qvel"} - set(capabilities.state_fields))
@@ -359,7 +351,7 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         if not isinstance(command_cfg, MotionCommandCfg):
             raise TypeError("Torch G1 FlashSAC requires MotionCommandCfg for sensor preflight")
         required_sensors = ["pelvis_local_linvel", "torso_gyro"]
-        if backend_type == "mjwarp":
+        if execution is TensorExecution.DEVICE_RESIDENT:
             required_sensors.extend(
                 f"{prefix}_{name}"
                 for name in command_cfg.body_names
@@ -1288,8 +1280,6 @@ def make_torch_g1_motion_tracking_flashsac_env(
 
     if not isinstance(cfg, ManagerBasedRlEnvCfg):
         raise TypeError("Torch G1 FlashSAC factory expected ManagerBasedRlEnvCfg")
-    if backend_type not in {"mujoco", "mjwarp"}:
-        raise ValueError("Torch G1 FlashSAC runtime supports mujoco and mjwarp only")
     if not cfg.tensor_runtime:
         env = make_manager_based_rl_env(cfg, num_envs=num_envs, backend_type=backend_type)
         return env

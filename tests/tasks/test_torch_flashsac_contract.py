@@ -7,7 +7,12 @@ import pytest
 import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
-from unisim.backend.base import TensorExecution, TensorLifecycleCapabilities
+from unisim.backend.base import (
+    TensorDataPlane,
+    TensorExecution,
+    TensorLifecycleCapabilities,
+    TensorProcessTopology,
+)
 
 from unilab.base.config_adapter import BackendAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
@@ -210,12 +215,23 @@ def test_manual_torch_reset_clears_only_selected_done_flags(
     assert torch.equal(env._state.truncated, torch.tensor([False, True, False]))
 
 
-def test_torch_mjwarp_state_store_renegotiates_and_preserves_policy_sensor_boundary() -> None:
+def test_torch_device_state_store_renegotiates_and_preserves_policy_sensor_boundary() -> None:
     class Backend:
-        backend_type = "mjwarp"
+        backend_type = "fake-device"
 
         def get_tensor_capabilities(self):
-            return TensorLifecycleCapabilities(execution=TensorExecution.DEVICE_RESIDENT)
+            return TensorLifecycleCapabilities(
+                execution=TensorExecution.DEVICE_RESIDENT,
+                state_views=True,
+                state_fields=frozenset({"qpos", "qvel"}),
+                sensor_views=True,
+                stepping=True,
+                selected_reset=True,
+                process_topology=TensorProcessTopology.IN_PROCESS,
+                data_plane=TensorDataPlane.DIRECT,
+                stream_event_ownership="backend completes fake refresh; caller owns stream",
+                torch_devices=("cpu",),
+            )
 
         def get_state_views(self, names, device=None):
             assert names == ("qpos", "qvel")
@@ -250,3 +266,173 @@ def test_torch_mjwarp_state_store_renegotiates_and_preserves_policy_sensor_bound
     torch.testing.assert_close(env._linvel, torch.ones((2, 3)))
     torch.testing.assert_close(env._gyro, torch.full((2, 3), -1.0))
     torch.testing.assert_close(env._robot_body_pos, torch.full((2, 2, 3), 2.0))
+
+
+@pytest.mark.parametrize(
+    ("backend_name", "execution", "packed"),
+    [
+        ("fake-device", TensorExecution.DEVICE_RESIDENT, False),
+        ("fake-host", TensorExecution.HOST_BRIDGE, True),
+    ],
+)
+def test_torch_backend_validation_is_capability_driven(
+    backend_name: str, execution: TensorExecution, packed: bool
+) -> None:
+    class Backend:
+        backend_type = backend_name
+
+        def tensor_execution(self):
+            return execution
+
+        def get_tensor_capabilities(self):
+            return TensorLifecycleCapabilities(
+                execution=execution,
+                state_views=True,
+                state_fields=frozenset({"qpos", "qvel"}),
+                sensor_views=True,
+                stepping=True,
+                selected_reset=True,
+                packed_host_bridge=packed,
+                process_topology=TensorProcessTopology.IN_PROCESS,
+                data_plane=(
+                    TensorDataPlane.DIRECT
+                    if execution is TensorExecution.DEVICE_RESIDENT
+                    else TensorDataPlane.HOST_BRIDGE
+                ),
+                stream_event_ownership="backend completes fake lifecycle; caller owns stream",
+                torch_devices=("cpu",),
+            )
+
+        def get_state_views(self, names, device=None):
+            assert names == ("qpos", "qvel")
+            return {
+                "qpos": torch.zeros((2, 9), device=device),
+                "qvel": torch.zeros((2, 8), device=device),
+            }
+
+        def get_sensor_view(self, name, device=None):
+            if name == "pelvis_local_linvel":
+                return torch.ones((2, 3), device=device)
+            if name == "torso_gyro":
+                return torch.full((2, 3), -1.0, device=device)
+            prefix = name.rsplit("_", maxsplit=1)[0]
+            shape = (2, 4) if "quat" in prefix else (2, 3)
+            return torch.full(shape, 2.0, device=device)
+
+        def get_body_ids(self, names):
+            return np.arange(len(names), dtype=np.intp)
+
+    env = module.TorchG1MotionTrackingFlashSACEnv.__new__(module.TorchG1MotionTrackingFlashSACEnv)
+    env._cfg = _materialize_task("g1_motion_tracking/mujoco")
+    env.device = torch.device("cpu")
+    env._backend = Backend()
+
+    env._validate_backend()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+@pytest.mark.parametrize("exact_device", [False, True])
+def test_g1_backend_validation_accepts_cuda_family_and_current_exact_device(exact_device) -> None:
+    class Backend:
+        backend_type = "fake-device"
+
+        def tensor_execution(self):
+            return TensorExecution.DEVICE_RESIDENT
+
+        def get_tensor_capabilities(self):
+            torch_devices = ("cuda",)
+            if exact_device:
+                torch_devices = (f"cuda:{torch.cuda.current_device()}",)
+            return TensorLifecycleCapabilities(
+                execution=TensorExecution.DEVICE_RESIDENT,
+                state_views=True,
+                state_fields=frozenset({"qpos", "qvel"}),
+                sensor_views=True,
+                stepping=True,
+                selected_reset=True,
+                process_topology=TensorProcessTopology.IN_PROCESS,
+                data_plane=TensorDataPlane.DIRECT,
+                stream_event_ownership="backend completes fake lifecycle",
+                torch_devices=torch_devices,
+            )
+
+        def get_state_views(self, names, device=None):
+            assert names == ("qpos", "qvel")
+            return {
+                "qpos": torch.zeros((2, 9), device=device),
+                "qvel": torch.zeros((2, 8), device=device),
+            }
+
+        def get_sensor_view(self, name, device=None):
+            shape = (2, 4) if "quat" in name else (2, 3)
+            return torch.ones(shape, device=device)
+
+        def get_body_ids(self, names):
+            return np.arange(len(names), dtype=np.intp)
+
+    env = module.TorchG1MotionTrackingFlashSACEnv.__new__(module.TorchG1MotionTrackingFlashSACEnv)
+    env._cfg = _materialize_task("g1_motion_tracking/mujoco")
+    env.device = torch.device("cuda", index=torch.cuda.current_device())
+    env._backend = Backend()
+
+    env._validate_backend()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_g1_backend_validation_rejects_wrong_exact_cuda_device() -> None:
+    class Backend:
+        backend_type = "fake-device"
+
+        def tensor_execution(self):
+            return TensorExecution.DEVICE_RESIDENT
+
+        def get_tensor_capabilities(self):
+            wrong_index = (torch.cuda.current_device() + 1) % max(2, torch.cuda.device_count() + 1)
+            return TensorLifecycleCapabilities(
+                execution=TensorExecution.DEVICE_RESIDENT,
+                process_topology=TensorProcessTopology.IN_PROCESS,
+                data_plane=TensorDataPlane.DIRECT,
+                stream_event_ownership="backend completes fake lifecycle",
+                torch_devices=(f"cuda:{wrong_index}",),
+            )
+
+    env = module.TorchG1MotionTrackingFlashSACEnv.__new__(module.TorchG1MotionTrackingFlashSACEnv)
+    env.device = torch.device("cuda", index=torch.cuda.current_device())
+    env._backend = Backend()
+
+    with pytest.raises(RuntimeError, match="did not accept Torch device"):
+        env._validate_backend()
+
+
+def test_torch_factory_delegates_noncanonical_backends_to_capability_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _materialize_task("g1_motion_tracking/mujoco")
+    created: dict[str, object] = {}
+
+    class Backend:
+        backend_type = "fake-device"
+
+    def fake_create_backend(*args, **kwargs):
+        created["args"] = args
+        created["kwargs"] = kwargs
+        backend = Backend()
+        created["backend"] = backend
+        return backend
+
+    sentinel = object()
+    monkeypatch.setattr(module, "create_backend", fake_create_backend)
+    monkeypatch.setattr(
+        module,
+        "TorchG1MotionTrackingFlashSACEnv",
+        lambda cfg, backend, num_envs, device: (sentinel, backend),
+    )
+
+    result = module.make_torch_g1_motion_tracking_flashsac_env(
+        cfg,
+        num_envs=2,
+        backend_type="fake-device",
+    )
+
+    assert result == (sentinel, created["backend"])
+    assert created["args"][0] == "fake-device"
