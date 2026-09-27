@@ -510,8 +510,13 @@ class MotionSampler:
             padded = np.pad(sampling_probs, (0, self.adaptive_kernel_size - 1), mode="edge")
             sampling_probs = np.convolve(padded, self.kernel, mode="valid")
 
-        # Normalize to probabilities
-        sampling_probs = sampling_probs / sampling_probs.sum()
+        # With no failure statistics yet, a zero uniform floor leaves every bin
+        # at weight zero. Initialize that cold-start state as uniform.
+        sampling_weight_sum = float(sampling_probs.sum())
+        if sampling_weight_sum <= 0.0:
+            sampling_probs = np.full(self.bin_count, 1.0 / self.bin_count, dtype=np.float64)
+        else:
+            sampling_probs = sampling_probs / sampling_weight_sum
 
         # Sample bins
         sampled_bins = (
