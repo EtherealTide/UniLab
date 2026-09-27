@@ -11,9 +11,7 @@ backend terms fail closed rather than falling back silently.
 
 from __future__ import annotations
 
-import hashlib
-from dataclasses import dataclass, is_dataclass
-from dataclasses import fields as dataclass_fields
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Mapping
 
@@ -39,6 +37,13 @@ from unilab.tasks.motion_tracking.common.manager_terms import (
     MotionJointPositionAction,
     MotionJointPositionActionCfg,
 )
+from unilab.tasks.motion_tracking.common.tensor_runtime import (
+    TensorEpisodeMetrics,
+    TensorObservationNoise,
+    TensorResetPlan,
+    semantic_fingerprint,
+)
+from unilab.tasks.motion_tracking.common.tensor_state_store import TensorDeviceStateStore
 
 
 @dataclass
@@ -68,50 +73,14 @@ def _qualified_name(value: Any) -> str:
     return f"{type(value).__module__}.{type(value).__qualname__}"
 
 
-def _semantic_token(value: Any) -> Any:
-    """Normalize an owner configuration value without allowing unknown escapes."""
-    if value is None:
-        return "none"
-    if isinstance(value, slice):
-        return "slice", value.start, value.stop, value.step
-    if is_dataclass(value) and not isinstance(value, type):
-        excluded = {"fixed_variant_plan"} if type(value).__name__ == "SceneCfg" else set()
-        return (
-            _qualified_name(value),
-            tuple(
-                (item.name, _semantic_token(getattr(value, item.name)))
-                for item in dataclass_fields(value)
-                if item.name not in excluded
-            ),
-        )
-    if isinstance(value, (str, bytes, bool, int, float)):
-        if isinstance(value, float) and not bool(np.isfinite(value)):
-            raise ValueError("Torch G1 FlashSAC owner identity contains a non-finite scalar")
-        return type(value).__name__, value
-    if isinstance(value, np.generic):
-        if isinstance(value, (float, np.floating)) and not bool(np.isfinite(value)):
-            raise ValueError("Torch G1 FlashSAC owner identity contains a non-finite scalar")
-        return type(value).__name__, value.item()
-    if isinstance(value, np.ndarray):
-        return _qualified_name(value), str(value.dtype), value.shape, value.tobytes(order="C")
-    if isinstance(value, Mapping):
-        return tuple((str(key), _semantic_token(item)) for key, item in value.items())
-    if isinstance(value, (list, tuple)):
-        return tuple(_semantic_token(item) for item in value)
-    if isinstance(value, (set, frozenset)):
-        return tuple(sorted((_semantic_token(item) for item in value), key=repr))
-    if callable(value):
-        return "callable", _qualified_name(value)
-    raise TypeError(f"unsupported Torch G1 FlashSAC owner identity value: {_qualified_name(value)}")
-
-
 def _torch_g1_flashsac_owner_identity(cfg: ManagerBasedRlEnvCfg) -> str:
     """Return a versioned semantic fingerprint for the narrow Torch owner."""
     if cfg.fixed_model_variants is not None:
         raise ValueError("Torch G1 FlashSAC v1 does not support fixed model variants")
     if cfg.scene is None:
         raise ValueError("Torch G1 FlashSAC requires a scene owner")
-    token = _semantic_token(
+    return semantic_fingerprint(
+        "unilab.motion_tracking.g1.tensor.v1",
         (
             1,
             cfg.scene,
@@ -132,22 +101,29 @@ def _torch_g1_flashsac_owner_identity(cfg: ManagerBasedRlEnvCfg) -> str:
             cfg.scale_rewards_by_dt,
             cfg.policy_observation_group,
             cfg.critic_observation_group,
-        )
+        ),
     )
-    return hashlib.sha256(repr(token).encode("utf-8")).hexdigest()
 
 
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V1 = (
-    "6a0f2a5b731e6f7cc9f1f0eb2cb6414357f4f619bdc94bebecaff80a74161ad9"
+    "21f829c6ccda078a15b306ac5afd294ede8b69ce22cd3eda2ea4c79c6e4fd681"
+)
+_TORCH_G1_SAC_OWNER_IDENTITY_V1 = "a4758cad941b5d85209e98520a08ea5ac2433fe0766c7a7b49b6451c33dd7f7f"
+_TORCH_G1_FLIP_SAC_OWNER_IDENTITY_V1 = (
+    "7e729441242f7675b93ab36c4ca0b41762a202ea6e188f04d5dc2d9a9384816c"
 )
 
 
 def _validate_torch_g1_flashsac_owner_contract(cfg: ManagerBasedRlEnvCfg) -> None:
     identity = _torch_g1_flashsac_owner_identity(cfg)
-    if identity != _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V1:
+    if identity not in {
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V1,
+        _TORCH_G1_SAC_OWNER_IDENTITY_V1,
+        _TORCH_G1_FLIP_SAC_OWNER_IDENTITY_V1,
+    }:
         raise ValueError(
-            "Torch G1 FlashSAC v1 supports only the canonical owner contract; "
-            f"semantic identity {identity} != {_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V1}"
+            "Torch G1 tensor runtime supports only canonical owner contracts; "
+            f"semantic identity {identity} is not recognized"
         )
 
 
@@ -266,19 +242,16 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
 
     is_vector_env = True
 
-    _qpos: torch.Tensor
-    _qvel: torch.Tensor
+    _qpos: torch.Tensor | None
+    _qvel: torch.Tensor | None
     _joint_pos: torch.Tensor
     _joint_vel: torch.Tensor
     _linvel: torch.Tensor
     _gyro: torch.Tensor
     _terminations: dict[str, dict[str, Any]]
-    _observation_noise_lower: torch.Tensor
-    _observation_noise_upper: torch.Tensor
-    _mjwarp_state_views: Mapping[str, torch.Tensor] | None
-    _mjwarp_sensor_views: dict[str, torch.Tensor | tuple[torch.Tensor, ...]] | None
-    _mjwarp_linvel_view: torch.Tensor | None
-    _mjwarp_gyro_view: torch.Tensor | None
+    _observation_noise: TensorObservationNoise
+    _episode_metrics: TensorEpisodeMetrics
+    _state_store: TensorDeviceStateStore
 
     def __init__(
         self,
@@ -303,14 +276,28 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         if backend.num_envs != self._num_envs:
             raise ValueError("backend num_envs does not match the environment")
         self._validate_backend()
-        self._mjwarp_state_views = None
-        self._mjwarp_sensor_views = None
-        self._mjwarp_linvel_view = None
-        self._mjwarp_gyro_view = None
-
         self._cpu_env = ManagerBasedRlEnv(cfg, backend, self._num_envs)
         try:
             self._extract_contract()
+            self._state_store = TensorDeviceStateStore(
+                backend=self._backend,
+                device=self.device,
+                num_envs=self._num_envs,
+                joint_qpos_ids=self._joint_qpos_ids,
+                joint_qvel_ids=self._joint_qvel_ids,
+                body_names=self._body_names,
+                body_ids=self._body_ids,
+            )
+            self._qpos = None
+            self._qvel = None
+            self._joint_pos = self._state_store.joint_pos
+            self._joint_vel = self._state_store.joint_vel
+            self._linvel = self._state_store.linvel
+            self._gyro = self._state_store.gyro
+            self._robot_body_pos = self._state_store.robot_body_pos
+            self._robot_body_quat = self._state_store.robot_body_quat
+            self._robot_body_lin_vel = self._state_store.robot_body_lin_vel
+            self._robot_body_ang_vel = self._state_store.robot_body_ang_vel
             self._obs_groups_spec = {
                 "obs": 160,
                 "critic": 289,
@@ -323,6 +310,7 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         except BaseException:
             self._cpu_env.close()
             raise
+        self._episode_metrics = TensorEpisodeMetrics.create(self._num_envs, self.device)
 
     def _validate_backend(self) -> None:
         backend_type = self._backend.backend_type
@@ -400,9 +388,13 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         ):
             raise TypeError("FlashSAC G1 requires exactly one canonical MotionCommandCfg")
         command_cfg = cfg.commands["motion"]
-        if command_cfg.sampling_mode != "adaptive" or not command_cfg.params.truncate_on_clip_end:
-            raise ValueError("FlashSAC G1 Torch runtime requires adaptive, truncating sampling")
-        if cfg.events or cfg.curriculum or cfg.metrics or cfg.recorders:
+        if command_cfg.sampling_mode not in {"adaptive", "mixed"}:
+            raise ValueError("G1 tensor runtime requires adaptive or mixed sampling")
+        if not command_cfg.params.truncate_on_clip_end:
+            raise ValueError("G1 tensor runtime requires truncating sampling")
+        if any(term is not None for term in cfg.events.values()):
+            raise ValueError("G1 tensor runtime requires a DR-free event lifecycle")
+        if cfg.curriculum or cfg.metrics or cfg.recorders:
             raise ValueError("FlashSAC G1 Torch runtime does not support extra lifecycle managers")
         if not cfg.auto_reset or cfg.is_finite_horizon:
             raise ValueError("FlashSAC G1 Torch runtime requires auto-reset infinite horizon")
@@ -432,38 +424,73 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
             "actions",
         )
         expected_critic = (*expected_actor, "body_pos", "body_ori", "sac_base_lin_vel")
-        if actor_terms != expected_actor or critic_terms != expected_critic:
+        expected_sac_critic = (
+            "command",
+            "motion_anchor_pos_b",
+            "motion_anchor_ori_b",
+            "base_lin_vel",
+            "base_ang_vel",
+            "joint_vel",
+            "actions",
+            "joint_pos",
+            "body_pos",
+            "body_ori",
+            "sac_base_lin_vel",
+        )
+        if actor_terms != expected_actor or critic_terms not in {
+            expected_critic,
+            expected_sac_critic,
+        }:
             raise ValueError("unsupported FlashSAC G1 observation declaration")
+        self._critic_prefix_names = tuple(critic_terms[:-3])
 
-        expected_rewards = {
-            "motion_global_root_pos": 1.0,
-            "motion_global_root_ori": 0.5,
-            "motion_body_pos": 2.0,
-            "motion_body_ori": 1.0,
-            "motion_body_lin_vel": 1.0,
-            "motion_body_ang_vel": 1.0,
-            "motion_joint_pos": 0.0,
-            "motion_joint_vel": 0.0,
-            "action_rate_l2": -0.1,
-            "joint_limit": -2.0,
-            "undesired_contacts": -0.1,
-        }
         reward_terms: dict[str, RewardTermCfg] = {}
         for name, term in cfg.rewards.items():
             if not isinstance(term, RewardTermCfg):
                 raise TypeError("FlashSAC G1 rewards must all be concrete RewardTermCfg terms")
             reward_terms[name] = term
-        actual_rewards = {name: float(term.weight) for name, term in reward_terms.items()}
-        if actual_rewards != expected_rewards:
-            raise ValueError(f"unsupported FlashSAC G1 rewards: {actual_rewards}")
-        if set(cfg.terminations) != {
-            "time_out",
-            "motion_clip_end",
-            "anchor_pos",
-            "anchor_ori",
-            "ee_body_pos",
-        }:
-            raise ValueError(f"unsupported FlashSAC G1 terminations: {sorted(cfg.terminations)}")
+        core_rewards = {
+            "motion_global_root_pos",
+            "motion_global_root_ori",
+            "motion_body_pos",
+            "motion_body_ori",
+            "motion_body_lin_vel",
+            "motion_body_ang_vel",
+            "motion_joint_pos",
+            "motion_joint_vel",
+            "action_rate_l2",
+            "joint_limit",
+            "undesired_contacts",
+        }
+        supported_rewards = {
+            frozenset(core_rewards),
+            frozenset({*core_rewards, "motion_ee_body_pos_z"}),
+        }
+        if frozenset(reward_terms) not in supported_rewards:
+            raise ValueError(f"unsupported G1 tensor rewards: {sorted(reward_terms)}")
+        expected_terminations = {
+            frozenset(
+                {
+                    "time_out",
+                    "motion_clip_end",
+                    "anchor_pos",
+                    "anchor_ori",
+                    "ee_body_pos",
+                }
+            ),
+            frozenset(
+                {
+                    "time_out",
+                    "motion_clip_end",
+                    "anchor_pos",
+                    "anchor_ori",
+                    "ee_body_pos",
+                    "undesired_contacts",
+                }
+            ),
+        }
+        if frozenset(cfg.terminations) not in expected_terminations:
+            raise ValueError(f"unsupported G1 tensor terminations: {sorted(cfg.terminations)}")
         if any(term is None for term in cfg.terminations.values()):
             raise ValueError("FlashSAC G1 terminations must all be concrete termination terms")
 
@@ -477,6 +504,8 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         self._command = cpu_command
         self._action_cfg = action_cfg
         self._command_cfg = command_cfg
+        self._reward_terms = reward_terms
+        self._sampling_mode = command_cfg.sampling_mode
         self._robot = robot
         self._anchor_idx = command_cfg.body_names.index(command_cfg.anchor_body_name)
         self._body_names = tuple(command_cfg.body_names)
@@ -535,9 +564,18 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         if cfg.max_episode_seconds is None:
             raise ValueError("FlashSAC G1 requires max_episode_seconds")
         self._max_episode_length = int(round(cfg.max_episode_seconds / cfg.ctrl_dt))
-        if isinstance(action_cfg.scale, dict) or isinstance(action_cfg.scale, bool):
-            raise TypeError("FlashSAC G1 Torch runtime requires a scalar action scale")
-        self._action_scale = float(action_cfg.scale)
+        action_scale = np.asarray(cpu_action._scale, dtype=np.float32)
+        if action_scale.ndim == 0:
+            action_scale = np.full(self._joint_qpos_ids.shape, action_scale, dtype=np.float32)
+        elif action_scale.ndim == 2:
+            # The cold Manager-Based resolver repeats one declared scale row per
+            # environment. Its canonical semantic identity is checked above.
+            action_scale = np.ascontiguousarray(action_scale[0])
+        if action_scale.shape != self._joint_qpos_ids.shape or not np.all(
+            np.isfinite(action_scale)
+        ):
+            raise ValueError("G1 tensor action scales must match joints and be finite")
+        self._action_scale = _to_device(action_scale, self.device)
         self._actor_corruption = actor_group.enable_corruption
         noise_terms: list[UniformNoiseCfg] = []
         for name in ("base_lin_vel", "base_ang_vel", "joint_pos", "joint_vel"):
@@ -551,14 +589,19 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
                 )
             noise_terms.append(noise)
         noise_widths = (3, 3, 29, 29)
-        self._observation_noise_lower = torch.tensor(
-            tuple(_scalar_noise_bound(term.n_min, label="noise minimum") for term in noise_terms),
-            device=self.device,
-        ).repeat_interleave(torch.tensor(noise_widths, device=self.device))
-        self._observation_noise_upper = torch.tensor(
-            tuple(_scalar_noise_bound(term.n_max, label="noise maximum") for term in noise_terms),
-            device=self.device,
-        ).repeat_interleave(torch.tensor(noise_widths, device=self.device))
+        for term in noise_terms:
+            _scalar_noise_bound(term.n_min, label="noise minimum")
+            _scalar_noise_bound(term.n_max, label="noise maximum")
+        self._observation_noise = TensorObservationNoise.from_uniform_terms(
+            tuple(noise_terms), noise_widths, self.device
+        )
+        joint_pos_term = actor_group.terms["joint_pos"]
+        if joint_pos_term is None:
+            raise ValueError("G1 actor joint_pos term is required")
+        self._actor_joint_pos_biased = (
+            _qualified_name(joint_pos_term.func)
+            == "unilab.tasks.motion_tracking.common.manager_terms.motion_joint_pos_rel_biased"
+        )
 
     @property
     def num_envs(self) -> int:
@@ -605,6 +648,7 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
             info={
                 "log": {},
                 "steps": torch.zeros(self._num_envs, dtype=torch.int64, device=self.device),
+                "episode_metrics": self._episode_metrics.snapshot(),
             },
         )
         return self._state
@@ -694,10 +738,6 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         self._motion_body_ang_vel = self._motion_state[:, cursor:motion_width].view(
             self._num_envs, shape[1], 3
         )
-        self._robot_body_pos = torch.empty_like(self._motion_body_pos)
-        self._robot_body_quat = torch.empty_like(self._motion_body_quat)
-        self._robot_body_lin_vel = torch.empty_like(self._motion_body_lin_vel)
-        self._robot_body_ang_vel = torch.empty_like(self._motion_body_ang_vel)
         self._body_pos_relative = torch.empty_like(self._motion_body_pos)
         self._body_quat_relative = torch.empty_like(self._motion_body_quat)
         self._motion_anchor_pos_b = torch.empty((self._num_envs, 3), device=self.device)
@@ -740,150 +780,19 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         self._motion_state[target] = selected
 
     def _read_robot_state(self, rows: torch.Tensor | None = None) -> None:
-        torch = self._torch
-        if self._backend.backend_type == "mjwarp":
-            if self._mjwarp_state_views is None or self._mjwarp_sensor_views is None:
-                self._mjwarp_state_views = self._backend.get_state_views(
-                    ("qpos", "qvel"), device=self.device
-                )
-                linvel_view = self._backend.get_sensor_view(
-                    "pelvis_local_linvel", device=self.device
-                )
-                gyro_view = self._backend.get_sensor_view("torso_gyro", device=self.device)
-                if not isinstance(linvel_view, torch.Tensor) or not isinstance(
-                    gyro_view, torch.Tensor
-                ):
-                    raise TypeError("MJWarp scalar sensor views did not return tensors")
-                self._mjwarp_sensor_views = {
-                    "linvel": linvel_view,
-                    "gyro": gyro_view,
-                }
-                for prefix in (
-                    "track_pos_w",
-                    "track_quat_w",
-                    "track_linvel_w",
-                    "track_angvel_w",
-                ):
-                    self._mjwarp_sensor_views[prefix] = tuple(
-                        self._backend.get_sensor_view(f"{prefix}_{name}", device=self.device)
-                        for name in self._body_names
-                    )
-                self._mjwarp_linvel_view = linvel_view
-                self._mjwarp_gyro_view = gyro_view
-                self._linvel = linvel_view.clone()
-                self._gyro = gyro_view.clone()
-            else:
-                assert self._mjwarp_linvel_view is not None
-                assert self._mjwarp_gyro_view is not None
-                # MJWarp's tracked-body refresh also evaluates authored frame
-                # sensors at the final qpos/qvel. Preserve the legacy host-path
-                # substep-boundary values for policy sensors while still using
-                # refreshed tracked-body state for rewards and terminations.
-                self._linvel.copy_(self._mjwarp_linvel_view)
-                self._gyro.copy_(self._mjwarp_gyro_view)
-                # Stable views do not negotiate lifecycle state on dereference.
-                # One tracked-sensor read refreshes all injected frame sensors
-                # after step/reset while avoiding per-body backend calls.
-                self._backend.get_sensor_view(
-                    f"track_pos_w_{self._body_names[0]}", device=self.device
-                )
-                if rows is not None:
-                    self._linvel[rows] = self._mjwarp_linvel_view.index_select(0, rows)
-                    self._gyro[rows] = self._mjwarp_gyro_view.index_select(0, rows)
-            assert self._mjwarp_state_views is not None
-            assert self._mjwarp_sensor_views is not None
-            self._qpos = self._mjwarp_state_views["qpos"]
-            self._qvel = self._mjwarp_state_views["qvel"]
-            self._joint_pos = self._qpos[:, self._joint_qpos_ids]
-            self._joint_vel = self._qvel[:, self._joint_qvel_ids]
-            targets = (
-                self._robot_body_pos,
-                self._robot_body_quat,
-                self._robot_body_lin_vel,
-                self._robot_body_ang_vel,
-            )
-            prefixes = ("track_pos_w", "track_quat_w", "track_linvel_w", "track_angvel_w")
-            for destination, prefix in zip(targets, prefixes, strict=True):
-                views = self._mjwarp_sensor_views[prefix]
-                if not isinstance(views, tuple):
-                    raise TypeError("MJWarp body sensor views did not return a tuple")
-                if rows is None:
-                    torch.stack(views, dim=1, out=destination)
-                else:
-                    selected = torch.stack(
-                        tuple(view.index_select(0, rows) for view in views),
-                        dim=1,
-                    )
-                    destination.index_copy_(0, rows, selected)
-            return
-
-        if rows is None:
-            state = self._backend.get_state_views(("qpos", "qvel"), device=self.device)
-            self._qpos = state["qpos"]
-            self._qvel = state["qvel"]
-            self._joint_pos = self._qpos[:, self._joint_qpos_ids]
-            self._joint_vel = self._qvel[:, self._joint_qvel_ids]
-        self._joint_pos = self._qpos[:, self._joint_qpos_ids]
-        self._joint_vel = self._qvel[:, self._joint_qvel_ids]
-        if rows is None:
-            self._linvel = self._backend.get_sensor_view("pelvis_local_linvel", device=self.device)
-            self._gyro = self._backend.get_sensor_view("torso_gyro", device=self.device)
-        else:
-            host_rows = rows.detach().cpu().numpy()
-            linvel = self._backend.get_sensor_data_rows("pelvis_local_linvel", host_rows)
-            gyro = self._backend.get_sensor_data_rows("torso_gyro", host_rows)
-            self._linvel[rows] = torch.as_tensor(
-                np.ascontiguousarray(linvel), dtype=torch.float32, device=self.device
-            )
-            self._gyro[rows] = torch.as_tensor(
-                np.ascontiguousarray(gyro), dtype=torch.float32, device=self.device
-            )
-        if rows is None:
-            self._robot_body_pos.copy_(
-                torch.as_tensor(
-                    np.ascontiguousarray(self._backend.get_body_pos_w(self._body_ids)),
-                    dtype=torch.float32,
-                    device=self.device,
-                )
-            )
-            self._robot_body_quat.copy_(
-                torch.as_tensor(
-                    np.ascontiguousarray(self._backend.get_body_quat_w(self._body_ids)),
-                    dtype=torch.float32,
-                    device=self.device,
-                )
-            )
-            self._robot_body_lin_vel.copy_(
-                torch.as_tensor(
-                    np.ascontiguousarray(self._backend.get_body_lin_vel_w(self._body_ids)),
-                    dtype=torch.float32,
-                    device=self.device,
-                )
-            )
-            self._robot_body_ang_vel.copy_(
-                torch.as_tensor(
-                    np.ascontiguousarray(self._backend.get_body_ang_vel_w(self._body_ids)),
-                    dtype=torch.float32,
-                    device=self.device,
-                )
-            )
-        else:
-            host_rows = rows.detach().cpu().numpy()
-            pos, quat = self._backend.get_body_pose_w_rows(host_rows, self._body_ids)
-            lin_vel = self._backend.get_body_lin_vel_w_rows(host_rows, self._body_ids)
-            ang_vel = self._backend.get_body_ang_vel_w_rows(host_rows, self._body_ids)
-            self._robot_body_pos[rows] = torch.as_tensor(
-                np.ascontiguousarray(pos), dtype=torch.float32, device=self.device
-            )
-            self._robot_body_quat[rows] = torch.as_tensor(
-                np.ascontiguousarray(quat), dtype=torch.float32, device=self.device
-            )
-            self._robot_body_lin_vel[rows] = torch.as_tensor(
-                np.ascontiguousarray(lin_vel), dtype=torch.float32, device=self.device
-            )
-            self._robot_body_ang_vel[rows] = torch.as_tensor(
-                np.ascontiguousarray(ang_vel), dtype=torch.float32, device=self.device
-            )
+        store = self._state_store
+        store.read(rows)
+        qpos, qvel = store.qviews()
+        self._qpos = qpos
+        self._qvel = qvel
+        self._joint_pos = store.joint_pos
+        self._joint_vel = store.joint_vel
+        self._linvel = store.linvel
+        self._gyro = store.gyro
+        self._robot_body_pos = store.robot_body_pos
+        self._robot_body_quat = store.robot_body_quat
+        self._robot_body_lin_vel = store.robot_body_lin_vel
+        self._robot_body_ang_vel = store.robot_body_ang_vel
 
     def _refresh_motion_relative_transforms(self, rows: torch.Tensor | None = None) -> None:
         target = slice(None) if rows is None else rows
@@ -946,57 +855,89 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
             > float(ee_cfg["threshold"]),
             dim=-1,
         )
-        return anchor_pos_bad | anchor_ori_bad | ee_bad
+        failure = anchor_pos_bad | anchor_ori_bad | ee_bad
+        undesired_cfg = self._terminations.get("undesired_contacts")
+        if undesired_cfg is not None:
+            failure |= torch.any(
+                self._robot_body_pos[:, self._undesired_ids, 2] < float(undesired_cfg["threshold"]),
+                dim=-1,
+            )
+        return failure
 
     def _compute_reward(self) -> torch.Tensor:
         anchor = self._anchor_idx
-        terms: list[torch.Tensor] = []
+        weighted_terms: list[torch.Tensor] = []
         self.last_reward_terms: dict[str, torch.Tensor] = {}
+
+        def add_term(name: str, value: torch.Tensor) -> None:
+            self.last_reward_terms[name] = value
+            weighted_terms.append(float(self._reward_terms[name].weight) * value)
+
         pos_error = (
             (self._motion_body_pos[:, anchor] - self._robot_body_pos[:, anchor])
             .square()
             .sum(dim=-1)
         )
-        root_pos_term = self._exp_error(pos_error, 0.3)
-        self.last_reward_terms["motion_global_root_pos"] = root_pos_term
-        terms.append(root_pos_term)
+        add_term(
+            "motion_global_root_pos",
+            self._exp_error(
+                pos_error, float(self._reward_terms["motion_global_root_pos"].params["std"])
+            ),
+        )
         ori_error = _quat_error_squared(
             self._motion_body_quat[:, anchor], self._robot_body_quat[:, anchor]
         )
-        root_ori_term = self._exp_error(ori_error, 0.4)
-        self.last_reward_terms["motion_global_root_ori"] = root_ori_term
-        terms.append(0.5 * root_ori_term)
-        body_specs = (
-            ("motion_body_pos", 2.0, 0.3, self._body_pos_relative, self._robot_body_pos),
-            ("motion_body_ori", 1.0, 0.4, self._body_quat_relative, self._robot_body_quat),
-            ("motion_body_lin_vel", 1.0, 1.0, self._motion_body_lin_vel, self._robot_body_lin_vel),
-            ("motion_body_ang_vel", 1.0, 3.14, self._motion_body_ang_vel, self._robot_body_ang_vel),
+        add_term(
+            "motion_global_root_ori",
+            self._exp_error(
+                ori_error, float(self._reward_terms["motion_global_root_ori"].params["std"])
+            ),
         )
-        for name, weight, std, reference, actual in body_specs:
-            body_std = std * (reference.shape[1] ** 0.5)
+        body_specs = (
+            ("motion_body_pos", self._body_pos_relative, self._robot_body_pos),
+            ("motion_body_ori", self._body_quat_relative, self._robot_body_quat),
+            ("motion_body_lin_vel", self._motion_body_lin_vel, self._robot_body_lin_vel),
+            ("motion_body_ang_vel", self._motion_body_ang_vel, self._robot_body_ang_vel),
+        )
+        for name, reference, actual in body_specs:
+            std = float(self._reward_terms[name].params["std"]) * (reference.shape[1] ** 0.5)
             if reference is self._body_quat_relative:
                 error = _quat_error_squared(reference, actual).sum(dim=-1)
             else:
                 error = (reference - actual).square().sum(dim=(-1, -2))
-            term = self._exp_error(error, float(body_std))
-            self.last_reward_terms[name] = term
-            terms.append(weight * term)
+            add_term(name, self._exp_error(error, std))
+
+        if "motion_ee_body_pos_z" in self._reward_terms:
+            ee_error = (
+                (
+                    self._body_pos_relative[:, self._ee_ids, 2]
+                    - self._robot_body_pos[:, self._ee_ids, 2]
+                )
+                .square()
+                .mean(dim=-1)
+            )
+            add_term(
+                "motion_ee_body_pos_z",
+                self._exp_error(
+                    ee_error, float(self._reward_terms["motion_ee_body_pos_z"].params["std"])
+                ),
+            )
+
         action_rate = (self._raw_actions - self._previous_raw_actions).square().sum(dim=-1)
-        self.last_reward_terms["action_rate_l2"] = action_rate
-        terms.append(-0.1 * action_rate)
+        add_term("action_rate_l2", action_rate)
         lower_violation = (self._soft_limits[..., 0] - self._joint_pos).clamp_min(0.0)
         upper_violation = (self._joint_pos - self._soft_limits[..., 1]).clamp_min(0.0)
         joint_violation = (lower_violation + upper_violation).square().sum(dim=-1)
-        self.last_reward_terms["joint_limit"] = joint_violation
-        terms.append(-2.0 * joint_violation)
-        undesired_cfg = self._terminations  # body names are in the reward owner, not terminations
-        del undesired_cfg
-        contacts = (self._robot_body_pos[:, self._undesired_ids, 2] < 0.05).sum(dim=-1)
-        contact_term = contacts.to(torch.float32)
-        self.last_reward_terms["undesired_contacts"] = contact_term
-        terms.append(-0.1 * contact_term)
-        reward = terms[0]
-        for term in terms[1:]:
+        add_term("joint_limit", joint_violation)
+
+        contact_cfg = self._reward_terms["undesired_contacts"].params
+        contacts = (
+            self._robot_body_pos[:, self._undesired_ids, 2] < float(contact_cfg["threshold"])
+        ).sum(dim=-1)
+        add_term("undesired_contacts", contacts.to(torch.float32))
+
+        reward = weighted_terms[0]
+        for term in weighted_terms[1:]:
             reward = reward + term
         return reward * self._cfg.ctrl_dt
 
@@ -1015,7 +956,20 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         joint_vel = self._joint_vel[target] - self._default_joint_vel[target]
         linvel = self._linvel[target]
         gyro = self._gyro[target]
-        clean_actor = torch.cat(
+        segments = {
+            "command": command,
+            "motion_anchor_pos_b": self._motion_anchor_pos_b[target],
+            "motion_anchor_ori_b": self._motion_anchor_ori_b[target],
+            "base_lin_vel": linvel,
+            "base_ang_vel": gyro,
+            "joint_pos": joint_pos,
+            "joint_vel": joint_vel,
+            "actions": self._raw_actions[target],
+        }
+        critic_prefix = torch.cat(
+            tuple(segments[name] for name in self._critic_prefix_names), dim=-1
+        )
+        actor = torch.cat(
             (
                 command,
                 self._motion_anchor_pos_b[target],
@@ -1028,18 +982,24 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
             ),
             dim=-1,
         )
-        actor = clean_actor.clone()
+        if self._actor_joint_pos_biased:
+            joint_cursor = (
+                command.shape[-1]
+                + self._motion_anchor_pos_b.shape[-1]
+                + self._motion_anchor_ori_b.shape[-1]
+                + linvel.shape[-1]
+                + gyro.shape[-1]
+            )
+            actor[..., joint_cursor : joint_cursor + self._encoder_bias.shape[-1]] += (
+                self._encoder_bias[target]
+            )
         noisy = self._actor_corruption if corrupt is None else corrupt
         if noisy:
             cursor = 58 + 3 + 6
-            width = self._observation_noise_lower.numel()
-            noise = torch.rand((*actor.shape[:-1], width), device=self.device, generator=self._rng)
-            noise *= self._observation_noise_upper - self._observation_noise_lower
-            noise += self._observation_noise_lower
-            actor[..., cursor : cursor + width] += noise
+            actor = self._observation_noise.apply(actor, cursor=cursor, generator=self._rng)
         critic = torch.cat(
             (
-                clean_actor,
+                critic_prefix,
                 self._robot_body_pos_b[target].reshape(target_length := actor.shape[0], -1),
                 self._robot_body_ori_b[target].reshape(target_length, -1),
                 linvel,
@@ -1049,6 +1009,28 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         return {"obs": actor, "critic": critic}
 
     def _sample_frames(self, rows: torch.Tensor) -> torch.Tensor:
+        if self._sampling_mode == "mixed":
+            count = rows.numel()
+            use_start = torch.rand(count, device=self.device, generator=self._rng) < float(
+                self._command_cfg.params.sampling_start_ratio
+            )
+            uniform_frames = torch.randint(
+                0,
+                self._motion_features.shape[0],
+                (count,),
+                device=self.device,
+                generator=self._rng,
+                dtype=torch.int32,
+            )
+            frames = torch.where(use_start, torch.zeros_like(uniform_frames), uniform_frames)
+            self.current_frames[rows] = frames
+            clip_indices = (
+                torch.searchsorted(self._clip_offsets.int(), frames.int(), right=True) - 1
+            )
+            clip_indices = clip_indices.clamp_(min=0)
+            self._clip_ends[rows] = self._clip_ends_store[clip_indices]
+            return frames
+
         probs = (
             self._bin_failed
             + float(self._command_cfg.params.adaptive_uniform_ratio) / self._bin_failed.numel()
@@ -1134,6 +1116,7 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         self._previous_raw_actions[rows] = 0.0
         self._ctrl[rows] = 0.0
         self._steps[rows] = 0
+        self._episode_metrics.reset(rows)
         self._refresh_motion_buffers(frames, rows)
         self._read_robot_state(rows)
         self._refresh_motion_relative_transforms(rows)
@@ -1185,28 +1168,34 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         truncated = clip_end | timeout
         reward = self._compute_reward()
 
-        bin_indices = (
-            self.current_frames.to(torch.int64)
-            * self._bin_failed.numel()
-            // self._motion_features.shape[0]
-        ).clamp_(max=self._bin_failed.numel() - 1)
-        n_bins = self._bin_failed.numel()
-        failures = _adaptive_failure_counts(bin_indices, terminated, n_bins)
-        failure_alpha = _adaptive_failure_alpha(
-            terminated, self._command_cfg.params.adaptive_alpha
-        ).to(dtype=self._bin_failed.dtype)
-        self._bin_failed.mul_(1.0 - failure_alpha).add_(failures * failure_alpha)
+        if self._sampling_mode == "adaptive":
+            bin_indices = (
+                self.current_frames.to(torch.int64)
+                * self._bin_failed.numel()
+                // self._motion_features.shape[0]
+            ).clamp_(max=self._bin_failed.numel() - 1)
+            n_bins = self._bin_failed.numel()
+            failures = _adaptive_failure_counts(bin_indices, terminated, n_bins)
+            failure_alpha = _adaptive_failure_alpha(
+                terminated, self._command_cfg.params.adaptive_alpha
+            ).to(dtype=self._bin_failed.dtype)
+            self._bin_failed.mul_(1.0 - failure_alpha).add_(failures * failure_alpha)
         active = ~(terminated | truncated)
         self.current_frames += active.to(torch.int32)
         self._refresh_motion_buffers(self.current_frames)
         self._refresh_motion_relative_transforms()
         obs = self._compute_observations()
+        if not _all_finite(reward, obs["obs"], obs["critic"]):
+            raise ValueError("Torch G1 tensor reward or observations contain NaN or Inf")
         timing["update_state_ms"] = (perf_counter() - phase) * 1000.0
 
         phase = perf_counter()
-        done = terminated | truncated
+        reset_plan = TensorResetPlan(terminated=terminated, truncated=truncated)
+        done = reset_plan.done
+        self._episode_metrics.update(reward, done)
         final_obs = None
-        rows = done.nonzero(as_tuple=False).flatten().to(torch.int64)
+        rows = reset_plan.rows
+        finished_episode_metrics = self._episode_metrics.finished_values(rows)
         if rows.numel():
             final_obs = self._final_observation
             for name, values in obs.items():
@@ -1224,7 +1213,13 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
             reward=reward,
             terminated=terminated,
             truncated=truncated,
-            info={"log": {}, "steps": self._steps.clone(), "timing": timing},
+            info={
+                "log": {},
+                "steps": self._steps.clone(),
+                "timing": timing,
+                "finished_episode_metrics": finished_episode_metrics,
+                "episode_metrics": self._episode_metrics.snapshot(),
+            },
             final_observation=final_obs,
         )
         return self._state

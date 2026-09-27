@@ -37,6 +37,13 @@ registry.register_env(
     make_torch_g1_motion_tracking_flashsac_env,
     sim_backend="mjwarp",
 )
+# G1 flip tracking is the second scoped tensor task owner. It intentionally
+# registers only the validated MJWarp tensor path; MuJoCo/Motrix remain NumPy.
+registry.register_env(
+    "G1FlipTrackingSAC",
+    make_torch_g1_motion_tracking_flashsac_env,
+    sim_backend="mjwarp",
+)
 # genesis/newton implement the motion-body-id capability since unisim-core 1.5.1
 # (unilabsim/unisim#137); isaacgym/isaacsim join them since unisim-core 1.7.4
 # fixed the subprocess body-state publish/reset paths (unilabsim/unisim#141,
