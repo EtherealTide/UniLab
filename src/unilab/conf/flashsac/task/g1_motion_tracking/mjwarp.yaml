@@ -12,3 +12,6 @@ training:
   task_name: G1MotionTrackingSAC
   sim_backend: mjwarp
   play_render_mode: record
+  # Reduce metric D2H frequency for the scoped tensor benchmark; capacity
+  # remains CLI-overridable so ring depth can be measured without task forks.
+  collector_metrics_interval: 100

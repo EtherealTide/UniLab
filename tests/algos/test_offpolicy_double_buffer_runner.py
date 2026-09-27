@@ -82,6 +82,18 @@ def test_offpolicy_config_has_one_replay_path():
     cfg = _offpolicy_cfg()
     assert cfg.training.replay_prefetch_mode == "one_tick"
     assert cfg.training.env_steps_per_sync == 1
+    assert cfg.training.inference_slot_capacity == 1
+    assert cfg.training.collector_metrics_interval == 1
+
+
+def test_flashsac_scoped_tensor_benchmark_reduces_metric_flush_frequency():
+    cfg = _offpolicy_cfg(
+        ["task=g1_motion_tracking/mjwarp"],
+        algo="flashsac",
+    )
+
+    assert cfg.training.inference_slot_capacity == 1
+    assert cfg.training.collector_metrics_interval == 100
 
 
 @pytest.mark.parametrize("mode", ["invalid_mode", "same_tick"])
