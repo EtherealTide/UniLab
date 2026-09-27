@@ -7,9 +7,16 @@ for their semantic contracts and downstream finite checks.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import torch
-from unisim.backend.base import SimBackend
+from unisim.backend.base import (
+    HostBridgeTransferPlan,
+    SimBackend,
+    TensorExecution,
+    TensorIOSpec,
+)
 
 
 class TensorDeviceStateStore:
@@ -52,6 +59,35 @@ class TensorDeviceStateStore:
         self.robot_body_quat = torch.empty((*body_shape, 4), device=self.device)
         self.robot_body_lin_vel = torch.empty_like(self.robot_body_pos)
         self.robot_body_ang_vel = torch.empty_like(self.robot_body_pos)
+        self._host_bridge_plan: HostBridgeTransferPlan | None = None
+        self.last_backend_result: dict | None = None
+        capabilities = self.backend.get_tensor_capabilities()
+        if capabilities.execution is TensorExecution.HOST_BRIDGE:
+            if not capabilities.packed_host_bridge:
+                raise RuntimeError(
+                    "Tensor state store requires packed I/O for host-bridge physics backends"
+                )
+            sensor_names = (
+                "pelvis_local_linvel",
+                "torso_gyro",
+                *(
+                    f"{prefix}_{name}"
+                    for prefix in (
+                        "track_pos_w",
+                        "track_quat_w",
+                        "track_linvel_w",
+                        "track_angvel_w",
+                    )
+                    for name in self.body_names
+                ),
+            )
+            self._host_bridge_plan = self.backend.compile_host_bridge_io(
+                TensorIOSpec(
+                    state_fields=("qpos", "qvel"),
+                    sensor_names=sensor_names,
+                    device=self.device,
+                )
+            )
         self._mjwarp_state_views: dict[str, torch.Tensor] | None = None
         self._mjwarp_sensor_views: dict[str, object] | None = None
         self._mjwarp_linvel_view: torch.Tensor | None = None
@@ -156,6 +192,35 @@ class TensorDeviceStateStore:
                 destination.index_copy_(0, rows, selected)
 
     def _read_host_bridge(self, rows: torch.Tensor | None) -> None:
+        if self._host_bridge_plan is not None:
+            values = (
+                self._host_bridge_plan.read_state_sensors()
+                if rows is None
+                else self._host_bridge_plan.read_selected_state_sensors()
+            )
+            self.qpos = values["qpos"]
+            self.qvel = values["qvel"]
+            qpos, qvel = self._validate_qviews()
+            self.joint_pos = qpos[:, self.joint_qpos_ids]
+            self.joint_vel = qvel[:, self.joint_qvel_ids]
+            self.linvel = values["pelvis_local_linvel"]
+            self.gyro = values["torso_gyro"]
+            destinations = (
+                self.robot_body_pos,
+                self.robot_body_quat,
+                self.robot_body_lin_vel,
+                self.robot_body_ang_vel,
+            )
+            prefixes = ("track_pos_w", "track_quat_w", "track_linvel_w", "track_angvel_w")
+            for destination, prefix in zip(destinations, prefixes, strict=True):
+                torch.stack(
+                    tuple(values[f"{prefix}_{name}"] for name in self.body_names),
+                    dim=1,
+                    out=destination,
+                )
+            self.last_backend_result = {"timing": dict(self._host_bridge_plan.last_timing)}
+            return
+
         if rows is None:
             state = self.backend.get_state_views(("qpos", "qvel"), device=self.device)
             self.qpos = state["qpos"]
@@ -222,6 +287,21 @@ class TensorDeviceStateStore:
             self._read_mjwarp(selected_rows)
         else:
             self._read_host_bridge(selected_rows)
+
+    def step_tensor(self, ctrl: torch.Tensor, nsteps: int) -> dict | None:
+        """Step through the negotiated packed plan when one is available."""
+        if self._host_bridge_plan is not None:
+            self._host_bridge_plan.write_control(ctrl)
+            return cast(dict | None, self._host_bridge_plan.step(nsteps))
+        return cast(dict | None, self.backend.step_tensor(ctrl, nsteps=nsteps))
+
+    def apply_reset(
+        self, rows: torch.Tensor, qpos: torch.Tensor, qvel: torch.Tensor
+    ) -> dict | None:
+        """Apply selected reset through the negotiated packed plan."""
+        if self._host_bridge_plan is not None:
+            return cast(dict | None, self._host_bridge_plan.apply_reset(rows, qpos, qvel))
+        return cast(dict | None, self.backend.set_state_tensor(rows, qpos, qvel))
 
     def validate_finite(self) -> None:
         qpos, qvel = self._require_qviews()

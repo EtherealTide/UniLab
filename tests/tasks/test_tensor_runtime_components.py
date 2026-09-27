@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+from unisim.backend.base import (
+    HostBridgeTransferPlan,
+    TensorExecution,
+    TensorLifecycleCapabilities,
+)
 
 from unilab.managers._noise.noise_cfg import UniformNoiseCfg
 from unilab.tasks.motion_tracking.common.tensor_runtime import (
@@ -77,6 +82,75 @@ def test_tensor_episode_metrics_include_terminal_then_reset() -> None:
 class _HostBridgeBackend:
     backend_type = "mujoco"
 
+    def get_tensor_capabilities(self):
+        return TensorLifecycleCapabilities(
+            execution=TensorExecution.HOST_BRIDGE,
+            packed_host_bridge=True,
+        )
+
+    def compile_host_bridge_io(self, spec):
+        backend = self
+
+        class _Plan(HostBridgeTransferPlan):
+            def __init__(self, plan_spec):
+                self._spec = plan_spec
+                self.last_timing = {}
+                self._reset: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None
+
+            @property
+            def spec(self):
+                return self._spec
+
+            @property
+            def transfer_stats(self):
+                return {}
+
+            def read_state_sensors(self):
+                return self._views()
+
+            def write_control(self, ctrl):
+                return None
+
+            def step(self, nsteps=1):
+                return None
+
+            def apply_reset(self, env_indices, qpos, qvel, randomization=None):
+                self._reset = (env_indices, qpos.clone(), qvel.clone())
+                return None
+
+            def read_selected_state_sensors(self):
+                views = self._views()
+                if self._reset is not None:
+                    rows, qpos, qvel = self._reset
+                    views["qpos"] = views["qpos"].index_copy(0, rows, qpos)
+                    views["qvel"] = views["qvel"].index_copy(0, rows, qvel)
+                return views
+
+            def close(self):
+                return None
+
+            def _views(self):
+                state = backend.get_state_views(("qpos", "qvel"), device="cpu")
+                state["pelvis_local_linvel"] = backend.get_sensor_view(
+                    "pelvis_local_linvel", device="cpu"
+                )
+                state["torso_gyro"] = backend.get_sensor_view("torso_gyro", device="cpu")
+                state["track_pos_w_pelvis"] = backend.get_sensor_view(
+                    "track_pos_w_pelvis", device="cpu"
+                )
+                state["track_quat_w_pelvis"] = backend.get_sensor_view(
+                    "track_quat_w_pelvis", device="cpu"
+                )
+                state["track_linvel_w_pelvis"] = backend.get_sensor_view(
+                    "track_linvel_w_pelvis", device="cpu"
+                )
+                state["track_angvel_w_pelvis"] = backend.get_sensor_view(
+                    "track_angvel_w_pelvis", device="cpu"
+                )
+                return state
+
+        return _Plan(spec)
+
     def get_state_views(self, names, device=None):
         assert names == ("qpos", "qvel")
         return {
@@ -89,6 +163,12 @@ class _HostBridgeBackend:
 
     def get_sensor_view(self, name, device=None):
         values = {"pelvis_local_linvel": (1.0, 2.0, 3.0), "torso_gyro": (-1.0, -2.0, -3.0)}
+        if name == "track_pos_w_pelvis":
+            return torch.tensor([[0.1, 0.2, 0.3]], device=device)
+        if name == "track_quat_w_pelvis":
+            return torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=device)
+        if name in {"track_linvel_w_pelvis", "track_angvel_w_pelvis"}:
+            return torch.zeros((1, 3), device=device)
         return torch.tensor(values[name], device=device).unsqueeze(0)
 
     def get_body_pos_w(self, body_ids):
@@ -121,3 +201,29 @@ def test_tensor_state_store_full_read_validates_layout_and_finite_state() -> Non
     torch.testing.assert_close(store.joint_pos, torch.tensor([[0.25]]))
     torch.testing.assert_close(store.linvel, torch.tensor([[1.0, 2.0, 3.0]]))
     torch.testing.assert_close(store.robot_body_pos, torch.tensor([[[0.1, 0.2, 0.3]]]))
+
+
+def test_tensor_state_store_selected_reset_reads_authoritative_selected_rows() -> None:
+    store = TensorDeviceStateStore(
+        backend=_HostBridgeBackend(),  # pyright: ignore[reportArgumentType]
+        device=torch.device("cpu"),
+        num_envs=1,
+        joint_qpos_ids=np.array([7], dtype=np.int64),
+        joint_qvel_ids=np.array([6], dtype=np.int64),
+        body_names=("pelvis",),
+        body_ids=np.array([0], dtype=np.intp),
+    )
+    store.read()
+    qpos_before = store.qpos.clone()
+    qvel_before = store.qvel.clone()
+    rows = torch.tensor([0], dtype=torch.int64)
+    qpos = torch.full_like(qpos_before, -2.0)
+    qvel = torch.full_like(qvel_before, -3.0)
+
+    store.apply_reset(rows, qpos, qvel)
+    store.read(rows)
+
+    torch.testing.assert_close(store.qpos, qpos)
+    torch.testing.assert_close(store.qvel, qvel)
+    torch.testing.assert_close(store.joint_pos, qpos[:, 7:])
+    torch.testing.assert_close(store.joint_vel, qvel[:, 6:])

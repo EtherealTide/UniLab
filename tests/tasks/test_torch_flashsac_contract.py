@@ -7,6 +7,7 @@ import pytest
 import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
+from unisim.backend.base import TensorExecution, TensorLifecycleCapabilities
 
 from unilab.base.config_adapter import BackendAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
@@ -212,6 +213,9 @@ def test_manual_torch_reset_clears_only_selected_done_flags(
 def test_torch_mjwarp_state_store_renegotiates_and_preserves_policy_sensor_boundary() -> None:
     class Backend:
         backend_type = "mjwarp"
+
+        def get_tensor_capabilities(self):
+            return TensorLifecycleCapabilities(execution=TensorExecution.DEVICE_RESIDENT)
 
         def get_state_views(self, names, device=None):
             assert names == ("qpos", "qvel")

@@ -342,6 +342,11 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
             raise RuntimeError("backend did not negotiate state and sensor tensor views")
         if not capabilities.stepping or not capabilities.selected_reset:
             raise RuntimeError("backend did not negotiate tensor stepping and selected reset")
+        if (
+            capabilities.execution is TensorExecution.HOST_BRIDGE
+            and not capabilities.packed_host_bridge
+        ):
+            raise RuntimeError("Host-bridge backend did not negotiate packed tensor I/O")
         if self._cfg.fixed_model_variants is not None:
             raise ValueError("Torch G1 FlashSAC v1 does not support fixed model variants")
         state_views = self._backend.get_state_views(("qpos", "qvel"), device=self.device)
@@ -779,7 +784,7 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         target = slice(None) if rows is None else rows
         self._motion_state[target] = selected
 
-    def _read_robot_state(self, rows: torch.Tensor | None = None) -> None:
+    def _read_robot_state(self, rows: torch.Tensor | None = None) -> dict | None:
         store = self._state_store
         store.read(rows)
         qpos, qvel = store.qviews()
@@ -793,6 +798,7 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         self._robot_body_quat = store.robot_body_quat
         self._robot_body_lin_vel = store.robot_body_lin_vel
         self._robot_body_ang_vel = store.robot_body_ang_vel
+        return store.last_backend_result
 
     def _refresh_motion_relative_transforms(self, rows: torch.Tensor | None = None) -> None:
         target = slice(None) if rows is None else rows
@@ -1108,7 +1114,6 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         qvel[:, self._joint_qvel_ids] = motion[1]
         if not _all_finite(qpos, qvel):
             raise ValueError("Torch G1 FlashSAC reset qpos/qvel contain NaN or Inf")
-        self._last_backend_reset_result = self._backend.set_state_tensor(rows, qpos, qvel)
         qpos_view[rows] = qpos
         qvel_view[rows] = qvel
         default_range = self._command_cfg.params.joint_default_position_range
@@ -1122,7 +1127,14 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         self._steps[rows] = 0
         self._episode_metrics.reset(rows)
         self._refresh_motion_buffers(frames, rows)
-        self._read_robot_state(rows)
+        backend_result = self._state_store.apply_reset(rows, qpos, qvel)
+        read_result = self._read_robot_state(rows)
+        combined_timing: dict[str, float] = {}
+        if isinstance(backend_result, dict):
+            combined_timing.update(backend_result.get("timing", {}))
+        if isinstance(read_result, dict):
+            combined_timing.update(read_result.get("timing", {}))
+        self._last_backend_reset_result = {"timing": combined_timing}
         self._refresh_motion_relative_transforms(rows)
         self._refresh_robot_relative_transforms(rows)
         reset_obs = self._compute_observations(rows=rows)
@@ -1157,14 +1169,16 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
             if not bool(torch.isfinite(action).all()):
                 raise ValueError("actions contain NaN or Inf")
             raise ValueError("transformed controls contain NaN or Inf")
-        backend_result = self._backend.step_tensor(self._ctrl, nsteps=self._cfg.sim_substeps)
+        backend_result = self._state_store.step_tensor(self._ctrl, self._cfg.sim_substeps)
         if isinstance(backend_result, dict):
             timing.update(backend_result.get("timing", {}))
         timing["action_backend_step_ms"] = (perf_counter() - started) * 1000.0
 
         phase = perf_counter()
         self._steps += 1
-        self._read_robot_state()
+        read_result = self._read_robot_state()
+        if isinstance(read_result, dict):
+            timing.update(read_result.get("timing", {}))
         self._refresh_robot_relative_transforms()
         terminated = self._compute_terminations()
         clip_end = self.current_frames >= self._clip_ends
@@ -1207,8 +1221,6 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         obs = self._reset_rows(rows, obs)
         if rows.numel() and isinstance(self._last_backend_reset_result, dict):
             timing.update(self._last_backend_reset_result.get("timing", {}))
-        if self.device.type == "cuda":
-            torch.cuda.synchronize(self.device)
         timing["reset_done_ms"] = (perf_counter() - phase) * 1000.0
         timing["step_ms"] = (perf_counter() - started) * 1000.0
 

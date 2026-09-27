@@ -12,6 +12,8 @@ Run it inside the sibling checkout workspace: this branch resolves UniSim,
 UniLab-RL, and mjbatch through the relative paths in ``pyproject.toml``.
 Each requested backend is measured in its own Python process to avoid sharing
  warmed vendor context and allocator state.
+The MuJoCo result also records the packed transfer counters and semantic H2D/D2H
+boundary inventory so host-bridge claims remain independently checkable.
 """
 
 from __future__ import annotations
@@ -30,8 +32,8 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import torch
+from unisim.backend.base import TensorIOSpec
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
 if str(ROOT_DIR) not in sys.path:
@@ -42,6 +44,83 @@ from scripts.benchmark.torch_env.motion_tracking import (  # noqa: E402
     MotionTrackingWorkload,
 )
 from scripts.benchmark.torch_env.xp import TorchBackend, TorchRng  # noqa: E402
+
+
+def _host_bridge_sensor_names(body_names: tuple[str, ...]) -> tuple[str, ...]:
+    return (
+        "pelvis_local_linvel",
+        "torso_gyro",
+        *(
+            f"{prefix}_{name}"
+            for prefix in (
+                "track_pos_w",
+                "track_quat_w",
+                "track_linvel_w",
+                "track_angvel_w",
+            )
+            for name in body_names
+        ),
+    )
+
+
+def _transfer_stats_delta(
+    start: dict[str, int] | None, end: dict[str, int] | None
+) -> dict[str, int] | None:
+    if start is None or end is None:
+        return None
+    return {key: end.get(key, 0) - start.get(key, 0) for key in sorted(set(start) | set(end))}
+
+
+_TRANSFER_BOUNDARY_INVENTORY: tuple[dict[str, object], ...] = (
+    {
+        "phase": "control",
+        "direction": "d2h",
+        "semantic_limit_per_control_step": 1,
+        "implementation": "packed control tensor to pinned host staging",
+    },
+    {
+        "phase": "cpu_physics",
+        "direction": "none",
+        "semantic_limit_per_control_step": 0,
+        "implementation": "MJBatch CPU physics remains authoritative",
+    },
+    {
+        "phase": "update_state_full_read",
+        "direction": "h2d",
+        "semantic_limit_per_control_step": 1,
+        "implementation": "qpos/qvel/requested sensors packed into one host packet",
+    },
+    {
+        "phase": "update_state_manager_compute",
+        "direction": "none",
+        "semantic_limit_per_control_step": 0,
+        "implementation": "Torch reward, termination, observation, and bookkeeping on device",
+    },
+    {
+        "phase": "reset_done_selection",
+        "direction": "none",
+        "semantic_limit_per_control_step": 0,
+        "implementation": "done/row selection and reset-state construction on device",
+    },
+    {
+        "phase": "reset_commit",
+        "direction": "d2h",
+        "semantic_limit_per_control_step": 1,
+        "implementation": "selected row IDs and qpos/qvel packed into one reset packet",
+    },
+    {
+        "phase": "reset_publication",
+        "direction": "h2d",
+        "semantic_limit_per_control_step": 1,
+        "implementation": "selected state/sensors copied as one contiguous prefix, then scattered on device",
+    },
+    {
+        "phase": "replay_publication",
+        "direction": "excluded",
+        "semantic_limit_per_control_step": None,
+        "implementation": "outside this phase-local backend probe; no transfer claim is made",
+    },
+)
 
 
 def _build_cfg(backend: str, num_envs: int) -> Any:
@@ -242,9 +321,13 @@ def _run(backend: str, num_envs: int, warmup: int, iters: int) -> dict[str, Any]
     mode = sim_backend.tensor_execution().value
     if mode not in {"device_resident", "host_bridge"}:
         raise RuntimeError(f"backend {backend} did not negotiate a tensor lifecycle: {mode}")
+    capabilities = sim_backend.get_tensor_capabilities()
     sim_backend.materialize()
     sim_backend.reset()
-    robot_body_ids_host = sim_backend.get_body_ids(tuple(robot_body_names))
+    sim_backend.get_body_ids(tuple(robot_body_names))
+    host_bridge_plan = None
+    host_bridge_views = None
+    host_bridge_start_stats: dict[str, int] | None = None
 
     action = torch.zeros((num_envs, sim_backend.num_actuators), device=device)
     reset_rows = max(1, num_envs // 16)
@@ -286,6 +369,38 @@ def _run(backend: str, num_envs: int, warmup: int, iters: int) -> dict[str, Any]
         if mode == "device_resident"
         else None
     )
+    if mode == "host_bridge":
+        if not capabilities.packed_host_bridge:
+            raise RuntimeError("host-bridge benchmark backend does not support packed I/O")
+        host_bridge_plan = sim_backend.compile_host_bridge_io(
+            TensorIOSpec(
+                state_fields=("qpos", "qvel"),
+                sensor_names=_host_bridge_sensor_names(tuple(robot_body_names)),
+                device=device,
+            )
+        )
+        host_bridge_views = host_bridge_plan.read_state_sensors()
+        assert host_bridge_views is not None
+        workload.dof_pos = host_bridge_views["qpos"][:, 7:]
+        workload.dof_vel = host_bridge_views["qvel"][:, 6:]
+        workload.linvel = host_bridge_views["pelvis_local_linvel"]
+        workload.gyro = host_bridge_views["torso_gyro"]
+        workload.body_pos = torch.stack(
+            tuple(host_bridge_views[f"track_pos_w_{name}"] for name in robot_body_names),
+            dim=1,
+        )
+        workload.body_quat = torch.stack(
+            tuple(host_bridge_views[f"track_quat_w_{name}"] for name in robot_body_names),
+            dim=1,
+        )
+        workload.body_lin_vel = torch.stack(
+            tuple(host_bridge_views[f"track_linvel_w_{name}"] for name in robot_body_names),
+            dim=1,
+        )
+        workload.body_ang_vel = torch.stack(
+            tuple(host_bridge_views[f"track_angvel_w_{name}"] for name in robot_body_names),
+            dim=1,
+        )
     phase_samples = {
         "backend_step_ms": [],
         "state_exchange_ms": [],
@@ -299,6 +414,7 @@ def _run(backend: str, num_envs: int, warmup: int, iters: int) -> dict[str, Any]
     reset_row_samples: list[float] = []
     backend_step_results: list[dict[str, Any] | None] = []
     backend_reset_results: list[dict[str, Any] | None] = []
+    post_reset_results: list[dict[str, Any] | None] = []
 
     # Keep the synthetic action/reset schedule identical across backends even
     # when multiple runs share one CUDA context.
@@ -312,13 +428,21 @@ def _run(backend: str, num_envs: int, warmup: int, iters: int) -> dict[str, Any]
                 reset_row_samples = []
                 backend_step_results = []
                 backend_reset_results = []
+                post_reset_results = []
+                host_bridge_start_stats = (
+                    host_bridge_plan.transfer_stats if host_bridge_plan is not None else None
+                )
 
             action.uniform_(-1.0, 1.0)
             workload.current_actions.copy_(action)
             started = time.perf_counter()
 
             phase = time.perf_counter()
-            backend_step_results.append(sim_backend.step_tensor(action, nsteps=3))
+            if host_bridge_plan is None:
+                backend_step_results.append(sim_backend.step_tensor(action, nsteps=3))
+            else:
+                host_bridge_plan.write_control(action)
+                backend_step_results.append(host_bridge_plan.step(nsteps=3))
             phase_samples["backend_step_ms"].append((time.perf_counter() - phase) * 1000.0)
 
             phase = time.perf_counter()
@@ -365,23 +489,32 @@ def _run(backend: str, num_envs: int, warmup: int, iters: int) -> dict[str, Any]
                 workload.linvel = device_sensor_views["linvel"]
                 workload.gyro = device_sensor_views["gyro"]
             else:
-                state = sim_backend.get_state_views(("qpos", "qvel"), device=device)
+                assert host_bridge_plan is not None
+                state = host_bridge_plan.read_state_sensors()
                 workload.dof_pos = state["qpos"][:, 7:]
                 workload.dof_vel = state["qvel"][:, 6:]
-                workload.body_pos = torch.from_numpy(
-                    np.ascontiguousarray(sim_backend.get_body_pos_w(robot_body_ids_host))
-                ).to(device)
-                workload.body_quat = torch.from_numpy(
-                    np.ascontiguousarray(sim_backend.get_body_quat_w(robot_body_ids_host))
-                ).to(device)
-                workload.body_lin_vel = torch.from_numpy(
-                    np.ascontiguousarray(sim_backend.get_body_lin_vel_w(robot_body_ids_host))
-                ).to(device)
-                workload.body_ang_vel = torch.from_numpy(
-                    np.ascontiguousarray(sim_backend.get_body_ang_vel_w(robot_body_ids_host))
-                ).to(device)
-                workload.linvel = sim_backend.get_sensor_view("pelvis_local_linvel", device=device)
-                workload.gyro = sim_backend.get_sensor_view("torso_gyro", device=device)
+                workload.linvel = state["pelvis_local_linvel"]
+                workload.gyro = state["torso_gyro"]
+                torch.stack(
+                    tuple(state[f"track_pos_w_{name}"] for name in robot_body_names),
+                    dim=1,
+                    out=workload.body_pos,
+                )
+                torch.stack(
+                    tuple(state[f"track_quat_w_{name}"] for name in robot_body_names),
+                    dim=1,
+                    out=workload.body_quat,
+                )
+                torch.stack(
+                    tuple(state[f"track_linvel_w_{name}"] for name in robot_body_names),
+                    dim=1,
+                    out=workload.body_lin_vel,
+                )
+                torch.stack(
+                    tuple(state[f"track_angvel_w_{name}"] for name in robot_body_names),
+                    dim=1,
+                    out=workload.body_ang_vel,
+                )
             xp.sync()
             phase_samples["state_exchange_ms"].append((time.perf_counter() - phase) * 1000.0)
 
@@ -406,11 +539,38 @@ def _run(backend: str, num_envs: int, warmup: int, iters: int) -> dict[str, Any]
             del reset_obs
 
             phase = time.perf_counter()
-            backend_reset_results.append(sim_backend.set_state_tensor(env_ids, qpos, qvel))
+            if host_bridge_plan is None:
+                backend_reset_results.append(sim_backend.set_state_tensor(env_ids, qpos, qvel))
+            else:
+                backend_reset_results.append(host_bridge_plan.apply_reset(env_ids, qpos, qvel))
             phase_samples["backend_reset_ms"].append((time.perf_counter() - phase) * 1000.0)
             phase = time.perf_counter()
-            workload.dof_pos[env_ids] = qpos[:, 7:]
-            workload.dof_vel[env_ids] = qvel[:, 6:]
+            if host_bridge_plan is None:
+                workload.dof_pos[env_ids] = qpos[:, 7:]
+                workload.dof_vel[env_ids] = qvel[:, 6:]
+            else:
+                state = host_bridge_plan.read_selected_state_sensors()
+                post_reset_results.append({"timing": dict(host_bridge_plan.last_timing)})
+                selected_body_pos = torch.stack(
+                    tuple(state[f"track_pos_w_{name}"][env_ids] for name in robot_body_names),
+                    dim=1,
+                )
+                workload.body_pos.index_copy_(0, env_ids, selected_body_pos)
+                selected_body_quat = torch.stack(
+                    tuple(state[f"track_quat_w_{name}"][env_ids] for name in robot_body_names),
+                    dim=1,
+                )
+                workload.body_quat.index_copy_(0, env_ids, selected_body_quat)
+                selected_body_lin_vel = torch.stack(
+                    tuple(state[f"track_linvel_w_{name}"][env_ids] for name in robot_body_names),
+                    dim=1,
+                )
+                workload.body_lin_vel.index_copy_(0, env_ids, selected_body_lin_vel)
+                selected_body_ang_vel = torch.stack(
+                    tuple(state[f"track_angvel_w_{name}"][env_ids] for name in robot_body_names),
+                    dim=1,
+                )
+                workload.body_ang_vel.index_copy_(0, env_ids, selected_body_ang_vel)
             xp.sync()
             phase_samples["reset_publish_ms"].append((time.perf_counter() - phase) * 1000.0)
             phase_samples["iteration_ms"].append((time.perf_counter() - started) * 1000.0)
@@ -419,6 +579,11 @@ def _run(backend: str, num_envs: int, warmup: int, iters: int) -> dict[str, Any]
 
     stats = {name: _stats(values) for name, values in phase_samples.items()}
     mean_total_s = stats["iteration_ms"]["mean_ms"] / 1000.0
+    transfer_stats = (
+        _transfer_stats_delta(host_bridge_start_stats, host_bridge_plan.transfer_stats)
+        if host_bridge_plan is not None
+        else None
+    )
     return {
         "backend": backend,
         "tensor_execution": mode,
@@ -441,9 +606,22 @@ def _run(backend: str, num_envs: int, warmup: int, iters: int) -> dict[str, Any]
         "throughput_env_control_steps_per_s": num_envs / mean_total_s,
         "throughput_physics_substeps_per_s": 3 * num_envs / mean_total_s,
         "phases": stats,
+        "transfer_boundary_inventory": (
+            _TRANSFER_BOUNDARY_INVENTORY if mode == "host_bridge" else None
+        ),
+        "gpu_cpu_overlap": {
+            "policy": "none_by_design" if mode == "host_bridge" else "not_applicable",
+            "reason": (
+                "each measured phase ends at a Torch synchronization point"
+                if mode == "host_bridge"
+                else "device-resident physics has no host-bridge boundary in this probe"
+            ),
+        },
+        "host_bridge_transfer_stats": transfer_stats,
         "backend_timings": {
             "step_tensor": _backend_timing_stats(backend_step_results),
             "set_state_tensor": _backend_timing_stats(backend_reset_results),
+            "post_reset_read": _backend_timing_stats(post_reset_results),
         },
     }
 
