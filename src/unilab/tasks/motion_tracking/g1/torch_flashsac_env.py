@@ -589,9 +589,9 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
                 )
             noise_terms.append(noise)
         noise_widths = (3, 3, 29, 29)
-        for term in noise_terms:
-            _scalar_noise_bound(term.n_min, label="noise minimum")
-            _scalar_noise_bound(term.n_max, label="noise maximum")
+        for uniform_noise in noise_terms:
+            _scalar_noise_bound(uniform_noise.n_min, label="noise minimum")
+            _scalar_noise_bound(uniform_noise.n_max, label="noise maximum")
         self._observation_noise = TensorObservationNoise.from_uniform_terms(
             tuple(noise_terms), noise_widths, self.device
         )
@@ -1094,8 +1094,12 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         ) * joint_noise_scale + float(joint_range[0])
         joint_pos = motion[0] + joint_noise
         joint_pos = joint_pos.clamp(self._soft_limits[:, 0], self._soft_limits[:, 1])
-        qpos = self._qpos.index_select(0, rows).clone()
-        qvel = self._qvel.index_select(0, rows).clone()
+        qpos_view = self._qpos
+        qvel_view = self._qvel
+        if qpos_view is None or qvel_view is None:
+            raise RuntimeError("Torch G1 FlashSAC selected reset requires initialized state views")
+        qpos = qpos_view.index_select(0, rows).clone()
+        qvel = qvel_view.index_select(0, rows).clone()
         qpos[:, :3] = root_pos
         qpos[:, 3:7] = root_quat
         qpos[:, self._joint_qpos_ids] = joint_pos
@@ -1105,8 +1109,8 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         if not _all_finite(qpos, qvel):
             raise ValueError("Torch G1 FlashSAC reset qpos/qvel contain NaN or Inf")
         self._last_backend_reset_result = self._backend.set_state_tensor(rows, qpos, qvel)
-        self._qpos[rows] = qpos
-        self._qvel[rows] = qvel
+        qpos_view[rows] = qpos
+        qvel_view[rows] = qvel
         default_range = self._command_cfg.params.joint_default_position_range
         default_noise_scale = float(default_range[1] - default_range[0])
         self._joint_default_bias[rows] = torch.rand(

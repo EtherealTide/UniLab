@@ -97,8 +97,10 @@ class TensorObservationNoise:
     ) -> TensorObservationNoise:
         if len(terms) != len(widths) or not terms or min(widths) <= 0:
             raise ValueError("observation noise terms and widths must be non-empty and aligned")
-        lower_values = tuple(float(term.n_min) for term in terms)
-        upper_values = tuple(float(term.n_max) for term in terms)
+        lower_values = tuple(term.n_min for term in terms if isinstance(term.n_min, float))
+        upper_values = tuple(term.n_max for term in terms if isinstance(term.n_max, float))
+        if len(lower_values) != len(terms) or len(upper_values) != len(terms):
+            raise TypeError("motion-tracking tensor runtime requires scalar uniform noise bounds")
         if any(not np.isfinite(value) for value in (*lower_values, *upper_values)):
             raise ValueError("observation noise bounds must be finite")
         if any(upper < lower for lower, upper in zip(lower_values, upper_values)):
@@ -151,11 +153,11 @@ class TensorResetPlan:
 
     @property
     def rows(self) -> torch.Tensor:
-        if self._rows is None:
-            object.__setattr__(
-                self, "_rows", self.done.nonzero(as_tuple=False).flatten().to(torch.int64)
-            )
-        return self._rows
+        rows = self._rows
+        if rows is None:
+            rows = self.done.nonzero(as_tuple=False).flatten().to(torch.int64)
+            object.__setattr__(self, "_rows", rows)
+        return rows
 
 
 @dataclass

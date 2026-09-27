@@ -91,20 +91,29 @@ class TensorDeviceStateStore:
         return qpos, qvel
 
     def _read_mjwarp(self, rows: torch.Tensor | None) -> None:
-        if self._mjwarp_state_views is None or self._mjwarp_sensor_views is None:
-            self._mjwarp_state_views = self.backend.get_state_views(
-                ("qpos", "qvel"), device=self.device
-            )
+        state_views = self._mjwarp_state_views
+        sensor_views = self._mjwarp_sensor_views
+        if state_views is None or sensor_views is None:
+            requested_views = self.backend.get_state_views(("qpos", "qvel"), device=self.device)
+            qpos = requested_views["qpos"]
+            qvel = requested_views["qvel"]
+            if not isinstance(qpos, torch.Tensor) or not isinstance(qvel, torch.Tensor):
+                raise TypeError("MJWarp state views did not return tensors")
+            state_views = {"qpos": qpos, "qvel": qvel}
+            sensor_views = {}
             linvel_view = self.backend.get_sensor_view("pelvis_local_linvel", device=self.device)
             gyro_view = self.backend.get_sensor_view("torso_gyro", device=self.device)
             if not isinstance(linvel_view, torch.Tensor) or not isinstance(gyro_view, torch.Tensor):
                 raise TypeError("MJWarp scalar sensor views did not return tensors")
-            self._mjwarp_sensor_views = {"linvel": linvel_view, "gyro": gyro_view}
+            sensor_views["linvel"] = linvel_view
+            sensor_views["gyro"] = gyro_view
             for prefix in ("track_pos_w", "track_quat_w", "track_linvel_w", "track_angvel_w"):
-                self._mjwarp_sensor_views[prefix] = tuple(
+                sensor_views[prefix] = tuple(
                     self.backend.get_sensor_view(f"{prefix}_{name}", device=self.device)
                     for name in self.body_names
                 )
+            self._mjwarp_state_views = state_views
+            self._mjwarp_sensor_views = sensor_views
             self._mjwarp_linvel_view = linvel_view
             self._mjwarp_gyro_view = gyro_view
             self.linvel = linvel_view.clone()
@@ -124,10 +133,8 @@ class TensorDeviceStateStore:
                 self.linvel[rows] = self._mjwarp_linvel_view.index_select(0, rows)
                 self.gyro[rows] = self._mjwarp_gyro_view.index_select(0, rows)
 
-        assert self._mjwarp_state_views is not None
-        assert self._mjwarp_sensor_views is not None
-        self.qpos = self._mjwarp_state_views["qpos"]
-        self.qvel = self._mjwarp_state_views["qvel"]
+        self.qpos = state_views["qpos"]
+        self.qvel = state_views["qvel"]
         self._validate_qviews()
         self.joint_pos = self.qpos[:, self.joint_qpos_ids]
         self.joint_vel = self.qvel[:, self.joint_qvel_ids]
@@ -139,7 +146,7 @@ class TensorDeviceStateStore:
         )
         prefixes = ("track_pos_w", "track_quat_w", "track_linvel_w", "track_angvel_w")
         for destination, prefix in zip(destinations, prefixes, strict=True):
-            views = self._mjwarp_sensor_views[prefix]
+            views = sensor_views[prefix]
             if not isinstance(views, tuple) or len(views) != len(self.body_names):
                 raise TypeError("MJWarp body sensor views did not match the body layout")
             if rows is None:
@@ -153,9 +160,9 @@ class TensorDeviceStateStore:
             state = self.backend.get_state_views(("qpos", "qvel"), device=self.device)
             self.qpos = state["qpos"]
             self.qvel = state["qvel"]
-            self._validate_qviews()
-            self.joint_pos = self.qpos[:, self.joint_qpos_ids]
-            self.joint_vel = self.qvel[:, self.joint_qvel_ids]
+            qpos, qvel = self._validate_qviews()
+            self.joint_pos = qpos[:, self.joint_qpos_ids]
+            self.joint_vel = qvel[:, self.joint_qvel_ids]
             self.linvel = self.backend.get_sensor_view("pelvis_local_linvel", device=self.device)
             self.gyro = self.backend.get_sensor_view("torso_gyro", device=self.device)
         else:

@@ -79,7 +79,7 @@ uv run scripts/generate_support_matrix.py --write
 | APPO (torch) | `allegro_inhand` (Allegro in-hand) | Tested | - | Tested | - | - | - | - | - |
 | SAC (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Tested | Tested | Tested | Tested | Configured | Tested | - |
 | SAC (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Configured | Tested | Configured | Configured | Configured | Configured | - |
-| SAC (torch) | `g1_flip_tracking` (G1 flip tracking) | Tested | - | Registered | - | - | - | - | - |
+| SAC (torch) | `g1_flip_tracking` (G1 flip tracking) | Tested | Registered | Registered | - | - | - | - | - |
 | SAC (torch) | `g1_wbt_obs` (g1 wbt obs) | Tested | - | Registered | - | - | - | - | - |
 | FlashSAC (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | - | Registered | - | - | - | - | Registered |
 | FlashSAC (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Configured | Tested | Registered | Registered | Registered | Registered | - |
