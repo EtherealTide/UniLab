@@ -208,6 +208,26 @@ def test_motion_sampler_uses_env_owned_rng_and_steps_only_selected_rows(tmp_path
     assert sampler.current_frames[2] == frames[1] + 1
 
 
+def test_motion_sampler_adaptive_zero_floor_cold_starts_uniform(tmp_path):
+    motion = tmp_path / "motion.npz"
+    _write_motion_npz(motion, base_value=0.0, num_frames=70)
+    loader = MotionLoader(str(motion))
+    sampler = MotionSampler(
+        loader,
+        mode="adaptive",
+        num_envs=64,
+        adaptive_uniform_ratio=0.0,
+        rng=np.random.default_rng(7),
+    )
+
+    frames = sampler.sample_frames(np.arange(64, dtype=np.int32))
+
+    assert frames.min() >= 0
+    assert frames.max() < loader.num_frames
+    np.testing.assert_allclose(sampler.sampling_entropy, 1.0)
+    np.testing.assert_allclose(sampler.sampling_top1_prob, 1.0 / sampler.bin_count)
+
+
 def test_box_motion_loader_reads_object_state_and_trims_robot_joints(tmp_path):
     from unilab.tasks.motion_tracking.g1.motion_box_loader import BoxMotionLoader
 
