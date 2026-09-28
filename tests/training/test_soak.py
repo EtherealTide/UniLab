@@ -35,6 +35,23 @@ def _valid_replay_ingress() -> dict[str, object]:
     }
 
 
+def _normal_shutdown() -> dict[str, Any]:
+    return {
+        "classification": "normal_completion",
+        "owner": "learner",
+        "phase": "finalize/logger_finish",
+        "iteration": 100,
+        "coordination_tick": 101,
+        "inference_epoch": 0,
+        "exception": None,
+        "learner_coordination": {"phase": "STOPPED", "progress": 101},
+        "inference_ring": None,
+        "replay_ingress": None,
+        "collector": {"alive": False, "exitcode": 0, "signal": None, "signal_name": None},
+        "cleanup": {"errors": []},
+    }
+
+
 def _completed_summary() -> dict[str, Any]:
     return {
         "status": "completed",
@@ -52,6 +69,7 @@ def _completed_summary() -> dict[str, Any]:
                 "max_publication_lag": 1,
             },
             "replay_ingress": _valid_replay_ingress(),
+            "shutdown": _normal_shutdown(),
         },
     }
 
@@ -116,7 +134,9 @@ def test_soak_monitor_accepts_completed_run(tmp_path: Path) -> None:
     assert artifact["post_shutdown"]["residual_processes"] == []
     assert artifact["resource_summary"]["sample_count"] >= 1
     assert artifact["resource_summary"]["max_process_count"] >= 1
-    assert artifact["schema_version"] == "0.2.0"
+    assert artifact["schema_version"] == "0.3.0"
+    assert artifact["failure_classification"] is None
+    assert artifact["shutdown"]["classification"] == "normal_completion"
     assert artifact["resource_summary"]["replay_ingress_depth"] == 2
     assert artifact["resource_summary"]["replay_ingress_high_water_occupancy"] == 2
     assert artifact["resource_summary"]["replay_ingress_final_occupancy"] == 0
@@ -160,7 +180,162 @@ def test_soak_monitor_fails_closed_on_stale_progress(tmp_path: Path) -> None:
     artifact = json.loads((tmp_path / "artifact.json").read_text())
     assert artifact["status"] == "failed"
     assert "did not change" in artifact["failure_reason"]
+    assert artifact["failure_classification"] == "timeout/stale_tick"
+    assert artifact["shutdown"] is None
     assert artifact["post_shutdown"]["residual_processes"] == []
+
+
+def test_soak_monitor_reports_abnormal_shutdown_diagnostics(tmp_path: Path) -> None:
+    summary = {
+        "status": "failed",
+        "error": "learner update failed",
+        "metric_schema_version": 1,
+        "runtime_manifest": {
+            "schema_version": 1,
+            "shutdown": {
+                "classification": "learner_failure",
+                "owner": "learner",
+                "phase": "training/learner_update",
+                "iteration": 7,
+                "coordination_tick": 8,
+                "inference_epoch": 0,
+                "exception": {"type": "RuntimeError", "message": "learner update failed"},
+                "learner_coordination": {"phase": "STOPPED", "progress": 8},
+                "inference_ring": None,
+                "replay_ingress": None,
+                "collector": {"alive": False, "exitcode": 0, "signal": None, "signal_name": None},
+                "cleanup": {"errors": [{"type": "OSError", "message": "join failed"}]},
+            },
+        },
+    }
+
+    with pytest.raises(SoakFailureError, match="learner_failure.*training/learner_update"):
+        _run_with_summary(tmp_path, summary)
+
+    artifact = json.loads((tmp_path / "artifact.json").read_text())
+    assert artifact["schema_version"] == "0.3.0"
+    assert artifact["status"] == "failed"
+    assert artifact["failure_classification"] == "learner_failure"
+    assert artifact["shutdown"]["owner"] == "learner"
+    assert artifact["shutdown"]["phase"] == "training/learner_update"
+    assert artifact["shutdown"]["exception"]["type"] == "RuntimeError"
+    assert artifact["shutdown"]["cleanup"]["errors"][0]["type"] == "OSError"
+
+
+@pytest.mark.parametrize(
+    "classification",
+    ["collector_failure", "backend_worker_failure", "timeout/stale_tick", "external_cancellation"],
+)
+def test_soak_monitor_preserves_abnormal_producer_classification(
+    tmp_path: Path, classification: str
+) -> None:
+    shutdown = _normal_shutdown()
+    shutdown.update(
+        classification=classification,
+        owner="collector",
+        phase="collection/env_step",
+    )
+    summary: dict[str, Any] = {
+        "status": "failed",
+        "error": "collector stopped",
+        "metric_schema_version": 1,
+        "runtime_manifest": {"schema_version": 1, "shutdown": shutdown},
+    }
+
+    with pytest.raises(SoakFailureError, match="run_summary status is 'failed'"):
+        _run_with_summary(tmp_path, summary)
+
+    artifact = json.loads((tmp_path / "artifact.json").read_text())
+    assert artifact["failure_classification"] == classification
+    assert artifact["shutdown"] == shutdown
+
+
+def test_soak_monitor_reports_missing_abnormal_shutdown_diagnostics(tmp_path: Path) -> None:
+    summary: dict[str, Any] = {
+        "status": "failed",
+        "error": "learner stopped before diagnostics",
+        "metric_schema_version": 1,
+        "runtime_manifest": {"schema_version": 1},
+    }
+
+    with pytest.raises(SoakFailureError, match="shutdown diagnostics are unavailable"):
+        _run_with_summary(tmp_path, summary)
+
+    artifact = json.loads((tmp_path / "artifact.json").read_text())
+    assert artifact["failure_classification"] == "unknown_failure"
+    assert artifact["shutdown"] is None
+
+
+def test_soak_monitor_rejects_normal_completion_on_abnormal_run(tmp_path: Path) -> None:
+    summary: dict[str, Any] = {
+        "status": "failed",
+        "metric_schema_version": 1,
+        "runtime_manifest": {"schema_version": 1, "shutdown": _normal_shutdown()},
+    }
+
+    with pytest.raises(SoakFailureError, match="cannot be normal_completion"):
+        _run_with_summary(tmp_path, summary)
+
+    artifact = json.loads((tmp_path / "artifact.json").read_text())
+    assert artifact["failure_classification"] == "shutdown_contract_violation"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda shutdown: shutdown.update(classification="invalid"),
+        lambda shutdown: shutdown.update(classification=None),
+        lambda shutdown: shutdown.update(owner=""),
+        lambda shutdown: shutdown.update(owner=7),
+        lambda shutdown: shutdown.update(phase=""),
+        lambda shutdown: shutdown.update(phase=None),
+        lambda shutdown: shutdown.update(exception="RuntimeError"),
+        lambda shutdown: shutdown.update(cleanup={"errors": "[]"}),
+    ],
+)
+def test_soak_monitor_rejects_malformed_shutdown_diagnostics(tmp_path: Path, mutation: Any) -> None:
+    summary = _completed_summary()
+    shutdown = summary["runtime_manifest"]["shutdown"]
+    assert isinstance(shutdown, dict)
+    mutation(shutdown)
+
+    with pytest.raises(
+        SoakFailureError, match="shutdown has invalid|shutdown exception|cleanup.errors"
+    ):
+        _run_with_summary(tmp_path, summary)
+
+    artifact = json.loads((tmp_path / "artifact.json").read_text())
+    assert artifact["status"] == "failed"
+    assert artifact["failure_classification"] == "shutdown_contract_violation"
+
+
+def test_soak_monitor_rejects_completed_cleanup_errors(tmp_path: Path) -> None:
+    summary = _completed_summary()
+    summary["runtime_manifest"]["shutdown"]["cleanup"]["errors"].append(
+        {"type": "OSError", "message": "join failed"}
+    )
+
+    with pytest.raises(SoakFailureError, match="completed run reported shutdown cleanup errors"):
+        _run_with_summary(tmp_path, summary)
+
+    artifact = json.loads((tmp_path / "artifact.json").read_text())
+    assert artifact["failure_classification"] == "shutdown_contract_violation"
+
+
+def test_soak_monitor_reports_local_replay_error_before_manifest_schema_error(
+    tmp_path: Path,
+) -> None:
+    summary = _completed_summary()
+    manifest = summary["runtime_manifest"]
+    manifest.pop("inference_ring_capacity")
+    manifest["replay_ingress"]["occupancy"] = 1
+
+    with pytest.raises(SoakFailureError, match="occupancy does not match publication sequences"):
+        _run_with_summary(tmp_path, summary)
+
+    artifact = json.loads((tmp_path / "artifact.json").read_text())
+    assert "occupancy does not match publication sequences" in artifact["failure_reason"]
+    assert "inference_ring_capacity" not in artifact["failure_reason"]
 
 
 def test_soak_monitor_fails_when_summary_is_missing(tmp_path: Path) -> None:
