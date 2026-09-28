@@ -23,9 +23,20 @@ from typing import Any
 
 from unilab.cli import build_command
 
-_ARTIFACT_SCHEMA_VERSION = "0.2.0"
+_ARTIFACT_SCHEMA_VERSION = "0.3.0"
 _SUPPORTED_METRIC_SCHEMA_VERSION = 1
 _SUPPORTED_RUNTIME_MANIFEST_SCHEMA_VERSION = 1
+_SHUTDOWN_CLASSIFICATIONS = frozenset(
+    (
+        "normal_completion",
+        "learner_failure",
+        "collector_failure",
+        "backend_worker_failure",
+        "timeout/stale_tick",
+        "external_cancellation",
+        "unknown_failure",
+    )
+)
 
 _REPLAY_INGRESS_INTEGER_FIELDS = (
     "ingress_depth",
@@ -469,38 +480,145 @@ def _finite_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _final_replay_ingress_failure(run_summary: Mapping[str, Any]) -> str | None:
-    """Validate the final replay-ingress contract without reading CUDA tensors."""
+def _schema_failure(run_summary: Mapping[str, Any], *, completed: bool) -> str | None:
+    """Validate producer schemas for both normal and minimal failure summaries."""
+    scope = "completed " if completed else ""
     metric_schema_version = run_summary.get("metric_schema_version")
     if metric_schema_version is None:
-        return "completed run_summary is missing metric_schema_version"
+        return f"{scope}run_summary is missing metric_schema_version"
     if (
         isinstance(metric_schema_version, bool)
         or not isinstance(metric_schema_version, int)
         or metric_schema_version != _SUPPORTED_METRIC_SCHEMA_VERSION
     ):
         return (
-            "completed run_summary has unsupported "
-            f"metric_schema_version "
+            f"{scope}run_summary has unsupported metric_schema_version "
             f"{metric_schema_version!r}; expected {_SUPPORTED_METRIC_SCHEMA_VERSION}"
         )
 
     manifest = run_summary.get("runtime_manifest")
     if not isinstance(manifest, Mapping):
-        return "completed run_summary is missing runtime_manifest"
+        return f"{scope}run_summary is missing runtime_manifest"
     runtime_schema_version = manifest.get("schema_version")
     if runtime_schema_version is None:
-        return "completed runtime_manifest is missing runtime_manifest.schema_version"
+        return f"{scope}runtime_manifest is missing runtime_manifest.schema_version"
     if (
         isinstance(runtime_schema_version, bool)
         or not isinstance(runtime_schema_version, int)
         or runtime_schema_version != _SUPPORTED_RUNTIME_MANIFEST_SCHEMA_VERSION
     ):
         return (
-            "completed runtime_manifest has unsupported runtime_manifest.schema_version "
+            f"{scope}runtime_manifest has unsupported runtime_manifest.schema_version "
             f"{runtime_schema_version!r}; expected "
             f"{_SUPPORTED_RUNTIME_MANIFEST_SCHEMA_VERSION}"
         )
+
+    return None
+
+
+def _runtime_manifest_contract_failure(
+    run_summary: Mapping[str, Any], *, completed: bool
+) -> str | None:
+    manifest = run_summary.get("runtime_manifest")
+    if not isinstance(manifest, Mapping):
+        return None
+    try:
+        from uni_rl.logging.runtime_manifest_schema import validate_runtime_manifest
+    except ImportError as exc:
+        return f"runtime_manifest validation requires uni_rl runtime_manifest_schema: {exc}"
+    try:
+        validate_runtime_manifest(manifest, completed=completed)
+    except (TypeError, ValueError) as exc:
+        return f"runtime_manifest violates v1 contract: {exc}"
+    return None
+
+
+def _shutdown_diagnostics(run_summary: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if run_summary is None:
+        return None
+    manifest = run_summary.get("runtime_manifest")
+    if not isinstance(manifest, Mapping):
+        return None
+    shutdown = manifest.get("shutdown")
+    return shutdown if isinstance(shutdown, Mapping) else None
+
+
+def _shutdown_contract_failure(
+    shutdown: Mapping[str, Any] | None,
+    *,
+    require_normal_completion: bool,
+) -> str | None:
+    """Validate only the durable, host-only shutdown fields consumed by soak."""
+    if shutdown is None:
+        return (
+            "completed runtime_manifest is missing shutdown diagnostics"
+            if require_normal_completion
+            else None
+        )
+    classification = shutdown.get("classification")
+    owner = shutdown.get("owner")
+    phase = shutdown.get("phase")
+    if not isinstance(classification, str) or classification not in _SHUTDOWN_CLASSIFICATIONS:
+        return f"shutdown has invalid classification {classification!r}"
+    if not isinstance(owner, str) or not owner:
+        return f"shutdown has invalid owner {owner!r}"
+    if not isinstance(phase, str) or not phase:
+        return f"shutdown has invalid phase {phase!r}"
+
+    exception = shutdown.get("exception")
+    if exception is not None and not isinstance(exception, Mapping):
+        return f"shutdown has invalid exception {exception!r}"
+    if isinstance(exception, Mapping):
+        exception_type = exception.get("type")
+        exception_message = exception.get("message")
+        if not isinstance(exception_type, str) or not isinstance(exception_message, str):
+            return "shutdown exception requires string type and message fields"
+
+    cleanup = shutdown.get("cleanup")
+    if not isinstance(cleanup, Mapping):
+        return f"shutdown has invalid cleanup {cleanup!r}"
+    cleanup_errors = cleanup.get("errors")
+    if not isinstance(cleanup_errors, list):
+        return "shutdown cleanup.errors must be a list"
+
+    if not require_normal_completion and classification == "normal_completion":
+        return "abnormal run shutdown classification cannot be normal_completion"
+    if require_normal_completion:
+        if classification != "normal_completion":
+            return (
+                "completed run shutdown classification must be normal_completion, "
+                f"got {classification!r}"
+            )
+        if cleanup_errors:
+            return f"completed run reported shutdown cleanup errors: {cleanup_errors!r}"
+    return None
+
+
+def _describe_shutdown(shutdown: Mapping[str, Any]) -> str:
+    exception = shutdown.get("exception")
+    exception_text = ""
+    if isinstance(exception, Mapping):
+        exception_text = f", exception={exception.get('type')!r}: {exception.get('message')!r}"
+    cleanup = shutdown.get("cleanup")
+    cleanup_count = ""
+    if isinstance(cleanup, Mapping) and isinstance(cleanup.get("errors"), list):
+        cleanup_count = f", cleanup_errors={len(cleanup['errors'])}"
+    return (
+        "shutdown classification="
+        f"{shutdown.get('classification')!r}, owner={shutdown.get('owner')!r}, "
+        f"phase={shutdown.get('phase')!r}{exception_text}{cleanup_count}"
+    )
+
+
+def _append_failure_reason(current: str | None, addition: str) -> str:
+    return addition if current is None else f"{current}; {addition}"
+
+
+def _final_replay_ingress_failure(run_summary: Mapping[str, Any]) -> str | None:
+    """Validate the final replay-ingress contract without reading CUDA tensors."""
+    manifest = run_summary.get("runtime_manifest")
+    if not isinstance(manifest, Mapping):
+        return "completed runtime_manifest is missing runtime_manifest"
 
     replay_ingress = manifest.get("replay_ingress")
     if not isinstance(replay_ingress, Mapping):
@@ -601,17 +719,10 @@ def _final_replay_ingress_failure(run_summary: Mapping[str, Any]) -> str | None:
     if values["high_water_occupancy"] <= 0:
         return "completed replay_ingress high_water_occupancy must be positive"
 
-    try:
-        from uni_rl.logging.runtime_manifest_schema import validate_runtime_manifest
-    except ImportError as exc:
-        return (
-            f"completed runtime_manifest validation requires uni_rl runtime_manifest_schema: {exc}"
-        )
-    try:
-        validate_runtime_manifest(manifest, completed=True)
-    except (TypeError, ValueError) as exc:
-        return f"completed runtime_manifest violates v1 contract: {exc}"
-    return None
+    # UniLab's replay checks are intentionally more specific than the producer's
+    # stable-schema contract. Run the producer validator only after they pass so
+    # a generic schema error cannot hide the actionable replay-ingress failure.
+    return _runtime_manifest_contract_failure(run_summary, completed=True)
 
 
 def run_soak(
@@ -653,6 +764,7 @@ def run_soak(
     started = time.monotonic()
     samples: list[dict[str, Any]] = []
     failure_reason: str | None = None
+    monitor_failure_kind: str | None = None
     process: subprocess.Popen[bytes] | None = None
     last_progress_change: float | None = None
     last_progress_bytes: int | None = None
@@ -689,12 +801,14 @@ def run_soak(
                             "training progress did not change for "
                             f"{now - last_progress_change:.1f}s"
                         )
+                        monitor_failure_kind = "timeout/stale_tick"
                         break
                 elif now - started > startup_timeout_seconds:
                     failure_reason = (
                         "training produced no progress artifact within "
                         f"{startup_timeout_seconds:.1f}s"
                     )
+                    monitor_failure_kind = "timeout/startup"
                     break
                 samples.append(
                     {
@@ -707,12 +821,15 @@ def run_soak(
                 time.sleep(sample_interval_seconds)
         except KeyboardInterrupt:
             failure_reason = "soak was interrupted before the trainer completed"
+            monitor_failure_kind = "external_cancellation"
         except Exception as exc:
             failure_reason = f"soak monitor failed: {type(exc).__name__}: {exc}"
+            monitor_failure_kind = "monitor_failure"
         finally:
             if process is not None and process.poll() is None:
                 if failure_reason is None:
                     failure_reason = "soak monitor exited before the trainer"
+                    monitor_failure_kind = "monitor_failure"
                 _terminate_process_group(process.pid, process)
             if process is not None:
                 returncode = process.wait()
@@ -728,35 +845,106 @@ def run_soak(
     if failure_reason is None and residual_processes:
         pids = ", ".join(str(item["pid"]) for item in residual_processes)
         failure_reason = f"residual child processes after shutdown: {pids}"
+        monitor_failure_kind = "resource_leak"
 
     run_summary = _load_json(progress_dir / "run_summary.json")
-    if failure_reason is None:
+    shutdown = _shutdown_diagnostics(run_summary if isinstance(run_summary, Mapping) else None)
+    if not isinstance(run_summary, Mapping):
         if run_summary is None:
-            failure_reason = "trainer did not write run_summary.json"
-        elif run_summary.get("status") != "completed":
-            failure_reason = (
-                f"run_summary status is {run_summary.get('status')!r}, expected 'completed'"
+            failure_reason = _append_failure_reason(
+                failure_reason, "trainer did not write run_summary.json"
             )
+            if monitor_failure_kind is None:
+                monitor_failure_kind = "missing_run_summary"
         else:
-            manifest = run_summary.get("runtime_manifest")
-            flight = manifest.get("inference_flight") if isinstance(manifest, dict) else None
-            if isinstance(flight, dict):
-                queue_depth = flight.get("queue_depth")
-                publication_lag = flight.get("publication_lag")
-                if queue_depth not in (None, 0) or publication_lag not in (None, 0):
-                    failure_reason = (
-                        "final inference flight is not drained: "
-                        f"queue_depth={queue_depth!r}, publication_lag={publication_lag!r}"
-                    )
-            replay_ingress_failure = _final_replay_ingress_failure(run_summary)
-            if failure_reason is None and replay_ingress_failure is not None:
-                failure_reason = replay_ingress_failure
+            failure_reason = _append_failure_reason(
+                failure_reason,
+                f"run_summary must be a JSON object, got {type(run_summary).__name__}",
+            )
+            if monitor_failure_kind is None:
+                monitor_failure_kind = "invalid_run_summary"
+    else:
+        summary_status = run_summary.get("status")
+        completed_summary = summary_status == "completed"
+        schema_failure = _schema_failure(run_summary, completed=completed_summary)
+        if schema_failure is not None:
+            failure_reason = _append_failure_reason(failure_reason, schema_failure)
+            if monitor_failure_kind is None:
+                monitor_failure_kind = "schema_violation"
+
+        if not completed_summary:
+            if failure_reason is None:
+                failure_reason = f"run_summary status is {summary_status!r}, expected 'completed'"
+            manifest_failure = _runtime_manifest_contract_failure(
+                run_summary,
+                completed=False,
+            )
+            if manifest_failure is not None:
+                failure_reason = _append_failure_reason(failure_reason, manifest_failure)
+            shutdown_failure = _shutdown_contract_failure(
+                shutdown,
+                require_normal_completion=False,
+            )
+            if shutdown_failure is not None:
+                failure_reason = _append_failure_reason(failure_reason, shutdown_failure)
+                if monitor_failure_kind is None:
+                    monitor_failure_kind = "shutdown_contract_violation"
+            elif shutdown is not None:
+                failure_reason = _append_failure_reason(
+                    failure_reason, _describe_shutdown(shutdown)
+                )
+            else:
+                failure_reason = _append_failure_reason(
+                    failure_reason, "shutdown diagnostics are unavailable"
+                )
+            if isinstance(shutdown, Mapping):
+                classification = shutdown.get("classification")
+                if (
+                    shutdown_failure is None
+                    and isinstance(classification, str)
+                    and classification in _SHUTDOWN_CLASSIFICATIONS
+                ):
+                    monitor_failure_kind = classification
+            elif monitor_failure_kind is None:
+                monitor_failure_kind = "unknown_failure"
+        else:
+            if schema_failure is None:
+                manifest = run_summary.get("runtime_manifest")
+                flight = manifest.get("inference_flight") if isinstance(manifest, Mapping) else None
+                if isinstance(flight, Mapping):
+                    queue_depth = flight.get("queue_depth")
+                    publication_lag = flight.get("publication_lag")
+                    if queue_depth not in (None, 0) or publication_lag not in (None, 0):
+                        failure_reason = _append_failure_reason(
+                            failure_reason,
+                            "final inference flight is not drained: "
+                            f"queue_depth={queue_depth!r}, publication_lag={publication_lag!r}",
+                        )
+                        if monitor_failure_kind is None:
+                            monitor_failure_kind = "unknown_failure"
+                replay_ingress_failure = _final_replay_ingress_failure(run_summary)
+                if replay_ingress_failure is not None:
+                    failure_reason = _append_failure_reason(failure_reason, replay_ingress_failure)
+                    if monitor_failure_kind is None:
+                        monitor_failure_kind = "schema_violation"
+            shutdown_failure = _shutdown_contract_failure(
+                shutdown,
+                require_normal_completion=True,
+            )
+            if shutdown_failure is not None:
+                failure_reason = _append_failure_reason(failure_reason, shutdown_failure)
+                if monitor_failure_kind is None:
+                    monitor_failure_kind = "shutdown_contract_violation"
+
+    if monitor_failure_kind is None and failure_reason is not None:
+        monitor_failure_kind = "unknown_failure"
 
     completed = failure_reason is None
     artifact: dict[str, Any] = {
         "schema_version": _ARTIFACT_SCHEMA_VERSION,
         "status": "passed" if completed else "failed",
         "failure_reason": failure_reason,
+        "failure_classification": monitor_failure_kind,
         "command": list(command),
         "context": dict(metadata or {}),
         "started_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started_wall)),
@@ -773,6 +961,7 @@ def run_soak(
         },
         "samples": samples,
         "resource_summary": _resource_summary(samples, len(residual_processes), run_summary),
+        "shutdown": shutdown,
         "post_shutdown": {
             "residual_processes": residual_processes,
         },
