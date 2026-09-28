@@ -1,17 +1,31 @@
+# The tensor-runtime integration profile resolves unisim-core from the relative
+# sibling checkout. Repository-owned test entrypoints therefore provide the
+# explicit approved-source sentinel. `make check-workspace` verifies the pinned
+# commits; direct uv users can run scripts/tools/sync_tensor_workspace.py.
+UNILAB_LOCAL_UNISIM ?= $(abspath ../unisim)
+export UNILAB_LOCAL_UNISIM
+
+.PHONY: sync-workspace
+sync-workspace:
+	uv run --no-project python scripts/tools/sync_tensor_workspace.py --sync
+
+.PHONY: check-workspace
+check-workspace:
+	uv run --no-project python scripts/tools/sync_tensor_workspace.py
+
 .PHONY: sync
-sync:
+sync: sync-workspace
 	uv sync --extra mujoco --extra motrix --extra uni_rl
 
 .PHONY: setup
-setup:
-	uv sync --extra mujoco --extra motrix --extra uni_rl
+setup: sync
 	uv run --no-sync unilab-complete install
 
 # Installs the Python extra and builds DrakeUni's native extension. By default
 # the host-compatible official tarball is downloaded; use DRAKE_HOME=<prefix>
 # to build against an existing installation.
 .PHONY: setup-drake
-setup-drake:
+setup-drake: sync-workspace
 	@ if [ -n "$(DRAKE_HOME)" ]; then \
 		bash scripts/tools/setup_drake_env.sh --drake-home "$(DRAKE_HOME)"; \
 	else \
@@ -19,7 +33,7 @@ setup-drake:
 	fi
 
 .PHONY: setup-motrix
-setup-motrix:
+setup-motrix: sync-workspace
 	uv sync --extra motrix
 	uv run --no-sync unilab-complete install
 
@@ -35,7 +49,7 @@ sync-rocm:
 	cp uv.lock uv.rocm.lock
 
 .PHONY: sync-xpu
-sync-xpu:
+sync-xpu: sync-workspace
 	uv sync --extra mujoco --extra motrix --extra uni_rl --no-install-package torch
 	uv pip install torch==2.7.0 --torch-backend xpu
 

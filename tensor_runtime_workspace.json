@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "profile": "local-editable",
+  "integration_branch": "develop/tensor-runtime",
+  "siblings": [
+    {
+      "name": "unisim-core",
+      "repository": "https://github.com/unilabsim/unisim.git",
+      "ref": "develop/tensor-runtime",
+      "commit": "d647e52e277b344e69cfa653e0b3d39176bc9ba8",
+      "path": "../unisim",
+      "sentinel_env": "UNILAB_LOCAL_UNISIM"
+    },
+    {
+      "name": "unilab-rl",
+      "repository": "https://github.com/unilabsim/unilab_rl.git",
+      "ref": "develop/tensor-runtime",
+      "commit": "79b30a5a25fed83db1809c2c83358132f50ad75f",
+      "path": "../unilab_rl"
+    },
+    {
+      "name": "mjbatch-uni",
+      "repository": "https://github.com/unilabsim/mjbatch_uni.git",
+      "ref": "develop/tensor-runtime",
+      "commit": "b3a3b480ff360cb8144e2557338b5040b5917900",
+      "path": "../mjbatch_uni"
+    }
+  ]
+}

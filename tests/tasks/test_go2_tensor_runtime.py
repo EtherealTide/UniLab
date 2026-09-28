@@ -435,6 +435,34 @@ def test_go2_tensor_runtime_rejects_nonfinite_actions() -> None:
         runtime.step(actions)
 
 
+def test_go2_tensor_runtime_fails_closed_when_cuda_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = FakeGo2DeviceBackend(num_envs=1)
+    qpos, qvel = _reset_state(1)
+    monkeypatch.setattr(
+        tensor_parity_module.torch.cuda,
+        "is_available",
+        lambda: False,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="CUDA Go2 tensor parity requested but CUDA is unavailable",
+    ):
+        Go2TensorParityRuntime(
+            backend,  # pyright: ignore[reportArgumentType]
+            command=torch.zeros((1, 3)),
+            reset_qpos=qpos,
+            reset_qvel=qvel,
+            device="cuda",
+        )
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="wrong-device rejection requires an active CUDA context",
+)
 def test_go2_tensor_runtime_rejects_wrong_device_input() -> None:
     backend = FakeGo2DeviceBackend(num_envs=1)
     qpos, qvel = _reset_state(1)

@@ -13,6 +13,12 @@
   CUDA / macOS profile，执行 `git restore -- pyproject.toml uv.lock` 后重新
   `make setup`。
 - Linux Intel XPU：`make sync-xpu`
+- Tensor-runtime 集成 profile：先运行 `make sync-workspace`，按
+  `tensor_runtime_workspace.json` 中的固定 commit 物化 sibling 仓库；`make setup`
+  会自动执行这一步。默认 `uv.lock` 有意从这些相对 editable checkout 解析
+  `unisim-core`、`unilab-rl` 与 `mjbatch-uni`。仓库 Make target 会为
+  dependency-source sentinel 导出 `UNILAB_LOCAL_UNISIM`；直接使用 `uv run`
+  时必须显式导出它。
 - 如果更喜欢直接使用 uv，完整默认环境为 `uv sync --extra mujoco --extra motrix`；
   单后端使用 `--extra mujoco` 或 `--extra motrix`。
 
@@ -22,7 +28,14 @@ make setup
 # make setup-motrix
 make sync-rocm
 make sync-xpu
+make check-workspace
 ```
+
+`make check-workspace` 检查每个 sibling 是否 clean，并且位于
+`tensor_runtime_workspace.json` 记录的 commit。它不会丢弃或 reset 本地工作。如果
+sibling 是 dirty，请先在那个仓库提交或 stash，再切换固定工作区。ROCm profile 不同：
+`make sync-rocm` 激活的是已提交的 PyPI/ROCm lock 文件，而不是本地 editable
+sibling profile。
 
 请使用 `uv run` 运行命令。不要在 `uv run` 之外直接调用 `python`。
 
