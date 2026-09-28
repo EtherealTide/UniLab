@@ -22,3 +22,9 @@ fields select the replay regime:
 
 WarpSAC requires the same CUDA or Apple MPS device-resident replay path as
 SAC and FlashSAC, and writes runs under `logs/warp_sac/<task>/`.
+
+WarpSAC also shares the public off-policy inference runtime knobs with SAC and
+FlashSAC. Both `training.inference_slot_capacity` and
+`training.collector_metrics_interval` default to `1` and must be positive
+integers. They are written to the runtime manifest as `inference_ring_capacity`
+and `collector_metrics_interval`.

@@ -20,3 +20,8 @@ reward 与训练预算。WarpSAC 专属字段如下：
 
 WarpSAC 与 SAC/FlashSAC 一样要求 CUDA 或 Apple MPS 上的 device-resident replay
 路径，日志写入 `logs/warp_sac/<task>/`。
+
+WarpSAC 也与 SAC/FlashSAC 共享公共 off-policy inference runtime 配置。
+`training.inference_slot_capacity` 与 `training.collector_metrics_interval`
+默认均为 `1`，且必须是正整数。二者会分别以 `inference_ring_capacity` 和
+`collector_metrics_interval` 写入 runtime manifest。
