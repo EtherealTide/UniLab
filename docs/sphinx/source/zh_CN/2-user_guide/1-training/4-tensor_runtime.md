@@ -54,3 +54,5 @@ Runtime manifest 记录审计 run 所需的有效证据：
 预算决策在 spawn 前写入 manifest。如果不安全的组合被拒绝，错误会指出具体
 设置，且相关进程不会被启动。
 
+单 GPU G1 FlashSAC/MJWarp 生产工作流的 benchmark 复现、artifact 与故障排查见
+{doc}`7-tensor_runtime_production`。

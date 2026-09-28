@@ -42,6 +42,12 @@ Hydra owner YAML 身份与后端选择规则。
 Manager-Based construction、reset、interval 与后端能力边界。
 :::
 
+:::{grid-item-card} Tensor runtime 生产化
+:link: 8-tensor_runtime_production
+:link-type: doc
+契约所有权、schema 策略、benchmark 验收与 release transition。
+:::
+
 ::::
 
 ## 扩展
@@ -93,5 +99,6 @@ Manager-Based construction、reset、interval 与后端能力边界。
 5-contributing_workflow
 6-agent_quick_reference
 7-motion_assets
+8-tensor_runtime_production
 9-sim2sim_contract_status
 ```
