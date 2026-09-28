@@ -148,6 +148,7 @@ def test_factory_routes_isaacsim_without_importing_kit(scene_file: str) -> None:
         ({"isaacsim_render_width": 0}, "isaacsim_render_width"),
         ({"isaacsim_render_height": True}, "isaacsim_render_height"),
         ({"isaacsim_tensor_cuda_ipc": 1}, "isaacsim_tensor_cuda_ipc"),
+        ({"isaacsim_share_friction_materials": 1}, "isaacsim_share_friction_materials"),
     ],
 )
 def test_env_cfg_rejects_invalid_isaacsim_render_settings(
@@ -217,6 +218,15 @@ def test_env_backend_kwargs_forwards_isaacsim_tensor_cuda_ipc() -> None:
     assert "isaacsim_tensor_cuda_ipc" not in env_backend_kwargs(EnvCfg())
     kwargs = env_backend_kwargs(EnvCfg(isaacsim_tensor_cuda_ipc=True))
     assert kwargs["isaacsim_tensor_cuda_ipc"] is True
+
+
+def test_env_backend_kwargs_forwards_isaacsim_material_sharing() -> None:
+    """Material sharing is an explicit benchmark/task opt-in, not a default."""
+    from unilab.base.backend_factory import env_backend_kwargs
+
+    assert "share_friction_materials" not in env_backend_kwargs(EnvCfg())
+    kwargs = env_backend_kwargs(EnvCfg(isaacsim_share_friction_materials=True))
+    assert kwargs["share_friction_materials"] is True
 
 
 def test_create_backend_rejects_legacy_isaacsim_tensor_cuda_ipc_runtime(

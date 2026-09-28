@@ -91,6 +91,8 @@ def env_backend_kwargs(cfg: "EnvCfg") -> dict[str, Any]:
     # constructor never see an unknown keyword on the legacy default path.
     if cfg.isaacsim_tensor_cuda_ipc:
         result["isaacsim_tensor_cuda_ipc"] = True
+    if cfg.isaacsim_share_friction_materials:
+        result["share_friction_materials"] = True
     # Forward the explicit Genesis device id only when a rank selected one;
     # when absent, unisim-core's factory default applies and Genesis picks
     # its own device.
