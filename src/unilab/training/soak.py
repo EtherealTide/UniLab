@@ -10,6 +10,7 @@ after all child processes have exited.
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
 import signal
@@ -22,7 +23,21 @@ from typing import Any
 
 from unilab.cli import build_command
 
-_ARTIFACT_SCHEMA_VERSION = "0.1.0"
+_ARTIFACT_SCHEMA_VERSION = "0.2.0"
+
+_REPLAY_INGRESS_INTEGER_FIELDS = (
+    "ingress_depth",
+    "ingress_slot_rows",
+    "published_sequence",
+    "release_sequence",
+    "occupancy",
+    "high_water_occupancy",
+    "backpressure_waits",
+    "early_returns",
+    "dropped_batches",
+    "closed_returns",
+    "stop_returns",
+)
 
 
 class SoakFailureError(RuntimeError):
@@ -397,6 +412,7 @@ def _resource_summary(
     manifest = run_summary.get("runtime_manifest") if run_summary is not None else None
     flight = manifest.get("inference_flight") if isinstance(manifest, Mapping) else None
     budget = manifest.get("inference_memory_budget") if isinstance(manifest, Mapping) else None
+    replay_ingress = manifest.get("replay_ingress") if isinstance(manifest, Mapping) else None
     return {
         "sample_count": len(samples),
         "max_process_count": max(process_counts, default=None),
@@ -411,7 +427,151 @@ def _resource_summary(
         "max_publication_lag": (
             flight.get("max_publication_lag") if isinstance(flight, Mapping) else None
         ),
+        "replay_ingress_depth": (
+            replay_ingress.get("ingress_depth") if isinstance(replay_ingress, Mapping) else None
+        ),
+        "replay_ingress_slot_rows": (
+            replay_ingress.get("ingress_slot_rows") if isinstance(replay_ingress, Mapping) else None
+        ),
+        "replay_ingress_high_water_occupancy": (
+            replay_ingress.get("high_water_occupancy")
+            if isinstance(replay_ingress, Mapping)
+            else None
+        ),
+        "replay_ingress_final_occupancy": (
+            replay_ingress.get("occupancy") if isinstance(replay_ingress, Mapping) else None
+        ),
+        "replay_ingress_backpressure_waits": (
+            replay_ingress.get("backpressure_waits")
+            if isinstance(replay_ingress, Mapping)
+            else None
+        ),
+        "replay_ingress_backpressure_wait_s": (
+            replay_ingress.get("backpressure_wait_s")
+            if isinstance(replay_ingress, Mapping)
+            else None
+        ),
+        "replay_ingress_early_returns": (
+            replay_ingress.get("early_returns") if isinstance(replay_ingress, Mapping) else None
+        ),
+        "replay_ingress_dropped_batches": (
+            replay_ingress.get("dropped_batches") if isinstance(replay_ingress, Mapping) else None
+        ),
     }
+
+
+def _finite_number(value: Any) -> float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _final_replay_ingress_failure(run_summary: Mapping[str, Any]) -> str | None:
+    """Validate the final replay-ingress contract without reading CUDA tensors."""
+    manifest = run_summary.get("runtime_manifest")
+    if not isinstance(manifest, Mapping):
+        return "completed run_summary is missing runtime_manifest"
+
+    replay_ingress = manifest.get("replay_ingress")
+    if not isinstance(replay_ingress, Mapping):
+        return "completed runtime_manifest is missing replay_ingress"
+
+    values: dict[str, int] = {}
+    for field in _REPLAY_INGRESS_INTEGER_FIELDS:
+        value = replay_ingress.get(field)
+        number = _finite_number(value)
+        if number is None or not number.is_integer():
+            return f"replay_ingress.{field} must be an integer, got {value!r}"
+        values[field] = int(number)
+
+    wait_s = replay_ingress.get("backpressure_wait_s")
+    finite_wait_s = _finite_number(wait_s)
+    if finite_wait_s is None:
+        return f"replay_ingress.backpressure_wait_s must be finite, got {wait_s!r}"
+    if finite_wait_s < 0:
+        return f"replay_ingress.backpressure_wait_s must be nonnegative, got {finite_wait_s!r}"
+
+    for field in _REPLAY_INGRESS_INTEGER_FIELDS:
+        if values[field] < 0:
+            return f"replay_ingress.{field} must be nonnegative, got {values[field]}"
+
+    if values["ingress_depth"] <= 0:
+        return f"replay_ingress.ingress_depth must be positive, got {values['ingress_depth']}"
+    if values["ingress_slot_rows"] <= 0:
+        return (
+            f"replay_ingress.ingress_slot_rows must be positive, got {values['ingress_slot_rows']}"
+        )
+    if values["release_sequence"] > values["published_sequence"]:
+        return (
+            "replay_ingress release_sequence exceeds published_sequence: "
+            f"{values['release_sequence']} > {values['published_sequence']}"
+        )
+    expected_occupancy = values["published_sequence"] - values["release_sequence"]
+    if values["occupancy"] != expected_occupancy:
+        return (
+            "replay_ingress occupancy does not match publication sequences: "
+            f"{values['occupancy']} != {expected_occupancy}"
+        )
+    if values["occupancy"] > values["ingress_depth"]:
+        return (
+            "replay_ingress occupancy exceeds ingress_depth: "
+            f"{values['occupancy']} > {values['ingress_depth']}"
+        )
+    if values["high_water_occupancy"] > values["ingress_depth"]:
+        return (
+            "replay_ingress high_water_occupancy exceeds ingress_depth: "
+            f"{values['high_water_occupancy']} > {values['ingress_depth']}"
+        )
+    if values["high_water_occupancy"] < values["occupancy"]:
+        return (
+            "replay_ingress high_water_occupancy is below final occupancy: "
+            f"{values['high_water_occupancy']} < {values['occupancy']}"
+        )
+    if values["early_returns"] != values["dropped_batches"]:
+        return (
+            "replay_ingress early_returns and dropped_batches disagree: "
+            f"{values['early_returns']} != {values['dropped_batches']}"
+        )
+    if values["closed_returns"] + values["stop_returns"] != values["early_returns"]:
+        return (
+            "replay_ingress shutdown return counters disagree with early_returns: "
+            f"{values['closed_returns']} + {values['stop_returns']} "
+            f"!= {values['early_returns']}"
+        )
+    if values["occupancy"] != 0:
+        return f"final replay ingress occupancy is nonzero: {values['occupancy']}"
+    if values["dropped_batches"] != 0:
+        return f"replay ingress dropped batches during normal run: {values['dropped_batches']}"
+    if values["early_returns"] != 0:
+        return f"replay ingress early returns during normal run: {values['early_returns']}"
+
+    total_env_steps = run_summary.get("total_env_steps")
+    total_steps_number = _finite_number(total_env_steps)
+    if total_steps_number is None or not total_steps_number.is_integer():
+        return f"completed total_env_steps must be an integer, got {total_env_steps!r}"
+    total_steps = int(total_steps_number)
+    if total_steps <= 0:
+        return f"completed total_env_steps must be positive, got {total_steps}"
+    if total_steps % values["ingress_slot_rows"] != 0:
+        return (
+            "total_env_steps is not divisible by replay_ingress.ingress_slot_rows: "
+            f"{total_steps} % {values['ingress_slot_rows']}"
+        )
+    expected_sequence = total_steps // values["ingress_slot_rows"]
+    if values["published_sequence"] != expected_sequence:
+        return (
+            "replay_ingress published_sequence does not match total_env_steps: "
+            f"{values['published_sequence']} != {expected_sequence}"
+        )
+    if values["release_sequence"] != expected_sequence:
+        return (
+            "replay_ingress release_sequence does not match total_env_steps: "
+            f"{values['release_sequence']} != {expected_sequence}"
+        )
+    if values["high_water_occupancy"] <= 0:
+        return "completed replay_ingress high_water_occupancy must be positive"
+    return None
 
 
 def run_soak(
@@ -548,6 +708,9 @@ def run_soak(
                         "final inference flight is not drained: "
                         f"queue_depth={queue_depth!r}, publication_lag={publication_lag!r}"
                     )
+            replay_ingress_failure = _final_replay_ingress_failure(run_summary)
+            if failure_reason is None and replay_ingress_failure is not None:
+                failure_reason = replay_ingress_failure
 
     completed = failure_reason is None
     artifact: dict[str, Any] = {
