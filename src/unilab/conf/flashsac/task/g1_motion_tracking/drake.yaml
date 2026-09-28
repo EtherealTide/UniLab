@@ -1,0 +1,14 @@
+# @package _global_
+# Candidate FlashSAC Drake host-bridge owner for G1 whole-body tracking.
+# The static tensor support matrix remains unsupported until #1679 completes
+# precision parity, transfer profiling, and benchmark review.
+defaults:
+  - /task/g1_motion_tracking/mujoco
+  - _self_
+
+training:
+  task_name: G1MotionTrackingSAC
+  sim_backend: drake
+
+env:
+  tensor_runtime: true

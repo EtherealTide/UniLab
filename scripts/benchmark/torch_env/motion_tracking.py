@@ -531,6 +531,18 @@ class MotionTrackingWorkload:
             self.final_obs[key][env_ids] = self.obs[key][env_ids]
             self.compat_final_obs[key][env_ids] = self.final_obs[key][env_ids]
 
+        if n == 0:
+            # Torch's multinomial sampler rejects a zero-sample draw.  Empty
+            # reset sets are valid during small smoke runs, so return correctly
+            # shaped no-op state/observations without consulting the sampler.
+            empty_actions = b.zeros((0, N_ACTION))
+            return (
+                b.zeros((0, NQ)),
+                b.zeros((0, NV)),
+                {"obs": b.zeros((0, OBS_DIM)), "critic": b.zeros((0, CRITIC_DIM))},
+                {"current_actions": empty_actions, "last_actions": empty_actions},
+            )
+
         # MotionSampler.sample_frames (adaptive).
         p = self.bin_failed_count + SAMPLER_UNIFORM_RATIO / N_BINS
         p = p / b.sum(p)

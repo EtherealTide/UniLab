@@ -8,6 +8,7 @@ factory. Physics implementations and their public contract live in the
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -20,6 +21,26 @@ from unilab.base.process_device import bind_genesis_process_device
 if TYPE_CHECKING:
     from unilab.base.base import EnvCfg
     from unilab.base.scene import SceneCfg
+
+
+def _validate_isaacsim_tensor_cuda_ipc_runtime() -> None:
+    """Fail closed before constructing an IsaacSim release without CUDA IPC.
+
+    ``isaacsim_tensor_cuda_ipc`` is an M9 candidate contract.  A production
+    owner must not reach a released unisim-core that silently ignores or does
+    not understand the constructor option.  The public adapter constructor is
+    the compatibility boundary; no backend-private implementation state is
+    inspected.
+    """
+    from unisim.backend.isaacsim import IsaacSimBackend
+
+    parameter = inspect.signature(IsaacSimBackend.__init__).parameters.get("tensor_cuda_ipc")
+    if parameter is None or parameter.kind is inspect.Parameter.VAR_KEYWORD:
+        raise RuntimeError(
+            "isaacsim_tensor_cuda_ipc requires a unisim-core IsaacSim backend with the "
+            "tensor_cuda_ipc constructor contract; the installed unisim-core IsaacSim "
+            "backend does not provide it"
+        )
 
 
 def env_backend_kwargs(cfg: "EnvCfg") -> dict[str, Any]:
@@ -66,6 +87,10 @@ def env_backend_kwargs(cfg: "EnvCfg") -> dict[str, Any]:
         result["isaacsim_gpu_max_rigid_contact_count"] = cfg.isaacsim_gpu_max_rigid_contact_count
     if cfg.isaacsim_gpu_max_rigid_patch_count is not None:
         result["isaacsim_gpu_max_rigid_patch_count"] = cfg.isaacsim_gpu_max_rigid_patch_count
+    # Forward the tensor opt-in only when enabled so releases without the M9
+    # constructor never see an unknown keyword on the legacy default path.
+    if cfg.isaacsim_tensor_cuda_ipc:
+        result["isaacsim_tensor_cuda_ipc"] = True
     # Forward the explicit Genesis device id only when a rank selected one;
     # when absent, unisim-core's factory default applies and Genesis picks
     # its own device.
@@ -87,6 +112,8 @@ def create_backend(
     """Prepare UniLab-owned assets and construct a UniSim backend."""
     if scene is None:
         raise ValueError("SceneCfg must be provided")
+    if backend_type == "isaacsim" and kwargs.get("isaacsim_tensor_cuda_ipc", False):
+        _validate_isaacsim_tensor_cuda_ipc_runtime()
     superdex_assets_root = kwargs.pop("superdex_assets_root", None)
     if backend_type == "superdex" and scene.model_file.endswith(".superdex_bot"):
         scene = replace(

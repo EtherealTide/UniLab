@@ -101,6 +101,10 @@ class ManagerBasedRlEnvCfg(EnvCfg):
                 raise ValueError(f"ManagerBasedRlEnvCfg {name} must be finite and positive")
         if not isinstance(self.tensor_runtime, bool):
             raise TypeError("ManagerBasedRlEnvCfg tensor_runtime must be a boolean")
+        if self.isaacsim_tensor_cuda_ipc and not self.tensor_runtime:
+            raise ValueError(
+                "ManagerBasedRlEnvCfg isaacsim_tensor_cuda_ipc requires tensor_runtime"
+            )
         super().validate()
         ratio = self.ctrl_dt / self.sim_dt
         if not np.isclose(ratio, round(ratio), rtol=0.0, atol=1e-9):

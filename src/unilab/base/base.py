@@ -103,6 +103,10 @@ class EnvCfg:
     isaacsim_render_mode: Optional[str] = None
     isaacsim_render_width: int = 1280
     isaacsim_render_height: int = 720
+    # Opt in to the external-worker CUDA IPC tensor lifecycle.  The default
+    # remains false so legacy NumPy shared-memory behavior is unchanged until a
+    # task owner explicitly negotiates the candidate tensor contract.
+    isaacsim_tensor_cuda_ipc: bool = False
     # ``isaacsim`` PhysX solver overrides, forwarded to UniSim's bounded,
     # readback-validated PhysxSolverConfig (unilabsim/unisim#251, #259).
     # ``None`` keeps the PhysX scene defaults; the backend validates each
@@ -279,6 +283,10 @@ class EnvCfg:
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer, got {value!r}")
+        if not isinstance(self.isaacsim_tensor_cuda_ipc, bool):
+            raise ValueError(
+                f"isaacsim_tensor_cuda_ipc must be a boolean, got {self.isaacsim_tensor_cuda_ipc!r}"
+            )
         # PhysX accepts zero velocity iterations (its scene minimum is 0) but
         # requires at least one position iteration; mirror UniSim's
         # PhysxSolverConfig bounds here so owner configs fail fast.

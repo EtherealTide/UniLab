@@ -13,7 +13,7 @@ import textwrap
 import types
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Iterator
 
 import numpy as np
 import pytest
@@ -35,7 +35,10 @@ from unisim.backend.isaacsim.dependencies import (
 from unisim.backend.isaacsim.scene_worker import _rotate
 from unisim.backend.isaacsim.worker import _resolve_articulation_root_prim_path
 
-from unilab.base.backend_factory import create_backend
+from unilab.base.backend_factory import (
+    _validate_isaacsim_tensor_cuda_ipc_runtime,
+    create_backend,
+)
 from unilab.base.base import EnvCfg
 from unilab.base.scene import SceneCfg
 
@@ -111,7 +114,7 @@ def _make_backend(scene_file: str, **kwargs: Any) -> IsaacSimBackend:
 
 
 @pytest.fixture()
-def backend(scene_file: str) -> IsaacSimBackend:
+def backend(scene_file: str) -> Iterator[IsaacSimBackend]:
     instance = _make_backend(scene_file)
     instance.materialize()
     try:
@@ -144,6 +147,7 @@ def test_factory_routes_isaacsim_without_importing_kit(scene_file: str) -> None:
         ({"isaacsim_render_mode": "video"}, "isaacsim_render_mode"),
         ({"isaacsim_render_width": 0}, "isaacsim_render_width"),
         ({"isaacsim_render_height": True}, "isaacsim_render_height"),
+        ({"isaacsim_tensor_cuda_ipc": 1}, "isaacsim_tensor_cuda_ipc"),
     ],
 )
 def test_env_cfg_rejects_invalid_isaacsim_render_settings(
@@ -204,6 +208,43 @@ def test_env_backend_kwargs_forwards_isaacsim_solver_knobs() -> None:
         else:
             # ``None`` keeps the PhysX scene defaults on the UniSim side.
             assert defaults[name] is None
+
+
+def test_env_backend_kwargs_forwards_isaacsim_tensor_cuda_ipc() -> None:
+    """Tensor opt-in is explicit and defaults to the legacy subprocess path."""
+    from unilab.base.backend_factory import env_backend_kwargs
+
+    assert "isaacsim_tensor_cuda_ipc" not in env_backend_kwargs(EnvCfg())
+    kwargs = env_backend_kwargs(EnvCfg(isaacsim_tensor_cuda_ipc=True))
+    assert kwargs["isaacsim_tensor_cuda_ipc"] is True
+
+
+def test_create_backend_rejects_legacy_isaacsim_tensor_cuda_ipc_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LegacyIsaacSimBackend:
+        def __init__(self, scene: object, num_envs: int, sim_dt: float, **kwargs: object):
+            raise AssertionError("legacy backend must not be constructed")
+
+    monkeypatch.setattr(
+        "unisim.backend.isaacsim.IsaacSimBackend",
+        LegacyIsaacSimBackend,
+    )
+
+    with pytest.raises(
+        RuntimeError, match="installed unisim-core IsaacSim backend does not provide"
+    ):
+        create_backend(
+            "isaacsim",
+            SceneCfg(),
+            1,
+            0.02,
+            isaacsim_tensor_cuda_ipc=True,
+        )
+
+
+def test_isaacsim_tensor_cuda_ipc_runtime_guard_accepts_public_contract() -> None:
+    _validate_isaacsim_tensor_cuda_ipc_runtime()
 
 
 def test_dependencies_resolve_default_layout(

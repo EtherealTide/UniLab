@@ -25,6 +25,17 @@ BACKENDS: tuple[str, ...] = (
     "superdex",
 )
 
+# Issue-gated M9 candidate owners (#1674) are benchmark/test fixtures,
+# not support claims.  Exclude them from the generated matrix until those
+# issues close;
+# otherwise the scanner would mechanically promote a task/backend cell from
+# Registered to Configured without acceptance evidence.
+_ISSUE_GATED_CANDIDATE_CONFIGS = frozenset(
+    {
+        "src/unilab/conf/flashsac/task/g1_motion_tracking/isaacgym.yaml",
+    }
+)
+
 # Maintainer-confirmed completed training validations. Keep this mapping narrow:
 # generic config/contract coverage must not promote an unvalidated entrypoint.
 _MAINTAINER_VALIDATED_MJWARP_ENTRYPOINT_TASKS = frozenset(
@@ -231,6 +242,9 @@ def _configured_entries(root: Path, spec: EntrypointSpec) -> dict[str, dict[str,
     task_root = root / spec.config_dir
     entries: dict[str, dict[str, str]] = {}
     for task_path in sorted(task_root.glob(spec.task_glob)):
+        relative_path = task_path.relative_to(root).as_posix()
+        if relative_path in _ISSUE_GATED_CANDIDATE_CONFIGS:
+            continue
         task_slug = task_path.parent.name
         backend = task_path.stem
         if backend not in BACKENDS:

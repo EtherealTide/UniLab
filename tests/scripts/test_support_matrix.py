@@ -117,6 +117,14 @@ def test_support_matrix_does_not_promote_unvalidated_isaacgym_entries():
     assert go2_row.cells["isaacgym"].level == EvidenceLevel.MISSING
 
 
+def test_issue_gated_motion_tracking_owners_do_not_promote_support_cells():
+    """M9 candidate benchmark owners remain outside the public support matrix."""
+    row = _row("FlashSAC (torch)", "g1_motion_tracking")
+
+    assert row.cells["isaacgym"].level == EvidenceLevel.REGISTERED
+    assert row.cells["isaacsim"].level == EvidenceLevel.REGISTERED
+
+
 def test_support_matrix_marks_g1_genesis_owner_configured_only():
     """SAC genesis is training-validated (Tested); PPO stays Configured."""
     row = _row("SAC (torch)", "g1_walk_flat")

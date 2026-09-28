@@ -1,0 +1,8 @@
+<mujoco model="g1_flat_floor_entity">
+  <option integrator="implicitfast" timestep="0.006666666666666667"/>
+  <worldbody>
+    <body name="floor">
+      <geom name="floor" type="box" size="100 100 0.05" pos="0 0 -0.05" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>

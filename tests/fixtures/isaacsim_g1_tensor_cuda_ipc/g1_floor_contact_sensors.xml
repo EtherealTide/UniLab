@@ -1,0 +1,6 @@
+<mujoco>
+  <sensor>
+    <contact name="left_foot_floor_force" geom1="robot/left_foot_contact_0_geom" geom2="floor/floor" data="force" reduce="netforce"/>
+    <contact name="right_foot_floor_force" geom1="robot/right_foot_contact_0_geom" geom2="floor/floor" data="force" reduce="netforce"/>
+  </sensor>
+</mujoco>

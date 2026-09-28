@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import pytest
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
 
+from unilab.base.config_adapter import BackendAdapter
+from unilab.base.registry import apply_cfg_overrides
+from unilab.envs import ManagerBasedRlEnvCfg
+
 CONF_DIR = Path(__file__).parents[2] / "src" / "unilab" / "conf"
+ROOT_DIR = Path(__file__).parents[2]
+ISAACSIM_TENSOR_FIXTURE_DIR = ROOT_DIR / "tests" / "fixtures" / "isaacsim_g1_tensor_cuda_ipc"
 
 
 def _compose_sac(task: str):
@@ -25,6 +33,38 @@ def _compose_flashsac(task: str):
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=str(CONF_DIR / "flashsac"), version_base="1.3"):
         return compose("config", overrides=[f"task={task}"])
+
+
+def _stand_key_values(path: Path) -> tuple[list[float], list[float]]:
+    key = ET.parse(path).find("./keyframe/key[@name='stand']")
+    assert key is not None
+    return (
+        [float(value) for value in key.attrib["qpos"].split()],
+        [float(value) for value in key.attrib["ctrl"].split()],
+    )
+
+
+def _compose_isaacsim_tensor_fixture():
+    base = _compose_flashsac("g1_motion_tracking/mujoco")
+    overlay = OmegaConf.load(ISAACSIM_TENSOR_FIXTURE_DIR / "isaacsim_candidate_overlay.yaml")
+    # The production MuJoCo owner is struct mode; a fixture overlay may add
+    # backend-only fields exactly as a Hydra child owner would.
+    OmegaConf.set_struct(base, False)
+    base.merge_with(overlay)
+    return base
+
+
+def _structural_robot_signature(path: Path) -> bytes:
+    root = ET.parse(path).getroot()
+    root.attrib.pop("model", None)
+    compiler = root.find("compiler")
+    if compiler is not None:
+        compiler.attrib.pop("meshdir", None)
+    keyframe = root.find("keyframe")
+    if keyframe is not None:
+        root.remove(keyframe)
+    ET.indent(root, space="")
+    return ET.tostring(root, encoding="unicode").encode()
 
 
 def test_sac_g1_motion_tracking_split_keeps_dr_in_backend_owner() -> None:
@@ -163,6 +203,103 @@ def test_sac_g1_motion_tracking_isaacsim_disables_unsupported_dr() -> None:
     # The isaacsim legacy path declares an empty DR capability set (fail-closed).
     assert set(cfg.env.events) == {"base_com", "encoder_bias", "foot_friction", "push_robot"}
     assert all(term is None for term in cfg.env.events.values())
+
+
+def test_flashsac_g1_motion_tracking_isaacsim_opts_into_cuda_ipc_candidate() -> None:
+    cfg = _compose_isaacsim_tensor_fixture()
+    assert cfg.training.sim_backend == "isaacsim"
+    assert cfg.env.tensor_runtime is True
+    assert cfg.env.isaacsim_tensor_cuda_ipc is True
+
+    scene = cfg.env.scene
+    assert scene.model_file is None
+    assert scene.default_keyframe_name == "stand"
+    assert [
+        (entity.name, entity.get("kind", "articulation"), entity.root_mode)
+        for entity in scene.entity_assets
+    ] == [("robot", "articulation", "floating"), ("floor", "rigid", "fixed")]
+    robot = scene.entities.robot
+    assert robot.physical_entity == "robot"
+    assert robot.root_body_name == "robot/pelvis"
+    assert robot.joint_names[0] == "robot/left_hip_pitch_joint"
+    assert robot.body_names[0] == "robot/pelvis"
+    assert all(name.startswith("robot/") for name in robot.joint_names)
+    assert all(name.startswith("robot/") for name in robot.body_names)
+    assert cfg.env.commands.motion.params.anchor_body_name == "robot/torso_link"
+    assert cfg.env.commands.motion.params.body_names[0] == "robot/pelvis"
+    assert (
+        cfg.env.observations.actor.terms.base_lin_vel.params.sensor_name
+        == "robot/pelvis_local_linvel"
+    )
+    assert cfg.env.observations.actor.terms.base_ang_vel.params.sensor_name == "robot/torso_gyro"
+    assert (
+        cfg.env.observations.critic.terms.sac_base_lin_vel.params.sensor_name
+        == "robot/pelvis_local_linvel"
+    )
+
+    fixture_robot = ROOT_DIR / str(scene.entity_assets[0].source.model_file)
+    canonical_robot = ROOT_DIR / "src/unilab/assets/robots/g1/g1.xml"
+    canonical_qpos, canonical_ctrl = _stand_key_values(
+        ROOT_DIR / "src/unilab/assets/robots/g1/scene_flat.xml"
+    )
+    mapped_qpos, mapped_ctrl = _stand_key_values(fixture_robot)
+    assert mapped_qpos == canonical_qpos
+    assert mapped_ctrl == canonical_ctrl
+    assert _structural_robot_signature(fixture_robot) == _structural_robot_signature(
+        canonical_robot
+    )
+    assert list(scene.entity_assets[0].initial_state.position) == [0.0, 0.0, mapped_qpos[2]]
+
+
+def test_isaacsim_tensor_candidate_stays_outside_production_owner_discovery() -> None:
+    production_owner = ROOT_DIR / "src/unilab/conf/flashsac/task/g1_motion_tracking/isaacsim.yaml"
+
+    assert not production_owner.exists()
+    assert (ISAACSIM_TENSOR_FIXTURE_DIR / "isaacsim_candidate_overlay.yaml").is_file()
+    assert (ISAACSIM_TENSOR_FIXTURE_DIR / "g1_stand_entity.xml").is_file()
+
+
+def test_isaacsim_tensor_fixture_materializes_into_manager_config() -> None:
+    owner_cfg = _compose_isaacsim_tensor_fixture()
+    override = BackendAdapter(
+        owner_cfg, root_dir=ROOT_DIR, algo_name="flashsac"
+    ).build_task_env_cfg_override()
+    cfg = ManagerBasedRlEnvCfg()
+    apply_cfg_overrides(cfg, override)
+
+    cfg.validate()
+    assert cfg.isaacsim_tensor_cuda_ipc is True
+    assert cfg.tensor_runtime is True
+    assert cfg.scene is not None
+    assert cfg.scene.entity_assets
+
+
+def test_isaacsim_cuda_ipc_requires_manager_tensor_runtime() -> None:
+    cfg = ManagerBasedRlEnvCfg(isaacsim_tensor_cuda_ipc=True)
+
+    with pytest.raises(ValueError, match="isaacsim_tensor_cuda_ipc requires tensor_runtime"):
+        cfg.validate()
+
+
+def test_flashsac_g1_motion_tracking_isaacgym_uses_gpu_tensor_candidate() -> None:
+    cfg = _compose_flashsac("g1_motion_tracking/isaacgym")
+    assert cfg.training.sim_backend == "isaacgym"
+    assert cfg.env.tensor_runtime is True
+    assert cfg.env.isaacgym_device_id == 0
+    assert cfg.env.scene.model_file.endswith("robots/g1/scene_flat.xml")
+    assert cfg.env.scene.default_keyframe_name == "stand"
+    assert not cfg.env.scene.get("entity_assets", [])
+    assert cfg.env.scene.entities.robot.get("physical_entity") is None
+    assert cfg.env.scene.entities.robot.root_body_name == "pelvis"
+
+
+@pytest.mark.parametrize("backend", ["superdex", "drake"])
+def test_flashsac_g1_motion_tracking_host_bridge_candidates_opt_in(backend: str) -> None:
+    cfg = _compose_flashsac(f"g1_motion_tracking/{backend}")
+    assert cfg.training.sim_backend == backend
+    assert cfg.env.tensor_runtime is True
+    assert cfg.env.scene.model_file.endswith("robots/g1/scene_flat.xml")
+    assert cfg.env.scene.default_keyframe_name == "stand"
 
 
 def test_sac_g1_flip_tracking_stays_dr_free() -> None:
