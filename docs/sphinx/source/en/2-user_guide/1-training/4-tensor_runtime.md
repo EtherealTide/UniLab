@@ -57,3 +57,6 @@ The manifest is written before spawn when a budget decision is made. If an
 unsafe combination is rejected, the error identifies the offending setting and
 the process is not launched.
 
+For the single-GPU G1 FlashSAC/MJWarp production workflow, benchmark
+reproduction, artifacts, and troubleshooting, see
+{doc}`7-tensor_runtime_production`.

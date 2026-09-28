@@ -43,6 +43,12 @@ TensorBoard、W&B、运行元数据以及 trace 选项。
 在仓库内置的 Linux NVIDIA 镜像工作流中运行 UniLab。
 :::
 
+:::{grid-item-card} Tensor runtime 生产指南
+:link: 7-tensor_runtime_production
+:link-type: doc
+复现并运维 scoped 单 GPU G1 FlashSAC/MJWarp 长 soak。
+:::
+
 ::::
 
 ## 什么时候下沉到 `scripts/train_*.py`
@@ -70,4 +76,5 @@ TensorBoard、W&B、运行元数据以及 trace 选项。
 4-tensor_runtime
 5-resume_and_checkpoints
 6-docker
+7-tensor_runtime_production
 ```

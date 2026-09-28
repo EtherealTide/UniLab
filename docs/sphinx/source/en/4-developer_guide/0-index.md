@@ -42,6 +42,12 @@ Hydra owner YAML identity and backend-selection rules.
 Manager-Based construction, reset, interval, and backend capability boundaries.
 :::
 
+:::{grid-item-card} Tensor runtime productionization
+:link: 8-tensor_runtime_production
+:link-type: doc
+Contract ownership, schema policy, benchmark acceptance, and release transition.
+:::
+
 ::::
 
 ## Extending
@@ -93,4 +99,5 @@ Extend terrain generation while keeping asset access on cold paths.
 5-contributing_workflow
 6-agent_quick_reference
 7-motion_assets
+8-tensor_runtime_production
 ```

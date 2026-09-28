@@ -44,6 +44,12 @@ How `algo.load_run`, checkpoint files, and replay commands fit together.
 Run UniLab inside the checked-in Linux NVIDIA image workflow.
 :::
 
+:::{grid-item-card} Tensor runtime production
+:link: 7-tensor_runtime_production
+:link-type: doc
+Reproduce and operate the scoped single-GPU G1 FlashSAC/MJWarp long soak.
+:::
+
 ::::
 
 ## When to Drop to `scripts/train_*.py`
@@ -71,4 +77,5 @@ Day-to-day runs should use the unified CLI. Reach for the low-level
 4-tensor_runtime
 5-resume_and_checkpoints
 6-docker
+7-tensor_runtime_production
 ```
