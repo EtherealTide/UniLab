@@ -31,6 +31,8 @@ def _write_run_summary(run_dir: Path, **overrides: object) -> None:
         "training_wall_time_sec": 600.0,
         **overrides,
     }
+    if "metric_schema_version" not in summary:
+        summary["metric_schema_version"] = 1
     (run_dir / "run_summary.json").write_text(json.dumps(summary), encoding="utf-8")
 
 
@@ -43,38 +45,16 @@ def _write_run_config(run_dir: Path, *, batch_size: int, updates_per_step: int) 
     (run_dir / "run_config.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _make_run_dir(
-    run_dir: Path,
-    *,
-    steps_per_sec: list[float] | None = None,
-    samples_per_sec: list[float] | None = None,
-    reward: list[float] | None = None,
-    dp_sync_time: list[float] | None = None,
-) -> None:
-    """A pre-1.4.1 run directory carrying only the legacy scalar tags."""
-    _write_run_summary(run_dir)
-    rank0_series = {
-        "perf/steps_per_sec": steps_per_sec or [],
-        "perf/effective_samples_per_sec": samples_per_sec or [],
-    }
-    if reward is not None:
-        rank0_series["reward/mean"] = reward
-    if dp_sync_time is not None:
-        rank0_series["train/dp_sync_time"] = dp_sync_time
-    _write_tfevents(run_dir, rank0_series)
-
-
 def _make_canonical_run_dir(
     run_dir: Path,
     *,
     total_fps: list[float],
     iteration_time: list[float],
-    batch_size: int = 8_192,
-    updates_per_step: int = 4,
+    batch_size: int = 100,
+    updates_per_step: int = 1,
     reward: list[float] | None = None,
     dp_sync_ms_per_rank: list[float] | None = None,
 ) -> None:
-    """A post-1.4.1 run directory: canonical tags only, no legacy tags."""
     _write_run_summary(run_dir)
     _write_run_config(run_dir, batch_size=batch_size, updates_per_step=updates_per_step)
     rank0_series = {
@@ -88,8 +68,13 @@ def _make_canonical_run_dir(
     _write_tfevents(run_dir, rank0_series)
 
 
+def _replace_tfevents(run_dir: Path, series: dict[str, list[float]]) -> None:
+    for event_file in run_dir.glob("events.out.tfevents.*"):
+        event_file.unlink()
+    _write_tfevents(run_dir, series)
+
+
 def test_steady_state_mean_uses_tail_half() -> None:
-    # ceil(3/2)=2 tail points: (30+40)/2; warm-up prefix 10 is excluded.
     assert bench.steady_state_mean([10.0, 30.0, 40.0]) == pytest.approx(35.0)
     assert bench.steady_state_mean([1.0, 2.0, 3.0, 4.0]) == pytest.approx(3.5)
     assert bench.steady_state_mean([7.0]) == pytest.approx(7.0)
@@ -105,6 +90,12 @@ def test_verdict_for_ratio() -> None:
     assert bench.verdict_for_ratio(None) is None
 
 
+def test_supported_metric_schema_matches_producer() -> None:
+    from uni_rl.logging.metric_schema import METRIC_SCHEMA_VERSION
+
+    assert bench._SUPPORTED_METRIC_SCHEMA_VERSION == METRIC_SCHEMA_VERSION
+
+
 def test_build_train_command_matches_production_overrides(tmp_path: Path) -> None:
     command = bench.build_train_command(tmp_path / "runs" / "n1", iterations=300, devices=None)
     assert command[0] == sys.executable
@@ -113,9 +104,7 @@ def test_build_train_command_matches_production_overrides(tmp_path: Path) -> Non
     assert "training.no_play=true" in command
     assert "algo.max_iterations=300" in command
     assert any(arg.startswith("training.log_dir=") for arg in command)
-    # N=1 baseline must not carry training.devices at all.
     assert not any(arg.startswith("training.devices") for arg in command)
-    assert not any(arg.startswith("training.dp_sync_interval") for arg in command)
 
     command_dp = bench.build_train_command(
         tmp_path / "runs" / "n2",
@@ -124,16 +113,17 @@ def test_build_train_command_matches_production_overrides(tmp_path: Path) -> Non
         extra_overrides=("algo.num_envs=2048",),
     )
     assert "training.devices=[0,1]" in command_dp
-    assert not any(arg.startswith("training.dp_sync_interval") for arg in command_dp)
     assert "algo.num_envs=2048" in command_dp
 
 
-def test_parse_run_single_rank(tmp_path: Path) -> None:
+def test_parse_run_single_rank_reads_canonical_tags(tmp_path: Path) -> None:
     run_dir = tmp_path / "n1"
-    _make_run_dir(
+    _make_canonical_run_dir(
         run_dir,
-        steps_per_sec=[100.0, 200.0, 300.0, 400.0],
-        samples_per_sec=[1_000.0, 2_000.0, 3_000.0, 4_000.0],
+        total_fps=[100.0, 200.0, 300.0, 400.0],
+        iteration_time=[1.0, 1.0, 1.0, 1.0],
+        batch_size=100,
+        updates_per_step=1,
         reward=[0.5, 1.5],
     )
     metrics = bench.parse_run(run_dir, world_size=1)
@@ -141,7 +131,8 @@ def test_parse_run_single_rank(tmp_path: Path) -> None:
     assert metrics["total_env_steps"] == 1_200_000
     assert metrics["training_wall_time_sec"] == pytest.approx(600.0)
     assert metrics["steady_state_collector_steps_per_s"] == pytest.approx(350.0)
-    assert metrics["steady_state_learner_samples_per_s"] == pytest.approx(3_500.0)
+    assert metrics["steady_state_learner_samples_per_s"] == pytest.approx(100.0)
+    assert metrics["learner_throughput_source"] == "derived"
     assert metrics["final_mean_reward"] == pytest.approx(1.5)
     assert metrics["mean_dp_sync_time_sec"] is None
     assert metrics["num_collector_throughput_samples"] == 4
@@ -150,83 +141,125 @@ def test_parse_run_single_rank(tmp_path: Path) -> None:
 
 def test_parse_run_two_ranks_reads_canonical_aggregate_tags(tmp_path: Path) -> None:
     run_dir = tmp_path / "n2"
-    _make_run_dir(
+    _make_canonical_run_dir(
         run_dir,
-        steps_per_sec=[300.0, 450.0],
-        samples_per_sec=[1_200.0, 1_800.0],
-        dp_sync_time=[0.02, 0.04],
+        total_fps=[300.0, 450.0],
+        iteration_time=[0.512, 1.024],
+        batch_size=128,
+        updates_per_step=2,
+        dp_sync_ms_per_rank=[20.0, 40.0],
     )
     metrics = bench.parse_run(run_dir, world_size=2)
     assert metrics["world_size"] == 2
     assert metrics["steady_state_collector_steps_per_s"] == pytest.approx(450.0)
-    assert metrics["steady_state_learner_samples_per_s"] == pytest.approx(1_800.0)
+    assert metrics["steady_state_learner_samples_per_s"] == pytest.approx(500.0)
     assert metrics["mean_dp_sync_time_sec"] == pytest.approx(0.03)
 
 
-def test_parse_run_missing_learner_throughput_is_a_hard_error(tmp_path: Path) -> None:
-    run_dir = tmp_path / "n2"
-    _make_run_dir(run_dir, steps_per_sec=[100.0, 200.0])
-    with pytest.raises(bench.RunParseError, match="effective_samples_per_sec"):
-        bench.parse_run(run_dir, world_size=2)
-
-
 def test_parse_run_canonical_tags_derive_learner_throughput(tmp_path: Path) -> None:
-    run_dir = tmp_path / "n2"
-    _make_canonical_run_dir(
-        run_dir,
-        total_fps=[100.0, 200.0, 300.0, 400.0],
-        iteration_time=[0.5, 0.5, 1.0, 1.0],
-        batch_size=1_000,
-        updates_per_step=2,
-        reward=[0.5, 1.5],
-    )
-    metrics = bench.parse_run(run_dir, world_size=2)
-    assert metrics["steady_state_collector_steps_per_s"] == pytest.approx(350.0)
-    # Derived per iteration: world_size * batch_size * updates_per_step /
-    # iteration_time = 2 * 1000 * 2 / 0.5 = 8000, 8000, 4000, 4000.
-    assert metrics["steady_state_learner_samples_per_s"] == pytest.approx(4_000.0)
-    assert metrics["learner_throughput_source"] == "derived"
-    assert metrics["final_mean_reward"] == pytest.approx(1.5)
-
-
-def test_parse_run_canonical_dp_sync_ms_is_converted_to_seconds(tmp_path: Path) -> None:
-    run_dir = tmp_path / "n2"
+    run_dir = tmp_path / "derived"
     _make_canonical_run_dir(
         run_dir,
         total_fps=[100.0],
         iteration_time=[0.5],
-        dp_sync_ms_per_rank=[20.0, 40.0],
+        batch_size=10,
+        updates_per_step=2,
     )
     metrics = bench.parse_run(run_dir, world_size=2)
-    assert metrics["mean_dp_sync_time_sec"] == pytest.approx(0.03)
+    assert metrics["steady_state_learner_samples_per_s"] == pytest.approx(80.0)
 
 
-def test_parse_run_prefers_canonical_tags_over_legacy(tmp_path: Path) -> None:
-    run_dir = tmp_path / "n1"
-    _write_run_summary(run_dir)
-    _write_tfevents(
+def test_parse_run_rejects_unversioned_legacy_run(tmp_path: Path) -> None:
+    run_dir = tmp_path / "legacy"
+    _write_run_summary(run_dir, metric_schema_version=None)
+    _replace_tfevents(
+        run_dir,
+        {
+            "perf/steps_per_sec": [100.0],
+            "perf/effective_samples_per_sec": [200.0],
+        },
+    )
+    with pytest.raises(bench.RunParseError, match="missing metric_schema_version"):
+        bench.parse_run(run_dir, world_size=1)
+
+
+def test_parse_run_rejects_mixed_canonical_and_legacy_tags(tmp_path: Path) -> None:
+    run_dir = tmp_path / "mixed"
+    _make_canonical_run_dir(run_dir, total_fps=[100.0], iteration_time=[0.5])
+    _replace_tfevents(
         run_dir,
         {
             "Perf/total_fps": [999.0],
             "perf/steps_per_sec": [111.0],
-            "perf/effective_samples_per_sec": [500.0],
         },
     )
+    with pytest.raises(bench.RunParseError, match="must not contain legacy tags"):
+        bench.parse_run(run_dir, world_size=1)
+
+
+def test_parse_run_rejects_missing_metric_schema(tmp_path: Path) -> None:
+    run_dir = tmp_path / "missing-schema"
+    _make_canonical_run_dir(run_dir, total_fps=[100.0], iteration_time=[0.5])
+    _write_run_summary(run_dir, metric_schema_version=None)
+    with pytest.raises(bench.RunParseError, match="missing metric_schema_version"):
+        bench.parse_run(run_dir, world_size=1)
+
+
+@pytest.mark.parametrize("version", [True, "1", 1.0])
+def test_parse_run_rejects_non_integer_metric_schema(tmp_path: Path, version: object) -> None:
+    run_dir = tmp_path / "invalid-schema"
+    _make_canonical_run_dir(run_dir, total_fps=[100.0], iteration_time=[0.5])
+    _write_run_summary(run_dir, metric_schema_version=version)
+    with pytest.raises(bench.RunParseError, match="metric_schema_version must be an integer"):
+        bench.parse_run(run_dir, world_size=1)
+
+
+def test_parse_run_rejects_unsupported_metric_schema(tmp_path: Path) -> None:
+    run_dir = tmp_path / "future-schema"
+    _make_canonical_run_dir(run_dir, total_fps=[100.0], iteration_time=[0.5])
+    _write_run_summary(run_dir, metric_schema_version=2)
+    with pytest.raises(bench.RunParseError, match="unsupported metric_schema_version 2"):
+        bench.parse_run(run_dir, world_size=1)
+
+
+def test_parse_run_rejects_missing_canonical_collector_tag(tmp_path: Path) -> None:
+    run_dir = tmp_path / "missing-collector"
+    _make_canonical_run_dir(run_dir, total_fps=[100.0], iteration_time=[0.5])
+    _replace_tfevents(run_dir, {"Perf/iteration_time": [0.5]})
+    with pytest.raises(bench.RunParseError, match="Perf/total_fps"):
+        bench.parse_run(run_dir, world_size=1)
+
+
+def test_parse_run_does_not_require_runtime_manifest(tmp_path: Path) -> None:
+    # This benchmark consumes TensorBoard metrics only; runtime-manifest
+    # validation belongs to the soak consumer that reads runtime fields.
+    run_dir = tmp_path / "no-manifest"
+    _make_canonical_run_dir(run_dir, total_fps=[100.0], iteration_time=[0.5])
     metrics = bench.parse_run(run_dir, world_size=1)
-    assert metrics["steady_state_collector_steps_per_s"] == pytest.approx(999.0)
-    assert metrics["steady_state_learner_samples_per_s"] == pytest.approx(500.0)
-    assert metrics["learner_throughput_source"] == "tfevents"
+    assert metrics["steady_state_collector_steps_per_s"] == pytest.approx(100.0)
+
+
+def test_parse_run_rejects_learner_throughput_that_cannot_be_derived(tmp_path: Path) -> None:
+    run_dir = tmp_path / "no-config"
+    _make_canonical_run_dir(run_dir, total_fps=[100.0], iteration_time=[0.5])
+    (run_dir / "run_config.json").unlink()
+    with pytest.raises(bench.RunParseError, match="cannot be derived"):
+        bench.parse_run(run_dir, world_size=1)
+
+
+def test_parse_run_rejects_canonical_tags_without_summary(tmp_path: Path) -> None:
+    run_dir = tmp_path / "no-summary"
+    _make_canonical_run_dir(run_dir, total_fps=[100.0], iteration_time=[0.5])
+    (run_dir / "run_summary.json").unlink()
+    with pytest.raises(bench.RunParseError, match="missing run summary"):
+        bench.parse_run(run_dir, world_size=1)
 
 
 def test_parse_run_rejects_non_completed_status(tmp_path: Path) -> None:
-    run_dir = tmp_path / "n1"
-    _make_run_dir(run_dir, steps_per_sec=[100.0], samples_per_sec=[200.0])
+    run_dir = tmp_path / "failed"
+    _make_canonical_run_dir(run_dir, total_fps=[100.0], iteration_time=[0.5])
     _write_run_summary(run_dir, status="failed", error="boom")
     with pytest.raises(bench.RunParseError, match="did not complete"):
-        bench.parse_run(run_dir, world_size=1)
-
-    (run_dir / "run_summary.json").unlink()
-    with pytest.raises(bench.RunParseError, match="missing run summary"):
         bench.parse_run(run_dir, world_size=1)
 
 
@@ -286,3 +319,8 @@ def test_parse_args_skips_dp_config_with_single_device() -> None:
     assert args.keep_runs is True
     args = bench.parse_args(["--no-keep-runs"])
     assert args.keep_runs is False
+
+
+def test_parse_args_has_no_legacy_unversioned_mode() -> None:
+    with pytest.raises(SystemExit):
+        bench.parse_args(["--legacy-unversioned"])
