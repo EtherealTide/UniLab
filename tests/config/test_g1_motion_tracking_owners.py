@@ -210,6 +210,7 @@ def test_flashsac_g1_motion_tracking_isaacsim_opts_into_cuda_ipc_candidate() -> 
     assert cfg.training.sim_backend == "isaacsim"
     assert cfg.env.tensor_runtime is True
     assert cfg.env.isaacsim_tensor_cuda_ipc is True
+    assert cfg.env.isaacsim_share_friction_materials is True
 
     scene = cfg.env.scene
     assert scene.model_file is None
@@ -269,6 +270,7 @@ def test_isaacsim_tensor_fixture_materializes_into_manager_config() -> None:
 
     cfg.validate()
     assert cfg.isaacsim_tensor_cuda_ipc is True
+    assert cfg.isaacsim_share_friction_materials is True
     assert cfg.tensor_runtime is True
     assert cfg.scene is not None
     assert cfg.scene.entity_assets

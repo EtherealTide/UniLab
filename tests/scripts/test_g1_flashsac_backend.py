@@ -116,6 +116,8 @@ def test_build_backend_routes_owner_specific_base_names(
 
     assert captured["backend_type"] == backend
     assert captured["base_name"] == expected
+    if backend == "isaacsim":
+        assert captured["share_friction_materials"] is True
 
 
 def test_build_backend_binds_newton_process_device_before_construction(

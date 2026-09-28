@@ -14,8 +14,11 @@ training:
 env:
   tensor_runtime: true
   isaacsim_device_id: 0
-  isaacsim_worker_timeout_s: 120.0
+  isaacsim_worker_timeout_s: 300.0
   isaacsim_tensor_cuda_ipc: true
+  # This throughput fixture does not use geom-friction reset DR. Sharing equal
+  # initial native materials keeps 2048 clones below PhysX's 64K material cap.
+  isaacsim_share_friction_materials: true
   scene:
     # IsaacSim consumes the mapped physical-scene profile.  The task source,
     # not an all-zero EntityInitialState, remains authoritative for the 29

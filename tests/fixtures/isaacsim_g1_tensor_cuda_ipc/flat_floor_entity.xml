@@ -2,7 +2,9 @@
   <option integrator="implicitfast" timestep="0.006666666666666667"/>
   <worldbody>
     <body name="floor">
-      <geom name="floor" type="box" size="100 100 0.05" pos="0 0 -0.05" mass="1"/>
+      <!-- Task-local finite support avoids inter-env broadphase overlap while retaining
+           stable box-contact semantics that the zero-size-plane import lacked. -->
+      <geom name="floor" type="box" size="0.25 0.25 0.05" pos="0 0 -0.05" mass="1"/>
     </body>
   </worldbody>
 </mujoco>

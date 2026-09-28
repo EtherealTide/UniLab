@@ -107,6 +107,11 @@ class EnvCfg:
     # remains false so legacy NumPy shared-memory behavior is unchanged until a
     # task owner explicitly negotiates the candidate tensor contract.
     isaacsim_tensor_cuda_ipc: bool = False
+    # Opt-in PhysX material sharing for large scenes.  Equal initial sliding
+    # friction values share a material and reset-time friction DR is disabled
+    # at capability negotiation.  Keep this false when complete per-geom/per-env
+    # friction DR is required.
+    isaacsim_share_friction_materials: bool = False
     # ``isaacsim`` PhysX solver overrides, forwarded to UniSim's bounded,
     # readback-validated PhysxSolverConfig (unilabsim/unisim#251, #259).
     # ``None`` keeps the PhysX scene defaults; the backend validates each
@@ -286,6 +291,11 @@ class EnvCfg:
         if not isinstance(self.isaacsim_tensor_cuda_ipc, bool):
             raise ValueError(
                 f"isaacsim_tensor_cuda_ipc must be a boolean, got {self.isaacsim_tensor_cuda_ipc!r}"
+            )
+        if not isinstance(self.isaacsim_share_friction_materials, bool):
+            raise ValueError(
+                "isaacsim_share_friction_materials must be a boolean, got "
+                f"{self.isaacsim_share_friction_materials!r}"
             )
         # PhysX accepts zero velocity iterations (its scene minimum is 0) but
         # requires at least one position iteration; mirror UniSim's
