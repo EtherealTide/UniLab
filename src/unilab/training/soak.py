@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import signal
 import subprocess
 import time
 from collections.abc import Iterable, Mapping, Sequence
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
@@ -332,6 +334,21 @@ def _gpu_device_snapshot() -> list[dict[str, str]]:
     return rows
 
 
+def _package_version(name: str) -> str | None:
+    try:
+        return version(name)
+    except PackageNotFoundError:
+        return None
+
+
+def _software_snapshot() -> dict[str, str | None]:
+    """Record monitor-process versions without importing accelerator packages."""
+    return {
+        "python": platform.python_version(),
+        "torch": _package_version("torch"),
+    }
+
+
 def workspace_snapshot(root: Path) -> dict[str, Any]:
     """Record source, pinned-sibling, GPU, and environment provenance."""
     manifest_path = root / "tensor_runtime_workspace.json"
@@ -348,6 +365,7 @@ def workspace_snapshot(root: Path) -> dict[str, Any]:
         "workspace_manifest": manifest,
         "siblings": siblings,
         "gpu_devices": _gpu_device_snapshot(),
+        "software": _software_snapshot(),
         "environment": {
             key: os.environ.get(key) for key in ("CUDA_VISIBLE_DEVICES", "UNILAB_LOCAL_UNISIM")
         },

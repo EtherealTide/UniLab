@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import sys
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from unilab.training.soak import (
     _tree_snapshot,
     build_g1_flashsac_mjwarp_command,
     run_soak,
+    workspace_snapshot,
 )
 
 
@@ -77,6 +79,13 @@ def test_soak_monitor_accepts_completed_run(tmp_path: Path) -> None:
     saved = json.loads((tmp_path / "artifact.json").read_text())
     assert saved["status"] == "passed"
     assert saved["monitor"]["sample_count"] >= 1
+
+
+def test_workspace_snapshot_records_software_provenance(tmp_path: Path) -> None:
+    context = workspace_snapshot(tmp_path)
+
+    assert context["software"]["python"] == platform.python_version()
+    assert isinstance(context["software"]["torch"], (str, type(None)))
 
 
 def test_soak_monitor_fails_closed_on_stale_progress(tmp_path: Path) -> None:
