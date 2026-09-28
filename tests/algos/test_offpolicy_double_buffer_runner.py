@@ -96,6 +96,13 @@ def test_flashsac_scoped_tensor_benchmark_reduces_metric_flush_frequency():
     assert cfg.training.collector_metrics_interval == 100
 
 
+def test_warpsac_declares_public_tensor_runtime_knobs():
+    cfg = _offpolicy_cfg(algo="warpsac")
+
+    assert cfg.training.inference_slot_capacity == 1
+    assert cfg.training.collector_metrics_interval == 1
+
+
 @pytest.mark.parametrize("mode", ["invalid_mode", "same_tick"])
 def test_non_one_tick_prefetch_is_rejected_before_dispatch(mode: str):
     cfg = _offpolicy_cfg([f"training.replay_prefetch_mode={mode}"])
@@ -221,7 +228,13 @@ def test_warpsac_dispatch_constructs_regime_aware_runner(
     monkeypatch: pytest.MonkeyPatch,
 ):
     module = _offpolicy()
-    cfg = _offpolicy_cfg(algo="warpsac")
+    cfg = _offpolicy_cfg(
+        [
+            "training.inference_slot_capacity=3",
+            "training.collector_metrics_interval=7",
+        ],
+        algo="warpsac",
+    )
 
     import uni_rl.algos.warp_sac.double_buffer as warp_module
 
@@ -232,6 +245,8 @@ def test_warpsac_dispatch_constructs_regime_aware_runner(
     runner = module.build_runner("warpsac", cfg)
     assert isinstance(runner, _FakeRunner)
     assert runner.kwargs["algo_type"] == "warpsac"
+    assert runner.kwargs["inference_slot_capacity"] == 3
+    assert runner.kwargs["collector_metrics_interval"] == 7
     assert runner.kwargs["replay_pipeline_factory"].keywords == {
         "decay_step": cfg.algo.decay_step,
         "min_weight": cfg.algo.replay_min_weight,

@@ -89,6 +89,10 @@ training:
   log_root: null
   log_dir: null
   env_steps_per_sync: 1
+  # Fixed in-flight learner-inference requests; 1 preserves legacy ordering.
+  inference_slot_capacity: 1
+  # Tensor-collector steps between metric compaction and one host flush.
+  collector_metrics_interval: 1
   trace_enabled: false
   trace_output_dir: null
   trace_thread_time: false
