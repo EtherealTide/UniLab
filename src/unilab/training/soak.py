@@ -24,6 +24,8 @@ from typing import Any
 from unilab.cli import build_command
 
 _ARTIFACT_SCHEMA_VERSION = "0.2.0"
+_SUPPORTED_METRIC_SCHEMA_VERSION = 1
+_SUPPORTED_RUNTIME_MANIFEST_SCHEMA_VERSION = 1
 
 _REPLAY_INGRESS_INTEGER_FIELDS = (
     "ingress_depth",
@@ -469,9 +471,36 @@ def _finite_number(value: Any) -> float | None:
 
 def _final_replay_ingress_failure(run_summary: Mapping[str, Any]) -> str | None:
     """Validate the final replay-ingress contract without reading CUDA tensors."""
+    metric_schema_version = run_summary.get("metric_schema_version")
+    if metric_schema_version is None:
+        return "completed run_summary is missing metric_schema_version"
+    if (
+        isinstance(metric_schema_version, bool)
+        or not isinstance(metric_schema_version, int)
+        or metric_schema_version != _SUPPORTED_METRIC_SCHEMA_VERSION
+    ):
+        return (
+            "completed run_summary has unsupported "
+            f"metric_schema_version "
+            f"{metric_schema_version!r}; expected {_SUPPORTED_METRIC_SCHEMA_VERSION}"
+        )
+
     manifest = run_summary.get("runtime_manifest")
     if not isinstance(manifest, Mapping):
         return "completed run_summary is missing runtime_manifest"
+    runtime_schema_version = manifest.get("schema_version")
+    if runtime_schema_version is None:
+        return "completed runtime_manifest is missing runtime_manifest.schema_version"
+    if (
+        isinstance(runtime_schema_version, bool)
+        or not isinstance(runtime_schema_version, int)
+        or runtime_schema_version != _SUPPORTED_RUNTIME_MANIFEST_SCHEMA_VERSION
+    ):
+        return (
+            "completed runtime_manifest has unsupported runtime_manifest.schema_version "
+            f"{runtime_schema_version!r}; expected "
+            f"{_SUPPORTED_RUNTIME_MANIFEST_SCHEMA_VERSION}"
+        )
 
     replay_ingress = manifest.get("replay_ingress")
     if not isinstance(replay_ingress, Mapping):
@@ -571,6 +600,17 @@ def _final_replay_ingress_failure(run_summary: Mapping[str, Any]) -> str | None:
         )
     if values["high_water_occupancy"] <= 0:
         return "completed replay_ingress high_water_occupancy must be positive"
+
+    try:
+        from uni_rl.logging.runtime_manifest_schema import validate_runtime_manifest
+    except ImportError as exc:
+        return (
+            f"completed runtime_manifest validation requires uni_rl runtime_manifest_schema: {exc}"
+        )
+    try:
+        validate_runtime_manifest(manifest, completed=True)
+    except (TypeError, ValueError) as exc:
+        return f"completed runtime_manifest violates v1 contract: {exc}"
     return None
 
 

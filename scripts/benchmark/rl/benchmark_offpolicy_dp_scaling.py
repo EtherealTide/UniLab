@@ -12,16 +12,14 @@ to avoid resource contention.
 Measurement conventions:
 
 - Collector throughput (Steps/s): mean of the last 50% of canonical rank-0
-  ``Perf/total_fps`` samples (legacy ``perf/steps_per_sec`` for pre-1.4.1
-  event files). In DP runs the runner already sums the per-rank collector
-  rates before logging.
-- Learner throughput (Samples/s): the same tail mean over the legacy
-  ``perf/effective_samples_per_sec`` tag. unilab-rl 1.4.1 no longer persists
-  learner replay throughput, so runs without that tag derive it per iteration
-  as ``world_size * algo.batch_size * algo.updates_per_step /
-  Perf/iteration_time`` (run configuration from ``run_config.json``). This
-  counts effective learner replay rows (including configured sample
-  multipliers), summed across ranks.
+  ``Perf/total_fps`` samples. In DP runs the runner already sums the per-rank
+  collector rates before logging. This executable benchmark always generates a
+  current run, so immutable historical event files are outside its scope.
+- Learner throughput (Samples/s): unilab-rl 1.4.1 no longer persists learner
+  replay throughput, so schema-v1 runs derive it per iteration as
+  ``world_size * algo.batch_size * algo.updates_per_step / Perf/iteration_time``
+  (run configuration from ``run_config.json``). This counts effective learner
+  replay rows (including configured sample multipliers), summed across ranks.
 - Both fields report their own N-way / N=1 scaling ratio. The roadmap verdict
   remains attached to collector Steps/s: ``pass`` at >= 1.7
   (``SCALING_PASS_THRESHOLD``), otherwise ``below threshold``. The verdict is
@@ -70,35 +68,64 @@ TRAIN_SCRIPT = ROOT_DIR / "src" / "unilab" / "scripts" / "train_sac.py"
 # --sim mujoco` (see src/unilab/cli.py build_route for off-policy algos).
 ROUTE_OVERRIDES = ("task=g1_walk_flat/mujoco",)
 
-# Scalar tag candidates are ``(tag, scale)`` pairs ordered newest schema
-# first. unilab-rl 1.4.1 introduced the canonical metric schema
-# (``uni_rl.logging.metric_schema``; migration table in unilab_rl
-# ``docs/metrics.md``) without rewriting historical event files, so the first
-# tag present in a run wins and its values are scaled into the units the
-# report columns already use (per-second rates, seconds for durations).
-STEPS_PER_SEC_TAGS = (("Perf/total_fps", 1.0), ("perf/steps_per_sec", 1.0))
-REWARD_TAGS = (("Train/mean_reward", 1.0), ("reward/mean", 1.0))
-DP_SYNC_TIME_TAGS = (("Perf/dp_gradient_sync_ms_per_rank", 0.001), ("train/dp_sync_time", 1.0))
-ITERATION_TIME_TAGS = (("Perf/iteration_time", 1.0), ("perf/iter_ms", 0.001))
+# Canonical scalar tags consumed by current schema-v1 runs.
+STEPS_PER_SEC_TAGS = (("Perf/total_fps", 1.0),)
+REWARD_TAGS = (("Train/mean_reward", 1.0),)
+DP_SYNC_TIME_TAGS = (("Perf/dp_gradient_sync_ms_per_rank", 0.001),)
+ITERATION_TIME_TAGS = (("Perf/iteration_time", 1.0),)
 # unilab-rl 1.4.1 removed the persisted learner replay throughput chart with
-# no replacement tag; post-1.4.1 runs derive it from the run configuration
-# and ``Perf/iteration_time`` (see derive_learner_samples_per_sec).
-SAMPLES_PER_SEC_TAGS = (
-    ("perf/effective_samples_per_sec", 1.0),
-    ("perf/learner_samples_per_sec", 1.0),
+# no replacement tag; schema-v1 runs derive it from the run configuration and
+# ``Perf/iteration_time`` (see derive_learner_samples_per_sec).
+_RETIRED_LEARNER_THROUGHPUT_TAGS = frozenset(
+    ("perf/effective_samples_per_sec", "perf/learner_samples_per_sec")
 )
 
 DEFAULT_ITERATIONS = 300
 DEFAULT_DEVICES = "0,1"
+_SUPPORTED_METRIC_SCHEMA_VERSION = 1
 
 # Roadmap #964 acceptance target for 2-way data-parallel aggregate throughput.
 SCALING_PASS_THRESHOLD = 1.7
 
 STEADY_STATE_TAIL_FRACTION = 0.5
+_CANONICAL_TAGS = frozenset(
+    tag
+    for candidates in (STEPS_PER_SEC_TAGS, REWARD_TAGS, DP_SYNC_TIME_TAGS, ITERATION_TIME_TAGS)
+    for tag, _ in candidates
+)
+_LEGACY_TAGS = _RETIRED_LEARNER_THROUGHPUT_TAGS | frozenset(
+    (
+        "perf/steps_per_sec",
+        "reward/mean",
+        "train/dp_sync_time",
+        "perf/iter_ms",
+    )
+)
 
 
 class RunParseError(RuntimeError):
     """A finished run directory is missing required artifacts or is invalid."""
+
+
+def _validate_metric_schema(summary: dict[str, Any], scalar_tags: set[str]) -> None:
+    """Validate the current metric schema consumed by this benchmark."""
+    metric_version = summary.get("metric_schema_version")
+    if metric_version is None:
+        raise RunParseError("run summary is missing metric_schema_version")
+    if isinstance(metric_version, bool) or not isinstance(metric_version, int):
+        raise RunParseError(f"metric_schema_version must be an integer, got {metric_version!r}")
+    if metric_version != _SUPPORTED_METRIC_SCHEMA_VERSION:
+        raise RunParseError(
+            f"unsupported metric_schema_version {metric_version!r}; expected "
+            f"{_SUPPORTED_METRIC_SCHEMA_VERSION}"
+        )
+    present_legacy = sorted(_LEGACY_TAGS & scalar_tags)
+    if present_legacy:
+        raise RunParseError(
+            "schema-v1 event file must not contain legacy tags: " + ", ".join(present_legacy)
+        )
+    if not _CANONICAL_TAGS & scalar_tags:
+        raise RunParseError("schema-v1 event file has no canonical Perf/ or Train/ tags")
 
 
 # =====================================================================
@@ -135,6 +162,22 @@ def find_event_files(rank_dir: Path) -> list[Path]:
     return sorted(rank_dir.glob("events.out.tfevents.*"))
 
 
+def read_scalar_tags(rank_dir: Path) -> set[str]:
+    """Read scalar tag names after enforcing the one-event-file run contract."""
+    from tensorboard.backend.event_processing import event_accumulator
+
+    event_files = find_event_files(rank_dir)
+    if not event_files:
+        raise RunParseError(f"no tfevents file found under {rank_dir}")
+    if len(event_files) > 1:
+        raise RunParseError(
+            f"expected exactly one tfevents file under {rank_dir}, got {len(event_files)}"
+        )
+    accumulator = event_accumulator.EventAccumulator(str(event_files[0]))
+    accumulator.Reload()
+    return set(accumulator.Tags()["scalars"])
+
+
 def read_scalar_series(rank_dir: Path, candidates: Sequence[tuple[str, float]]) -> list[float]:
     """Scaled values of the first present tag among ``candidates``.
 
@@ -168,7 +211,10 @@ def derive_learner_samples_per_sec(run_dir: Path, world_size: int) -> list[float
     iteration, summed across ranks — divided by the measured
     ``Perf/iteration_time``.
     """
-    iteration_times = read_scalar_series(run_dir, ITERATION_TIME_TAGS)
+    iteration_times = read_scalar_series(
+        run_dir,
+        ITERATION_TIME_TAGS,
+    )
     config_path = Path(run_dir) / "run_config.json"
     if not iteration_times or not config_path.is_file():
         return []
@@ -200,6 +246,9 @@ def parse_run(run_dir: Path, world_size: int) -> dict[str, Any]:
     if not summary_path.is_file():
         raise RunParseError(f"missing run summary: {summary_path}")
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if not isinstance(summary, dict):
+        raise RunParseError(f"run summary must be a JSON object: {summary_path}")
+    _validate_metric_schema(summary, read_scalar_tags(run_dir))
     status = summary.get("status")
     if status != "completed":
         raise RunParseError(
@@ -209,18 +258,14 @@ def parse_run(run_dir: Path, world_size: int) -> dict[str, Any]:
     collector_series = read_scalar_series(run_dir, STEPS_PER_SEC_TAGS)
     if not collector_series:
         raise RunParseError(
-            f"run has no collector throughput samples "
-            f"({' or '.join(tag for tag, _ in STEPS_PER_SEC_TAGS)}) under {run_dir}"
+            f"run has no collector throughput samples ('Perf/total_fps') under {run_dir}"
         )
-    learner_series = read_scalar_series(run_dir, SAMPLES_PER_SEC_TAGS)
-    learner_throughput_source = "tfevents"
-    if not learner_series:
-        learner_series = derive_learner_samples_per_sec(run_dir, world_size)
-        learner_throughput_source = "derived"
+    learner_series = derive_learner_samples_per_sec(run_dir, world_size)
+    learner_throughput_source = "derived"
     if not learner_series:
         raise RunParseError(
-            f"run has no 'perf/effective_samples_per_sec' samples and learner "
-            f"throughput cannot be derived under {run_dir}"
+            "learner throughput cannot be derived from 'Perf/iteration_time' "
+            f"and run_config.json under {run_dir}"
         )
     dp_sync_samples = read_scalar_series(run_dir, DP_SYNC_TIME_TAGS)
     reward_series = read_scalar_series(run_dir, REWARD_TAGS)

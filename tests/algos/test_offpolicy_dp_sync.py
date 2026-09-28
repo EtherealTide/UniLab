@@ -302,7 +302,9 @@ def test_learn_source_orders_sync_around_collector_and_logging():
     """Startup broadcast precedes collection; timing is consumed after updates."""
     from uni_rl.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
 
-    source = inspect.getsource(DoubleBufferOffPolicyRunner.learn)
+    # Shutdown diagnostics wrap the public entrypoint; ordering guarantees live
+    # in the implementation that ``learn`` invokes.
+    source = inspect.getsource(DoubleBufferOffPolicyRunner._learn_impl)
     assert source.index("self._dp_init_broadcast()") < source.index("self._start_collector(")
     assert (
         source.index("inference_scheduler.finish_update()")

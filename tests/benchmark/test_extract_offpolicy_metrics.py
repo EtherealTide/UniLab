@@ -22,12 +22,18 @@ def _write_tfevents(log_dir: Path, series: dict[str, list[float]]) -> None:
         writer.close()
 
 
+def _write_run_summary(log_dir: Path, **overrides: object) -> None:
+    payload = {"status": "completed", "metric_schema_version": 1, **overrides}
+    (log_dir / "run_summary.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
 def _run_json(log_dir: Path, capsys: pytest.CaptureFixture) -> dict[str, float]:
     assert extract.main([str(log_dir), "--json", "--last", "20"]) == 0
     return json.loads(capsys.readouterr().out)
 
 
 def test_extract_new_schema_tags_with_unit_conversion(tmp_path: Path, capsys) -> None:
+    _write_run_summary(tmp_path)
     _write_tfevents(
         tmp_path,
         {
@@ -48,6 +54,10 @@ def test_extract_new_schema_tags_with_unit_conversion(tmp_path: Path, capsys) ->
 
 
 def test_extract_legacy_tags_fall_back_unscaled(tmp_path: Path, capsys) -> None:
+    # Unversioned summaries are historical only and require the explicit mode.
+    (tmp_path / "run_summary.json").write_text(
+        json.dumps({"status": "completed"}), encoding="utf-8"
+    )
     _write_tfevents(
         tmp_path,
         {
@@ -57,14 +67,16 @@ def test_extract_legacy_tags_fall_back_unscaled(tmp_path: Path, capsys) -> None:
             "perf/collector_active_steps_per_sec": [50.0, 70.0],
         },
     )
-    rows = _run_json(tmp_path, capsys)
+    assert extract.main([str(tmp_path), "--json", "--last", "20", "--legacy-unversioned"]) == 0
+    rows = json.loads(capsys.readouterr().out)
     assert rows["iter_ms"] == pytest.approx(1_250.0)
     assert rows["learner_train_ms"] == pytest.approx(500.0)
     assert rows["steps_per_sec"] == pytest.approx(200.0)
     assert rows["collector_active_steps_per_sec"] == pytest.approx(60.0)
 
 
-def test_extract_prefers_new_tag_when_both_exist(tmp_path: Path, capsys) -> None:
+def test_extract_does_not_fall_back_from_canonical_to_legacy(tmp_path: Path, capsys) -> None:
+    _write_run_summary(tmp_path)
     _write_tfevents(
         tmp_path,
         {
@@ -72,10 +84,92 @@ def test_extract_prefers_new_tag_when_both_exist(tmp_path: Path, capsys) -> None
             "perf/steps_per_sec": [111.0],
         },
     )
-    rows = _run_json(tmp_path, capsys)
-    assert rows["steps_per_sec"] == pytest.approx(999.0)
+    assert extract.main([str(tmp_path), "--json"]) == 1
+    assert "must not contain legacy tags" in capsys.readouterr().err
 
 
 def test_extract_missing_event_file_is_an_error(tmp_path: Path, capsys) -> None:
     assert extract.main([str(tmp_path)]) == 1
     assert "No event file found" in capsys.readouterr().err
+
+
+def test_extract_rejects_multiple_event_files(tmp_path: Path, capsys) -> None:
+    _write_tfevents(tmp_path / "run1", {"Perf/total_fps": [1.0]})
+    _write_tfevents(tmp_path / "run2", {"Perf/total_fps": [2.0]})
+    assert extract.main([str(tmp_path), "--json"]) == 1
+    assert "expected one event file" in capsys.readouterr().err
+
+
+def test_extract_uses_only_summary_co_located_with_event(tmp_path: Path, capsys) -> None:
+    _write_run_summary(tmp_path)
+    _write_tfevents(tmp_path / "rank0", {"Perf/total_fps": [1.0]})
+    assert extract.main([str(tmp_path), "--json"]) == 1
+    assert "metric_schema_version" in capsys.readouterr().err
+
+
+def test_extract_requires_schema_stamp_for_canonical_tags(tmp_path: Path, capsys) -> None:
+    _write_tfevents(tmp_path, {"Perf/total_fps": [100.0]})
+    assert extract.main([str(tmp_path), "--json"]) == 1
+    assert "metric_schema_version" in capsys.readouterr().err
+
+
+def test_extract_rejects_missing_summary_by_default(tmp_path: Path, capsys) -> None:
+    _write_tfevents(tmp_path, {"perf/steps_per_sec": [100.0]})
+    assert extract.main([str(tmp_path), "--json"]) == 1
+    assert "metric_schema_version" in capsys.readouterr().err
+
+
+def test_extract_rejects_unsupported_schema_version(tmp_path: Path, capsys) -> None:
+    _write_run_summary(tmp_path, metric_schema_version=2)
+    _write_tfevents(tmp_path, {"Perf/total_fps": [100.0]})
+    assert extract.main([str(tmp_path), "--json"]) == 1
+    assert "unsupported metric_schema_version 2" in capsys.readouterr().err
+
+
+def test_extract_rejects_mixed_canonical_and_legacy_tags(tmp_path: Path, capsys) -> None:
+    _write_run_summary(tmp_path)
+    _write_tfevents(
+        tmp_path,
+        {
+            "Perf/total_fps": [100.0],
+            "perf/steps_per_sec": [200.0],
+        },
+    )
+    assert extract.main([str(tmp_path), "--json"]) == 1
+    assert "must not contain legacy tags" in capsys.readouterr().err
+
+
+def test_extract_legacy_mode_rejects_schema_stamped_summary(tmp_path: Path, capsys) -> None:
+    _write_run_summary(tmp_path)
+    _write_tfevents(tmp_path, {"perf/steps_per_sec": [100.0]})
+    assert extract.main([str(tmp_path), "--json", "--legacy-unversioned"]) == 1
+    assert "cannot read a schema-stamped" in capsys.readouterr().err
+
+
+def test_extract_legacy_mode_rejects_null_schema_stamp(tmp_path: Path, capsys) -> None:
+    (tmp_path / "run_summary.json").write_text(
+        json.dumps({"status": "completed", "metric_schema_version": None}),
+        encoding="utf-8",
+    )
+    _write_tfevents(tmp_path, {"perf/steps_per_sec": [100.0]})
+    assert extract.main([str(tmp_path), "--json", "--legacy-unversioned"]) == 1
+    assert "cannot read a schema-stamped" in capsys.readouterr().err
+
+
+def test_extract_legacy_mode_rejects_canonical_tags_without_schema(tmp_path: Path, capsys) -> None:
+    _write_tfevents(
+        tmp_path,
+        {
+            "Perf/total_fps": [100.0],
+            "perf/steps_per_sec": [200.0],
+        },
+    )
+    assert extract.main([str(tmp_path), "--json", "--legacy-unversioned"]) == 1
+    assert "canonical tags require metric_schema_version" in capsys.readouterr().err
+
+
+def test_extract_legacy_mode_accepts_missing_summary(tmp_path: Path, capsys) -> None:
+    _write_tfevents(tmp_path, {"perf/steps_per_sec": [100.0, 300.0]})
+    assert extract.main([str(tmp_path), "--json", "--last", "20", "--legacy-unversioned"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert rows["steps_per_sec"] == pytest.approx(200.0)

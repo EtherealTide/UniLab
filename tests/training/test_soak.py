@@ -5,6 +5,7 @@ import os
 import platform
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -31,6 +32,27 @@ def _valid_replay_ingress() -> dict[str, object]:
         "dropped_batches": 0,
         "closed_returns": 0,
         "stop_returns": 0,
+    }
+
+
+def _completed_summary() -> dict[str, Any]:
+    return {
+        "status": "completed",
+        "total_env_steps": 102_400,
+        "metric_schema_version": 1,
+        "runtime_manifest": {
+            "schema_version": 1,
+            "inference_ring_capacity": 1,
+            "collector_metrics_interval": 100,
+            "collector_backend_device": "cuda:0",
+            "inference_flight": {
+                "queue_depth": 0,
+                "publication_lag": 0,
+                "max_in_flight": 1,
+                "max_publication_lag": 1,
+            },
+            "replay_ingress": _valid_replay_ingress(),
+        },
     }
 
 
@@ -84,14 +106,7 @@ def test_g1_flashsac_soak_command_rejects_owned_override(tmp_path: Path) -> None
 
 
 def test_soak_monitor_accepts_completed_run(tmp_path: Path) -> None:
-    summary = {
-        "status": "completed",
-        "total_env_steps": 102_400,
-        "runtime_manifest": {
-            "inference_flight": {"queue_depth": 0, "publication_lag": 0},
-            "replay_ingress": _valid_replay_ingress(),
-        },
-    }
+    summary = _completed_summary()
 
     artifact = _run_with_summary(tmp_path, summary)
 
@@ -173,14 +188,8 @@ def test_soak_monitor_fails_when_summary_is_missing(tmp_path: Path) -> None:
 
 
 def test_soak_monitor_fails_when_final_flight_is_not_drained(tmp_path: Path) -> None:
-    summary = {
-        "status": "completed",
-        "total_env_steps": 102_400,
-        "runtime_manifest": {
-            "inference_flight": {"queue_depth": 1, "publication_lag": 0},
-            "replay_ingress": _valid_replay_ingress(),
-        },
-    }
+    summary = _completed_summary()
+    summary["runtime_manifest"]["inference_flight"]["queue_depth"] = 1
 
     with pytest.raises(SoakFailureError, match="final inference flight is not drained"):
         _run_with_summary(tmp_path, summary)
@@ -248,14 +257,8 @@ def test_soak_monitor_fails_closed_on_invalid_replay_ingress(
 ) -> None:
     replay_ingress = _valid_replay_ingress()
     mutation(replay_ingress)
-    summary = {
-        "status": "completed",
-        "total_env_steps": 102_400,
-        "runtime_manifest": {
-            "inference_flight": {"queue_depth": 0, "publication_lag": 0},
-            "replay_ingress": replay_ingress,
-        },
-    }
+    summary = _completed_summary()
+    summary["runtime_manifest"]["replay_ingress"] = replay_ingress
 
     with pytest.raises(SoakFailureError, match=expected_failure):
         _run_with_summary(tmp_path, summary)
@@ -267,14 +270,10 @@ def test_soak_monitor_fails_closed_on_invalid_replay_ingress(
 
 @pytest.mark.parametrize("missing_field", ["runtime_manifest", "replay_ingress"])
 def test_soak_monitor_requires_final_replay_ingress(tmp_path: Path, missing_field: str) -> None:
-    replay_ingress = _valid_replay_ingress()
-    runtime_manifest: dict[str, object] = {
-        "inference_flight": {"queue_depth": 0, "publication_lag": 0},
-        "replay_ingress": replay_ingress,
-    }
+    summary = _completed_summary()
+    runtime_manifest = summary["runtime_manifest"]
     if missing_field == "replay_ingress":
         runtime_manifest.pop("replay_ingress")
-    summary: dict[str, object] = {"status": "completed", "runtime_manifest": runtime_manifest}
     if missing_field == "runtime_manifest":
         summary.pop("runtime_manifest")
 
@@ -286,29 +285,61 @@ def test_soak_monitor_requires_final_replay_ingress(tmp_path: Path, missing_fiel
 def test_soak_monitor_rejects_malformed_replay_ingress(
     tmp_path: Path, replay_ingress: object
 ) -> None:
-    summary = {
-        "status": "completed",
-        "total_env_steps": 102_400,
-        "runtime_manifest": {
-            "inference_flight": {"queue_depth": 0, "publication_lag": 0},
-            "replay_ingress": replay_ingress,
-        },
-    }
+    summary = _completed_summary()
+    summary["runtime_manifest"]["replay_ingress"] = replay_ingress
 
     with pytest.raises(SoakFailureError, match="missing replay_ingress|must be an integer"):
         _run_with_summary(tmp_path, summary)
 
 
 def test_soak_monitor_requires_total_env_steps_for_replay_publication_count(tmp_path: Path) -> None:
-    summary = {
-        "status": "completed",
-        "runtime_manifest": {
-            "inference_flight": {"queue_depth": 0, "publication_lag": 0},
-            "replay_ingress": _valid_replay_ingress(),
-        },
-    }
+    summary = _completed_summary()
+    summary.pop("total_env_steps")
 
     with pytest.raises(SoakFailureError, match="total_env_steps must be an integer"):
+        _run_with_summary(tmp_path, summary)
+
+
+@pytest.mark.parametrize("metric_schema_version", [None, 0, 2, "1", 1.0, True])
+def test_soak_monitor_fails_closed_on_invalid_metric_schema(
+    tmp_path: Path, metric_schema_version: object
+) -> None:
+    summary = _completed_summary()
+    if metric_schema_version is None:
+        summary.pop("metric_schema_version")
+    else:
+        summary["metric_schema_version"] = metric_schema_version
+
+    with pytest.raises(SoakFailureError, match="metric_schema_version"):
+        _run_with_summary(tmp_path, summary)
+
+
+@pytest.mark.parametrize("runtime_schema_version", [None, 0, 2, "1", 1.0, True])
+def test_soak_monitor_fails_closed_on_invalid_runtime_manifest_schema(
+    tmp_path: Path, runtime_schema_version: object
+) -> None:
+    summary = _completed_summary()
+    manifest = summary["runtime_manifest"]
+    if runtime_schema_version is None:
+        manifest.pop("schema_version")
+    else:
+        manifest["schema_version"] = runtime_schema_version
+
+    with pytest.raises(SoakFailureError, match="runtime_manifest.schema_version"):
+        _run_with_summary(tmp_path, summary)
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ["inference_ring_capacity", "collector_metrics_interval", "collector_backend_device"],
+)
+def test_soak_monitor_requires_completed_runtime_manifest_stable_fields(
+    tmp_path: Path, missing_field: str
+) -> None:
+    summary = _completed_summary()
+    summary["runtime_manifest"].pop(missing_field)
+
+    with pytest.raises(SoakFailureError, match=missing_field):
         _run_with_summary(tmp_path, summary)
 
 
