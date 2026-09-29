@@ -163,5 +163,25 @@ class RslRlVecEnvAdapter:
         obs = self.env.state.obs
         return _to_policy_tensor(obs.get("critic", obs["obs"]), self.device)
 
+    def export_training_state(self) -> dict[str, Any] | None:
+        """Export the wrapped environment's plain versioned training state."""
+        export = getattr(self.env, "export_training_state", None)
+        if not callable(export):
+            return None
+        state = export()
+        if not isinstance(state, dict):
+            raise TypeError("TorchEnv training state export must return a dictionary")
+        return state
+
+    def import_training_state(self, state: dict[str, Any]) -> None:
+        """Restore the wrapped environment's plain versioned training state."""
+        importer = getattr(self.env, "import_training_state", None)
+        if not callable(importer):
+            raise TypeError(
+                "TorchEnv does not implement import_training_state; cannot restore "
+                "checkpoint environment state"
+            )
+        importer(state)
+
     def close(self) -> None:
         self.env.close()

@@ -2294,6 +2294,63 @@ def test_play_wrapper_step_exports_time_outs_without_bootstrap_obs():
     assert "time_out_bootstrap_obs" not in infos
 
 
+def test_play_wrapper_round_trips_torchenv_training_state():
+    import torch
+
+    from unilab.rl import RslRlVecEnvAdapter
+
+    class _ProviderEnv:
+        def __init__(self):
+            self.device = torch.device("cpu")
+            self.num_envs = 1
+            self.state = type("State", (), {"obs": {"obs": torch.zeros((1, 3))}})()
+            self.cfg = type("Cfg", (), {"max_episode_seconds": 10.0, "ctrl_dt": 0.02})()
+            self.observation_space = type("Space", (), {"shape": (3,)})()
+            self.action_space = type("Space", (), {"shape": (2,)})()
+            self.obs_groups_spec = {"obs": 3}
+            self.imported = None
+
+        def init_state(self):
+            pass
+
+        def reset(self, env_indices):
+            return {"obs": torch.zeros((1, 3))}, {}
+
+        def export_training_state(self):
+            return {"version": 1, "step_counter": 17}
+
+        def import_training_state(self, state):
+            self.imported = dict(state)
+
+    class _PlainEnv:
+        def __init__(self):
+            self.device = torch.device("cpu")
+            self.num_envs = 1
+            self.state = type("State", (), {"obs": {"obs": torch.zeros((1, 3))}})()
+            self.cfg = type("Cfg", (), {"max_episode_seconds": 10.0, "ctrl_dt": 0.02})()
+            self.observation_space = type("Space", (), {"shape": (3,)})()
+            self.action_space = type("Space", (), {"shape": (2,)})()
+            self.obs_groups_spec = {"obs": 3}
+
+        def init_state(self):
+            pass
+
+        def reset(self, env_indices):
+            return {"obs": torch.zeros((1, 3))}, {}
+
+    provider = _ProviderEnv()
+    wrapper = RslRlVecEnvAdapter(provider, device="cpu")
+    assert wrapper.export_training_state() == {"version": 1, "step_counter": 17}
+    wrapper.import_training_state({"version": 1, "step_counter": 18})
+    assert provider.imported == {"version": 1, "step_counter": 18}
+
+    non_provider = _PlainEnv()
+    wrapper = RslRlVecEnvAdapter(non_provider, device="cpu")
+    assert wrapper.export_training_state() is None
+    with pytest.raises(TypeError, match="cannot restore checkpoint environment state"):
+        wrapper.import_training_state({"version": 1, "step_counter": 18})
+
+
 # ---------------------------------------------------------------------------
 # Issue #168: Unified log directory and load_run resolution
 # ---------------------------------------------------------------------------
