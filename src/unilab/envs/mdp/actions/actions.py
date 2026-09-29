@@ -290,8 +290,14 @@ class RelativeJointPositionActionCfg(BaseActionCfg):
 class RelativeJointPositionAction(BaseAction):
     """Control joints via position targets relative to current positions."""
 
+    def _joint_state(self):
+        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        if read_plan is not None:
+            return read_plan.joint_tensor_view(self._entity)
+        return self._entity.joint_tensor_view(self._device)
+
     def apply_actions(self) -> None:
-        joint_state = self._entity.joint_tensor_view(self._device)
+        joint_state = self._joint_state()
         target = joint_state.joint_pos.index_select(1, self._target_index) + (
             self._processed_actions
         )

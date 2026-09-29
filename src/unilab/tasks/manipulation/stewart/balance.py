@@ -11,11 +11,17 @@ from numbers import Real
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import numpy as np
+import torch
 
 from unilab.base import registry
 from unilab.dtype_config import get_global_dtype
 from unilab.envs import ManagerBasedRlEnvCfg, make_manager_based_rl_env
 from unilab.managers import ActionTerm, ActionTermCfg, ManagerTermBase, ManagerTermBaseCfg
+from unilab.tasks.motion_tracking.common.tensor_rotation import (
+    quat_apply,
+    quat_apply_inverse,
+    quat_from_euler_xyz,
+)
 from unilab.utils.geometry import np_roll_pitch_from_quat
 from unilab.utils.rotation import (
     np_quat_apply_batched,
@@ -159,6 +165,11 @@ class StewartTiltAction(ActionTerm):
 
     cfg: StewartTiltActionCfg
     _entity: Entity
+    uses_tensor_actions = True
+
+    @property
+    def tensor_body_names(self) -> tuple[str, ...]:
+        return (*self._leg_names, *self._connect_names, self._top_name, self._ball_name)
 
     def __init__(self, cfg: StewartTiltActionCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
@@ -187,6 +198,10 @@ class StewartTiltAction(ActionTerm):
         self._ball_body_id = _body_id(self._entity, ball_name, term=term)
         self._leg_body_ids = _body_ids(self._entity, leg_names, term=term)
         self._top_connect_body_ids = _body_ids(self._entity, connect_names, term=term)
+        self._top_name = top_name
+        self._ball_name = ball_name
+        self._leg_names = leg_names
+        self._connect_names = connect_names
 
         self._raw_clip = _pair(term, "raw_action_clip", cfg.raw_action_clip)
         self._tilt_limit_deg = _real(
@@ -211,118 +226,153 @@ class StewartTiltAction(ActionTerm):
         )
 
         ranges = np.asarray(self._entity.data.actuator_ctrl_range, dtype=get_global_dtype())
-        self._ctrl_lower = ranges[self._actuator_ids, 0]
-        self._ctrl_upper = ranges[self._actuator_ids, 1]
-        dtype = get_global_dtype()
-        self._raw_action = np.zeros((env.num_envs, _ACTION_DIM), dtype=dtype)
-        self._clipped_action = np.zeros_like(self._raw_action)
-        self._executed_action = np.zeros_like(self._raw_action)
-        self._previous_executed_action = np.zeros_like(self._raw_action)
-        self._effective_action = np.zeros_like(self._raw_action)
-        self._target_tilt_deg = np.zeros_like(self._raw_action)
-        self._target_tilt_rad = np.zeros_like(self._raw_action)
-        self._control = np.zeros((env.num_envs, _LEG_COUNT), dtype=dtype)
+        self._device = torch.device(getattr(env, "device", "cpu"))
+        self._ctrl_lower = torch.from_numpy(
+            np.ascontiguousarray(ranges[self._actuator_ids, 0], dtype=np.float32)
+        ).to(self._device)
+        self._ctrl_upper = torch.from_numpy(
+            np.ascontiguousarray(ranges[self._actuator_ids, 1], dtype=np.float32)
+        ).to(self._device)
+        self._raw_action = torch.zeros(
+            (env.num_envs, _ACTION_DIM), dtype=torch.float32, device=self._device
+        )
+        self._clipped_action = torch.zeros_like(self._raw_action)
+        self._executed_action = torch.zeros_like(self._raw_action)
+        self._previous_executed_action = torch.zeros_like(self._raw_action)
+        self._effective_action = torch.zeros_like(self._raw_action)
+        self._target_tilt_deg = torch.zeros_like(self._raw_action)
+        self._target_tilt_rad = torch.zeros_like(self._raw_action)
+        self._control = torch.zeros(
+            (env.num_envs, _LEG_COUNT), dtype=torch.float32, device=self._device
+        )
 
         self._ik_ready = False
-        self._top_home_pos = np.zeros(3, dtype=dtype)
-        self._connect_offsets = np.zeros((_LEG_COUNT, 3), dtype=dtype)
-        self._neutral_leg_lengths = np.zeros(_LEG_COUNT, dtype=dtype)
+        self._top_home_pos = torch.zeros(3, dtype=torch.float32, device=self._device)
+        self._connect_offsets = torch.zeros(
+            (_LEG_COUNT, 3), dtype=torch.float32, device=self._device
+        )
+        self._neutral_leg_lengths = torch.zeros(
+            _LEG_COUNT, dtype=torch.float32, device=self._device
+        )
 
     @property
     def action_dim(self) -> int:
         return _ACTION_DIM
 
     @property
-    def raw_action(self) -> np.ndarray:
+    def raw_action(self) -> torch.Tensor:
         return self._raw_action
 
     @property
-    def executed_action(self) -> np.ndarray:
+    def executed_action(self) -> torch.Tensor:
         return self._executed_action
 
     @property
-    def target_tilt_deg(self) -> np.ndarray:
+    def target_tilt_deg(self) -> torch.Tensor:
         return self._target_tilt_deg
 
     @property
-    def neutral_leg_lengths(self) -> np.ndarray:
+    def neutral_leg_lengths(self) -> torch.Tensor:
         self._ensure_ik_calibration()
         return self._neutral_leg_lengths
+
+    def _body_state(self, body_names: tuple[str, ...]):
+        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        if read_plan is not None:
+            if not read_plan.ready:
+                read_plan.refresh()
+            return read_plan.body_tensor_view(self._entity, body_names)
+        return self._entity.body_tensor_view(self._device, body_names=body_names)
 
     def _ensure_ik_calibration(self) -> None:
         if self._ik_ready:
             return
-        positions = np.asarray(self._entity.data.body_link_pos_w, dtype=get_global_dtype())
-        top = positions[:, self._top_body_id]
-        connects = positions[:, self._top_connect_body_ids]
-        legs = positions[:, self._leg_body_ids]
-        self._top_home_pos[:] = top[0]
-        self._connect_offsets[:] = connects[0] - self._top_home_pos
-        self._neutral_leg_lengths[:] = np.linalg.norm(connects[0] - legs[0], axis=-1)
+        state = self._body_state((*self._leg_names, *self._connect_names, self._top_name))
+        positions = dict(zip(state.body_names, state.pos_w.unbind(dim=1), strict=True))
+        first = {name: value[0] for name, value in positions.items()}
+        top = first[self._top_name]
+        connects = torch.stack(tuple(first[name] for name in self._connect_names), dim=0)
+        legs = torch.stack(tuple(first[name] for name in self._leg_names), dim=0)
+        self._top_home_pos.copy_(top)
+        self._connect_offsets.copy_(connects - top)
+        self._neutral_leg_lengths.copy_(torch.linalg.vector_norm(connects - legs, dim=-1))
         self._ik_ready = True
 
-    def leg_control_for_tilt(self, target_tilt_rad: np.ndarray) -> np.ndarray:
+    def _relative_ball_state(self) -> torch.Tensor:
+        state = self._body_state((self._top_name, self._ball_name))
+        positions = dict(zip(state.body_names, state.pos_w.unbind(dim=1), strict=True))
+        orientations = dict(zip(state.body_names, state.quat_w.unbind(dim=1), strict=True))
+        top_pos = positions[self._top_name]
+        top_quat = orientations[self._top_name]
+        ball_pos = positions[self._ball_name]
+        return quat_apply_inverse(top_quat, ball_pos - top_pos)
+
+    def leg_control_for_tilt(self, target_tilt_rad: torch.Tensor) -> torch.Tensor:
         """Return six actuator controls for ``(roll, pitch)`` radians."""
         expected = (self.num_envs, _ACTION_DIM)
-        if not isinstance(target_tilt_rad, np.ndarray) or target_tilt_rad.shape != expected:
+        if not isinstance(target_tilt_rad, torch.Tensor) or target_tilt_rad.shape != expected:
             shape = getattr(target_tilt_rad, "shape", None)
             raise ValueError(f"{type(self).__name__} tilt must have shape {expected}, got {shape}")
-        if not np.isfinite(target_tilt_rad).all():
+        if target_tilt_rad.dtype != torch.float32 or target_tilt_rad.device != self._device:
+            raise TypeError(
+                f"{type(self).__name__} tilt must be float32 on {self._device}; got "
+                f"{target_tilt_rad.dtype} on {target_tilt_rad.device}"
+            )
+        if not bool(torch.isfinite(target_tilt_rad).all()):
             raise ValueError(f"{type(self).__name__} tilt contains NaN or Inf")
         self._ensure_ik_calibration()
-        zeros = np.zeros(self.num_envs, dtype=target_tilt_rad.dtype)
-        target_quat = np_quat_from_euler_xyz(target_tilt_rad[:, 0], target_tilt_rad[:, 1], zeros)
-        rotated = np_quat_apply_batched(target_quat[:, None, :], self._connect_offsets[None, :, :])
-        expected_connects = self._top_home_pos[None, None, :] + rotated
-        leg_positions = np.asarray(
-            self._entity.data.body_link_pos_w[:, self._leg_body_ids],
-            dtype=get_global_dtype(),
-        )
+        zeros = torch.zeros_like(target_tilt_rad[:, 0])
+        target_quat = quat_from_euler_xyz(target_tilt_rad[:, 0], target_tilt_rad[:, 1], zeros)
+        rotated = quat_apply(target_quat[:, None, :], self._connect_offsets[None, :, :])
+        expected_connects = self._top_home_pos + rotated
+        leg_positions = self._body_state(self._leg_names).pos_w
         controls = (
-            np.linalg.norm(expected_connects - leg_positions, axis=-1)
-            - self._neutral_leg_lengths[None, :]
+            torch.linalg.vector_norm(expected_connects - leg_positions, dim=-1)
+            - self._neutral_leg_lengths
         )
-        return np.asarray(
-            np.clip(controls, self._ctrl_lower, self._ctrl_upper),
-            dtype=get_global_dtype(),
-        )
+        return torch.clamp(controls, min=self._ctrl_lower, max=self._ctrl_upper)
 
-    def process_actions(self, actions: np.ndarray) -> None:
+    def process_actions(self, actions: torch.Tensor) -> None:
         expected = self._raw_action.shape
-        if not isinstance(actions, np.ndarray):
+        if not isinstance(actions, torch.Tensor):
             raise TypeError(
-                f"{type(self).__name__} expected np.ndarray, got {type(actions).__name__}"
+                f"{type(self).__name__} expected torch.Tensor, got {type(actions).__name__}"
             )
         if actions.shape != expected:
             raise ValueError(
                 f"{type(self).__name__} expected action shape {expected}, got {actions.shape}"
             )
-        if not np.isfinite(actions).all():
+        if actions.dtype != torch.float32 or actions.device != self._device:
+            raise TypeError(
+                f"{type(self).__name__} expected float32 actions on {self._device}; got "
+                f"{actions.dtype} on {actions.device}"
+            )
+        if not bool(torch.isfinite(actions).all()):
             raise ValueError(f"{type(self).__name__} received NaN or Inf actions")
-        self._raw_action[:] = actions
-        np.clip(actions, self._raw_clip[0], self._raw_clip[1], out=self._clipped_action)
-        np.multiply(self._clipped_action, self._action_smooth, out=self._executed_action)
-        self._executed_action += (1.0 - self._action_smooth) * self._previous_executed_action
-        self._previous_executed_action[:] = self._executed_action
+        self._raw_action.copy_(actions)
+        torch.clamp(actions, min=self._raw_clip[0], max=self._raw_clip[1], out=self._clipped_action)
+        torch.mul(self._clipped_action, self._action_smooth, out=self._executed_action)
+        self._executed_action.add_((1.0 - self._action_smooth) * self._previous_executed_action)
+        self._previous_executed_action.copy_(self._executed_action)
 
-        relative, _, _ = _relative_ball_state(
-            self._entity,
-            ball_body_id=self._ball_body_id,
-            top_body_id=self._top_body_id,
-        )
-        relative_xy = np.linalg.norm(relative[:, :2], axis=-1)
+        relative = self._relative_ball_state()
+        relative_xy = torch.linalg.vector_norm(relative[:, :2], dim=-1)
         if self._center_radius > 0.0 and self._center_min_gain < 1.0:
-            ratio = np.clip(relative_xy / self._center_radius, 0.0, 1.0)
+            ratio = torch.clamp(relative_xy / self._center_radius, 0.0, 1.0)
             gain = self._center_min_gain + (1.0 - self._center_min_gain) * ratio
-            np.multiply(self._executed_action, gain[:, None], out=self._effective_action)
+            torch.mul(self._executed_action, gain[:, None], out=self._effective_action)
         else:
-            self._effective_action[:] = self._executed_action
-        np.multiply(self._effective_action, self._tilt_limit_deg, out=self._target_tilt_deg)
-        np.deg2rad(self._target_tilt_deg, out=self._target_tilt_rad)
-        self._control[:] = self.leg_control_for_tilt(self._target_tilt_rad)
+            self._effective_action.copy_(self._executed_action)
+        torch.mul(self._effective_action, self._tilt_limit_deg, out=self._target_tilt_deg)
+        torch.deg2rad(self._target_tilt_deg, out=self._target_tilt_rad)
+        self._control.copy_(self.leg_control_for_tilt(self._target_tilt_rad))
 
     def apply_actions(self) -> None:
-        self._entity.data.write_ctrl(self._control, actuator_ids=self._actuator_ids)
+        # Temporary migration boundary: Entity control writes remain NumPy until
+        # the owner control buffer becomes a Torch tensor.
+        self._entity.data.write_ctrl(
+            self._control.detach().cpu().numpy(), actuator_ids=self._actuator_ids
+        )
 
     def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
         ids = slice(None) if env_ids is None else env_ids

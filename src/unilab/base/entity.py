@@ -300,6 +300,16 @@ class SceneTensorReadPlan:
     def host_plan(self) -> HostBridgeTransferPlan | None:
         return self._host_plan
 
+    @property
+    def ready(self) -> bool:
+        """Return whether the current packet is available to phase readers."""
+        return self._refreshed and not self._closed
+
+    @property
+    def packet_names(self) -> tuple[str, ...]:
+        """Return the immutable backend sensor names compiled into this plan."""
+        return self._packet_names
+
     def refresh(self) -> None:
         """Publish one full-batch packet for the current read phase."""
         self._require_not_closed()
@@ -3316,6 +3326,7 @@ class EntityScene(Mapping[str, Entity]):
     ) -> None:
         self._backend = backend
         self._state_read_cache = _EntityStateReadCache()
+        self._tensor_read_plan: SceneTensorReadPlan | None = None
         materialized: dict[str, Entity] = {}
         for name, cfg in entities.items():
             if not isinstance(name, str) or not name:

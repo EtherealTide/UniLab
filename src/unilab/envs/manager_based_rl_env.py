@@ -25,7 +25,7 @@ from unilab.base.config_overrides import (
     MANAGER_TERM_MAPPING_POLICY,
 )
 from unilab.base.cpu_runtime import apply_env_cpu_runtime
-from unilab.base.entity import EntityCfg, EntityScene
+from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadPlan, SceneTensorReadSpec
 from unilab.base.reset_state import ResetStateTransaction
 from unilab.base.scene import SceneCfg, resolve_scene_default_qpos
 from unilab.base.torch_env import TorchEnv, TorchEnvState
@@ -275,6 +275,7 @@ class ManagerBasedRlEnv(TorchEnv):
     curriculum_manager: CurriculumManager | NullCurriculumManager
     metrics_manager: MetricsManager | NullMetricsManager
     recorder_manager: RecorderManager | NullRecorderManager
+    _tensor_read_plan: SceneTensorReadPlan | None
 
     def __init__(self, cfg: ManagerBasedRlEnvCfg, backend: SimBackend, num_envs: int):
         if not isinstance(cfg, ManagerBasedRlEnvCfg):
@@ -345,7 +346,54 @@ class ManagerBasedRlEnv(TorchEnv):
         if "startup" in self.event_manager.available_modes:
             self.event_manager.apply(mode="startup")
         self._materialize_backend()
+        self._compile_tensor_read_plan()
         self._validate_manager_tensor_runtime()
+
+    def _compile_tensor_read_plan(self) -> None:
+        """Compile the scene's only packed tensor read phase."""
+        specs: list[SceneTensorReadSpec] = []
+        for name in self.action_manager.active_terms:
+            term = self.action_manager.get_term(name)
+            body_names = getattr(term, "tensor_body_names", None)
+            if body_names is None:
+                continue
+            if (
+                not isinstance(body_names, (tuple, list))
+                or any(not isinstance(value, str) or not value for value in body_names)
+                or len(set(body_names)) != len(body_names)
+            ):
+                raise TypeError(
+                    "ManagerBasedRlEnv tensor read declaration for action term "
+                    f"'{name}' must be a unique sequence of body names; got {body_names!r}"
+                )
+            specs.append(
+                SceneTensorReadSpec(entity=term.cfg.entity_name, body_names=tuple(body_names))
+            )
+        for group_name, terms in self.observation_manager.active_terms.items():
+            for name in terms:
+                term_cfg = self.observation_manager.get_term_cfg(group_name, name)
+                body_names = term_cfg.params.get("tensor_body_names")
+                if body_names is None:
+                    continue
+                if (
+                    not isinstance(body_names, (tuple, list))
+                    or any(not isinstance(value, str) or not value for value in body_names)
+                    or len(set(body_names)) != len(body_names)
+                ):
+                    raise TypeError(
+                        "ManagerBasedRlEnv tensor read declaration for observation term "
+                        f"'{name}' must be a unique sequence of body names; got {body_names!r}"
+                    )
+                entity_name = term_cfg.params.get("entity_name")
+                if not isinstance(entity_name, str) or not entity_name:
+                    raise TypeError(
+                        "ManagerBasedRlEnv observation tensor read declaration "
+                        f"'{name}' requires an entity_name parameter"
+                    )
+                specs.append(SceneTensorReadSpec(entity=entity_name, body_names=tuple(body_names)))
+        self.scene._tensor_read_plan = (
+            self.scene.compile_tensor_reads(self.device, specs) if specs else None
+        )
 
     def _validate_manager_tensor_runtime(self) -> None:
         """Bind the tensor lifecycle after backend materialization."""
@@ -564,6 +612,9 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:
         del state
+        read_plan = self.scene._tensor_read_plan
+        if read_plan is not None:
+            read_plan.refresh()
         self.action_manager.process_action(actions)
         self._sim_step_counter += self._cfg.sim_substeps
         self.action_manager.apply_action()
@@ -834,6 +885,10 @@ class ManagerBasedRlEnv(TorchEnv):
         self._sim_step_counter = self.step_counter * self._cfg.sim_substeps
 
     def close(self) -> None:
+        read_plan = self.scene._tensor_read_plan
+        if read_plan is not None:
+            read_plan.close()
+            self.scene._tensor_read_plan = None
         self.recorder_manager.close()
         super().close()
 

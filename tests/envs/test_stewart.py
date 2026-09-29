@@ -252,9 +252,18 @@ def test_stewart_real_manager_runtime_preserves_io_reset_and_level_ik(backend: s
 
         action = env.action_manager.get_term("tilt")
         assert isinstance(action, StewartTiltAction)
-        np.testing.assert_allclose(action.neutral_leg_lengths, 1.1, atol=1e-4)
-        level_control = action.leg_control_for_tilt(np.zeros((2, 2), dtype=np.float32))
-        np.testing.assert_allclose(level_control, 0.0, atol=1e-4)
+        torch.testing.assert_close(
+            action.neutral_leg_lengths,
+            torch.full_like(action.neutral_leg_lengths, 1.1),
+            atol=1e-4,
+            rtol=0,
+        )
+        level_control = action.leg_control_for_tilt(
+            torch.zeros((2, 2), dtype=torch.float32, device=env.device)
+        )
+        torch.testing.assert_close(
+            level_control, torch.zeros_like(level_control), atol=1e-4, rtol=0
+        )
 
         state = env.step(torch.zeros((2, 2), dtype=torch.float32))
         for _ in range(19):
@@ -282,21 +291,34 @@ def test_stewart_action_smoothing_and_center_authority_match_legacy_equations() 
         assert isinstance(action, StewartTiltAction)
         assert isinstance(observation, StewartObservation)
 
-        action.process_actions(np.full((2, 2), 2.0, dtype=np.float32))
-        np.testing.assert_allclose(action.executed_action, 0.6, atol=1e-6)
+        action.process_actions(torch.full((2, 2), 2.0, dtype=torch.float32, device=env.device))
+        torch.testing.assert_close(
+            action.executed_action, torch.full_like(action.executed_action, 0.6), atol=1e-6, rtol=0
+        )
         ratio = np.clip(observation.relative_xy / 0.25, 0.0, 1.0)
         expected_gain = 0.15 + 0.85 * ratio
-        np.testing.assert_allclose(
+        torch.testing.assert_close(
             action.target_tilt_deg,
-            np.broadcast_to(0.6 * expected_gain[:, None] * 6.0, (2, 2)),
+            torch.as_tensor(
+                np.broadcast_to(0.6 * expected_gain[:, None] * 6.0, (2, 2)).copy(),
+                dtype=torch.float32,
+                device=action.target_tilt_deg.device,
+            ),
             atol=1e-6,
+            rtol=0,
         )
 
-        action.process_actions(np.ones((2, 2), dtype=np.float32))
-        np.testing.assert_allclose(action.executed_action, 0.84, atol=1e-6)
+        action.process_actions(torch.ones((2, 2), dtype=torch.float32, device=env.device))
+        torch.testing.assert_close(
+            action.executed_action, torch.full_like(action.executed_action, 0.84), atol=1e-6, rtol=0
+        )
         action.reset(np.array([1], dtype=np.int32))
-        np.testing.assert_allclose(action.executed_action[1], 0.0)
-        np.testing.assert_allclose(action.executed_action[0], 0.84)
+        torch.testing.assert_close(
+            action.executed_action[1], torch.zeros_like(action.executed_action[1])
+        )
+        torch.testing.assert_close(
+            action.executed_action[0], torch.full_like(action.executed_action[0], 0.84)
+        )
     finally:
         env.close()
 
