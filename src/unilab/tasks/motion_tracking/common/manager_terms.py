@@ -475,9 +475,11 @@ class MotionCommand(CommandTerm):
         if env_ids is not None:
             self._update_error_metrics(env_ids)
         # Sampler statistics are global scalars, so every row tracks them.
-        self.metrics["sampling_entropy"].fill(self.sampler.sampling_entropy)
-        self.metrics["sampling_top1_prob"].fill(self.sampler.sampling_top1_prob)
-        self.metrics["sampling_top1_bin"].fill(self.sampler.sampling_top1_bin)
+        # These scalar sampling settings and the Numba error kernel below are
+        # still NumPy-owned; assert that migration boundary explicitly.
+        self._numpy_metric("sampling_entropy").fill(self.sampler.sampling_entropy)
+        self._numpy_metric("sampling_top1_prob").fill(self.sampler.sampling_top1_prob)
+        self._numpy_metric("sampling_top1_bin").fill(self.sampler.sampling_top1_bin)
 
     def _update_error_metrics(self, rows: np.ndarray) -> None:
         """Recompute the row-wise error metrics for the given rows.
@@ -503,17 +505,26 @@ class MotionCommand(CommandTerm):
             self.robot_joint_pos,
             self._motion_data.joint_vel,
             self.robot_joint_vel,
-            self.metrics["error_anchor_pos"],
-            self.metrics["error_anchor_rot"],
-            self.metrics["error_anchor_lin_vel"],
-            self.metrics["error_anchor_ang_vel"],
-            self.metrics["error_body_pos"],
-            self.metrics["error_body_rot"],
-            self.metrics["error_body_lin_vel"],
-            self.metrics["error_body_ang_vel"],
-            self.metrics["error_joint_pos"],
-            self.metrics["error_joint_vel"],
+            self._numpy_metric("error_anchor_pos"),
+            self._numpy_metric("error_anchor_rot"),
+            self._numpy_metric("error_anchor_lin_vel"),
+            self._numpy_metric("error_anchor_ang_vel"),
+            self._numpy_metric("error_body_pos"),
+            self._numpy_metric("error_body_rot"),
+            self._numpy_metric("error_body_lin_vel"),
+            self._numpy_metric("error_body_ang_vel"),
+            self._numpy_metric("error_joint_pos"),
+            self._numpy_metric("error_joint_vel"),
         )
+
+    def _numpy_metric(self, name: str) -> np.ndarray:
+        value = self.metrics[name]
+        if not isinstance(value, np.ndarray):
+            raise TypeError(
+                f"MotionCommand metric '{name}' must remain np.ndarray until its "
+                "Numba kernel migrates to Torch."
+            )
+        return value
 
     def _resample_command(self, env_ids: np.ndarray) -> None:
         """Resample motion frames and stage the corresponding state writes.

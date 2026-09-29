@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.base import SimBackend
 
 from unilab.base.entity import EntityCfg, EntityScene
@@ -116,6 +117,20 @@ def test_public_exports_and_cfg_build_are_canonical() -> None:
     assert term.command.dtype == np.float32
 
 
+def test_manager_boundary_publishes_torch_commands() -> None:
+    env, _ = _env()
+    manager = _manager(env)
+    manager.reset(np.arange(env.num_envs, dtype=np.int32))
+
+    command = manager.get_command("twist")
+    term = manager.get_term("twist")
+    assert isinstance(command, torch.Tensor)
+    assert command.dtype == torch.float32
+    assert command.shape == (env.num_envs, 3)
+    assert term.time_left.dtype == torch.float32
+    assert term.command_counter.dtype == torch.int64
+
+
 def test_resampling_is_seeded_and_partial_reset_is_local() -> None:
     left_env, _ = _env(seed=19)
     right_env, _ = _env(seed=19)
@@ -131,8 +146,8 @@ def test_resampling_is_seeded_and_partial_reset_is_local() -> None:
         right.get_term("twist").time_left,
     )
 
-    before_command = left.get_command("twist").copy()
-    before_counter = left.get_term("twist").command_counter.copy()
+    before_command = left.get_command("twist").clone()
+    before_counter = left.get_term("twist").command_counter.clone()
     left.reset(np.asarray([1, 3], dtype=np.int32))
     np.testing.assert_array_equal(left.get_command("twist")[[0, 2]], before_command[[0, 2]])
     np.testing.assert_array_equal(
