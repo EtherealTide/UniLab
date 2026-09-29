@@ -378,3 +378,40 @@ def test_format_set_state_mjwarp_table_covers_mjwarp_only_keys() -> None:
     assert "Host cache refresh" in table
     assert "4.000 (50.0%)" in table
     assert "2.000 (25.0%)" in table
+
+
+def test_active_collector_loop_keeps_transition_tensors_native() -> None:
+    """The benchmark hot loop must not regress to NumPy transition carriers."""
+    import ast
+    from pathlib import Path
+
+    source = Path(bench.__file__).read_text()
+    tree = ast.parse(source)
+    loop = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_active_window_case"
+    )
+
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "zeros"
+        for node in ast.walk(loop)
+    )
+    assert not any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "asarray"
+        for node in ast.walk(loop)
+    )
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "from_numpy"
+        for node in ast.walk(loop)
+    )
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "resolve_terminal_observation_contract"
+        for node in ast.walk(loop)
+    )

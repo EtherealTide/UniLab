@@ -561,7 +561,6 @@ def _run_active_window_case(
     profile_numpy_random: bool = False,
 ) -> CollectorResult:
     from uni_rl.ipc.replay_buffer import ReplayBuffer
-    from uni_rl.utils.final_observation import resolve_terminal_observation_contract
     from uni_rl.utils.observations import split_obs_dict
 
     replay_buffer = ReplayBuffer(
@@ -573,13 +572,12 @@ def _run_active_window_case(
         ingress_slot_rows=case.num_envs,
     )
 
-    actions_np = np.zeros((case.num_envs, case.action_dim), dtype=np.float32)
-    state = env.step(actions_np)
-    obs_np, critic_np = split_obs_dict(state.obs)
-    obs_np = np.asarray(obs_np, dtype=np.float32)
-    critic_np = np.asarray(critic_np, dtype=np.float32)
-    current_ep_rewards = np.zeros(case.num_envs, dtype=np.float32)
-    current_ep_lengths = np.zeros(case.num_envs, dtype=np.int32)
+    env_device = env.device
+    actions = torch.zeros((case.num_envs, case.action_dim), dtype=torch.float32, device=env_device)
+    state = env.step(actions)
+    obs, critic = split_obs_dict(state.obs)
+    current_ep_rewards = torch.zeros(case.num_envs, dtype=torch.float32, device=env_device)
+    current_ep_lengths = torch.zeros(case.num_envs, dtype=torch.int64, device=env_device)
     ep_rewards: list[float] = []
     ep_lengths: list[int] = []
     ep_reward_components: defaultdict[str, list[Any]] = defaultdict(list)
@@ -618,7 +616,7 @@ def _run_active_window_case(
             if random_profiler is not None and record:
                 random_profiler.begin_step()
             try:
-                state = env.step(actions_np)
+                state = env.step(actions)
             finally:
                 if random_profiler is not None and record:
                     random_ms, random_calls = random_profiler.end_step()
@@ -648,41 +646,33 @@ def _run_active_window_case(
             else:
                 env_step_timing_values["env_step_internal_gap_ms"] = None
             phase_start_ns = time.perf_counter_ns()
-            next_obs_np, next_critic_np = split_obs_dict(state.obs)
-            next_obs_np = np.asarray(next_obs_np, dtype=np.float32)
-            next_critic_np = np.asarray(next_critic_np, dtype=np.float32)
-            rewards_np = np.asarray(state.reward, dtype=np.float32).ravel()
-            truncated_np = state.truncated.astype(np.float32, copy=False).ravel()
-            combined_dones = (
-                (state.terminated | state.truncated).astype(np.float32, copy=False).ravel()
+            next_obs, next_critic = split_obs_dict(state.obs)
+            rewards = state.reward
+            truncated = state.truncated.to(torch.float32)
+            combined_dones = (state.terminated | state.truncated).to(torch.float32)
+            terminal_mask = combined_dones > 0.5
+            terminal_obs = (
+                state.final_observation.get("obs")
+                if state.final_observation is not None and bool(terminal_mask.any())
+                else None
             )
-            terminal_contract = resolve_terminal_observation_contract(
-                next_obs_batch_size=next_obs_np.shape[0],
-                final_observation=state.final_observation,
-                done=combined_dones > 0.5,
-                info=state.info,
-                truncated=truncated_np,
+            terminal_critic = (
+                state.final_observation.get("critic")
+                if state.final_observation is not None and bool(terminal_mask.any())
+                else None
             )
             replay_buffer.add(
-                torch.from_numpy(obs_np),
-                torch.from_numpy(actions_np),
-                torch.from_numpy(rewards_np),
-                torch.from_numpy(next_obs_np),
-                torch.from_numpy(combined_dones),
-                torch.from_numpy(truncated_np),
-                terminal_mask=torch.from_numpy(terminal_contract.terminal_mask),
-                terminal_next_obs=(
-                    torch.from_numpy(terminal_contract.terminal_obs)
-                    if terminal_contract.terminal_obs is not None
-                    else None
-                ),
-                critic=torch.from_numpy(critic_np),
-                next_critic=torch.from_numpy(next_critic_np),
-                terminal_next_critic=(
-                    torch.from_numpy(terminal_contract.terminal_critic)
-                    if terminal_contract.terminal_critic is not None
-                    else None
-                ),
+                obs,
+                actions,
+                rewards,
+                next_obs,
+                combined_dones,
+                truncated,
+                terminal_mask=terminal_mask,
+                terminal_next_obs=terminal_obs,
+                critic=critic,
+                next_critic=next_critic,
+                terminal_next_critic=terminal_critic,
             )
             ingress = replay_buffer.take_published_ingress()
             if ingress is None:
@@ -692,12 +682,12 @@ def _run_active_window_case(
             replay_ms = (time.perf_counter_ns() - phase_start_ns) / 1e6
 
             phase_start_ns = time.perf_counter_ns()
-            current_ep_rewards += rewards_np
+            current_ep_rewards += rewards
             current_ep_lengths += 1
-            reset_indices = np.where(combined_dones > 0.5)[0]
-            if len(reset_indices) > 0:
-                ep_rewards.extend(current_ep_rewards[reset_indices].tolist())
-                ep_lengths.extend(current_ep_lengths[reset_indices].tolist())
+            reset_indices = terminal_mask.nonzero(as_tuple=False).flatten()
+            if reset_indices.numel() > 0:
+                ep_rewards.extend(current_ep_rewards[reset_indices].detach().cpu().tolist())
+                ep_lengths.extend(current_ep_lengths[reset_indices].detach().cpu().tolist())
                 current_ep_rewards[reset_indices] = 0.0
                 current_ep_lengths[reset_indices] = 0
 
@@ -708,8 +698,8 @@ def _run_active_window_case(
                         ep_reward_components[key].append(value)
             bookkeeping_ms = (time.perf_counter_ns() - phase_start_ns) / 1e6
 
-            obs_np = next_obs_np
-            critic_np = next_critic_np
+            obs = next_obs
+            critic = next_critic
 
             if record:
                 phase_values = {
