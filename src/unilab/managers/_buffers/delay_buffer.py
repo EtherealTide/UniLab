@@ -1,6 +1,6 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681), src/mjlab/utils/buffers/delay_buffer.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy and UniLab contracts; licensed under Apache-2.0.
+# Modified by UniLab for Torch temporal buffers and UniLab contracts; Apache-2.0.
 """Delay buffer for stochastically delayed observations."""
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import numpy as np
+import torch
 
 from unilab.managers._buffers import CircularBuffer
 
@@ -204,7 +205,7 @@ class DelayBuffer:
             )
             self._phase_offsets[idx] = new_phases[idx]
 
-    def append(self, data: np.ndarray) -> None:
+    def append(self, data: np.ndarray | torch.Tensor) -> None:
         """Append new observation to buffer.
 
         Args:
@@ -212,7 +213,7 @@ class DelayBuffer:
         """
         self._buffer.append(data)
 
-    def backfill(self, data: np.ndarray, batch_ids: np.ndarray) -> None:
+    def backfill(self, data: np.ndarray | torch.Tensor, batch_ids: np.ndarray) -> None:
         """Backfill the given rows with one frame, without advancing time.
 
         Used after a partial reset: the reset rows (whose lags and step counters
@@ -225,7 +226,7 @@ class DelayBuffer:
         """
         self._buffer.backfill(data, batch_ids)
 
-    def compute(self) -> np.ndarray:
+    def compute(self) -> torch.Tensor:
         """Compute delayed observation for current step.
 
         Advances the lag update schedule, then returns the delayed observation.
@@ -239,7 +240,7 @@ class DelayBuffer:
         self._update_lags()
         return self.peek()
 
-    def peek(self) -> np.ndarray:
+    def peek(self) -> torch.Tensor:
         """Return the delayed observation using current lags, without advancing.
 
         Unlike compute, this neither steps the update schedule nor resamples lags,
@@ -253,8 +254,14 @@ class DelayBuffer:
 
         # Clamp lags to valid range [0, buffer_length - 1].
         # Buffer may not be full yet (e.g., only 2 frames but sampled lag=3).
-        valid_lags = np.minimum(self._current_lags, self._buffer.current_length - 1)
-        valid_lags = np.maximum(valid_lags, 0)
+        current_length = self._buffer.current_length
+        valid_lags = torch.clamp(
+            torch.minimum(
+                torch.from_numpy(self._current_lags).to(current_length.device),
+                current_length - 1,
+            ),
+            min=0,
+        )
 
         return self._buffer[valid_lags]
 

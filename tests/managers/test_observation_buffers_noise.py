@@ -49,7 +49,7 @@ def test_delay_buffer_constant_delay_and_partial_backfill() -> None:
     outputs = []
     for value in (1.0, 2.0, 3.0, 4.0):
         buffer.append(np.full((2, 1), value, dtype=np.float32))
-        outputs.append(buffer.compute().copy())
+        outputs.append(buffer.compute().clone())
     np.testing.assert_array_equal(np.stack(outputs)[:, 0, 0], [1, 1, 1, 2])
 
     buffer.reset(np.array([1]))
@@ -208,6 +208,47 @@ def test_non_temporal_tensor_terms_stay_on_device_for_clip_scale_concat(
         ),
     )
     assert source.isfinite().all()
+
+
+def test_tensor_delay_and_history_stay_on_device_without_host_detour(
+    fake_env: FakeEnv,
+) -> None:
+    device = fake_env.device
+    source = torch.arange(fake_env.num_envs * 2, dtype=torch.float32, device=device).reshape(
+        fake_env.num_envs, 2
+    )
+    manager = ObservationManager(
+        {
+            "policy": ObservationGroupCfg(
+                terms={
+                    "delayed": ObservationTermCfg(
+                        func=lambda env: source, delay_min_lag=1, delay_max_lag=1
+                    ),
+                    "history": ObservationTermCfg(func=lambda env: source, history_length=2),
+                }
+            )
+        },
+        fake_env,
+    )
+
+    first = manager.compute(update_history=True)["policy"]
+    assert isinstance(first, torch.Tensor)
+    assert first.device == device
+
+    history_buffer = manager._group_obs_term_history_buffer["policy"]["history"]
+    delay_buffer = manager._group_obs_term_delay_buffer["policy"]["delayed"]
+    assert history_buffer.buffer.device == device
+    assert delay_buffer.peek().device == device
+
+    source = source + 10
+    second = manager.compute(update_history=True)["policy"]
+    assert second.device == device
+    torch.testing.assert_close(second[:, :2], first[:, :2])
+    torch.testing.assert_close(
+        second[:, 2:4],
+        first[:, 2:4],
+    )
+    torch.testing.assert_close(second[:, 4:6], source)
 
 
 def test_tensor_terms_are_row_scoped_on_reset(fake_env: FakeEnv) -> None:
