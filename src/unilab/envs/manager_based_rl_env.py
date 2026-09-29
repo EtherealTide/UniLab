@@ -306,9 +306,11 @@ class ManagerBasedRlEnv(TorchEnv):
 
         assert cfg.scene is not None
         default_qpos = resolve_scene_default_qpos(cfg.scene, backend)
-        self._control = np.zeros((num_envs, backend.num_actuators), dtype=get_global_dtype())
+        self._control = torch.zeros(
+            (num_envs, backend.num_actuators), dtype=torch.float32, device=self.device
+        )
         if cfg.scene.entity_assets:
-            self._control[:] = backend.get_state("ctrl")["ctrl"]
+            self._control.copy_(self._backend.get_state_views(("ctrl",))["ctrl"])
         self._reset_state = ResetStateTransaction(
             backend,
             default_qpos=default_qpos,
@@ -567,9 +569,8 @@ class ManagerBasedRlEnv(TorchEnv):
         return
 
     def _control_to_backend_boundary(self) -> torch.Tensor:
-        """Publish NumPy Manager control as one contiguous backend Torch tensor."""
-        host = np.array(self._control, dtype=np.float32, order="C", copy=True)
-        return torch.from_numpy(host).to(device=self.device)
+        """Return the contiguous authoritative Torch control tensor."""
+        return self._control
 
     def _reset_rows_to_manager_boundary(self, rows: torch.Tensor) -> np.ndarray:
         """Publish validated Torch reset rows to the NumPy Manager host."""
@@ -777,7 +778,7 @@ class ManagerBasedRlEnv(TorchEnv):
 
         self.episode_length_buf[ids] = 0
         if self._reset_state.scene_layout is not None:
-            self._control[ids] = self._backend.get_state("ctrl")["ctrl"][ids]
+            self._control[ids] = self._backend.get_state_views(("ctrl",))["ctrl"][ids]
         else:
             self._control[ids] = 0.0
         self._manual_reset_pending[ids] = False

@@ -88,7 +88,7 @@ class PositionAction(ActionTerm):
         self.values[:] = actions
 
     def apply_actions(self):
-        self._entity.data.write_ctrl(self.values)
+        self._entity.data.write_ctrl(torch.from_numpy(self.values))
 
 
 def observations(env):

@@ -368,11 +368,7 @@ class StewartTiltAction(ActionTerm):
         self._control.copy_(self.leg_control_for_tilt(self._target_tilt_rad))
 
     def apply_actions(self) -> None:
-        # Temporary migration boundary: Entity control writes remain NumPy until
-        # the owner control buffer becomes a Torch tensor.
-        self._entity.data.write_ctrl(
-            self._control.detach().cpu().numpy(), actuator_ids=self._actuator_ids
-        )
+        self._entity.data.write_ctrl(self._control, actuator_ids=self._actuator_ids)
 
     def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
         ids = slice(None) if env_ids is None else env_ids

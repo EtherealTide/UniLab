@@ -404,7 +404,7 @@ class _DriveAction(ActionTerm):
     def apply_actions(self) -> None:
         self._env.trace.append("action_apply")
         self._env.action_sim_steps.append(self._env._sim_step_counter)
-        self._entity.data.write_ctrl(self._processed)
+        self._entity.data.write_ctrl(torch.from_numpy(self._processed))
 
 
 class _FeedbackDriveAction(_DriveAction):
@@ -456,9 +456,7 @@ class _TensorBodyAction(ActionTerm):
         else:
             view = state.body_tensor_view(self._entity)
             self._processed.copy_(view.pos_w[:, 1, 2:3])
-        self._entity.data.write_ctrl(
-            self._processed.detach().cpu().numpy(),
-        )
+        self._entity.data.write_ctrl(self._processed)
 
 
 @dataclass(kw_only=True)

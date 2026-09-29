@@ -645,7 +645,13 @@ def _state_selector_key(ids: np.ndarray | None) -> tuple[int, ...] | None:
 
 
 class EntityData:
-    """Hot-path NumPy state surface backed by cached backend IDs."""
+    """Hot-path NumPy state surface backed by cached backend IDs.
+
+    Control writes use the environment's Torch control tensor. NumPy callers
+    remain supported for Manager terms that have not yet crossed that tensor
+    boundary; both paths publish into the same actuator layout without touching
+    backend-private state.
+    """
 
     def __init__(
         self,
@@ -663,7 +669,7 @@ class EntityData:
         body_ids: np.ndarray | None,
         actuator_ids: np.ndarray | None,
         actuator_ctrl_range: np.ndarray | None,
-        control_buffer: np.ndarray | None,
+        control_buffer: np.ndarray | torch.Tensor | None,
         entity_name: str,
         backend_type: str,
         state_read_cache: _EntityStateReadCache,
@@ -920,7 +926,7 @@ class EntityData:
 
     def write_ctrl(
         self,
-        values: np.ndarray,
+        values: np.ndarray | torch.Tensor,
         env_ids: np.ndarray | slice | None = None,
         *,
         actuator_ids: np.ndarray | Sequence[int] | slice | None = None,
@@ -928,16 +934,25 @@ class EntityData:
         """Write entity-local actuator controls into the env-owned control buffer.
 
         This is an in-memory scene write, analogous to the pinned manager runtime's
-        entity target buffers.  Physics remains owned by ``NpEnv``/``SimBackend``;
+        entity target buffers.  Physics remains owned by ``TorchEnv``/``SimBackend``;
         this method never steps or calls a backend-private API.
         """
         entity_actuator_ids = self._require(self._actuator_ids, "actuator control write")
         control = self._require(self._control_buffer, "actuator control write")
         if not isinstance(values, np.ndarray):
-            raise TypeError(
-                f"Entity '{self._entity_name}' write_ctrl expected np.ndarray, "
-                f"received {type(values).__name__}"
+            if not isinstance(values, torch.Tensor):
+                raise TypeError(
+                    f"Entity '{self._entity_name}' write_ctrl expected np.ndarray or "
+                    f"torch.Tensor, received {type(values).__name__}"
+                )
+            tensor_control = self._require_tensor_control_buffer()
+            self._write_tensor_ctrl(
+                values,
+                tensor_control,
+                env_ids=env_ids,
+                actuator_ids=actuator_ids,
             )
+            return
         row_index: np.ndarray | slice
         if env_ids is None:
             row_index = slice(None)
@@ -1010,10 +1025,127 @@ class EntityData:
         if not np.isfinite(values).all():
             raise ValueError(f"Entity '{self._entity_name}' write_ctrl received NaN or Inf")
 
-        if isinstance(row_index, slice) or isinstance(actuator_index, slice):
+        if isinstance(control, torch.Tensor):
+            self._write_tensor_ctrl(
+                torch.as_tensor(values, dtype=torch.float32, device=control.device),
+                control,
+                env_ids=env_ids,
+                actuator_ids=actuator_ids,
+            )
+        elif isinstance(row_index, slice) or isinstance(actuator_index, slice):
             control[row_index, actuator_index] = values
         else:
             control[row_index[:, None], actuator_index[None, :]] = values
+
+    def _require_tensor_control_buffer(self) -> torch.Tensor:
+        control = self._require(self._control_buffer, "actuator control write")
+        if not isinstance(control, torch.Tensor):
+            raise TypeError(
+                f"Entity '{self._entity_name}' tensor write_ctrl requires a Torch control buffer"
+            )
+        return control
+
+    def _write_tensor_ctrl(
+        self,
+        values: torch.Tensor,
+        control: torch.Tensor,
+        *,
+        env_ids: np.ndarray | slice | None,
+        actuator_ids: np.ndarray | Sequence[int] | slice | None,
+    ) -> None:
+        entity_actuator_ids = self._require(self._actuator_ids, "actuator control write")
+        if values.dtype != torch.float32:
+            raise TypeError(
+                f"Entity '{self._entity_name}' tensor write_ctrl must be float32, "
+                f"got {values.dtype}"
+            )
+        if values.device != control.device:
+            raise TypeError(
+                f"Entity '{self._entity_name}' tensor write_ctrl must live on "
+                f"{control.device}, got {values.device}"
+            )
+        if not values.is_contiguous():
+            raise TypeError(f"Entity '{self._entity_name}' tensor write_ctrl must be contiguous")
+
+        row_index: torch.Tensor | slice
+        if env_ids is None:
+            row_index = slice(None)
+            row_count = control.shape[0]
+        elif isinstance(env_ids, slice):
+            row_index = env_ids
+            row_count = len(range(*env_ids.indices(control.shape[0])))
+        else:
+            raw_ids = np.asarray(env_ids)
+            if (
+                raw_ids.ndim != 1
+                or not np.issubdtype(raw_ids.dtype, np.integer)
+                or np.issubdtype(raw_ids.dtype, np.bool_)
+            ):
+                raise TypeError(
+                    f"Entity '{self._entity_name}' tensor write_ctrl env_ids must be a "
+                    f"1-D integer array or slice, got shape={raw_ids.shape}, "
+                    f"dtype={raw_ids.dtype}"
+                )
+            host_ids = np.asarray(raw_ids, dtype=np.int64)
+            if np.any(host_ids < 0) or np.any(host_ids >= control.shape[0]):
+                raise IndexError(
+                    f"Entity '{self._entity_name}' tensor write_ctrl env_ids are out of "
+                    f"range for {control.shape[0]} environments: {host_ids.tolist()}"
+                )
+            if np.unique(host_ids).size != host_ids.size:
+                raise ValueError(
+                    f"Entity '{self._entity_name}' tensor write_ctrl env_ids contain "
+                    f"duplicates: {host_ids.tolist()}"
+                )
+            row_index = torch.from_numpy(host_ids).to(device=control.device)
+            row_count = int(host_ids.size)
+
+        if actuator_ids is None:
+            selected_actuator_ids = entity_actuator_ids
+        elif isinstance(actuator_ids, slice):
+            selected_actuator_ids = entity_actuator_ids[actuator_ids]
+        else:
+            raw_actuator_ids = np.asarray(actuator_ids)
+            if (
+                raw_actuator_ids.ndim != 1
+                or not np.issubdtype(raw_actuator_ids.dtype, np.integer)
+                or np.issubdtype(raw_actuator_ids.dtype, np.bool_)
+            ):
+                raise TypeError(
+                    f"Entity '{self._entity_name}' tensor write_ctrl actuator_ids must be "
+                    "a 1-D integer array or slice"
+                )
+            local_actuator_ids = np.asarray(raw_actuator_ids, dtype=np.intp)
+            if np.any(local_actuator_ids < 0) or np.any(
+                local_actuator_ids >= len(entity_actuator_ids)
+            ):
+                raise IndexError(
+                    f"Entity '{self._entity_name}' tensor write_ctrl actuator_ids are out "
+                    f"of range for {len(entity_actuator_ids)}: {local_actuator_ids.tolist()}"
+                )
+            if np.unique(local_actuator_ids).size != local_actuator_ids.size:
+                raise ValueError(
+                    f"Entity '{self._entity_name}' tensor write_ctrl actuator_ids contain "
+                    f"duplicates: {local_actuator_ids.tolist()}"
+                )
+            selected_actuator_ids = entity_actuator_ids[local_actuator_ids]
+
+        column_index = torch.from_numpy(np.asarray(selected_actuator_ids, dtype=np.int64)).to(
+            device=control.device
+        )
+        expected = (row_count, int(column_index.numel()))
+        if tuple(values.shape) != expected:
+            raise ValueError(
+                f"Entity '{self._entity_name}' tensor write_ctrl expected shape "
+                f"{expected}, received {tuple(values.shape)}"
+            )
+        if not bool(torch.isfinite(values).all()):
+            raise ValueError(f"Entity '{self._entity_name}' tensor write_ctrl got NaN or Inf")
+
+        if isinstance(row_index, slice):
+            control[:, column_index] = values
+        else:
+            control[row_index[:, None], column_index[None, :]] = values
 
 
 class Entity:
@@ -1024,7 +1156,7 @@ class Entity:
         name: str,
         cfg: EntityCfg,
         backend: SimBackend,
-        control_buffer: np.ndarray | None = None,
+        control_buffer: np.ndarray | torch.Tensor | None = None,
         reset_state: ResetStateTransaction | None = None,
         *,
         default_qpos: np.ndarray | None = None,
@@ -1158,7 +1290,13 @@ class Entity:
                     f"Entity '{self.name}' control buffer has shape {control_buffer.shape}; "
                     f"expected {expected_control_shape} on backend '{self._backend_type}'"
                 )
-            if not np.issubdtype(control_buffer.dtype, np.floating):
+            if isinstance(control_buffer, torch.Tensor):
+                if control_buffer.dtype != torch.float32:
+                    raise TypeError(
+                        f"Entity '{self.name}' control buffer must be float32 Torch, "
+                        f"got {control_buffer.dtype}"
+                    )
+            elif not np.issubdtype(control_buffer.dtype, np.floating):
                 raise TypeError(
                     f"Entity '{self.name}' control buffer must have floating dtype, "
                     f"got {control_buffer.dtype}"
@@ -3319,7 +3457,7 @@ class EntityScene(Mapping[str, Entity]):
         self,
         entities: Mapping[str, EntityCfg],
         backend: SimBackend,
-        control_buffer: np.ndarray | None = None,
+        control_buffer: np.ndarray | torch.Tensor | None = None,
         *,
         reset_state: ResetStateTransaction | None = None,
         default_qpos: np.ndarray | None = None,
@@ -3355,7 +3493,7 @@ class EntityScene(Mapping[str, Entity]):
         cls,
         cfg: SceneCfg,
         backend: SimBackend,
-        control_buffer: np.ndarray | None = None,
+        control_buffer: np.ndarray | torch.Tensor | None = None,
         *,
         reset_state: ResetStateTransaction | None = None,
         default_qpos: np.ndarray | None = None,
