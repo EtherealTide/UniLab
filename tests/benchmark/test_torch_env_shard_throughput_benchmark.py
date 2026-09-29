@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import numpy as np
 import pytest
-from scripts.benchmark.env import benchmark_np_env_shard_throughput as bench
+import torch
+from scripts.benchmark.env import benchmark_torch_env_shard_throughput as bench
 
 
 def test_shard_env_rows_covers_each_row_exactly_once() -> None:
@@ -55,17 +55,17 @@ def test_prepare_actions_is_seeded_and_legal() -> None:
     a2 = bench.prepare_actions(seed=42, num_steps=5, num_envs=8, action_dim=29)
     a3 = bench.prepare_actions(seed=43, num_steps=5, num_envs=8, action_dim=29)
     assert a1.shape == (5, 8, 29)
-    assert a1.dtype == np.float32
-    assert np.array_equal(a1, a2)
-    assert not np.array_equal(a1, a3)
+    assert a1.dtype == torch.float32
+    assert torch.equal(a1, a2)
+    assert not torch.equal(a1, a3)
     assert float(a1.min()) >= -1.0
     assert float(a1.max()) <= 1.0
 
 
 def test_run_measured_steps_times_only_the_step_loop() -> None:
-    calls: list[np.ndarray] = []
+    calls: list[torch.Tensor] = []
 
-    def step_fn(action: np.ndarray) -> None:
+    def step_fn(action: torch.Tensor) -> None:
         calls.append(action)
 
     actions = bench.prepare_actions(seed=0, num_steps=4, num_envs=3, action_dim=2)
@@ -83,7 +83,7 @@ def test_run_measured_steps_times_only_the_step_loop() -> None:
     # preparation happened before the timed window and is not re-done inside.
     assert len(calls) == actions.shape[0]
     for i, call in enumerate(calls):
-        assert np.array_equal(call, actions[i])
+        assert torch.equal(call, actions[i])
 
 
 def test_total_throughput_formula_uses_paired_wall_time() -> None:
