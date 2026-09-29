@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
@@ -1640,19 +1641,17 @@ def test_offpolicy_resolve_play_obs_dim_ignores_critic():
 
 
 def test_offpolicy_extract_play_obs_uses_obs_group_only():
-    import numpy as np
-
     from unilab.visualization.interactive_playback import extract_play_obs
 
     obs = {
-        "obs": np.ones((2, 98), dtype=np.float32),
-        "critic": np.full((2, 101), 2.0, dtype=np.float32),
+        "obs": torch.ones((2, 98), dtype=torch.float32),
+        "critic": torch.full((2, 101), 2.0, dtype=torch.float32),
     }
 
     play_obs = extract_play_obs(obs)
 
     assert play_obs.shape == (2, 98)
-    assert np.allclose(play_obs, 1.0)
+    assert torch.allclose(play_obs, torch.ones_like(play_obs))
 
 
 def test_offpolicy_play_actor_spec_keeps_standard_sac_and_flashsac():
