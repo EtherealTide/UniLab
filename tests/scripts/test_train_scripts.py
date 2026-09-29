@@ -2138,7 +2138,7 @@ def test_play_wrapper_imports_shared_implementation():
 
 def test_play_wrapper_uses_current_reset_contract():
     """Verify wrapper reset() uses current (obs, info) contract, not old (_, obs, _)."""
-    import numpy as np
+    import torch
     from tensordict import TensorDict
 
     from unilab.rl import RslRlVecEnvAdapter
@@ -2146,8 +2146,9 @@ def test_play_wrapper_uses_current_reset_contract():
     # Create a fake environment that returns (obs, info) tuple
     class FakeEnv:
         def __init__(self):
+            self.device = torch.device("cpu")
             self.num_envs = 2
-            self.state = type("State", (), {"obs": {"obs": np.ones((2, 5), dtype=np.float32)}})()
+            self.state = type("State", (), {"obs": {"obs": torch.ones((2, 5))}})()
             self.cfg = type("Cfg", (), {"max_episode_seconds": 10.0, "ctrl_dt": 0.02})()
             self.observation_space = type("Space", (), {"shape": (5,)})()
             self.action_space = type("Space", (), {"shape": (3,)})()
@@ -2158,7 +2159,7 @@ def test_play_wrapper_uses_current_reset_contract():
 
         def reset(self, env_indices):
             # Returns current contract: (obs, info)
-            return {"obs": np.ones((2, 5), dtype=np.float32)}, {}
+            return {"obs": torch.ones((2, 5))}, {}
 
     env = FakeEnv()
     wrapper = RslRlVecEnvAdapter(env, device="cpu", policy_obs_mode="flat")
@@ -2174,14 +2175,15 @@ def test_play_wrapper_uses_current_reset_contract():
 
 def test_play_wrapper_policy_obs_mode_actor():
     """Verify wrapper supports policy_obs_mode='actor'."""
-    import numpy as np
+    import torch
 
     from unilab.rl import RslRlVecEnvAdapter
 
     class FakeEnv:
         def __init__(self):
+            self.device = torch.device("cpu")
             self.num_envs = 1
-            self.state = type("State", (), {"obs": {"obs": np.ones((1, 3), dtype=np.float32)}})()
+            self.state = type("State", (), {"obs": {"obs": torch.ones((1, 3))}})()
             self.cfg = type("Cfg", (), {"max_episode_seconds": 10.0, "ctrl_dt": 0.02})()
             self.observation_space = type("Space", (), {"shape": (3,)})()
             self.action_space = type("Space", (), {"shape": (2,)})()
@@ -2192,8 +2194,8 @@ def test_play_wrapper_policy_obs_mode_actor():
 
         def reset(self, env_indices):
             return {
-                "obs": np.ones((1, 3), dtype=np.float32),
-                "critic": np.zeros((1, 5), dtype=np.float32),
+                "obs": torch.ones((1, 3)),
+                "critic": torch.zeros((1, 5)),
             }, {}
 
     env = FakeEnv()
@@ -2212,20 +2214,21 @@ def test_play_wrapper_policy_obs_mode_actor():
 
 
 def test_play_wrapper_flat_policy_excludes_critic_only_group():
-    import numpy as np
+    import torch
 
     from unilab.rl import RslRlVecEnvAdapter
 
     class FakeEnv:
         def __init__(self):
+            self.device = torch.device("cpu")
             self.num_envs = 1
             self.state = type(
                 "State",
                 (),
                 {
                     "obs": {
-                        "obs": np.array([[1.0, 2.0, 3.0]], dtype=np.float32),
-                        "critic": np.array([[9.0, 9.0, 9.0, 9.0]], dtype=np.float32),
+                        "obs": torch.tensor([[1.0, 2.0, 3.0]]),
+                        "critic": torch.tensor([[9.0, 9.0, 9.0, 9.0]]),
                     }
                 },
             )()
@@ -2238,19 +2241,13 @@ def test_play_wrapper_flat_policy_excludes_critic_only_group():
             pass
 
         def reset(self, env_indices):
-            return cast(dict[str, np.ndarray], getattr(self.state, "obs")), {}
+            return cast(dict[str, torch.Tensor], getattr(self.state, "obs")), {}
 
     wrapper = RslRlVecEnvAdapter(FakeEnv(), device="cpu", policy_obs_mode="flat")
     obs_td, _ = wrapper.reset()
 
-    np.testing.assert_allclose(
-        obs_td["policy"].cpu().numpy(),
-        np.array([[1.0, 2.0, 3.0]], dtype=np.float32),
-    )
-    np.testing.assert_allclose(
-        obs_td["critic"].cpu().numpy(),
-        np.array([[9.0, 9.0, 9.0, 9.0]], dtype=np.float32),
-    )
+    assert torch.equal(obs_td["policy"], torch.tensor([[1.0, 2.0, 3.0]]))
+    assert torch.equal(obs_td["critic"], torch.tensor([[9.0, 9.0, 9.0, 9.0]]))
     assert wrapper.num_obs == 3
     assert wrapper.num_privileged_obs == 4
 
@@ -2262,38 +2259,31 @@ def test_play_wrapper_step_exports_time_outs_without_bootstrap_obs():
 
     class FakeEnv:
         def __init__(self):
+            self.device = torch.device("cpu")
             self.num_envs = 1
             self.cfg = type("Cfg", (), {"max_episode_seconds": 10.0, "ctrl_dt": 0.02})()
             self.observation_space = type("Space", (), {"shape": (3,)})()
             self.action_space = type("Space", (), {"shape": (2,)})()
             self.obs_groups_spec = {"obs": 3, "critic": 2}
-            self.state = type("State", (), {"obs": {"obs": np.zeros((1, 3), dtype=np.float32)}})()
+            self.state = type("State", (), {"obs": {"obs": torch.zeros((1, 3))}})()
 
         def init_state(self):
             pass
 
         def reset(self, env_indices):
-            return {"obs": np.zeros((1, 3), dtype=np.float32)}, {}
+            return {"obs": torch.zeros((1, 3))}, {}
 
         def step(self, actions):
             return type(
                 "StepState",
                 (),
                 {
-                    "obs": {"obs": np.array([[1.0, 2.0, 3.0]], dtype=np.float32)},
-                    "reward": np.array([1.0], dtype=np.float32),
-                    "terminated": np.array([False]),
-                    "truncated": np.array([True]),
-                    "final_observation": {
-                        "obs": np.array([[7.0, 8.0, 9.0]], dtype=np.float32),
-                        "critic": np.array([[4.0, 5.0]], dtype=np.float32),
-                    },
-                    "info": {
-                        "final_observation": {
-                            "obs": np.array([[7.0, 8.0, 9.0]], dtype=np.float32),
-                            "critic": np.array([[4.0, 5.0]], dtype=np.float32),
-                        }
-                    },
+                    "obs": {"obs": torch.tensor([[1.0, 2.0, 3.0]])},
+                    "reward": torch.tensor([1.0]),
+                    "terminated": torch.tensor([False]),
+                    "truncated": torch.tensor([True]),
+                    "final_observation": {},
+                    "info": {},
                 },
             )()
 
