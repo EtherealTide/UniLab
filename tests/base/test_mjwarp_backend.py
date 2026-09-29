@@ -338,7 +338,7 @@ def test_body_state_matches_mujoco_backend() -> None:
 def test_set_state_returns_schema_conformant_timing() -> None:
     """Issue #1295: mjwarp set_state reports the shared keyset plus its granular
     reset_upload / reset_forward / host_cache_refresh sub-timings."""
-    from unilab.base.np_env import BACKEND_SET_STATE_DETAIL_TIMING_KEYS
+    from unilab.base.backend_timing import BACKEND_SET_STATE_DETAIL_TIMING_KEYS
 
     backend = _backend(2)
     qpos, qvel = _stand_state(backend, 2)

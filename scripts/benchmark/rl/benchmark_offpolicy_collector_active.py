@@ -110,7 +110,7 @@ NP_ENV_STEP_TIMING_KEYS = (
     "dr_reset_observation_compute_obs_ms",
     "dr_reset_observation_internal_gap_ms",
     # Backend set_state internals (see BACKEND_SET_STATE_DETAIL_TIMING_KEYS in
-    # src/unilab/base/np_env.py). All backends emit the same key set for column
+    # backend_timing.py). All backends emit the same key set for column
     # stability; sub-keys that don't apply report 0.0.
     "set_state_mask_ms",
     "set_state_data_slice_ms",

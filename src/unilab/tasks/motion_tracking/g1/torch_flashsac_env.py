@@ -11,7 +11,6 @@ backend terms fail closed rather than falling back silently.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Mapping
 
@@ -23,6 +22,7 @@ from unilab.base.backend_factory import create_backend, env_backend_kwargs
 from unilab.base.base import ABEnv, EnvPlayCapabilities
 from unilab.base.cpu_runtime import apply_env_cpu_runtime
 from unilab.base.entity import EntityCfg
+from unilab.base.torch_env import TorchEnvState
 from unilab.envs.manager_based_rl_env import (
     ManagerBasedRlEnv,
     ManagerBasedRlEnvCfg,
@@ -44,23 +44,6 @@ from unilab.tasks.motion_tracking.common.tensor_runtime import (
     semantic_fingerprint,
 )
 from unilab.tasks.motion_tracking.common.tensor_state_store import TensorDeviceStateStore
-
-
-@dataclass
-class TorchEnvState:
-    """Tensor-native counterpart of UniLab's vectorized state object."""
-
-    obs: dict[str, torch.Tensor]
-    reward: torch.Tensor
-    terminated: torch.Tensor
-    truncated: torch.Tensor
-    info: dict[str, Any]
-    final_observation: dict[str, torch.Tensor] | None = None
-
-    def replace(self, **updates: torch.Tensor | dict[str, Any]) -> TorchEnvState:
-        values = vars(self).copy()
-        values.update(updates)
-        return TorchEnvState(**values)
 
 
 def _to_device(value: np.ndarray, device: torch.device) -> torch.Tensor:
@@ -1308,7 +1291,6 @@ def make_torch_g1_motion_tracking_flashsac_env(
 
 
 __all__ = [
-    "TorchEnvState",
     "TorchG1MotionTrackingFlashSACEnv",
     "make_torch_g1_motion_tracking_flashsac_env",
 ]

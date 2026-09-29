@@ -17,6 +17,9 @@ from unisim.backend.base import (
     SimBackend,
 )
 
+from unilab.base.backend_timing import (
+    RESET_DONE_DETAIL_TIMING_KEYS as _RESET_DONE_DETAIL_TIMING_KEYS,
+)
 from unilab.base.base import ABEnv, EnvCfg, EnvPlayCapabilities
 from unilab.base.cpu_runtime import apply_env_cpu_runtime
 from unilab.base.scene import SceneCfg
@@ -24,78 +27,6 @@ from unilab.dtype_config import get_global_dtype
 
 if TYPE_CHECKING:
     from unilab.utils.nan_guard import NanGuard
-
-
-RESET_DONE_DETAIL_TIMING_KEYS = (
-    "reset_done_count",
-    "reset_done_terminal_obs_ms",
-    "reset_done_reset_call_ms",
-    "reset_done_obs_scatter_ms",
-    "reset_done_info_scatter_ms",
-    "reset_done_internal_gap_ms",
-    "dr_reset_total_ms",
-    "dr_reset_plan_ms",
-    "dr_reset_payload_filter_ms",
-    "dr_reset_set_state_ms",
-    "dr_reset_build_observation_ms",
-    "dr_reset_internal_gap_ms",
-    "dr_reset_observation_getters_ms",
-    "dr_reset_obs_get_motion_ms",
-    "dr_reset_obs_get_local_linvel_ms",
-    "dr_reset_obs_get_gyro_ms",
-    "dr_reset_obs_get_gravity_ms",
-    "dr_reset_obs_get_dof_pos_ms",
-    "dr_reset_obs_get_dof_vel_ms",
-    "dr_reset_obs_get_body_pose_ms",
-    "dr_reset_observation_compute_obs_ms",
-    "dr_reset_observation_internal_gap_ms",
-    # Backend-internal set_state sub-timings. All backends report the same key
-    # set for column stability; sub-keys that don't apply report 0.0.
-    "set_state_mask_ms",
-    "set_state_data_slice_ms",
-    "set_state_data_reset_ms",
-    "set_state_clear_forces_ms",
-    "set_state_geom_overrides_ms",
-    "set_state_reset_rand_ms",
-    "set_state_set_dof_vel_ms",
-    "set_state_set_dof_pos_ms",
-    "set_state_actuator_ctrl_ms",
-    "set_state_forward_kinematic_ms",
-    "set_state_refresh_pose_cache_ms",
-    "set_state_invalidate_velocity_ms",
-    "set_state_qpos_convert_ms",
-    "set_state_pool_reset_ms",
-    "set_state_state_scatter_ms",
-    "set_state_reset_upload_ms",
-    "set_state_reset_forward_ms",
-    "set_state_host_cache_refresh_ms",
-    "set_state_internal_gap_ms",
-)
-
-# Subset of RESET_DONE_DETAIL_TIMING_KEYS that comes from the backend's
-# set_state() timing dict. DR manager merges these keys 1-to-1 from the
-# backend return value.
-BACKEND_SET_STATE_DETAIL_TIMING_KEYS = (
-    "set_state_mask_ms",
-    "set_state_data_slice_ms",
-    "set_state_data_reset_ms",
-    "set_state_clear_forces_ms",
-    "set_state_geom_overrides_ms",
-    "set_state_reset_rand_ms",
-    "set_state_set_dof_vel_ms",
-    "set_state_set_dof_pos_ms",
-    "set_state_actuator_ctrl_ms",
-    "set_state_forward_kinematic_ms",
-    "set_state_refresh_pose_cache_ms",
-    "set_state_invalidate_velocity_ms",
-    "set_state_qpos_convert_ms",
-    "set_state_pool_reset_ms",
-    "set_state_state_scatter_ms",
-    "set_state_reset_upload_ms",
-    "set_state_reset_forward_ms",
-    "set_state_host_cache_refresh_ms",
-    "set_state_internal_gap_ms",
-)
 
 
 @dataclass
@@ -273,7 +204,7 @@ class NpEnv(ABEnv):
     def _reset_done_envs(self) -> None:
         assert self._state is not None
         reset_t0 = time.perf_counter()
-        detail_timing = {key: 0.0 for key in RESET_DONE_DETAIL_TIMING_KEYS}
+        detail_timing = {key: 0.0 for key in _RESET_DONE_DETAIL_TIMING_KEYS}
         done = self._state.terminated | self._state.truncated
         if not np.any(done):
             timing = self._state.info.setdefault("timing", {})
@@ -341,7 +272,7 @@ class NpEnv(ABEnv):
         timing.update(detail_timing)
 
     def _clear_reset_done_detail_timing(self, timing: dict[str, Any]) -> None:
-        for key in RESET_DONE_DETAIL_TIMING_KEYS:
+        for key in _RESET_DONE_DETAIL_TIMING_KEYS:
             timing[key] = 0.0
 
     def _collect_reset_backend_timing_ms(self) -> dict[str, float]:
@@ -349,7 +280,7 @@ class NpEnv(ABEnv):
 
         Manager-based envs override this to surface the reset-state
         transaction's set_state timings. Keys outside
-        RESET_DONE_DETAIL_TIMING_KEYS are dropped by the caller so stale keys
+        _RESET_DONE_DETAIL_TIMING_KEYS are dropped by the caller so stale keys
         never leak into ``info["timing"]``.
         """
         return {}
