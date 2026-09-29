@@ -632,15 +632,15 @@ def test_allegro_manager_runtime_transition_contract():
 
         action = env.action_manager.get_term("hand")
         assert isinstance(action, AllegroIncrementalPositionAction)
-        target_before = action.target.copy()
+        target_before = action.target.clone()
         actions = torch.full((2, 16), 0.25, dtype=torch.float32)
         manager_state = env.step(actions)
-        expected_target = np.clip(
+        expected_target = torch.clamp(
             target_before + 0.25 / 24.0,
-            action.ctrl_lower,
-            action.ctrl_upper,
+            min=action.ctrl_lower,
+            max=action.ctrl_upper,
         )
-        np.testing.assert_allclose(action.target, expected_target, rtol=0.0, atol=1.0e-7)
+        torch.testing.assert_close(action.target, expected_target, rtol=0.0, atol=1.0e-7)
 
         observation = env.observation_manager.get_term_cfg("policy", "rotation").func
         assert isinstance(observation, AllegroRotationObservation)
@@ -656,6 +656,56 @@ def test_allegro_manager_runtime_transition_contract():
         assert manager_state.terminated.dtype == torch.bool
         assert action.action_dim == 16
         assert env.obs_groups_spec == {"obs": 105}
+    finally:
+        env.close()
+
+
+def test_allegro_incremental_action_uses_device_tensors_and_partial_reset():
+    _require_mujoco_runtime()
+    ensure_registries()
+    from unilab.base import registry
+    from unilab.envs import ManagerBasedRlEnv
+    from unilab.tasks.manipulation.allegro_inhand.manager_terms import (
+        AllegroIncrementalPositionAction,
+    )
+
+    env = registry.make(
+        "AllegroInhandRotation",
+        num_envs=2,
+        sim_backend="mujoco",
+        env_cfg_override=_allegro_manager_override(),
+    )
+    assert isinstance(env, ManagerBasedRlEnv)
+    try:
+        env.reset(seed=23)
+        action = env.action_manager.get_term("hand")
+        assert isinstance(action, AllegroIncrementalPositionAction)
+        for value in (action.raw_action, action.target, action.ctrl_lower, action.ctrl_upper):
+            assert value.dtype == torch.float32
+            assert value.device == env.device
+
+        action.process_actions(torch.full((2, 16), 24.0, dtype=torch.float32, device=env.device))
+        torch.testing.assert_close(action.raw_action, torch.full_like(action.raw_action, 24.0))
+        torch.testing.assert_close(action.clipped_action, torch.ones_like(action.raw_action))
+        upper_before_reset = action.target[1].clone()
+        torch.testing.assert_close(action.target[1], action.ctrl_upper)
+
+        action.reset(torch.asarray([1], dtype=torch.int64, device=env.device))
+        torch.testing.assert_close(action.raw_action[1], torch.zeros_like(action.raw_action[1]))
+        torch.testing.assert_close(action.clipped_action[1], torch.zeros_like(action.raw_action[1]))
+        torch.testing.assert_close(action.target[1], upper_before_reset.zero_() + action.target[0])
+        torch.testing.assert_close(
+            action.raw_action[0], torch.full_like(action.raw_action[0], 24.0)
+        )
+
+        with pytest.raises(TypeError, match="expected float32"):
+            action.process_actions(torch.ones((2, 16), dtype=torch.float64))
+        with pytest.raises(ValueError, match="expected device"):
+            action.process_actions(
+                torch.ones((2, 16), dtype=torch.float32, device=torch.device("cpu"))
+                if env.device.type != "cpu"
+                else torch.ones((2, 16), dtype=torch.float32, device=torch.device("meta"))
+            )
     finally:
         env.close()
 
@@ -698,10 +748,10 @@ def test_allegro_grasp_manager_runtime_uses_zero_increment_action(sim_backend: s
         assert isinstance(action, AllegroIncrementalPositionAction)
         assert isinstance(quality, AllegroGraspQualityTermination)
         assert isinstance(recorder, AllegroGraspRecorder)
-        target = action.target.copy()
+        target = action.target.clone()
 
         state = env.step(torch.ones((2, 16), dtype=torch.float32))
-        np.testing.assert_array_equal(action.target, target)
+        torch.testing.assert_close(action.target, target)
         torch.testing.assert_close(state.reward, torch.zeros(2))
         assert initial.obs["obs"].shape == (2, 105)
         assert state.obs["obs"].shape == (2, 105)
