@@ -7,7 +7,7 @@ Synthetic xp-port of the NumPy kernels in the collector-timed sections of
 - `MotionCommand` gather, relative transforms, termination/reward terms,
   observation-group assembly (actor 160 / critic 289), and adaptive sampler
   bookkeeping from the Manager-Based motion runtime.
-- Motion-command reset-state construction and `NpEnv._reset_done_envs`
+- Motion-command reset-state construction and selected-row reset
   scatter/gather.
 
 Excluded (identical across variants, not NumPy/Torch env math):
@@ -525,7 +525,7 @@ class MotionTrackingWorkload:
         b = self.b
         n = int(env_ids.shape[0])
 
-        # NpEnv._reset_done_envs: steps reset + terminal-obs double copy.
+        # Selected-row reset: steps reset + terminal-observation copy.
         self.steps[env_ids] = 0
         for key in ("obs", "critic"):
             self.final_obs[key][env_ids] = self.obs[key][env_ids]
@@ -598,7 +598,7 @@ class MotionTrackingWorkload:
             new_actions,
         )
 
-        # NpEnv._reset_done_envs: obs/info scatter.
+        # Selected-row reset: obs/info scatter.
         for key in ("obs", "critic"):
             self.obs[key][env_ids] = obs_r[key]
         self.current_actions[env_ids] = new_actions

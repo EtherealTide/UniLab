@@ -117,6 +117,14 @@ def _actions(env: _StubTorchEnv) -> torch.Tensor:
     return torch.zeros((env.num_envs, 4), dtype=torch.float32)
 
 
+def test_scene_visual_model_file_reads_backend_getter() -> None:
+    backend = _backend()
+    backend.get_scene_visual_model_file.return_value = "/visual.xml"
+    env = _StubTorchEnv(backend=backend)
+
+    assert env.get_scene_visual_model_file() == "/visual.xml"
+
+
 def test_init_state_uses_tensor_dict_obs_and_selected_reset() -> None:
     env = _StubTorchEnv()
     state = env.init_state()

@@ -134,7 +134,7 @@ flowchart LR
   cli["uv run train/eval<br/>--algo --task --sim"] --> owner["Task owner YAML<br/>src/unilab/conf/*/task/..."]
   cli --> script["Thin script routing<br/>src/unilab/scripts/train_*.py"]
   owner --> registry["Registry bootstrap<br/>src/unilab/base/registry.py"]
-  registry --> env["NpEnv contract<br/>obs dict + info dict"]
+  registry --> env["TorchEnv contract<br/>tensor obs dict + info dict"]
   env --> backend["SimBackend<br/>unisim-core adapters"]
   env --> factory["EnvFactory contract"]
   factory --> runtime["Runner / IPC<br/>unilab-rl async runtime"]

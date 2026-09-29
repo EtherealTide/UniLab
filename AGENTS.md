@@ -42,7 +42,7 @@ architecture changes.
   dict of tensors. Keep `obs_groups_spec` and policy dimensions consistent with
   wrappers and learners.
 - The Manager-Based runtime is the sole task runtime; do not restore legacy
-  `EnvCfg -> NpEnv` factories or compatibility seams.
+  class-config factory seams or compatibility layers.
 - Manager-Based event terms negotiated through `SimBackend` capabilities are
   the sole DR lifecycle; do not reintroduce a DR manager/provider protocol, and
   unsupported capabilities fail closed.

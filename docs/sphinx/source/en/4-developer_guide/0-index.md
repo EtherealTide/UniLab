@@ -21,7 +21,7 @@ Bootstrap imports, env registration, and runtime construction.
 :::{grid-item-card} Env contract
 :link: 2-contracts/1-env_contract
 :link-type: doc
-`NpEnvState`, reset/step shape, observation groups, and wrapper expectations.
+`TorchEnvState`, reset/step shape, observation groups, and wrapper expectations.
 :::
 
 :::{grid-item-card} Backend contract

@@ -1,7 +1,7 @@
 # Env 契约
 
-迁移中的 Env 契约由 `src/unilab/base/base.py`、`src/unilab/base/torch_env.py`
-以及尚未删除的 legacy owner `src/unilab/base/np_env.py` 在代码层拥有。观测语义
+Env 契约由 `src/unilab/base/base.py` 与 `src/unilab/base/torch_env.py`
+在代码层拥有。观测语义
 记录在 {doc}`/adr/ADR-0005-unified-obs-critic-env-and-ipc-contract`，并被
 {doc}`/adr/ADR-0011-torch-only-manager-based-runtime` 取代。
 
@@ -16,8 +16,8 @@
   的 env 行返回 `(obs_dict, info_dict)`。
 - 在 `TorchEnv` 上调用 `step(actions)` 接受 contiguous float32 Torch tensor，
   并返回 `TorchEnvState`；外部适配器只能在适配边界做 trainer device transfer。
-- 在 roadmap #1701 期间，legacy `NpEnv` 仅保留给尚未迁移的 owner；它不是
-  `TorchEnv` 的 fallback。
+- 不存在 legacy 环境 fallback。不支持的 device、carrier 和 backend tensor
+  lifecycle 一律 fail closed。
 
 ## Owner 职责
 
@@ -31,7 +31,6 @@
 
 - Env base 契约：`src/unilab/base/base.py`
 - Torch env 生命周期：`src/unilab/base/torch_env.py`
-- 待删除的 legacy NumPy env：`src/unilab/base/np_env.py`
 - RSL-RL 适配边界：`src/unilab/rl/vec_env.py`
 - Final observation helper：`src/unilab/base/final_observation.py`
 - 测试：`tests/base/test_torch_env.py`、

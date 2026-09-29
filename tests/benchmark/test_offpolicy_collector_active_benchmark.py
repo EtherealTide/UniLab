@@ -143,7 +143,7 @@ def test_auto_discovery_supports_motrixsim_alias() -> None:
 
 
 def test_noise_seed_override_composes_for_target_g1_profiles() -> None:
-    # Manager-Based owners seed their NumPy runtime directly rather than
+    # Manager-Based owners seed their tensor runtime directly rather than
     # carrying the legacy observation-noise config.
     for spec in (("sac", "g1_motion_tracking", "mujoco"),):
         cfg = bench._compose_offpolicy_cfg(

@@ -1,13 +1,13 @@
-"""Standalone probe: parallelization ceiling for `NpEnv.update_state`.
+"""Standalone probe: parallelization ceiling for environment state updates.
 
 Companion to issue #663 / #665. Measures how much speedup is achievable when
-parallelizing the obs / reward / termination portion of `NpEnv.step` — the
+parallelizing the obs / reward / termination portion of `env.step` — the
 "Env overhead" bucket reported by `benchmark_offpolicy_collector_active.py`.
 
 The probe is intentionally decoupled from UniLab (no imports from `unilab`).
 It mirrors real training shapes: `num_envs=8192`, `act_dim=29`,
 `obs_dim=98/101`, `dtype=float32`, 15 active reward terms, 4 noise buffers,
-per-reward log means, 2% `_reset_done_envs` copy. RNG is excluded from the hot
+per-reward log means, 2% selected-row reset copy. RNG is excluded from the hot
 path (noise buffers pre-baked) so the reported ceiling reflects pure compute
 scaling; RNG parallelization is a separate axis.
 
