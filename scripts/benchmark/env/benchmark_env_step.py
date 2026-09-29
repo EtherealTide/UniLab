@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
+import torch
 
 plt: Any = None
 mpatches: Any = None
@@ -451,13 +452,18 @@ def _run_single(extra_args: list[str]) -> dict[str, Any]:
             )
         action_dim = int(action_shape[0])
         env.init_state()
+        device = env.device
 
         for _ in range(warmup_steps):
-            actions = np.random.uniform(-1, 1, size=(num_envs, action_dim)).astype(np.float32)
+            actions = (
+                torch.rand((num_envs, action_dim), dtype=torch.float32, device=device) * 2.0 - 1.0
+            )
             env.step(actions)
 
         for _ in range(num_steps):
-            actions = np.random.uniform(-1, 1, size=(num_envs, action_dim)).astype(np.float32)
+            actions = (
+                torch.rand((num_envs, action_dim), dtype=torch.float32, device=device) * 2.0 - 1.0
+            )
             state = env.step(actions)
             timing = state.info.get("timing", {})
             for k, v in timing.items():
