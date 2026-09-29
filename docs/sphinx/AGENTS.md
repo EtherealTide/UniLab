@@ -117,7 +117,7 @@ language-independent absolute path.
    creating a duplicate.
 4. Gather evidence near the claim:
    - algorithms and tasks: `src/unilab/conf/`, `src/unilab/scripts/train_*.py`, `uni_rl`
-   - env contract: `src/unilab/base/np_env.py`, `uni_rl.env_contract`
+   - env contract: `src/unilab/base/torch_env.py`, `uni_rl.env_contract`
    - backend contract: `unisim.backend.base`
    - registry: `src/unilab/base/registry.py`
    - runner/IPC: `uni_rl.ipc.async_runner`, `src/unilab/training/run.py`
@@ -146,7 +146,7 @@ language-independent absolute path.
 | Same-language doc link | MyST `{doc}` relative path, such as `{doc}`algorithms/ppo`` |
 | Shared ADR or root-level page | Absolute `{doc}` path, such as `{doc}`/adr/ADR-0003-task-owner-and-config-compose-contract`` |
 | Cross-language canonical link | Absolute `{doc}` path, such as `{doc}`/zh_CN/4-developer_guide/0-index`` |
-| Source/config/test path in prose | Backticks: `src/unilab/base/np_env.py` |
+| Source/config/test path in prose | Backticks: `src/unilab/base/torch_env.py` |
 | GitHub source link | Full GitHub URL to an existing file when a clickable source link is needed |
 
 Avoid old paths such as `docs/users/`, `docs/developers/`, and

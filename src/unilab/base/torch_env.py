@@ -1,9 +1,8 @@
 """Tensor-native environment lifecycle base.
 
-`TorchEnv` is the future sole Manager-Based runtime carrier. This first P1
-slice owns the core state, step, selected-row autoreset, timeout, finite, and
-training-state contracts. It also delegates the backend playback/render cold
-paths while Manager term migration continues in later P1 slices.
+`TorchEnv` is the sole Manager-Based runtime carrier. It owns the state, step,
+selected-row autoreset, timeout, finite, training-state, and backend playback
+contracts.
 """
 
 from __future__ import annotations

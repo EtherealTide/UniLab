@@ -7,7 +7,7 @@ registration can come back:
 - every registered factory is one of the canonical manager-runtime
   callables (generic factory plus the maintainer-approved wrappers),
 
-The legacy ``EnvCfg -> NpEnv`` factory seam (``unilab.tasks.compatibility``)
+The legacy ``EnvCfg -> NumPy environment`` factory seam (``unilab.tasks.compatibility``)
 has been removed: legacy task factories cannot coexist with the canonical
 Manager-Based runtime, and this suite keeps it that way.
 

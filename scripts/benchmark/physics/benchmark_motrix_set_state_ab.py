@@ -10,8 +10,8 @@ sequence of reset requests:
 * ``optimized`` — the current backend method: reusable scratch buffers, single
   hoisted ``env_ids_intp``, and a c-contiguous fast path for actuator ctrl.
 
-Both variants instrument the same 16-key schema documented in
-:mod:`unilab.base.np_env`. Only the internals differ.
+Both variants instrument the same 16-key reset-timing schema documented by the
+environment lifecycle. Only the internals differ.
 
 The script does NOT touch the collector loop / physics — it only drives the
 ``set_state`` method — so it isolates the change under study.

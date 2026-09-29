@@ -308,7 +308,7 @@ def test_materialize_uses_shared_protocol_and_exposes_state(backend: IsaacSimBac
 
 
 def test_env_cleanup_hook_reaps_isaacsim_worker(backend: IsaacSimBackend) -> None:
-    """The NpEnv cleanup hook must not leave the external worker alive."""
+    """The TorchEnv cleanup hook must not leave the external worker alive."""
     proc = backend._proc
     assert proc is not None and proc.poll() is None
     shm_names = [handle.name for handle in backend._shm_handles.values()]

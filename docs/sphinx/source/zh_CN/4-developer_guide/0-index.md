@@ -21,7 +21,7 @@ Bootstrap 导入、env 注册与运行时构造。
 :::{grid-item-card} Env 契约
 :link: 2-contracts/1-env_contract
 :link-type: doc
-`NpEnvState`、reset/step 形状、observation 分组与 wrapper 预期。
+`TorchEnvState`、reset/step 形状、observation 分组与 wrapper 预期。
 :::
 
 :::{grid-item-card} Backend 契约

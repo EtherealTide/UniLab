@@ -1,8 +1,7 @@
 # Env Contract
 
-The migration env contract is code-owned by `src/unilab/base/base.py`,
-`src/unilab/base/torch_env.py`, and the remaining legacy owner
-`src/unilab/base/np_env.py`. Observation semantics are recorded in
+The environment contract is code-owned by `src/unilab/base/base.py` and
+`src/unilab/base/torch_env.py`. Observation semantics are recorded in
 {doc}`/adr/ADR-0005-unified-obs-critic-env-and-ipc-contract` and superseded by
 {doc}`/adr/ADR-0011-torch-only-manager-based-runtime`.
 
@@ -18,8 +17,8 @@ The migration env contract is code-owned by `src/unilab/base/base.py`,
 - `step(actions)` on `TorchEnv` accepts a contiguous float32 Torch tensor and
   returns `TorchEnvState`; external adapters may transfer tensors to a trainer
   device only at the adapter boundary.
-- During roadmap #1701, legacy `NpEnv` remains only for not-yet-migrated owners;
-  it is not a fallback from `TorchEnv`.
+- There is no legacy environment fallback. Unsupported devices, carriers, and
+  backend tensor lifecycles fail closed.
 
 ## Owner Responsibilities
 
@@ -34,7 +33,6 @@ The migration env contract is code-owned by `src/unilab/base/base.py`,
 
 - Env base contract: `src/unilab/base/base.py`
 - Torch env lifecycle: `src/unilab/base/torch_env.py`
-- Legacy NumPy env pending deletion: `src/unilab/base/np_env.py`
 - RSL-RL adapter boundary: `src/unilab/rl/vec_env.py`
 - Final observation helper: `src/unilab/base/final_observation.py`
 - Tests: `tests/base/test_torch_env.py`,

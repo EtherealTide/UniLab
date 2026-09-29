@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from unilab.base.np_env import NpEnv
+from unilab.base.torch_env import TorchEnv
 
 
 def test_drake_env_auto_playback_is_mujoco_record_plan() -> None:
-    class _Env(NpEnv):
+    class _Env(TorchEnv):
         @property
         def action_space(self):
             raise NotImplementedError
