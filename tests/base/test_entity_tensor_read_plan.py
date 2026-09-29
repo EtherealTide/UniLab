@@ -1,0 +1,343 @@
+"""Focused tests for the scene-owned packed tensor read boundary."""
+
+from __future__ import annotations
+
+from types import MethodType
+from typing import cast
+
+import numpy as np
+import pytest
+import torch
+from unisim.backend.base import (
+    HostBridgeTransferPlan,
+    SimBackend,
+    TensorDataPlane,
+    TensorExecution,
+    TensorIOSpec,
+    TensorLifecycleCapabilities,
+    TensorProcessTopology,
+)
+
+from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadSpec
+
+
+class _SceneTensorBackend:
+    """Public-contract fake with a minimal packed host-bridge plan."""
+
+    backend_type = "fake-scene-tensor"
+    num_envs = 2
+    num_actuators = 1
+
+    def __init__(self, *, device_resident: bool = False) -> None:
+        self.device_resident = device_resident
+        self.full_reads = 0
+        self.selected_reads = 0
+        self.closes = 0
+        self.qpos = torch.tensor([[0.1], [0.3]], dtype=torch.float32)
+        self.qvel = torch.tensor([[10.0], [20.0]], dtype=torch.float32)
+        self.sensors = {
+            "imu_gyro": torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=torch.float32),
+            "track_pos_w_hip": torch.tensor(
+                [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=torch.float32
+            ),
+            "track_quat_w_hip": torch.tensor(
+                [[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=torch.float32
+            ),
+            "track_linvel_w_hip": torch.zeros((2, 3), dtype=torch.float32),
+            "track_angvel_w_hip": torch.ones((2, 3), dtype=torch.float32),
+        }
+        self._selected_rows = torch.empty((0,), dtype=torch.int64)
+
+    def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
+        if self.device_resident:
+            return TensorLifecycleCapabilities(
+                execution=TensorExecution.DEVICE_RESIDENT,
+                state_views=True,
+                state_fields=frozenset(("qpos", "qvel")),
+                sensor_views=True,
+                process_topology=TensorProcessTopology.IN_PROCESS,
+                data_plane=TensorDataPlane.DIRECT,
+                stream_event_ownership="caller owns the Torch stream",
+                torch_devices=("cpu",),
+            )
+        return TensorLifecycleCapabilities(
+            execution=TensorExecution.HOST_BRIDGE,
+            state_views=True,
+            state_fields=frozenset(("qpos", "qvel")),
+            sensor_views=True,
+            packed_host_bridge=True,
+            process_topology=TensorProcessTopology.IN_PROCESS,
+            data_plane=TensorDataPlane.HOST_BRIDGE,
+            stream_event_ownership="backend synchronizes at the packed host boundary",
+            torch_devices=("cpu",),
+        )
+
+    def tensor_execution(self) -> TensorExecution:
+        return (
+            TensorExecution.DEVICE_RESIDENT if self.device_resident else TensorExecution.HOST_BRIDGE
+        )
+
+    def get_state_views(self, names, device=None) -> dict[str, torch.Tensor]:
+        assert tuple(names) == ("qpos", "qvel")
+        target = torch.device(device) if device is not None else torch.device("cpu")
+        return {
+            "qpos": self.qpos.to(target),
+            "qvel": self.qvel.to(target),
+        }
+
+    def get_sensor_view(self, name: str, device: str | torch.device = "cpu") -> torch.Tensor:
+        return self.sensors[name].to(torch.device(device))
+
+    def get_actuator_names(self) -> tuple[str, ...]:
+        return ("hip_motor",)
+
+    def get_actuator_joint_names(self) -> tuple[str, ...]:
+        return ("hip",)
+
+    def get_actuator_ctrl_range(self):
+        return torch.tensor([[-1.0, 1.0]], dtype=torch.float32).numpy()
+
+    def get_joint_range(self, names=None):
+        count = len(names) if names is not None else 1
+        return torch.tile(torch.tensor([[-1.0, 1.0]], dtype=torch.float32), (count, 1)).numpy()
+
+    def get_default_dof_pos(self, names=None):
+        return torch.zeros(len(names) if names is not None else 1, dtype=torch.float32).numpy()
+
+    def get_dof_pos(self):
+        return self.qpos.numpy()
+
+    def get_dof_vel(self):
+        return self.qvel.numpy()
+
+    def get_body_pos_w(self, body_ids):
+        return torch.tile(
+            self.sensors["track_pos_w_hip"].unsqueeze(1), (1, len(body_ids), 1)
+        ).numpy()
+
+    def get_body_quat_w(self, body_ids):
+        return torch.tile(
+            self.sensors["track_quat_w_hip"].unsqueeze(1), (1, len(body_ids), 1)
+        ).numpy()
+
+    def get_body_lin_vel_w(self, body_ids):
+        return torch.tile(
+            self.sensors["track_linvel_w_hip"].unsqueeze(1), (1, len(body_ids), 1)
+        ).numpy()
+
+    def get_body_ang_vel_w(self, body_ids):
+        return torch.tile(
+            self.sensors["track_angvel_w_hip"].unsqueeze(1), (1, len(body_ids), 1)
+        ).numpy()
+
+    def get_body_lin_vel_b(self, body_ids):
+        return self.get_body_lin_vel_w(body_ids)
+
+    def get_body_ang_vel_b(self, body_ids):
+        return self.get_body_ang_vel_w(body_ids)
+
+    def get_joint_state_qpos_indices(self, names) -> np.ndarray:
+        import numpy as np
+
+        return np.zeros(len(names), dtype=np.int32)
+
+    def get_joint_state_qvel_indices(self, names) -> np.ndarray:
+        import numpy as np
+
+        return np.zeros(len(names), dtype=np.int32)
+
+    def get_body_ids(self, names) -> np.ndarray:
+        import numpy as np
+
+        return np.arange(len(names), dtype=np.int32)
+
+    def get_joint_dof_pos_indices(self, names) -> np.ndarray:
+        import numpy as np
+
+        return np.zeros(len(names), dtype=np.int32)
+
+    def get_joint_dof_vel_indices(self, names) -> np.ndarray:
+        import numpy as np
+
+        return np.zeros(len(names), dtype=np.int32)
+
+    def compile_host_bridge_io(self, spec: TensorIOSpec):
+        backend = self
+
+        class _Plan(HostBridgeTransferPlan):
+            def __init__(self, plan_spec: TensorIOSpec) -> None:
+                self._spec = plan_spec
+                self.last_timing: dict[str, float] = {}
+
+            @property
+            def spec(self) -> TensorIOSpec:
+                return self._spec
+
+            @property
+            def transfer_stats(self) -> dict[str, int]:
+                return {
+                    "state_sensor_h2d": backend.full_reads + backend.selected_reads,
+                    "selected_post_reset_h2d": backend.selected_reads,
+                }
+
+            def read_state_sensors(self):
+                backend.full_reads += 1
+                return backend._packet()
+
+            def read_selected_state_sensors(self):
+                backend.selected_reads += 1
+                return backend._packet()
+
+            def write_control(self, ctrl) -> None:
+                return None
+
+            def step(self, nsteps: int = 1):
+                return None
+
+            def apply_reset(self, env_indices, qpos, qvel, randomization=None):
+                backend._selected_rows = env_indices
+                return None
+
+            def close(self) -> None:
+                backend.closes += 1
+
+        return _Plan(spec)
+
+    def _packet(self) -> dict[str, torch.Tensor]:
+        packet = self.get_state_views(("qpos", "qvel"), device="cpu")
+        packet.update(self.sensors)
+        return packet
+
+
+def _scene(backend: _SceneTensorBackend) -> EntityScene:
+    return EntityScene(
+        {
+            "robot": EntityCfg(
+                joint_names=("hip",),
+                body_names=("hip",),
+                actuator_names=("hip_motor",),
+            )
+        },
+        cast(SimBackend, backend),
+    )
+
+
+def _specs() -> tuple[SceneTensorReadSpec, ...]:
+    return (
+        SceneTensorReadSpec(entity="robot", sensor_names=("imu_gyro",)),
+        SceneTensorReadSpec(entity="robot", body_names=("hip",)),
+    )
+
+
+def test_host_bridge_scene_plan_packs_all_reads_into_one_phase_transfer() -> None:
+    backend = _SceneTensorBackend()
+    scene = _scene(backend)
+    plan = scene.compile_tensor_reads("cpu", _specs())
+
+    assert backend.full_reads == 0
+    plan.refresh()
+    assert backend.full_reads == 1
+
+    joints = plan.joint_tensor_view("robot")
+    sensors = plan.sensor_tensor_views("robot", ("imu_gyro",))
+    body = plan.body_tensor_view("robot")
+    assert plan.transfer_stats["state_sensor_h2d"] == 1
+    assert joints.joint_pos.shape == (2, 1)
+    torch.testing.assert_close(joints.joint_pos[:, 0], backend.qpos[:, 0])
+    torch.testing.assert_close(sensors.values["imu_gyro"], backend.sensors["imu_gyro"])
+    torch.testing.assert_close(body.pos_w[:, 0], backend.sensors["track_pos_w_hip"])
+    assert body.body_names == ("hip",)
+
+    plan.refresh_selected()
+    assert backend.selected_reads == 1
+    assert plan.transfer_stats == {
+        "state_sensor_h2d": 2,
+        "selected_post_reset_h2d": 1,
+    }
+
+    plan.close()
+    assert backend.closes == 1
+
+
+def test_device_resident_scene_plan_refreshes_stable_public_views() -> None:
+    backend = _SceneTensorBackend(device_resident=True)
+    scene = _scene(backend)
+    plan = scene.compile_tensor_reads("cpu", _specs())
+
+    assert plan.host_plan is None
+    plan.refresh()
+    body = plan.body_tensor_view("robot")
+    torch.testing.assert_close(body.ang_vel_w[:, 0], backend.sensors["track_angvel_w_hip"])
+    assert plan.transfer_stats == {}
+    assert plan.last_timing == {}
+    plan.close()
+
+
+def test_scene_plan_rejects_reads_before_refresh_and_after_close() -> None:
+    backend = _SceneTensorBackend()
+    plan = _scene(backend).compile_tensor_reads("cpu", _specs())
+
+    with pytest.raises(RuntimeError, match="must be refreshed"):
+        plan.joint_tensor_view("robot")
+    with pytest.raises(RuntimeError, match="must be refreshed"):
+        plan.transfer_stats
+
+    plan.refresh()
+    plan.invalidate()
+    with pytest.raises(RuntimeError, match="must be refreshed"):
+        plan.sensor_tensor_views("robot", ("imu_gyro",))
+
+    plan.refresh()
+    plan.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        plan.joint_tensor_view("robot")
+    with pytest.raises(RuntimeError, match="closed"):
+        plan.refresh()
+
+
+def test_scene_plan_fails_closed_on_missing_entities_names_and_capabilities() -> None:
+    backend = _SceneTensorBackend()
+    scene = _scene(backend)
+
+    with pytest.raises(TypeError, match="sequence of SceneTensorReadSpec"):
+        scene.compile_tensor_reads("cpu", _specs()[0])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="request is empty"):
+        scene.compile_tensor_reads("cpu", ())
+    with pytest.raises(KeyError, match="'missing' not found"):
+        scene.compile_tensor_reads(
+            "cpu", (SceneTensorReadSpec(entity="missing", sensor_names=("imu_gyro",)),)
+        )
+
+    plan = scene.compile_tensor_reads("cpu", _specs())
+    plan.refresh()
+    with pytest.raises(ValueError, match="were not compiled"):
+        plan.sensor_tensor_views("robot", ("missing",))
+    with pytest.raises(KeyError, match="was not compiled"):
+        plan.joint_tensor_view("other")
+    plan.close()
+
+    unsupported = _SceneTensorBackend()
+    unsupported.get_tensor_capabilities = MethodType(  # type: ignore[method-assign]
+        lambda self: TensorLifecycleCapabilities(execution=TensorExecution.UNSUPPORTED),
+        unsupported,
+    )
+    with pytest.raises(NotImplementedError, match="tensor execution is TensorExecution"):
+        _scene(unsupported).compile_tensor_reads("cpu", _specs())
+
+    scattered = _SceneTensorBackend()
+    original = scattered.get_tensor_capabilities()
+    scattered.get_tensor_capabilities = MethodType(  # type: ignore[method-assign]
+        lambda self: TensorLifecycleCapabilities(
+            execution=original.execution,
+            state_views=True,
+            state_fields=original.state_fields,
+            sensor_views=True,
+            process_topology=original.process_topology,
+            data_plane=original.data_plane,
+            stream_event_ownership=original.stream_event_ownership,
+            torch_devices=original.torch_devices,
+        ),
+        scattered,
+    )
+    with pytest.raises(NotImplementedError, match="in-process packed host bridge"):
+        _scene(scattered).compile_tensor_reads("cpu", _specs())

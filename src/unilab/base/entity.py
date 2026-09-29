@@ -20,9 +20,13 @@ import torch
 from unisim.backend.base import (
     BackendRootStateLayout,
     BackendSensorView,
+    HostBridgeTransferPlan,
     SimBackend,
+    TensorDataPlane,
     TensorExecution,
+    TensorIOSpec,
     TensorLifecycleCapabilities,
+    TensorProcessTopology,
     tensor_device_matches,
 )
 from unisim.dr.types import IntervalRandomizationPlan
@@ -197,6 +201,410 @@ _TENSOR_BODY_SENSOR_FIELDS: tuple[tuple[str, str], ...] = (
 _TENSOR_SENSOR_WIDTHS = {"pos_w": 3, "quat_w": 4, "lin_vel_w": 3, "ang_vel_w": 3}
 
 
+@dataclass(frozen=True)
+class SceneTensorReadSpec:
+    """Declare one entity's named state reads for the scene tensor phase.
+
+    ``sensor_names`` are explicit backend names. ``body_names`` are entity-local
+    names; the scene owner expands them into the canonical ``track_*`` sensor
+    contract. Requests are explicit so the packed packet never grows from an
+    implicit EntityCfg namespace that is only needed by a cold-path consumer.
+    """
+
+    entity: str
+    sensor_names: tuple[str, ...] = ()
+    body_names: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.entity, str) or not self.entity:
+            raise TypeError("Scene tensor read entity must be a non-empty string")
+        if isinstance(self.sensor_names, (str, bytes)):
+            raise TypeError("Scene tensor read sensor_names must be a sequence of strings")
+        if isinstance(self.body_names, (str, bytes)):
+            raise TypeError("Scene tensor read body_names must be a sequence of strings")
+        sensors = tuple(self.sensor_names)
+        bodies = tuple(self.body_names)
+        if not sensors and not bodies:
+            raise ValueError("Scene tensor read request must contain sensors or bodies")
+        for label, names in (("sensor", sensors), ("body", bodies)):
+            if any(not isinstance(name, str) or not name for name in names):
+                raise TypeError(f"Scene tensor read {label} names must be non-empty strings")
+            if len(set(names)) != len(names):
+                raise ValueError(f"Scene tensor read {label} names must be unique: {names}")
+        object.__setattr__(self, "sensor_names", sensors)
+        object.__setattr__(self, "body_names", bodies)
+
+
+class SceneTensorReadPlan:
+    """Phase-scoped packed tensor reads for one ``EntityScene``.
+
+    The plan is the Manager read boundary. A phase calls ``refresh()`` (or
+    ``refresh_selected()`` after a selected reset) once and then slices entity
+    views from the resulting packet. Host-bridge execution therefore performs
+    one packed H2D transfer per read phase regardless of the number of terms,
+    entities, sensors, or bodies.
+    """
+
+    def __init__(
+        self,
+        *,
+        scene: "EntityScene",
+        device: torch.device,
+        entities: Mapping[str, "Entity"],
+        sensor_names: Mapping[str, tuple[str, ...]],
+        body_names: Mapping[str, tuple[str, ...]],
+        host_plan: HostBridgeTransferPlan | None,
+    ) -> None:
+        self._scene = scene
+        self._device = torch.device(device)
+        self._entities = MappingProxyType(dict(entities))
+        self._sensor_names = MappingProxyType(dict(sensor_names))
+        self._body_names = MappingProxyType(dict(body_names))
+        self._host_plan = host_plan
+        self._packet_names = self._aggregate_packet_names()
+        self._packet_sensor_owners: dict[str, str] = {}
+        self._packet_sensor_owners.update(
+            (name, entity_name)
+            for entity_name, names in self._sensor_names.items()
+            for name in names
+        )
+        for entity_name, body_names_value in self._body_names.items():
+            for body_name in body_names_value:
+                for _, prefix in _TENSOR_BODY_SENSOR_FIELDS:
+                    self._packet_sensor_owners.setdefault(prefix + body_name, entity_name)
+        self._packet: Mapping[str, torch.Tensor] = MappingProxyType({})
+        self._refreshed = False
+        self._closed = False
+
+    @property
+    def scene(self) -> "EntityScene":
+        return self._scene
+
+    @property
+    def device(self) -> torch.device:
+        return self._device
+
+    @property
+    def entities(self) -> Mapping[str, "Entity"]:
+        return self._entities
+
+    @property
+    def sensor_names(self) -> Mapping[str, tuple[str, ...]]:
+        return self._sensor_names
+
+    @property
+    def body_names(self) -> Mapping[str, tuple[str, ...]]:
+        return self._body_names
+
+    @property
+    def host_plan(self) -> HostBridgeTransferPlan | None:
+        return self._host_plan
+
+    @property
+    def ready(self) -> bool:
+        """Return whether the current packet is available to phase readers."""
+        return self._refreshed and not self._closed
+
+    @property
+    def packet_names(self) -> tuple[str, ...]:
+        """Return the immutable backend sensor names compiled into this plan."""
+        return self._packet_names
+
+    def refresh(self) -> None:
+        """Publish one full-batch packet for the current read phase."""
+        self._require_not_closed()
+        packet = self._read_packet(self._host_plan.read_state_sensors if self._host_plan else None)
+        self._publish_packet(packet)
+
+    def refresh_selected(self) -> None:
+        """Publish the post-selected-reset packet for the current read phase.
+
+        Host bridges use the backend's selected-row boundary so reset rebuild
+        does not trigger a second full read. Device-resident backends refresh
+        their stable public views through the same normal read path.
+        """
+        self._require_not_closed()
+        reader = (
+            self._host_plan.read_selected_state_sensors if self._host_plan is not None else None
+        )
+        packet = self._read_packet(reader)
+        self._publish_packet(packet)
+
+    def invalidate(self) -> None:
+        """Drop phase values after an in-phase simulation mutation."""
+        self._require_not_closed()
+        self._packet = MappingProxyType({})
+        self._refreshed = False
+
+    def joint_tensor_view(self, entity: "str | Entity") -> EntityTensorStateView:
+        """Return one entity's validated joint state from the phase packet."""
+        owner = self._require_entity(entity)
+        names = owner._joint_names
+        if names is None:
+            raise owner._capability_error(
+                "scene joint tensor state", "joint_names were not declared in EntityCfg"
+            )
+        try:
+            qpos_ids = self._scene._backend.get_joint_state_qpos_indices(names)
+            qvel_ids = self._scene._backend.get_joint_state_qvel_indices(names)
+        except (AttributeError, NotImplementedError) as exc:
+            raise owner._capability_error("scene joint tensor state layout", str(exc)) from exc
+        expected = (len(names),)
+        if qpos_ids.shape != expected or qvel_ids.shape != expected:
+            raise ValueError(
+                f"Entity '{owner.name}' scene tensor joint-state layout on backend "
+                f"'{owner._backend_type}' returned shapes {qpos_ids.shape} and "
+                f"{qvel_ids.shape}; expected {expected}"
+            )
+        if np.any(qpos_ids < 0) or np.any(qvel_ids < 0):
+            raise ValueError(
+                f"Entity '{owner.name}' scene tensor joint-state layout contains negative columns"
+            )
+
+        result: dict[str, torch.Tensor] = {}
+        expected_width = len(names)
+        for field, state_field, columns in (
+            ("joint_pos", "qpos", qpos_ids),
+            ("joint_vel", "qvel", qvel_ids),
+        ):
+            raw = self._packet[state_field]
+            expected_shape = (self._scene._backend.num_envs, expected_width)
+            if raw.ndim != 2 or raw.shape[0] != expected_shape[0]:
+                raise ValueError(
+                    f"Entity '{owner.name}' tensor {field} view on backend "
+                    f"'{owner._backend_type}' has shape {tuple(raw.shape)}; expected "
+                    f"{expected_shape} after entity column selection"
+                )
+            if int(np.max(columns)) >= raw.shape[1]:
+                raise ValueError(
+                    f"Entity '{owner.name}' tensor {field} columns exceed backend "
+                    f"width {raw.shape[1]}"
+                )
+            selected = raw[:, np.asarray(columns, dtype=np.intp)]
+            if tuple(selected.shape) != expected_shape:
+                raise ValueError(
+                    f"Entity '{owner.name}' tensor {field} selected shape "
+                    f"{tuple(selected.shape)} does not match {expected_shape}"
+                )
+            if not bool(torch.isfinite(selected).all()):
+                raise ValueError(f"Entity '{owner.name}' tensor {field} has NaN or Inf")
+            result[field] = selected
+        return EntityTensorStateView(**result)
+
+    def sensor_tensor_views(
+        self, entity: "str | Entity", names: Sequence[str]
+    ) -> EntityTensorSensorViews:
+        """Return explicit named sensors from the phase packet."""
+        owner = self._require_entity(entity)
+        if isinstance(names, (str, bytes)):
+            raise TypeError(
+                f"Entity '{owner.name}' scene tensor sensor names must be a sequence of strings"
+            )
+        sensor_names = tuple(names)
+        if not sensor_names:
+            raise ValueError(f"Entity '{owner.name}' scene tensor sensor request is empty")
+        if any(not isinstance(name, str) or not name for name in sensor_names):
+            raise TypeError(
+                f"Entity '{owner.name}' scene tensor sensor names must be non-empty strings"
+            )
+        if len(set(sensor_names)) != len(sensor_names):
+            raise ValueError(
+                f"Entity '{owner.name}' scene tensor sensor names must be unique: {sensor_names}"
+            )
+        missing = [name for name in sensor_names if name not in self._packet]
+        if missing:
+            raise ValueError(
+                f"Entity '{owner.name}' scene tensor sensors {missing} were not compiled "
+                f"into the packed read; compiled={list(self._packet_names)}"
+            )
+        values = {
+            name: Entity._validate_tensor_sensor(
+                self._packet[name],
+                entity_name=owner.name,
+                backend_type=owner._backend_type,
+                sensor_name=name,
+                expected_width=None,
+                num_envs=self._scene._backend.num_envs,
+                device=self._device,
+            )
+            for name in sensor_names
+        }
+        return EntityTensorSensorViews(names=sensor_names, values=values)
+
+    def body_tensor_view(
+        self, entity: "str | Entity", body_names: Sequence[str] | None = None
+    ) -> EntityTensorBodyStateView:
+        """Return entity-local body state from canonical phase sensors."""
+        owner = self._require_entity(entity)
+        if owner._body_names is None:
+            raise owner._capability_error(
+                "scene body tensor state", "body_names were not declared in EntityCfg"
+            )
+        requested = self._scene._normalize_tensor_body_request(
+            owner, tuple(body_names) if body_names is not None else owner._body_names
+        )
+        missing = [name for name in requested if name not in set(self._body_names[owner.name])]
+        if missing:
+            raise ValueError(
+                f"Entity '{owner.name}' scene tensor bodies {missing} were not compiled "
+                f"into the packed read; compiled={list(self._body_names[owner.name])}"
+            )
+
+        fields: dict[str, torch.Tensor] = {}
+        for field, prefix in _TENSOR_BODY_SENSOR_FIELDS:
+            stacked = [
+                Entity._validate_tensor_sensor(
+                    self._packet[prefix + body_name],
+                    entity_name=owner.name,
+                    backend_type=owner._backend_type,
+                    sensor_name=prefix + body_name,
+                    expected_width=_TENSOR_SENSOR_WIDTHS[field],
+                    num_envs=self._scene._backend.num_envs,
+                    device=self._device,
+                )
+                for body_name in requested
+            ]
+            fields[field] = torch.stack(stacked, dim=1)
+        return EntityTensorBodyStateView(
+            body_names=requested,
+            pos_w=fields["pos_w"],
+            quat_w=fields["quat_w"],
+            lin_vel_w=fields["lin_vel_w"],
+            ang_vel_w=fields["ang_vel_w"],
+        )
+
+    @property
+    def transfer_stats(self) -> dict[str, int]:
+        self._require_open()
+        if self._host_plan is None:
+            return {}
+        return dict(self._host_plan.transfer_stats)
+
+    @property
+    def last_timing(self) -> dict[str, float]:
+        self._require_open()
+        if self._host_plan is None:
+            return {}
+        return dict(self._host_plan.last_timing)
+
+    def close(self) -> None:
+        """Release the backend-owned packed read plan."""
+        if self._closed:
+            return
+        try:
+            if self._host_plan is not None:
+                self._host_plan.close()
+        finally:
+            self._packet = MappingProxyType({})
+            self._refreshed = False
+            self._closed = True
+
+    def _aggregate_packet_names(self) -> tuple[str, ...]:
+        names: list[str] = []
+        for entity_names in self._sensor_names.values():
+            names.extend(entity_names)
+        for entity_names in self._body_names.values():
+            for body_name in entity_names:
+                names.extend(prefix + body_name for _, prefix in _TENSOR_BODY_SENSOR_FIELDS)
+        return tuple(dict.fromkeys(names))
+
+    def _read_packet(
+        self, reader: Callable[[], Mapping[str, Any]] | None
+    ) -> dict[str, torch.Tensor]:
+        backend = self._scene._backend
+        if reader is not None:
+            try:
+                raw = reader()
+            except (AttributeError, KeyError, TypeError, ValueError, NotImplementedError) as exc:
+                raise type(exc)(
+                    f"Manager scene packed tensor read on backend '{backend.backend_type}': {exc}"
+                ) from exc
+        else:
+            try:
+                raw = backend.get_state_views(("qpos", "qvel"), device=self._device)
+                raw = dict(raw)
+                for name in self._packet_names:
+                    raw[name] = backend.get_sensor_view(name, device=self._device)
+            except (AttributeError, KeyError, TypeError, ValueError, NotImplementedError) as exc:
+                raise type(exc)(
+                    "Manager scene device-resident tensor read on backend "
+                    f"'{backend.backend_type}': {exc}"
+                ) from exc
+        if not isinstance(raw, Mapping):
+            raise TypeError(
+                "Manager scene tensor read packet on backend "
+                f"'{backend.backend_type}' is {type(raw).__name__}, expected a mapping"
+            )
+        return dict(raw)
+
+    def _publish_packet(self, packet: dict[str, torch.Tensor]) -> None:
+        backend = self._scene._backend
+        expected_keys = {"qpos", "qvel", *self._packet_names}
+        missing = sorted(expected_keys - set(packet))
+        if missing:
+            raise ValueError(
+                "Manager scene tensor read packet on backend "
+                f"'{backend.backend_type}' is missing {missing}"
+            )
+        num_envs = backend.num_envs
+        for field in ("qpos", "qvel"):
+            value = packet[field]
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(
+                    f"Scene tensor {field} view on backend '{backend.backend_type}' is "
+                    f"{type(value).__name__}, expected torch.Tensor"
+                )
+            if value.ndim != 2 or value.shape[0] != num_envs or value.shape[1] < 1:
+                raise ValueError(
+                    f"Scene tensor {field} view on backend '{backend.backend_type}' has "
+                    f"shape {tuple(value.shape)}; expected ({num_envs}, width)"
+                )
+            if value.dtype != torch.float32 or value.device != self._device:
+                raise TypeError(
+                    f"Scene tensor {field} view must be float32 on {self._device}; "
+                    f"got {value.dtype} on {value.device}"
+                )
+            if not bool(torch.isfinite(value).all()):
+                raise ValueError(f"Scene tensor {field} view has NaN or Inf")
+        for name in self._packet_names:
+            owner = self._packet_sensor_owners[name]
+            packet[name] = Entity._validate_tensor_sensor(
+                packet[name],
+                entity_name=owner,
+                backend_type=backend.backend_type,
+                sensor_name=name,
+                expected_width=None,
+                num_envs=num_envs,
+                device=self._device,
+            )
+        self._packet = MappingProxyType(packet)
+        self._refreshed = True
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("Scene tensor read plan is closed")
+        self._require_refreshed()
+
+    def _require_not_closed(self) -> None:
+        if self._closed:
+            raise RuntimeError("Scene tensor read plan is closed")
+
+    def _require_refreshed(self) -> None:
+        if not self._refreshed:
+            raise RuntimeError("Scene tensor read plan must be refreshed before the read phase")
+
+    def _require_entity(self, entity: "str | Entity") -> "Entity":
+        self._require_open()
+        name = entity if isinstance(entity, str) else entity.name
+        try:
+            return self._entities[name]
+        except KeyError as exc:
+            raise KeyError(
+                f"Scene tensor read entity '{name}' was not compiled into this plan; "
+                f"compiled={list(self._entities)}"
+            ) from exc
+
+
 class _EntityStateReadCache:
     """Update-phase cache shared by every entity bound to one backend scene."""
 
@@ -237,7 +645,13 @@ def _state_selector_key(ids: np.ndarray | None) -> tuple[int, ...] | None:
 
 
 class EntityData:
-    """Hot-path NumPy state surface backed by cached backend IDs."""
+    """Hot-path NumPy state surface backed by cached backend IDs.
+
+    Control writes use the environment's Torch control tensor. NumPy callers
+    remain supported for Manager terms that have not yet crossed that tensor
+    boundary; both paths publish into the same actuator layout without touching
+    backend-private state.
+    """
 
     def __init__(
         self,
@@ -255,7 +669,7 @@ class EntityData:
         body_ids: np.ndarray | None,
         actuator_ids: np.ndarray | None,
         actuator_ctrl_range: np.ndarray | None,
-        control_buffer: np.ndarray | None,
+        control_buffer: np.ndarray | torch.Tensor | None,
         entity_name: str,
         backend_type: str,
         state_read_cache: _EntityStateReadCache,
@@ -512,7 +926,7 @@ class EntityData:
 
     def write_ctrl(
         self,
-        values: np.ndarray,
+        values: np.ndarray | torch.Tensor,
         env_ids: np.ndarray | slice | None = None,
         *,
         actuator_ids: np.ndarray | Sequence[int] | slice | None = None,
@@ -520,16 +934,25 @@ class EntityData:
         """Write entity-local actuator controls into the env-owned control buffer.
 
         This is an in-memory scene write, analogous to the pinned manager runtime's
-        entity target buffers.  Physics remains owned by ``NpEnv``/``SimBackend``;
+        entity target buffers.  Physics remains owned by ``TorchEnv``/``SimBackend``;
         this method never steps or calls a backend-private API.
         """
         entity_actuator_ids = self._require(self._actuator_ids, "actuator control write")
         control = self._require(self._control_buffer, "actuator control write")
         if not isinstance(values, np.ndarray):
-            raise TypeError(
-                f"Entity '{self._entity_name}' write_ctrl expected np.ndarray, "
-                f"received {type(values).__name__}"
+            if not isinstance(values, torch.Tensor):
+                raise TypeError(
+                    f"Entity '{self._entity_name}' write_ctrl expected np.ndarray or "
+                    f"torch.Tensor, received {type(values).__name__}"
+                )
+            tensor_control = self._require_tensor_control_buffer()
+            self._write_tensor_ctrl(
+                values,
+                tensor_control,
+                env_ids=env_ids,
+                actuator_ids=actuator_ids,
             )
+            return
         row_index: np.ndarray | slice
         if env_ids is None:
             row_index = slice(None)
@@ -602,10 +1025,127 @@ class EntityData:
         if not np.isfinite(values).all():
             raise ValueError(f"Entity '{self._entity_name}' write_ctrl received NaN or Inf")
 
-        if isinstance(row_index, slice) or isinstance(actuator_index, slice):
+        if isinstance(control, torch.Tensor):
+            self._write_tensor_ctrl(
+                torch.as_tensor(values, dtype=torch.float32, device=control.device),
+                control,
+                env_ids=env_ids,
+                actuator_ids=actuator_ids,
+            )
+        elif isinstance(row_index, slice) or isinstance(actuator_index, slice):
             control[row_index, actuator_index] = values
         else:
             control[row_index[:, None], actuator_index[None, :]] = values
+
+    def _require_tensor_control_buffer(self) -> torch.Tensor:
+        control = self._require(self._control_buffer, "actuator control write")
+        if not isinstance(control, torch.Tensor):
+            raise TypeError(
+                f"Entity '{self._entity_name}' tensor write_ctrl requires a Torch control buffer"
+            )
+        return control
+
+    def _write_tensor_ctrl(
+        self,
+        values: torch.Tensor,
+        control: torch.Tensor,
+        *,
+        env_ids: np.ndarray | slice | None,
+        actuator_ids: np.ndarray | Sequence[int] | slice | None,
+    ) -> None:
+        entity_actuator_ids = self._require(self._actuator_ids, "actuator control write")
+        if values.dtype != torch.float32:
+            raise TypeError(
+                f"Entity '{self._entity_name}' tensor write_ctrl must be float32, "
+                f"got {values.dtype}"
+            )
+        if values.device != control.device:
+            raise TypeError(
+                f"Entity '{self._entity_name}' tensor write_ctrl must live on "
+                f"{control.device}, got {values.device}"
+            )
+        if not values.is_contiguous():
+            raise TypeError(f"Entity '{self._entity_name}' tensor write_ctrl must be contiguous")
+
+        row_index: torch.Tensor | slice
+        if env_ids is None:
+            row_index = slice(None)
+            row_count = control.shape[0]
+        elif isinstance(env_ids, slice):
+            row_index = env_ids
+            row_count = len(range(*env_ids.indices(control.shape[0])))
+        else:
+            raw_ids = np.asarray(env_ids)
+            if (
+                raw_ids.ndim != 1
+                or not np.issubdtype(raw_ids.dtype, np.integer)
+                or np.issubdtype(raw_ids.dtype, np.bool_)
+            ):
+                raise TypeError(
+                    f"Entity '{self._entity_name}' tensor write_ctrl env_ids must be a "
+                    f"1-D integer array or slice, got shape={raw_ids.shape}, "
+                    f"dtype={raw_ids.dtype}"
+                )
+            host_ids = np.asarray(raw_ids, dtype=np.int64)
+            if np.any(host_ids < 0) or np.any(host_ids >= control.shape[0]):
+                raise IndexError(
+                    f"Entity '{self._entity_name}' tensor write_ctrl env_ids are out of "
+                    f"range for {control.shape[0]} environments: {host_ids.tolist()}"
+                )
+            if np.unique(host_ids).size != host_ids.size:
+                raise ValueError(
+                    f"Entity '{self._entity_name}' tensor write_ctrl env_ids contain "
+                    f"duplicates: {host_ids.tolist()}"
+                )
+            row_index = torch.from_numpy(host_ids).to(device=control.device)
+            row_count = int(host_ids.size)
+
+        if actuator_ids is None:
+            selected_actuator_ids = entity_actuator_ids
+        elif isinstance(actuator_ids, slice):
+            selected_actuator_ids = entity_actuator_ids[actuator_ids]
+        else:
+            raw_actuator_ids = np.asarray(actuator_ids)
+            if (
+                raw_actuator_ids.ndim != 1
+                or not np.issubdtype(raw_actuator_ids.dtype, np.integer)
+                or np.issubdtype(raw_actuator_ids.dtype, np.bool_)
+            ):
+                raise TypeError(
+                    f"Entity '{self._entity_name}' tensor write_ctrl actuator_ids must be "
+                    "a 1-D integer array or slice"
+                )
+            local_actuator_ids = np.asarray(raw_actuator_ids, dtype=np.intp)
+            if np.any(local_actuator_ids < 0) or np.any(
+                local_actuator_ids >= len(entity_actuator_ids)
+            ):
+                raise IndexError(
+                    f"Entity '{self._entity_name}' tensor write_ctrl actuator_ids are out "
+                    f"of range for {len(entity_actuator_ids)}: {local_actuator_ids.tolist()}"
+                )
+            if np.unique(local_actuator_ids).size != local_actuator_ids.size:
+                raise ValueError(
+                    f"Entity '{self._entity_name}' tensor write_ctrl actuator_ids contain "
+                    f"duplicates: {local_actuator_ids.tolist()}"
+                )
+            selected_actuator_ids = entity_actuator_ids[local_actuator_ids]
+
+        column_index = torch.from_numpy(np.asarray(selected_actuator_ids, dtype=np.int64)).to(
+            device=control.device
+        )
+        expected = (row_count, int(column_index.numel()))
+        if tuple(values.shape) != expected:
+            raise ValueError(
+                f"Entity '{self._entity_name}' tensor write_ctrl expected shape "
+                f"{expected}, received {tuple(values.shape)}"
+            )
+        if not bool(torch.isfinite(values).all()):
+            raise ValueError(f"Entity '{self._entity_name}' tensor write_ctrl got NaN or Inf")
+
+        if isinstance(row_index, slice):
+            control[:, column_index] = values
+        else:
+            control[row_index[:, None], column_index[None, :]] = values
 
 
 class Entity:
@@ -616,7 +1156,7 @@ class Entity:
         name: str,
         cfg: EntityCfg,
         backend: SimBackend,
-        control_buffer: np.ndarray | None = None,
+        control_buffer: np.ndarray | torch.Tensor | None = None,
         reset_state: ResetStateTransaction | None = None,
         *,
         default_qpos: np.ndarray | None = None,
@@ -750,7 +1290,13 @@ class Entity:
                     f"Entity '{self.name}' control buffer has shape {control_buffer.shape}; "
                     f"expected {expected_control_shape} on backend '{self._backend_type}'"
                 )
-            if not np.issubdtype(control_buffer.dtype, np.floating):
+            if isinstance(control_buffer, torch.Tensor):
+                if control_buffer.dtype != torch.float32:
+                    raise TypeError(
+                        f"Entity '{self.name}' control buffer must be float32 Torch, "
+                        f"got {control_buffer.dtype}"
+                    )
+            elif not np.issubdtype(control_buffer.dtype, np.floating):
                 raise TypeError(
                     f"Entity '{self.name}' control buffer must have floating dtype, "
                     f"got {control_buffer.dtype}"
@@ -2911,13 +3457,14 @@ class EntityScene(Mapping[str, Entity]):
         self,
         entities: Mapping[str, EntityCfg],
         backend: SimBackend,
-        control_buffer: np.ndarray | None = None,
+        control_buffer: np.ndarray | torch.Tensor | None = None,
         *,
         reset_state: ResetStateTransaction | None = None,
         default_qpos: np.ndarray | None = None,
     ) -> None:
         self._backend = backend
         self._state_read_cache = _EntityStateReadCache()
+        self._tensor_read_plan: SceneTensorReadPlan | None = None
         materialized: dict[str, Entity] = {}
         for name, cfg in entities.items():
             if not isinstance(name, str) or not name:
@@ -2946,7 +3493,7 @@ class EntityScene(Mapping[str, Entity]):
         cls,
         cfg: SceneCfg,
         backend: SimBackend,
-        control_buffer: np.ndarray | None = None,
+        control_buffer: np.ndarray | torch.Tensor | None = None,
         *,
         reset_state: ResetStateTransaction | None = None,
         default_qpos: np.ndarray | None = None,
@@ -2969,6 +3516,170 @@ class EntityScene(Mapping[str, Entity]):
         """Read-only per-environment origins; flat UniLab scenes default to zero."""
         return self._env_origins
 
+    def compile_tensor_reads(
+        self,
+        device: str | torch.device,
+        specs: Sequence[SceneTensorReadSpec],
+    ) -> "SceneTensorReadPlan":
+        """Compile the scene's only packed tensor read layout for one device.
+
+        ``HOST_BRIDGE`` execution aggregates every entity's sensors and canonical
+        body views into one public ``TensorIOSpec``, so a read phase performs one
+        H2D transfer. ``DEVICE_RESIDENT`` execution keeps stable backend views but
+        exposes the same phase API; manager terms therefore do not branch on the
+        backend topology.
+        """
+        if isinstance(specs, SceneTensorReadSpec):
+            raise TypeError("Scene tensor read specs must be a sequence of SceneTensorReadSpec")
+        normalized = tuple(specs)
+        if not normalized:
+            raise ValueError("Scene tensor read request is empty")
+        if any(not isinstance(spec, SceneTensorReadSpec) for spec in normalized):
+            raise TypeError("Scene tensor read specs must be SceneTensorReadSpec instances")
+
+        entities: dict[str, Entity] = {}
+        per_entity_sensors: dict[str, tuple[str, ...]] = {}
+        per_entity_bodies: dict[str, tuple[str, ...]] = {}
+        request_owners: dict[str, str] = {}
+        for spec in normalized:
+            try:
+                entity = self._entities[spec.entity]
+            except KeyError as exc:
+                raise KeyError(
+                    f"Scene tensor read entity '{spec.entity}' not found; "
+                    f"available={list(self._entities)}"
+                ) from exc
+            entities[spec.entity] = entity
+            sensors = per_entity_sensors.setdefault(spec.entity, ())
+            bodies = per_entity_bodies.setdefault(spec.entity, ())
+            for name in spec.sensor_names:
+                owner = request_owners.get(name)
+                if owner is not None and owner != spec.entity:
+                    raise ValueError(
+                        f"Scene tensor sensor '{name}' is requested by entities "
+                        f"'{owner}' and '{spec.entity}'"
+                    )
+                request_owners[name] = spec.entity
+            per_entity_sensors[spec.entity] = (*sensors, *spec.sensor_names)
+            per_entity_bodies[spec.entity] = (*bodies, *spec.body_names)
+
+        expanded_bodies: dict[str, tuple[str, ...]] = {}
+        for entity_name, body_names in per_entity_bodies.items():
+            if not body_names:
+                expanded_bodies[entity_name] = ()
+                continue
+            expanded_bodies[entity_name] = self._normalize_tensor_body_request(
+                entities[entity_name], body_names
+            )
+
+        resolved_device = torch.device(device)
+        if resolved_device.type == "cuda":
+            if not torch.cuda.is_available():
+                raise RuntimeError("CUDA scene tensor reads requested but CUDA is unavailable")
+            if resolved_device.index is None:
+                resolved_device = torch.device("cuda", index=torch.cuda.current_device())
+
+        capabilities = self._backend.get_tensor_capabilities()
+        self._validate_tensor_read_capabilities(capabilities, resolved_device)
+        sensor_names = self._aggregate_tensor_read_names(
+            entities, per_entity_sensors, expanded_bodies
+        )
+
+        host_plan: HostBridgeTransferPlan | None = None
+        if capabilities.execution is TensorExecution.HOST_BRIDGE:
+            spec = TensorIOSpec(
+                state_fields=("qpos", "qvel"),
+                sensor_names=sensor_names,
+                device=resolved_device,
+            )
+            try:
+                host_plan = self._backend.compile_host_bridge_io(spec)
+            except (AttributeError, KeyError, TypeError, ValueError, NotImplementedError) as exc:
+                raise type(exc)(
+                    "Manager scene packed tensor read compilation on backend "
+                    f"'{self._backend.backend_type}': {exc}"
+                ) from exc
+
+        return SceneTensorReadPlan(
+            scene=self,
+            device=resolved_device,
+            entities=entities,
+            sensor_names=per_entity_sensors,
+            body_names=expanded_bodies,
+            host_plan=host_plan,
+        )
+
+    @staticmethod
+    def _normalize_tensor_body_request(
+        entity: "Entity", requested: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        declared = entity.body_names
+        missing = [name for name in requested if name not in set(declared)]
+        if missing:
+            raise ValueError(
+                f"Entity '{entity.name}' tensor body names {missing} are not declared; "
+                f"available={list(declared)}"
+            )
+        return tuple(dict.fromkeys(requested))
+
+    @staticmethod
+    def _validate_tensor_read_capabilities(
+        capabilities: TensorLifecycleCapabilities, device: torch.device
+    ) -> None:
+        backend_type = "backend"
+        if capabilities.execution not in {
+            TensorExecution.HOST_BRIDGE,
+            TensorExecution.DEVICE_RESIDENT,
+        }:
+            raise NotImplementedError(
+                f"Manager scene tensor reads are unavailable on {backend_type}: "
+                f"tensor execution is {capabilities.execution}"
+            )
+        if not capabilities.state_views or not {"qpos", "qvel"}.issubset(capabilities.state_fields):
+            raise NotImplementedError(
+                "Manager scene tensor reads require public qpos/qvel state views"
+            )
+        if not capabilities.sensor_views:
+            raise NotImplementedError(
+                "Manager scene tensor reads require public named sensor views"
+            )
+        if capabilities.execution is TensorExecution.HOST_BRIDGE and not (
+            capabilities.packed_host_bridge
+            and capabilities.process_topology is TensorProcessTopology.IN_PROCESS
+            and capabilities.data_plane is TensorDataPlane.HOST_BRIDGE
+        ):
+            raise NotImplementedError(
+                "Manager scene HOST_BRIDGE tensor reads require an in-process packed host bridge"
+            )
+        if not tensor_device_matches(capabilities.torch_devices, device):
+            raise ValueError(
+                f"Manager scene tensor read device {device} is unsupported; "
+                f"accepted={capabilities.torch_devices}"
+            )
+
+    @staticmethod
+    def _aggregate_tensor_read_names(
+        entities: Mapping[str, "Entity"],
+        sensor_names: Mapping[str, tuple[str, ...]],
+        body_names: Mapping[str, tuple[str, ...]],
+    ) -> tuple[str, ...]:
+        aggregate: list[str] = []
+
+        def add(name: str) -> None:
+            if name not in seen:
+                seen.add(name)
+                aggregate.append(name)
+
+        seen: set[str] = set()
+        for entity_name in entities:
+            for name in sensor_names[entity_name]:
+                add(name)
+        for entity_name in entities:
+            for body_name in body_names[entity_name]:
+                for _, prefix in _TENSOR_BODY_SENSOR_FIELDS:
+                    add(prefix + body_name)
+        return tuple(aggregate)
+
     @contextmanager
     def _scoped_state_reads(self) -> Iterator[None]:
         """Internal ManagerBasedRlEnv boundary for one stable update phase."""
@@ -2978,6 +3689,8 @@ class EntityScene(Mapping[str, Entity]):
     def _invalidate_state_reads(self) -> None:
         """Discard cached backend state after an in-phase simulation mutation."""
         self._state_read_cache.invalidate()
+        if self._tensor_read_plan is not None:
+            self._tensor_read_plan.invalidate()
 
     def reset_to_default(self, env_ids: np.ndarray, *, term_name: str) -> None:
         """Stage a full-scene default state in the active reset transaction."""
@@ -3055,4 +3768,6 @@ __all__ = [
     "EntityTensorBodyStateView",
     "EntityTensorSensorViews",
     "EntityTensorStateView",
+    "SceneTensorReadPlan",
+    "SceneTensorReadSpec",
 ]

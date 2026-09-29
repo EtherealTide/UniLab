@@ -10,9 +10,11 @@ import pytest
 import torch
 from unisim.backend.base import (
     DebugPrimitive,
+    HostBridgeTransferPlan,
     SimBackend,
     TensorDataPlane,
     TensorExecution,
+    TensorIOSpec,
     TensorLifecycleCapabilities,
 )
 
@@ -237,6 +239,143 @@ class _KeyframeBackend(_ResetBackend):
         return self.keyframe_qpos
 
 
+class _ScenePlanBackend(_StateBackend):
+    """State backend with the public packed scene-read contract."""
+
+    def __init__(self, num_envs: int) -> None:
+        super().__init__(num_envs)
+        self.full_reads = 0
+        self.selected_reads = 0
+        self.plan_closes = 0
+        self.reset_calls: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        self.nq = 4
+        self.nv = 3
+        self.sensors = {
+            "track_pos_w_platform": torch.zeros((num_envs, 3), dtype=torch.float32),
+            "track_quat_w_platform": torch.tile(
+                torch.tensor([1.0, 0.0, 0.0, 0.0], dtype=torch.float32), (num_envs, 1)
+            ),
+            "track_linvel_w_platform": torch.zeros((num_envs, 3), dtype=torch.float32),
+            "track_angvel_w_platform": torch.zeros((num_envs, 3), dtype=torch.float32),
+            "track_pos_w_ball": torch.tensor(
+                [[0.1, 0.2, 1.2], [0.3, 0.4, 1.2]], dtype=torch.float32
+            ),
+            "track_quat_w_ball": torch.tile(
+                torch.tensor([1.0, 0.0, 0.0, 0.0], dtype=torch.float32), (num_envs, 1)
+            ),
+            "track_linvel_w_ball": torch.zeros((num_envs, 3), dtype=torch.float32),
+            "track_angvel_w_ball": torch.zeros((num_envs, 3), dtype=torch.float32),
+        }
+
+    def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
+        return TensorLifecycleCapabilities(
+            execution=TensorExecution.HOST_BRIDGE,
+            state_views=True,
+            state_fields=frozenset({"qpos", "qvel"}),
+            sensor_views=True,
+            stepping=True,
+            selected_reset=True,
+            packed_host_bridge=True,
+            data_plane=TensorDataPlane.HOST_BRIDGE,
+            stream_event_ownership="test",
+            torch_devices=("cpu",),
+        )
+
+    def get_state_views(self, fields, device=None) -> dict[str, torch.Tensor]:
+        assert tuple(fields) == ("qpos", "qvel")
+        target = torch.device(device) if device is not None else torch.device("cpu")
+        return {
+            "qpos": torch.zeros((self.num_envs, 4), dtype=torch.float32, device=target),
+            "qvel": torch.zeros((self.num_envs, 3), dtype=torch.float32, device=target),
+        }
+
+    def get_body_ids(self, names) -> np.ndarray:
+        available = ("base", "platform", "ball")
+        return np.asarray([available.index(name) for name in names], dtype=np.int32)
+
+    def get_body_pos_w(self, body_ids) -> np.ndarray:
+        positions = torch.zeros((self.num_envs, len(body_ids), 3), dtype=torch.float32)
+        for row, body_id in enumerate(body_ids):
+            name = ("base", "platform", "ball")[int(body_id)]
+            if name == "platform":
+                positions[:, row] = self.sensors["track_pos_w_platform"]
+            elif name == "ball":
+                positions[:, row] = self.sensors["track_pos_w_ball"]
+        return positions.numpy()
+
+    def get_body_quat_w(self, body_ids) -> np.ndarray:
+        count = len(body_ids)
+        return np.broadcast_to(
+            np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+            (self.num_envs, count, 4),
+        ).copy()
+
+    def get_body_lin_vel_w(self, body_ids) -> np.ndarray:
+        return np.zeros((self.num_envs, len(body_ids), 3), dtype=np.float32)
+
+    def get_body_ang_vel_w(self, body_ids) -> np.ndarray:
+        return np.zeros((self.num_envs, len(body_ids), 3), dtype=np.float32)
+
+    def get_body_lin_vel_b(self, body_ids) -> np.ndarray:
+        return self.get_body_lin_vel_w(body_ids)
+
+    def get_body_ang_vel_b(self, body_ids) -> np.ndarray:
+        return self.get_body_ang_vel_w(body_ids)
+
+    def compile_host_bridge_io(self, spec: TensorIOSpec):
+        backend = self
+
+        class _Plan(HostBridgeTransferPlan):
+            def __init__(self, plan_spec: TensorIOSpec) -> None:
+                self._spec = plan_spec
+                self.last_timing: dict[str, float] = {}
+
+            @property
+            def spec(self) -> TensorIOSpec:
+                return self._spec
+
+            @property
+            def transfer_stats(self) -> dict[str, int]:
+                return {
+                    "state_sensor_h2d": backend.full_reads + backend.selected_reads,
+                    "selected_post_reset_h2d": backend.selected_reads,
+                }
+
+            def _packet(self) -> dict[str, torch.Tensor]:
+                packet: dict[str, torch.Tensor] = backend.get_state_views(("qpos", "qvel"))
+                packet.update(backend.sensors)
+                return packet
+
+            def read_state_sensors(self):
+                backend.full_reads += 1
+                return self._packet()
+
+            def read_selected_state_sensors(self):
+                backend.selected_reads += 1
+                return self._packet()
+
+            def write_control(self, ctrl) -> None:
+                return None
+
+            def step(self, nsteps: int = 1):
+                return None
+
+            def apply_reset(self, env_indices, qpos, qvel, randomization=None):
+                backend.reset_calls.append(
+                    (
+                        env_indices.detach().clone(),
+                        qpos.detach().clone(),
+                        qvel.detach().clone(),
+                    )
+                )
+                return None
+
+            def close(self) -> None:
+                backend.plan_closes += 1
+
+        return _Plan(spec)
+
+
 @dataclass(kw_only=True)
 class _DriveCfg(ActionTermCfg):
     gain: float = 1.0
@@ -265,7 +404,7 @@ class _DriveAction(ActionTerm):
     def apply_actions(self) -> None:
         self._env.trace.append("action_apply")
         self._env.action_sim_steps.append(self._env._sim_step_counter)
-        self._entity.data.write_ctrl(self._processed)
+        self._entity.data.write_ctrl(torch.from_numpy(self._processed))
 
 
 class _FeedbackDriveAction(_DriveAction):
@@ -276,6 +415,48 @@ class _FeedbackDriveAction(_DriveAction):
 class _FeedbackDriveCfg(_DriveCfg):
     def build(self, env) -> ActionTerm:
         return _FeedbackDriveAction(self, env)
+
+
+@dataclass(kw_only=True)
+class _TensorBodyActionCfg(ActionTermCfg):
+    top_body_name: str
+    ball_body_name: str
+
+    def build(self, env) -> _TensorBodyAction:
+        return _TensorBodyAction(self, env)
+
+
+class _TensorBodyAction(ActionTerm):
+    uses_tensor_actions = True
+
+    def __init__(self, cfg: _TensorBodyActionCfg, env) -> None:
+        super().__init__(cfg, env)
+        self._processed = torch.zeros((self.num_envs, 1), dtype=torch.float32, device=env.device)
+
+    @property
+    def action_dim(self) -> int:
+        return 1
+
+    @property
+    def raw_action(self) -> torch.Tensor:
+        return self._processed
+
+    @property
+    def tensor_body_names(self) -> tuple[str, ...]:
+        cfg = cast(_TensorBodyActionCfg, self.cfg)
+        return (cfg.top_body_name, cfg.ball_body_name)
+
+    def process_actions(self, actions: torch.Tensor) -> None:
+        self._processed.copy_(actions)
+
+    def apply_actions(self) -> None:
+        state = self._env.scene._tensor_read_plan
+        if state is None:
+            self._processed.zero_()
+        else:
+            view = state.body_tensor_view(self._entity)
+            self._processed.copy_(view.pos_w[:, 1, 2:3])
+        self._entity.data.write_ctrl(self._processed)
 
 
 @dataclass(kw_only=True)
@@ -376,6 +557,12 @@ def _joint_state_termination(env: _TestEnv) -> np.ndarray:
 def _mutate_joint_state_step_event(env: _TestEnv, env_ids: np.ndarray | None) -> None:
     assert env_ids is None
     cast(_StateBackend, env._backend).dof_pos += 10.0
+
+
+def _mutate_backend_tensor_state(env: _TestEnv, env_ids: np.ndarray | None) -> None:
+    assert env_ids is None
+    backend = cast(_ScenePlanBackend, env._backend)
+    backend.sensors["track_pos_w_ball"].add_(10.0)
 
 
 def _failure(env: _TestEnv) -> np.ndarray:
@@ -1314,6 +1501,111 @@ def test_partial_reset_observation_reads_post_set_state_rows() -> None:
     assert state.final_observation is not None
     torch.testing.assert_close(state.final_observation["obs"][0], torch.tensor([1.25]))
     np.testing.assert_array_equal(backend.dof_pos[:, 0], [0.25, 1.25])
+
+
+def test_scene_read_plan_refreshes_once_per_phase_and_after_mutations() -> None:
+    cfg = _make_cfg(include_optional_managers=False)
+    cfg.actions = {
+        "tilt": _TensorBodyActionCfg(
+            entity_name="robot",
+            top_body_name="platform",
+            ball_body_name="ball",
+        )
+    }
+    cfg.scene.entities["robot"] = EntityCfg(
+        root_body_name="base",
+        joint_names=("joint",),
+        body_names=("platform", "ball"),
+        actuator_names=("motor",),
+    )
+    backend = _ScenePlanBackend(2)
+    env = _TestEnv(cfg, cast(SimBackend, backend), 2)
+    try:
+        plan = env.scene._tensor_read_plan
+        assert plan is not None
+
+        obs, _ = env.reset()
+        assert backend.full_reads == 0
+        assert backend.selected_reads == 1
+        assert obs["obs"].shape == (2, 2)
+
+        state = env.step(torch.zeros((2, 1), dtype=torch.float32))
+        # The action phase packs body reads once, then ``step_tensor`` mutates
+        # backend state. update_state drops that stale packet and republishes
+        # one post-physics packet shared by all Manager terms.
+        assert backend.full_reads == 2
+        assert state.obs["obs"].shape == (2, 2)
+
+        cfg_events = env.cfg.events
+        assert isinstance(cfg_events, dict)
+        cfg_events["mutate"] = EventTermCfg(func=_mutate_backend_tensor_state, mode="step")
+        state = env.step(torch.zeros((2, 1), dtype=torch.float32))
+        # Each control step owns two phases: pre-action and post-physics. The
+        # bounded mutation adds one refresh before the legacy read phase.
+        assert backend.full_reads == 4
+        assert state.obs["obs"].shape == (2, 2)
+
+        plan.close()
+        env.scene._tensor_read_plan = None
+        state = env.step(torch.zeros((2, 1), dtype=torch.float32))
+        assert state.obs["obs"].shape == (2, 2)
+    finally:
+        if env.scene._tensor_read_plan is not None:
+            env.scene._tensor_read_plan.close()
+            env.scene._tensor_read_plan = None
+        env.close()
+
+
+def test_scene_read_plan_pairs_reset_with_selected_packed_transfer() -> None:
+    cfg = _make_cfg(include_optional_managers=False)
+    cfg.actions = {
+        "tilt": _TensorBodyActionCfg(
+            entity_name="robot",
+            top_body_name="platform",
+            ball_body_name="ball",
+        )
+    }
+    cfg.scene.entities["robot"] = EntityCfg(
+        root_body_name="base",
+        joint_names=("joint",),
+        body_names=("platform", "ball"),
+        actuator_names=("motor",),
+    )
+    cfg.events = {"joint_state": EventTermCfg(func=_write_reset_joint_state, mode="reset")}
+    backend = _ScenePlanBackend(2)
+    env = _TestEnv(cfg, cast(SimBackend, backend), 2)
+    try:
+        plan = env.scene._tensor_read_plan
+        assert plan is not None
+        assert plan.host_plan is not None
+
+        env.reset()
+
+        assert backend.set_state_calls == []
+        assert len(backend.reset_calls) == 1
+        rows, qpos, qvel = backend.reset_calls[0]
+        torch.testing.assert_close(rows, torch.tensor([0, 1], dtype=torch.int64))
+        torch.testing.assert_close(
+            qpos,
+            torch.tensor([[0.0, 0.0, 0.5, 0.25], [0.0, 0.0, 0.5, 0.25]], dtype=torch.float32),
+        )
+        torch.testing.assert_close(
+            qvel, torch.tensor([[0.0, 0.0, -0.5], [0.0, 0.0, -0.5]], dtype=torch.float32)
+        )
+        assert backend.full_reads == 0
+        assert backend.selected_reads == 1
+        assert plan.transfer_stats["selected_post_reset_h2d"] == 1
+
+        env.reset(env_indices=torch.tensor([1], dtype=torch.int64))
+        assert len(backend.reset_calls) == 2
+        torch.testing.assert_close(backend.reset_calls[1][0], torch.tensor([1], dtype=torch.int64))
+        assert backend.full_reads == 0
+        assert backend.selected_reads == 2
+    finally:
+        if env.scene._tensor_read_plan is not None:
+            env.scene._tensor_read_plan.close()
+            env.scene._tensor_read_plan = None
+        env.close()
 
 
 def test_partial_reset_preserves_other_env_counter_and_terminal_obs() -> None:

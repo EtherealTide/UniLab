@@ -25,7 +25,7 @@ from unilab.base.config_overrides import (
     MANAGER_TERM_MAPPING_POLICY,
 )
 from unilab.base.cpu_runtime import apply_env_cpu_runtime
-from unilab.base.entity import EntityCfg, EntityScene
+from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadPlan, SceneTensorReadSpec
 from unilab.base.reset_state import ResetStateTransaction
 from unilab.base.scene import SceneCfg, resolve_scene_default_qpos
 from unilab.base.torch_env import TorchEnv, TorchEnvState
@@ -275,6 +275,7 @@ class ManagerBasedRlEnv(TorchEnv):
     curriculum_manager: CurriculumManager | NullCurriculumManager
     metrics_manager: MetricsManager | NullMetricsManager
     recorder_manager: RecorderManager | NullRecorderManager
+    _tensor_read_plan: SceneTensorReadPlan | None
 
     def __init__(self, cfg: ManagerBasedRlEnvCfg, backend: SimBackend, num_envs: int):
         if not isinstance(cfg, ManagerBasedRlEnvCfg):
@@ -305,9 +306,11 @@ class ManagerBasedRlEnv(TorchEnv):
 
         assert cfg.scene is not None
         default_qpos = resolve_scene_default_qpos(cfg.scene, backend)
-        self._control = np.zeros((num_envs, backend.num_actuators), dtype=get_global_dtype())
+        self._control = torch.zeros(
+            (num_envs, backend.num_actuators), dtype=torch.float32, device=self.device
+        )
         if cfg.scene.entity_assets:
-            self._control[:] = backend.get_state("ctrl")["ctrl"]
+            self._control.copy_(self._backend.get_state_views(("ctrl",))["ctrl"])
         self._reset_state = ResetStateTransaction(
             backend,
             default_qpos=default_qpos,
@@ -345,7 +348,54 @@ class ManagerBasedRlEnv(TorchEnv):
         if "startup" in self.event_manager.available_modes:
             self.event_manager.apply(mode="startup")
         self._materialize_backend()
+        self._compile_tensor_read_plan()
         self._validate_manager_tensor_runtime()
+
+    def _compile_tensor_read_plan(self) -> None:
+        """Compile the scene's only packed tensor read phase."""
+        specs: list[SceneTensorReadSpec] = []
+        for name in self.action_manager.active_terms:
+            term = self.action_manager.get_term(name)
+            body_names = getattr(term, "tensor_body_names", None)
+            if body_names is None:
+                continue
+            if (
+                not isinstance(body_names, (tuple, list))
+                or any(not isinstance(value, str) or not value for value in body_names)
+                or len(set(body_names)) != len(body_names)
+            ):
+                raise TypeError(
+                    "ManagerBasedRlEnv tensor read declaration for action term "
+                    f"'{name}' must be a unique sequence of body names; got {body_names!r}"
+                )
+            specs.append(
+                SceneTensorReadSpec(entity=term.cfg.entity_name, body_names=tuple(body_names))
+            )
+        for group_name, terms in self.observation_manager.active_terms.items():
+            for name in terms:
+                term_cfg = self.observation_manager.get_term_cfg(group_name, name)
+                body_names = term_cfg.params.get("tensor_body_names")
+                if body_names is None:
+                    continue
+                if (
+                    not isinstance(body_names, (tuple, list))
+                    or any(not isinstance(value, str) or not value for value in body_names)
+                    or len(set(body_names)) != len(body_names)
+                ):
+                    raise TypeError(
+                        "ManagerBasedRlEnv tensor read declaration for observation term "
+                        f"'{name}' must be a unique sequence of body names; got {body_names!r}"
+                    )
+                entity_name = term_cfg.params.get("entity_name")
+                if not isinstance(entity_name, str) or not entity_name:
+                    raise TypeError(
+                        "ManagerBasedRlEnv observation tensor read declaration "
+                        f"'{name}' requires an entity_name parameter"
+                    )
+                specs.append(SceneTensorReadSpec(entity=entity_name, body_names=tuple(body_names)))
+        self.scene._tensor_read_plan = (
+            self.scene.compile_tensor_reads(self.device, specs) if specs else None
+        )
 
     def _validate_manager_tensor_runtime(self) -> None:
         """Bind the tensor lifecycle after backend materialization."""
@@ -519,9 +569,8 @@ class ManagerBasedRlEnv(TorchEnv):
         return
 
     def _control_to_backend_boundary(self) -> torch.Tensor:
-        """Publish NumPy Manager control as one contiguous backend Torch tensor."""
-        host = np.array(self._control, dtype=np.float32, order="C", copy=True)
-        return torch.from_numpy(host).to(device=self.device)
+        """Return the contiguous authoritative Torch control tensor."""
+        return self._control
 
     def _reset_rows_to_manager_boundary(self, rows: torch.Tensor) -> np.ndarray:
         """Publish validated Torch reset rows to the NumPy Manager host."""
@@ -564,6 +613,9 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:
         del state
+        read_plan = self.scene._tensor_read_plan
+        if read_plan is not None:
+            read_plan.refresh()
         self.action_manager.process_action(actions)
         self._sim_step_counter += self._cfg.sim_substeps
         self.action_manager.apply_action()
@@ -571,8 +623,14 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def update_state(self, state: TorchEnvState) -> TorchEnvState:
         # Physics stepping and reset/set_state lifecycles sit outside this private
-        # scope. In-phase mutations explicitly invalidate it below.
+        # scope, so values packed before ``step_tensor`` are stale here. Drop
+        # the action-phase packet first; in-phase mutations explicitly invalidate
+        # it below.
+        self.scene._invalidate_state_reads()
         with self.scene._scoped_state_reads():
+            read_plan = self.scene._tensor_read_plan
+            if read_plan is not None and not read_plan.ready:
+                read_plan.refresh()
             return self._update_state_in_read_phase(state)
 
     def _update_state_in_read_phase(self, state: TorchEnvState) -> TorchEnvState:
@@ -614,6 +672,7 @@ class ManagerBasedRlEnv(TorchEnv):
             # interval/step capabilities; EventManager does not expose whether a
             # particular interval fired, so this boundary stays fail-closed.
             self.scene._invalidate_state_reads()
+            self._refresh_tensor_reads_after_mutation()
 
         self._command_dt.fill(self.step_dt)
         self._command_dt[self.reset_buf] = 0.0
@@ -621,6 +680,7 @@ class ManagerBasedRlEnv(TorchEnv):
             self.command_manager.compute(dt=self._command_dt)
         if self._reset_state.last_commit_had_writes:
             self.scene._invalidate_state_reads()
+            self._refresh_tensor_reads_after_mutation()
         self.command_manager.post_compute()
 
         manager_obs = self.observation_manager.compute(update_history=True)
@@ -638,6 +698,26 @@ class ManagerBasedRlEnv(TorchEnv):
             terminated=self._manager_tensor(self.reset_terminated, dtype=torch.bool),
             truncated=self._manager_tensor(self.reset_time_outs, dtype=torch.bool),
         )
+
+    def _refresh_tensor_reads_after_mutation(self) -> None:
+        """Repack scene tensor reads after an in-phase simulation mutation."""
+        read_plan = self.scene._tensor_read_plan
+        if read_plan is not None:
+            read_plan.refresh()
+
+    def _reset_manager_state(self, rows: torch.Tensor) -> None:
+        """Re-run row-scoped manager reset after initial state allocation."""
+        ids = self._reset_rows_to_manager_boundary(rows)
+        for manager in (
+            self.observation_manager,
+            self.action_manager,
+            self.reward_manager,
+            self.metrics_manager,
+            self.curriculum_manager,
+            self.event_manager,
+            self.termination_manager,
+        ):
+            manager.reset(ids)
 
     def _compute_truncated(self, state: TorchEnvState) -> torch.Tensor:
         del state
@@ -670,6 +750,7 @@ class ManagerBasedRlEnv(TorchEnv):
                     "ManagerBasedRlEnv requires a full reset before the first partial reset"
                 )
             state = self.init_state()
+            self._reset_manager_state(rows)
             return state.obs, {"log": state.info.get("log", {})}
 
         done_ids = ids[self.reset_buf[ids]]
@@ -678,7 +759,22 @@ class ManagerBasedRlEnv(TorchEnv):
 
         log: dict[str, Any] = {}
         self.curriculum_manager.compute(env_ids=ids)
-        with self._reset_state.scoped(ids):
+        read_plan = self.scene._tensor_read_plan
+        use_packed_reset = (
+            read_plan is not None
+            and read_plan.host_plan is not None
+            # Force eager default materialization: a backend with different
+            # native and public layouts must fall back before terms run.
+            and self._reset_state.can_commit_packed(term_name="reset")
+        )
+        if use_packed_reset:
+            assert read_plan is not None
+            assert read_plan.host_plan is not None
+            self._reset_state.declare_packed_reset_device(read_plan.device)
+            reset_context = self._reset_state.scoped_tensor(ids, read_plan.host_plan)
+        else:
+            reset_context = self._reset_state.scoped(ids)
+        with reset_context:
             if "reset" in self.event_manager.available_modes:
                 self.event_manager.apply(
                     mode="reset",
@@ -700,7 +796,7 @@ class ManagerBasedRlEnv(TorchEnv):
 
         self.episode_length_buf[ids] = 0
         if self._reset_state.scene_layout is not None:
-            self._control[ids] = self._backend.get_state("ctrl")["ctrl"][ids]
+            self._control[ids] = self._backend.get_state_views(("ctrl",))["ctrl"][ids]
         else:
             self._control[ids] = 0.0
         self._manual_reset_pending[ids] = False
@@ -711,6 +807,15 @@ class ManagerBasedRlEnv(TorchEnv):
         # committed, so cached getter values are post-set_state reads shared
         # across terms (issue #1295).
         with self.scene._scoped_state_reads():
+            read_plan = self.scene._tensor_read_plan
+            if read_plan is not None:
+                # A host-bridge plan owns the paired selected-row boundary from
+                # ``apply_reset``. Device-resident plans have no selected packet
+                # and refresh their stable public views normally.
+                if use_packed_reset:
+                    read_plan.refresh_selected()
+                else:
+                    read_plan.refresh()
             self.command_manager.compute(dt=0.0, env_ids=ids)
             self.command_manager.post_compute()
             # Row-scoped reset rebuild (issue #1259 R2): the observation manager
@@ -834,6 +939,10 @@ class ManagerBasedRlEnv(TorchEnv):
         self._sim_step_counter = self.step_counter * self._cfg.sim_substeps
 
     def close(self) -> None:
+        read_plan = self.scene._tensor_read_plan
+        if read_plan is not None:
+            read_plan.close()
+            self.scene._tensor_read_plan = None
         self.recorder_manager.close()
         super().close()
 

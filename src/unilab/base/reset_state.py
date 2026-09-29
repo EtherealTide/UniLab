@@ -10,10 +10,16 @@ from __future__ import annotations
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
-from unisim.backend.base import BackendMocapPoseBinding, BackendRootStateLayout, SimBackend
+import torch
+from unisim.backend.base import (
+    BackendMocapPoseBinding,
+    BackendRootStateLayout,
+    HostBridgeTransferPlan,
+    SimBackend,
+)
 from unisim.dr.types import (
     RESET_TERM_BODY_INERTIA,
     RESET_TERM_BODY_IPOS,
@@ -129,6 +135,7 @@ class ResetStateTransaction:
         self._mocap_bindings: dict[str, BackendMocapPoseBinding] = {}
         self._mocap_values: dict[str, np.ndarray] = {}
         self._mocap_masks: dict[str, np.ndarray] = {}
+        self._packed_reset_device: torch.device | None = None
 
     @property
     def active(self) -> bool:
@@ -162,6 +169,42 @@ class ResetStateTransaction:
             raise
         else:
             self.commit()
+
+    @contextmanager
+    def scoped_tensor(
+        self, env_ids: np.ndarray, host_plan: HostBridgeTransferPlan
+    ) -> Iterator[ResetStateTransaction]:
+        """Begin a packed tensor reset and commit it only after terms succeed."""
+        self.begin(env_ids)
+        try:
+            yield self
+        except BaseException:
+            self.abort()
+            raise
+        else:
+            self.commit_tensor(host_plan)
+
+    def declare_packed_reset_device(self, device: torch.device) -> None:
+        """Declare the scene read-plan device paired with packed reset commits."""
+        resolved = torch.device(device)
+        if resolved.type == "cuda" and resolved.index is None:
+            resolved = torch.device("cuda", index=torch.cuda.current_device())
+        self._packed_reset_device = resolved
+
+    def can_commit_packed(self, *, term_name: str = "reset") -> bool:
+        """Report whether staged widths can use the public packed reset API.
+
+        Packed reset requires the NumPy reset composer and backend public state
+        to describe the same canonical qpos/qvel columns. A backend that uses
+        different native and public layouts must keep the explicit public
+        ``set_state`` boundary until UniSim exposes that projection publicly.
+        """
+        if self.scene_layout is not None:
+            return False
+        self._materialize_default_state(term_name)
+        if self._default_qpos is None or self._default_qvel is None:
+            return True
+        return self._packed_reset_widths_match()
 
     def begin(self, env_ids: np.ndarray) -> None:
         """Open a transaction for the concrete reset environment IDs."""
@@ -1158,6 +1201,114 @@ class ResetStateTransaction:
                 ) from exc
         finally:
             self._finish()
+
+    def commit_tensor(self, host_plan: HostBridgeTransferPlan) -> dict | None:
+        """Commit staged state through one public packed reset boundary.
+
+        The tensor reset path is intentionally restricted to the scalar
+        qpos/qvel transaction shape with backend-compatible canonical widths.
+        It stages the composed rows on the backend device once through
+        ``HostBridgeTransferPlan.apply_reset`` so the scene read plan can pair
+        this commit with a selected-row H2D read. Mapped entity patches, DR
+        model writes, and mocap writes remain explicit migration boundaries and
+        fail closed here rather than silently falling back to NumPy
+        ``set_state``.
+        """
+        self._require_active()
+        if self.scene_layout is not None:
+            try:
+                self._commit_entities()
+                if np.any(self._dirty_mask) or any(
+                    np.any(mask) for mask in self._mocap_masks.values()
+                ):
+                    raise NotImplementedError(
+                        "tensor reset commit does not support mapped entity mixed writes"
+                    )
+                return None
+            finally:
+                self._finish()
+        dirty_ids = np.flatnonzero(self._dirty_mask).astype(np.int32, copy=False)
+        mocap_dirty = any(np.any(mask) for mask in self._mocap_masks.values())
+        self._last_commit_had_writes = bool(dirty_ids.size) or mocap_dirty
+        try:
+            if dirty_ids.size == 0:
+                self._commit_mocap_poses()
+                return None
+            assert self._qpos is not None
+            assert self._qvel is not None
+            if self._randomization_dirty_masks or mocap_dirty:
+                raise NotImplementedError(
+                    "tensor reset commit supports scalar qpos/qvel rows only; "
+                    "randomization and mocap writes remain explicit migration boundaries"
+                )
+            if self._packed_reset_device is not None and self._packed_reset_device.type == "cuda":
+                # The staged NumPy transaction must cross exactly one public
+                # host/device boundary. A device plan requires a device-resident
+                # reset composer and must not be converted row-by-row here.
+                raise NotImplementedError(
+                    "tensor reset commit currently requires a host Torch device"
+                )
+            rows = torch.from_numpy(dirty_ids.astype(np.int64, copy=True))
+            staged_qpos = self._qpos[dirty_ids]
+            staged_qvel = self._qvel[dirty_ids]
+            qpos_width, qvel_width = self._packed_reset_public_widths()
+            if not isinstance(qpos_width, (int, np.integer)) or not isinstance(
+                qvel_width, (int, np.integer)
+            ):
+                raise NotImplementedError("packed reset requires public backend qpos/qvel widths")
+            if staged_qpos.shape[1] != qpos_width or staged_qvel.shape[1] != qvel_width:
+                raise NotImplementedError(
+                    "packed reset requires the NumPy reset composer and backend public "
+                    f"state to share one canonical layout; staged="
+                    f"{(staged_qpos.shape[1], staged_qvel.shape[1])}, backend="
+                    f"{(qpos_width, qvel_width)}"
+                )
+            qpos = torch.from_numpy(np.ascontiguousarray(staged_qpos, dtype=np.float32))
+            qvel = torch.from_numpy(np.ascontiguousarray(staged_qvel, dtype=np.float32))
+            try:
+                set_state_t0 = time.perf_counter()
+                result = host_plan.apply_reset(rows, qpos, qvel, randomization=None)
+                self._commit_mocap_poses()
+                timing: dict[str, float] = {
+                    "dr_reset_set_state_ms": (time.perf_counter() - set_state_t0) * 1000.0
+                }
+                if isinstance(result, dict):
+                    backend_timing = result.get("timing")
+                    if isinstance(backend_timing, dict):
+                        timing.update(backend_timing)
+                self._last_set_state_timing_ms = timing
+                return cast(dict | None, result)
+            except (AttributeError, NotImplementedError) as exc:
+                terms = ", ".join(sorted(self._requesting_terms))
+                raise NotImplementedError(
+                    "EventManager reset-state capability "
+                    "'HostBridgeTransferPlan.apply_reset' is unavailable for term(s) "
+                    f"[{terms}] on backend '{self._backend.backend_type}': {exc}"
+                ) from exc
+        finally:
+            self._finish()
+
+    def _packed_reset_widths_match(self) -> bool:
+        try:
+            qpos_width, qvel_width = self._packed_reset_public_widths()
+        except (AttributeError, NotImplementedError):
+            return False
+        if not isinstance(qpos_width, (int, np.integer)) or not isinstance(
+            qvel_width, (int, np.integer)
+        ):
+            return False
+        assert self._default_qpos is not None
+        assert self._default_qvel is not None
+        return bool(qpos_width == self._default_qpos.size and qvel_width == self._default_qvel.size)
+
+    def _packed_reset_public_widths(self) -> tuple[int, int]:
+        qpos_width = getattr(self._backend, "nq", None)
+        qvel_width = getattr(self._backend, "nv", None)
+        if not isinstance(qpos_width, (int, np.integer)) or not isinstance(
+            qvel_width, (int, np.integer)
+        ):
+            raise NotImplementedError("packed reset requires public backend qpos/qvel widths")
+        return int(qpos_width), int(qvel_width)
 
     def _commit_mocap_poses(self) -> None:
         for name, mask in self._mocap_masks.items():

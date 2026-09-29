@@ -114,6 +114,13 @@ persistent packed backend plan: shapes and layouts are fixed on the cold path, t
 bytes are measurable, and selected-row payloads transfer once. Per-term, per-field, or per-Python-loop
 scattered H2D/D2H transfers are prohibited.
 
+Manager reads are scene-owned rather than term-owned. `EntityScene.compile_tensor_reads()` freezes
+the union of entity joint columns, explicit named sensors, and canonical tracked-body sensor names
+for one runtime device. The resulting phase plan publishes one packet per normal read phase and one
+selected-row packet after reset; terms only slice validated entity views from that packet. This is
+the implementation boundary for the invariant that a `HOST_BRIDGE` Manager read phase performs one
+packed H2D transfer.
+
 CPU-authoritative backends may explicitly choose a CPU Torch lifecycle on CPU-only platforms.
 CUDA-native backends fail closed without the required CUDA runtime/device, on cross-device tensors,
 or when a required capability is absent. macOS and ROCm must not silently degrade to NumPy or CPU
