@@ -81,7 +81,7 @@ COLLECTOR_PHASES = (
     "replay_ms",
     "bookkeeping_ms",
 )
-NP_ENV_STEP_TIMING_KEYS = (
+ENV_STEP_TIMING_KEYS = (
     "env_step_total_ms",
     "apply_action_ms",
     "step_core_ms",
@@ -132,8 +132,8 @@ NP_ENV_STEP_TIMING_KEYS = (
     "set_state_host_cache_refresh_ms",
     "set_state_internal_gap_ms",
 )
-NP_ENV_STEP_COUNT_KEYS = ("reset_done_count",)
-NP_ENV_STEP_SAMPLE_KEYS = (*NP_ENV_STEP_TIMING_KEYS, *NP_ENV_STEP_COUNT_KEYS)
+ENV_STEP_COUNT_KEYS = ("reset_done_count",)
+ENV_STEP_SAMPLE_KEYS = (*ENV_STEP_TIMING_KEYS, *ENV_STEP_COUNT_KEYS)
 NP_RANDOM_PROFILE_FUNCTIONS = (
     "uniform",
     "randint",
@@ -143,13 +143,13 @@ NP_RANDOM_PROFILE_FUNCTIONS = (
     "normal",
     "choice",
 )
-NP_ENV_STEP_TIMING_CSV_FIELDS = (
-    ("env_step_total_ms", "np_env_step_total_ms"),
-    ("apply_action_ms", "np_env_apply_action_ms"),
-    ("step_core_ms", "np_env_step_core_ms"),
-    ("update_state_ms", "np_env_update_state_ms"),
-    ("reset_done_ms", "np_env_reset_done_ms"),
-    ("env_step_internal_gap_ms", "np_env_internal_gap_ms"),
+ENV_STEP_TIMING_CSV_FIELDS = (
+    ("env_step_total_ms", "env_step_total_ms"),
+    ("apply_action_ms", "apply_action_ms"),
+    ("step_core_ms", "step_core_ms"),
+    ("update_state_ms", "update_state_ms"),
+    ("reset_done_ms", "reset_done_ms"),
+    ("env_step_internal_gap_ms", "env_step_internal_gap_ms"),
     ("reset_done_terminal_obs_ms", "reset_done_terminal_obs_ms"),
     ("reset_done_reset_call_ms", "reset_done_reset_call_ms"),
     ("reset_done_obs_scatter_ms", "reset_done_obs_scatter_ms"),
@@ -231,7 +231,7 @@ class CollectorResult:
     phase_ms_per_vector_step: dict[str, TimingStats]
     phase_pct: dict[str, float]
     notes: list[str]
-    # Fine-grained timings reported by NpEnv.step() inside env_step_ms.
+    # Fine-grained timings reported by `TorchEnv.step()` inside env_step_ms.
     env_step_timing_ms_per_vector_step: dict[str, TimingStats] = field(default_factory=dict)
     # Backend-internal physics time per vector step (sub-part of env_step_ms).
     # None when the backend does not report it (e.g. motrix).
@@ -589,7 +589,7 @@ def _run_active_window_case(
         "physics_ms": [],
         "env_step_overhead_ms": [],
     }
-    env_step_timing_samples: dict[str, list[float]] = {key: [] for key in NP_ENV_STEP_SAMPLE_KEYS}
+    env_step_timing_samples: dict[str, list[float]] = {key: [] for key in ENV_STEP_SAMPLE_KEYS}
     numpy_random_ms_samples: list[float] = []
     numpy_random_call_samples: list[float] = []
     random_profiler = _NumpyRandomProfiler() if profile_numpy_random else None
@@ -630,7 +630,7 @@ def _run_active_window_case(
             physics_ms = _optional_timing_ms(_timing, "backend_physics_ms")
             env_step_timing_values = {
                 key: _optional_timing_ms(_timing, key)
-                for key in NP_ENV_STEP_SAMPLE_KEYS
+                for key in ENV_STEP_SAMPLE_KEYS
                 if key != "env_step_internal_gap_ms"
             }
             internal_children = (
@@ -872,13 +872,13 @@ def _write_csv(path: Path, results: list[CollectorResult]) -> None:
         "physics_ms",
         "env_step_overhead_ms",
         "reset_done_count",
-        *(field_name for _, field_name in NP_ENV_STEP_TIMING_CSV_FIELDS),
+        *(field_name for _, field_name in ENV_STEP_TIMING_CSV_FIELDS),
         "env_step_pct",
         "replay_pct",
         "bookkeeping_pct",
         "physics_pct",
         "env_step_overhead_pct",
-        *(f"{field_name[:-3]}_pct" for _, field_name in NP_ENV_STEP_TIMING_CSV_FIELDS),
+        *(f"{field_name[:-3]}_pct" for _, field_name in ENV_STEP_TIMING_CSV_FIELDS),
         "cpu_util_pct",
     ]
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -926,7 +926,7 @@ def _write_csv(path: Path, results: list[CollectorResult]) -> None:
             row["reset_done_count"] = (
                 reset_done_count.mean_ms if reset_done_count is not None else ""
             )
-            for timing_key, field_name in NP_ENV_STEP_TIMING_CSV_FIELDS:
+            for timing_key, field_name in ENV_STEP_TIMING_CSV_FIELDS:
                 stat = result.env_step_timing_ms_per_vector_step.get(timing_key)
                 row[field_name] = stat.mean_ms if stat is not None else ""
             for key in COLLECTOR_PHASES:
@@ -945,7 +945,7 @@ def _write_csv(path: Path, results: list[CollectorResult]) -> None:
                 if result.env_step_overhead_ms_per_vector_step is not None and env_step_mean > 0.0
                 else ""
             )
-            for timing_key, field_name in NP_ENV_STEP_TIMING_CSV_FIELDS:
+            for timing_key, field_name in ENV_STEP_TIMING_CSV_FIELDS:
                 stat = result.env_step_timing_ms_per_vector_step.get(timing_key)
                 row[f"{field_name[:-3]}_pct"] = (
                     (stat.mean_ms / env_step_mean) * env_step_pct
@@ -1147,7 +1147,7 @@ def _format_ms_env_active_pct(ms: float, env_pct: float, active_pct: float) -> s
     return f"{ms:.3f} ({env_pct:.1f}%, {active_pct:.1f}%)"
 
 
-def _format_np_env_timing(result: CollectorResult, key: str) -> str:
+def _format_env_step_timing(result: CollectorResult, key: str) -> str:
     stat = result.env_step_timing_ms_per_vector_step.get(key)
     if stat is None:
         return "n/a"
@@ -1158,7 +1158,7 @@ def _format_np_env_timing(result: CollectorResult, key: str) -> str:
     )
 
 
-def _format_np_env_value(result: CollectorResult, key: str, *, digits: int = 1) -> str:
+def _format_env_step_value(result: CollectorResult, key: str, *, digits: int = 1) -> str:
     stat = result.env_step_timing_ms_per_vector_step.get(key)
     if stat is None:
         return "n/a"
@@ -1248,13 +1248,13 @@ def _format_reset_done_timing_table(results: list[CollectorResult]) -> str:
                 result.case.algo,
                 result.case.task,
                 result.case.runtime_sim_backend,
-                _format_np_env_value(result, "reset_done_count"),
-                _format_np_env_timing(result, "reset_done_ms"),
-                _format_np_env_timing(result, "reset_done_terminal_obs_ms"),
-                _format_np_env_timing(result, "reset_done_reset_call_ms"),
-                _format_np_env_timing(result, "reset_done_obs_scatter_ms"),
-                _format_np_env_timing(result, "reset_done_info_scatter_ms"),
-                _format_np_env_timing(result, "reset_done_internal_gap_ms"),
+                _format_env_step_value(result, "reset_done_count"),
+                _format_env_step_timing(result, "reset_done_ms"),
+                _format_env_step_timing(result, "reset_done_terminal_obs_ms"),
+                _format_env_step_timing(result, "reset_done_reset_call_ms"),
+                _format_env_step_timing(result, "reset_done_obs_scatter_ms"),
+                _format_env_step_timing(result, "reset_done_info_scatter_ms"),
+                _format_env_step_timing(result, "reset_done_internal_gap_ms"),
             )
         )
     return _format_table(headers, rows)
@@ -1285,15 +1285,15 @@ def _format_dr_reset_timing_table(results: list[CollectorResult]) -> str:
                 result.case.algo,
                 result.case.task,
                 result.case.runtime_sim_backend,
-                _format_np_env_timing(result, "dr_reset_total_ms"),
-                _format_np_env_timing(result, "dr_reset_plan_ms"),
-                _format_np_env_timing(result, "dr_reset_set_state_ms"),
-                _format_np_env_timing(result, "dr_reset_build_observation_ms"),
-                _format_np_env_timing(result, "dr_reset_obs_get_motion_ms"),
-                _format_np_env_timing(result, "dr_reset_observation_getters_ms"),
-                _format_np_env_timing(result, "dr_reset_obs_get_body_pose_ms"),
-                _format_np_env_timing(result, "dr_reset_observation_compute_obs_ms"),
-                _format_np_env_timing(result, "dr_reset_internal_gap_ms"),
+                _format_env_step_timing(result, "dr_reset_total_ms"),
+                _format_env_step_timing(result, "dr_reset_plan_ms"),
+                _format_env_step_timing(result, "dr_reset_set_state_ms"),
+                _format_env_step_timing(result, "dr_reset_build_observation_ms"),
+                _format_env_step_timing(result, "dr_reset_obs_get_motion_ms"),
+                _format_env_step_timing(result, "dr_reset_observation_getters_ms"),
+                _format_env_step_timing(result, "dr_reset_obs_get_body_pose_ms"),
+                _format_env_step_timing(result, "dr_reset_observation_compute_obs_ms"),
+                _format_env_step_timing(result, "dr_reset_internal_gap_ms"),
             )
         )
     return _format_table(headers, rows)
@@ -1357,7 +1357,7 @@ def _format_set_state_detail_table(results: list[CollectorResult]) -> str:
                 result.case.algo,
                 result.case.task,
                 result.case.runtime_sim_backend,
-                _format_np_env_timing(result, "dr_reset_set_state_ms"),
+                _format_env_step_timing(result, "dr_reset_set_state_ms"),
                 *(_format_set_state_sub_ms(result, key) for key, _ in _SET_STATE_MOTRIX_KEYS),
             )
         )
@@ -1383,7 +1383,7 @@ def _format_set_state_mujoco_table(results: list[CollectorResult]) -> str:
                 result.case.algo,
                 result.case.task,
                 result.case.runtime_sim_backend,
-                _format_np_env_timing(result, "dr_reset_set_state_ms"),
+                _format_env_step_timing(result, "dr_reset_set_state_ms"),
                 *(_format_set_state_sub_ms(result, key) for key, _ in _SET_STATE_MUJOCO_KEYS),
             )
         )
@@ -1409,20 +1409,20 @@ def _format_set_state_mjwarp_table(results: list[CollectorResult]) -> str:
                 result.case.algo,
                 result.case.task,
                 result.case.runtime_sim_backend,
-                _format_np_env_timing(result, "dr_reset_set_state_ms"),
+                _format_env_step_timing(result, "dr_reset_set_state_ms"),
                 *(_format_set_state_sub_ms(result, key) for key, _ in _SET_STATE_MJWARP_KEYS),
             )
         )
     return _format_table(headers, rows)
 
 
-def _format_np_env_step_timing_table(results: list[CollectorResult]) -> str:
+def _format_env_step_timing_table(results: list[CollectorResult]) -> str:
     headers = (
         "Algo",
         "Task",
         "Backend",
         "Env step ms (% env, % active)",
-        "NpEnv total ms (% env, % active)",
+        "Env total ms (% env, % active)",
         "Apply action ms (% env, % active)",
         "Backend step ms (% env, % active)",
         "Update state ms (% env, % active)",
@@ -1444,12 +1444,12 @@ def _format_np_env_step_timing_table(results: list[CollectorResult]) -> str:
                     100.0,
                     _phase_pct(result, "env_step_ms"),
                 ),
-                _format_np_env_timing(result, "env_step_total_ms"),
-                _format_np_env_timing(result, "apply_action_ms"),
-                _format_np_env_timing(result, "step_core_ms"),
-                _format_np_env_timing(result, "update_state_ms"),
-                _format_np_env_timing(result, "reset_done_ms"),
-                _format_np_env_timing(result, "env_step_internal_gap_ms"),
+                _format_env_step_timing(result, "env_step_total_ms"),
+                _format_env_step_timing(result, "apply_action_ms"),
+                _format_env_step_timing(result, "step_core_ms"),
+                _format_env_step_timing(result, "update_state_ms"),
+                _format_env_step_timing(result, "reset_done_ms"),
+                _format_env_step_timing(result, "env_step_internal_gap_ms"),
             )
         )
     return _format_table(headers, rows)
@@ -1514,7 +1514,7 @@ def _mean_phase_ms(result: CollectorResult, key: str) -> float | None:
     return stat.mean_ms if stat is not None else None
 
 
-def _mean_np_env_ms(result: CollectorResult, key: str) -> float | None:
+def _mean_env_step_ms(result: CollectorResult, key: str) -> float | None:
     stat = result.env_step_timing_ms_per_vector_step.get(key)
     return stat.mean_ms if stat is not None else None
 
@@ -1601,7 +1601,7 @@ def _print_result(result: CollectorResult) -> None:
             if stat is None:
                 continue
             print(
-                f"  {('np_env_' + key):<18} mean={stat.mean_ms:8.3f} ms  "
+                f"  {('env_step_' + key):<18} mean={stat.mean_ms:8.3f} ms  "
                 f"pct_env={_env_step_child_env_pct(result, stat.mean_ms):5.1f}% "
                 f"pct_active={_env_step_child_pct(result, stat.mean_ms):5.1f}%"
             )
@@ -1774,10 +1774,10 @@ def main() -> int:
         )
         print(_format_env_step_breakdown_table(results))
         print(
-            "\nNpEnv step timing (subparts reported by NpEnv.step; gap = external env_step_ms - listed subparts):"
+            "\nEnv step timing (subparts reported by TorchEnv.step; gap = external env_step_ms - listed subparts):"
         )
-        print(_format_np_env_step_timing_table(results))
-        print("\nReset done timing (subparts of NpEnv reset_done_ms):")
+        print(_format_env_step_timing_table(results))
+        print("\nReset done timing (subparts of TorchEnv reset_done_ms):")
         print(_format_reset_done_timing_table(results))
         print(
             "\nDR reset timing (subparts of reset call; reset obs getters currently read full batch):"
