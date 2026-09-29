@@ -44,8 +44,8 @@ class TorchEnvState:
     """Tensor-native vectorized environment transition.
 
     Terminal pre-reset observations are represented only by
-    ``final_observation``. Unlike the legacy NumPy runtime, this contract does
-    not duplicate them through ``info`` compatibility buffers.
+    ``final_observation``. This contract does not duplicate them through
+    ``info`` compatibility buffers.
     """
 
     obs: dict[str, torch.Tensor]

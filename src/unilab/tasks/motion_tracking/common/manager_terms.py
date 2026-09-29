@@ -486,7 +486,7 @@ class MotionCommand(CommandTerm):
 
         All row-wise metrics are written by one Numba kernel.  Passing an
         explicit all-row index buffer for normal steps lets the same kernel
-        serve partial-reset rows without retaining a NumPy runtime formula.
+        serve partial-reset rows without retaining a separate full-batch formula.
         """
         update_motion_metrics_kernel(
             rows,

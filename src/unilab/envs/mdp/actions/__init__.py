@@ -1,4 +1,4 @@
-"""Built-in action terms supported by the NumPy runtime."""
+"""Built-in action terms supported by the Manager-Based runtime."""
 
 from unilab.envs.mdp.actions.actions import JointEffortAction as JointEffortAction
 from unilab.envs.mdp.actions.actions import JointEffortActionCfg as JointEffortActionCfg

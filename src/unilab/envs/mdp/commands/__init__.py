@@ -1,4 +1,4 @@
-"""Built-in command terms supported by the NumPy runtime."""
+"""Built-in command terms supported by the Manager-Based runtime."""
 
 from unilab.envs.mdp.commands.pose_command import UniformPoseCommand as UniformPoseCommand
 from unilab.envs.mdp.commands.pose_command import UniformPoseCommandCfg as UniformPoseCommandCfg
