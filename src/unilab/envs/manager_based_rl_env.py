@@ -623,7 +623,10 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def update_state(self, state: TorchEnvState) -> TorchEnvState:
         # Physics stepping and reset/set_state lifecycles sit outside this private
-        # scope. In-phase mutations explicitly invalidate it below.
+        # scope, so values packed before ``step_tensor`` are stale here. Drop
+        # the action-phase packet first; in-phase mutations explicitly invalidate
+        # it below.
+        self.scene._invalidate_state_reads()
         with self.scene._scoped_state_reads():
             read_plan = self.scene._tensor_read_plan
             if read_plan is not None and not read_plan.ready:
@@ -702,6 +705,20 @@ class ManagerBasedRlEnv(TorchEnv):
         if read_plan is not None:
             read_plan.refresh()
 
+    def _reset_manager_state(self, rows: torch.Tensor) -> None:
+        """Re-run row-scoped manager reset after initial state allocation."""
+        ids = self._reset_rows_to_manager_boundary(rows)
+        for manager in (
+            self.observation_manager,
+            self.action_manager,
+            self.reward_manager,
+            self.metrics_manager,
+            self.curriculum_manager,
+            self.event_manager,
+            self.termination_manager,
+        ):
+            manager.reset(ids)
+
     def _compute_truncated(self, state: TorchEnvState) -> torch.Tensor:
         del state
         return torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
@@ -733,6 +750,7 @@ class ManagerBasedRlEnv(TorchEnv):
                     "ManagerBasedRlEnv requires a full reset before the first partial reset"
                 )
             state = self.init_state()
+            self._reset_manager_state(rows)
             return state.obs, {"log": state.info.get("log", {})}
 
         done_ids = ids[self.reset_buf[ids]]

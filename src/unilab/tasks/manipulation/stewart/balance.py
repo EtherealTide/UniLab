@@ -20,16 +20,14 @@ from unilab.managers import ActionTerm, ActionTermCfg, ManagerTermBase, ManagerT
 from unilab.tasks.motion_tracking.common.tensor_rotation import (
     quat_apply,
     quat_apply_inverse,
+    quat_conjugate,
     quat_from_euler_xyz,
+    quat_mul,
+    quat_roll_pitch,
+    quat_to_axis_angle,
 )
-from unilab.utils.geometry import np_roll_pitch_from_quat
 from unilab.utils.rotation import (
-    np_quat_apply_batched,
     np_quat_apply_inverse,
-    np_quat_conjugate_batched,
-    np_quat_from_euler_xyz,
-    np_quat_mul_batched,
-    np_quat_to_axis_angle,
 )
 
 if TYPE_CHECKING:
@@ -139,6 +137,15 @@ def _relative_ball_state(
     ball_pos = body_pos[:, ball_body_id]
     relative = np_quat_apply_inverse(top_quat, ball_pos - top_pos)
     return relative, top_quat, ball_pos
+
+
+def _runtime_tensor(values: torch.Tensor | np.ndarray, *, name: str) -> torch.Tensor:
+    """Return float32 Torch state for the task's Torch manager buffers."""
+    if isinstance(values, torch.Tensor):
+        if values.dtype != torch.float32:
+            raise TypeError(f"StewartBalanceState {name} must be float32 Torch values")
+        return values
+    return torch.tensor(np.asarray(values), dtype=torch.float32)
 
 
 @dataclass(kw_only=True)
@@ -425,6 +432,8 @@ class StewartObservation(ManagerTermBase):
                 f"got {type(action).__name__}"
             )
         self._action = action
+        self._top_name = _name(term, "top_body_name", cfg.params.get("top_body_name"))
+        self._ball_name = _name(term, "ball_body_name", cfg.params.get("ball_body_name"))
         self._tilt_limit_deg = _real(
             term,
             "target_rotation_limit_deg",
@@ -441,21 +450,24 @@ class StewartObservation(ManagerTermBase):
         )
         self._step_dt = _real(term, "step_dt", env.step_dt, minimum=0.0, strict_minimum=True)
 
-        dtype = get_global_dtype()
-        self._relative = np.zeros((env.num_envs, 3), dtype=dtype)
-        self._previous_relative = np.zeros_like(self._relative)
-        self._filtered_relative_velocity = np.zeros_like(self._relative)
-        self._top_quat = np.zeros((env.num_envs, 4), dtype=dtype)
+        self._device = torch.device(getattr(env, "device", "cpu"))
+        self._relative = torch.zeros((env.num_envs, 3), dtype=torch.float32, device=self._device)
+        self._previous_relative = torch.zeros_like(self._relative)
+        self._filtered_relative_velocity = torch.zeros_like(self._relative)
+        self._top_quat = torch.zeros((env.num_envs, 4), dtype=torch.float32, device=self._device)
         self._top_quat[:, 0] = 1.0
-        self._previous_top_quat = self._top_quat.copy()
-        self._filtered_top_angular_velocity = np.zeros_like(self._relative)
-        self._local_top_angular_velocity = np.zeros_like(self._relative)
-        self._ball_pos = np.zeros_like(self._relative)
-        self._relative_xy = np.zeros(env.num_envs, dtype=dtype)
-        self._velocity_xy = np.zeros(env.num_envs, dtype=dtype)
-        self._obs = np.zeros((env.num_envs, 15), dtype=dtype)
+        self._previous_top_quat = self._top_quat.clone()
+        self._filtered_top_angular_velocity = torch.zeros_like(self._relative)
+        self._local_top_angular_velocity = torch.zeros_like(self._relative)
+        self._ball_pos = torch.zeros_like(self._relative)
+        self._relative_xy = torch.zeros(env.num_envs, dtype=torch.float32, device=self._device)
+        self._velocity_xy = torch.zeros(env.num_envs, dtype=torch.float32, device=self._device)
+        self._obs = torch.zeros((env.num_envs, 15), dtype=torch.float32, device=self._device)
         self._last_counter = self._counter(env)
-        self.reset(None)
+
+    @property
+    def tensor_body_names(self) -> tuple[str, ...]:
+        return (self._top_name, self._ball_name)
 
     @staticmethod
     def _counter(env: _StewartEnv) -> int:
@@ -467,23 +479,23 @@ class StewartObservation(ManagerTermBase):
         return int(counter)
 
     @property
-    def relative_xy(self) -> np.ndarray:
+    def relative_xy(self) -> torch.Tensor:
         return self._relative_xy
 
     @property
-    def velocity_xy(self) -> np.ndarray:
+    def velocity_xy(self) -> torch.Tensor:
         return self._velocity_xy
 
     @property
-    def ball_pos(self) -> np.ndarray:
+    def ball_pos(self) -> torch.Tensor:
         return self._ball_pos
 
     def _write_observation_rows(self, ids: np.ndarray, *, reset_actions: bool) -> None:
-        roll, pitch = np_roll_pitch_from_quat(self._top_quat[ids])
+        roll, pitch = quat_roll_pitch(self._top_quat[ids])
         self._obs[ids, 0:3] = self._relative[ids]
         self._obs[ids, 3:6] = self._filtered_relative_velocity[ids]
-        self._obs[ids, 6] = np.rad2deg(roll) / self._tilt_limit_deg
-        self._obs[ids, 7] = np.rad2deg(pitch) / self._tilt_limit_deg
+        self._obs[ids, 6] = torch.rad2deg(roll) / self._tilt_limit_deg
+        self._obs[ids, 7] = torch.rad2deg(pitch) / self._tilt_limit_deg
         self._obs[ids, 8:11] = self._local_top_angular_velocity[ids]
         if reset_actions:
             self._obs[ids, 11:15] = 0.0
@@ -493,11 +505,13 @@ class StewartObservation(ManagerTermBase):
 
     def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
         ids = _env_ids(self._env, env_ids)
-        relative, top_quat, ball_pos = _relative_ball_state(
-            self._entity,
-            ball_body_id=self._ball_body_id,
-            top_body_id=self._top_body_id,
-        )
+        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        if read_plan is not None and not read_plan.ready:
+            # Initial manager construction runs before the first reset-state
+            # transaction publishes a packet. The Manager-owned reset below is
+            # the authoritative row-scoped initialization.
+            return
+        relative, top_quat, ball_pos = self._relative_ball_state()
         self._relative[ids] = relative[ids]
         self._previous_relative[ids] = relative[ids]
         self._filtered_relative_velocity[ids] = 0.0
@@ -506,7 +520,7 @@ class StewartObservation(ManagerTermBase):
         self._filtered_top_angular_velocity[ids] = 0.0
         self._local_top_angular_velocity[ids] = 0.0
         self._ball_pos[ids] = ball_pos[ids]
-        self._relative_xy[ids] = np.linalg.norm(relative[ids, :2], axis=-1)
+        self._relative_xy[ids] = torch.linalg.vector_norm(relative[ids, :2], dim=-1)
         self._velocity_xy[ids] = 0.0
         self._write_observation_rows(ids, reset_actions=True)
 
@@ -519,25 +533,19 @@ class StewartObservation(ManagerTermBase):
                 "StewartObservation missed a control-step update: "
                 f"last={self._last_counter}, current={counter}"
             )
-        relative, top_quat, ball_pos = _relative_ball_state(
-            self._entity,
-            ball_body_id=self._ball_body_id,
-            top_body_id=self._top_body_id,
-        )
+        relative, top_quat, ball_pos = self._relative_ball_state()
         relative_velocity = (relative - self._previous_relative) / self._step_dt
         self._filtered_relative_velocity[:] = (
             self._vel_smooth * relative_velocity
             + (1.0 - self._vel_smooth) * self._filtered_relative_velocity
         )
-        quaternion_delta = np_quat_mul_batched(
-            top_quat, np_quat_conjugate_batched(self._previous_top_quat)
-        )
-        top_angular_velocity = np_quat_to_axis_angle(quaternion_delta) / self._step_dt
+        quaternion_delta = quat_mul(top_quat, quat_conjugate(self._previous_top_quat))
+        top_angular_velocity = quat_to_axis_angle(quaternion_delta) / self._step_dt
         self._filtered_top_angular_velocity[:] = (
             self._vel_smooth * top_angular_velocity
             + (1.0 - self._vel_smooth) * self._filtered_top_angular_velocity
         )
-        self._local_top_angular_velocity[:] = np_quat_apply_inverse(
+        self._local_top_angular_velocity[:] = quat_apply_inverse(
             top_quat, self._filtered_top_angular_velocity
         )
         self._relative[:] = relative
@@ -545,17 +553,35 @@ class StewartObservation(ManagerTermBase):
         self._top_quat[:] = top_quat
         self._previous_top_quat[:] = top_quat
         self._ball_pos[:] = ball_pos
-        self._relative_xy[:] = np.linalg.norm(relative[:, :2], axis=-1)
-        self._velocity_xy[:] = np.linalg.norm(self._filtered_relative_velocity[:, :2], axis=-1)
+        self._relative_xy[:] = torch.linalg.vector_norm(relative[:, :2], dim=-1)
+        self._velocity_xy[:] = torch.linalg.vector_norm(
+            self._filtered_relative_velocity[:, :2], dim=-1
+        )
         all_ids = np.arange(env.num_envs, dtype=np.int32)
         self._write_observation_rows(all_ids, reset_actions=False)
         self._last_counter = counter
 
-    def snapshot(self, env: _StewartEnv) -> np.ndarray:
+    def _relative_ball_state(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        if read_plan is None:
+            raise NotImplementedError(
+                "StewartObservation requires a scene-owned packed tensor read plan; "
+                "compile tensor body reads with the Manager-Based Torch runtime"
+            )
+        state = read_plan.body_tensor_view(self._entity, (self._top_name, self._ball_name))
+        positions = dict(zip(state.body_names, state.pos_w.unbind(dim=1), strict=True))
+        orientations = dict(zip(state.body_names, state.quat_w.unbind(dim=1), strict=True))
+        top_pos = positions[self._top_name]
+        top_quat = orientations[self._top_name]
+        ball_pos = positions[self._ball_name]
+        relative = quat_apply_inverse(top_quat, ball_pos - top_pos)
+        return relative, top_quat, ball_pos
+
+    def snapshot(self, env: _StewartEnv) -> torch.Tensor:
         self._advance(env)
         return self._obs
 
-    def __call__(self, env: _StewartEnv, **params: Any) -> np.ndarray:
+    def __call__(self, env: _StewartEnv, **params: Any) -> torch.Tensor:
         del params
         return self.snapshot(env)
 
@@ -636,15 +662,17 @@ class StewartBalanceState(ManagerTermBase):
             raise ValueError(f"{term} still_steps_needed must be positive")
         self._still_steps_needed = int(steps)
 
-        dtype = get_global_dtype()
-        self.fallen = np.zeros(env.num_envs, dtype=np.bool_)
-        self.success = np.zeros(env.num_envs, dtype=np.bool_)
-        self.center_score = np.zeros(env.num_envs, dtype=dtype)
-        self.progress = np.zeros(env.num_envs, dtype=dtype)
-        self.still_steps = np.zeros(env.num_envs, dtype=np.int32)
-        self.still_window_active = np.zeros(env.num_envs, dtype=np.bool_)
-        self._previous_zero_velocity_xy = np.zeros(env.num_envs, dtype=dtype)
-        self._done = np.zeros(env.num_envs, dtype=np.bool_)
+        self._device = torch.device(getattr(env, "device", "cpu"))
+        self.fallen = torch.zeros(env.num_envs, dtype=torch.bool, device=self._device)
+        self.success = torch.zeros(env.num_envs, dtype=torch.bool, device=self._device)
+        self.center_score = torch.zeros(env.num_envs, dtype=torch.float32, device=self._device)
+        self.progress = torch.zeros(env.num_envs, dtype=torch.float32, device=self._device)
+        self.still_steps = torch.zeros(env.num_envs, dtype=torch.int32, device=self._device)
+        self.still_window_active = torch.zeros(env.num_envs, dtype=torch.bool, device=self._device)
+        self._previous_zero_velocity_xy = torch.zeros(
+            env.num_envs, dtype=torch.float32, device=self._device
+        )
+        self._done = torch.zeros(env.num_envs, dtype=torch.bool, device=self._device)
         self._last_counter = int(env.common_step_counter)
 
     @property
@@ -655,10 +683,8 @@ class StewartBalanceState(ManagerTermBase):
         ids = _env_ids(self._env, env_ids)
         self.fallen[ids] = False
         self.success[ids] = False
-        self.center_score[ids] = np.clip(
-            1.0 - self._observation.relative_xy[ids] / self._fall_radius,
-            0.0,
-            1.0,
+        self.center_score[ids] = torch.clamp(
+            1.0 - self._observation.relative_xy[ids] / self._fall_radius, min=0.0, max=1.0
         )
         self.progress[ids] = 0.0
         self.still_steps[ids] = 0
@@ -668,24 +694,27 @@ class StewartBalanceState(ManagerTermBase):
 
     def _update(
         self,
-        relative_xy: np.ndarray,
-        velocity_xy: np.ndarray,
-        ball_pos: np.ndarray,
+        relative_xy: torch.Tensor | np.ndarray,
+        velocity_xy: torch.Tensor | np.ndarray,
+        ball_pos: torch.Tensor | np.ndarray,
     ) -> None:
+        relative_xy = _runtime_tensor(relative_xy, name="relative_xy")
+        velocity_xy = _runtime_tensor(velocity_xy, name="velocity_xy")
+        ball_pos = _runtime_tensor(ball_pos, name="ball_pos")
         fall_z = self._top_center_z - np.sin(np.deg2rad(30.0)) * self._platform_radius
         self.fallen[:] = (relative_xy > self._fall_radius) | (ball_pos[:, 2] < fall_z)
-        self.center_score[:] = np.clip(
+        self.center_score[:] = torch.clip(
             1.0 - relative_xy / self._fall_radius,
             0.0,
             1.0,
         )
 
         zero_event = velocity_xy <= self._zero_vel_thresh
-        improvement = np.maximum(self._previous_zero_velocity_xy - relative_xy, 0.0)
-        self.progress[:] = np.where(
+        improvement = torch.clamp(self._previous_zero_velocity_xy - relative_xy, min=0.0)
+        self.progress[:] = torch.where(
             zero_event & (relative_xy < self._previous_zero_velocity_xy),
-            np.clip(improvement / self._platform_radius, 0.0, 1.0),
-            0.0,
+            torch.clip(improvement / self._platform_radius, 0.0, 1.0),
+            torch.zeros_like(improvement),
         )
         self._previous_zero_velocity_xy[zero_event] = relative_xy[zero_event]
 
@@ -699,16 +728,18 @@ class StewartBalanceState(ManagerTermBase):
             & (relative_xy <= self._still_xy)
             & (velocity_xy <= self._still_vel)
         )
-        self.still_steps[:] = np.where(
+        self.still_steps[:] = torch.where(
             keep,
             self.still_steps + 1,
-            np.where(enter, 1, 0),
+            torch.where(
+                enter, torch.ones_like(self.still_steps), torch.zeros_like(self.still_steps)
+            ),
         )
         self.still_window_active[:] = keep | enter
         self.success[:] = self.still_steps >= self._still_steps_needed
         self._done[:] = self.fallen | self.success
 
-    def __call__(self, env: _StewartEnv, **params: Any) -> np.ndarray:
+    def __call__(self, env: _StewartEnv, **params: Any) -> torch.Tensor:
         del params
         counter = int(env.common_step_counter)
         if counter == self._last_counter:
@@ -747,22 +778,40 @@ def _balance_state(env: _StewartEnv, state_term_name: str) -> StewartBalanceStat
 
 def center_reward(env: _StewartEnv, state_term_name: str) -> np.ndarray:
     state = _balance_state(env, state_term_name)
-    return np.asarray(np.where(state.fallen, 0.0, state.center_score), dtype=get_global_dtype())
+    return np.asarray(
+        torch.where(
+            state.fallen,
+            torch.zeros_like(state.center_score),
+            state.center_score,
+        )
+        .cpu()
+        .numpy(),
+        dtype=get_global_dtype(),
+    )
 
 
 def progress_reward(env: _StewartEnv, state_term_name: str) -> np.ndarray:
     state = _balance_state(env, state_term_name)
-    return np.asarray(np.where(state.fallen, 0.0, state.progress), dtype=get_global_dtype())
+    return np.asarray(
+        torch.where(
+            state.fallen,
+            torch.zeros_like(state.progress),
+            state.progress,
+        )
+        .cpu()
+        .numpy(),
+        dtype=get_global_dtype(),
+    )
 
 
 def still_reward(env: _StewartEnv, state_term_name: str) -> np.ndarray:
     state = _balance_state(env, state_term_name)
-    return np.asarray(state.success & ~state.fallen, dtype=get_global_dtype())
+    return np.asarray((state.success & ~state.fallen).cpu().numpy(), dtype=get_global_dtype())
 
 
 def fall_reward(env: _StewartEnv, state_term_name: str) -> np.ndarray:
     state = _balance_state(env, state_term_name)
-    return np.asarray(state.fallen, dtype=get_global_dtype())
+    return np.asarray(state.fallen.cpu().numpy(), dtype=get_global_dtype())
 
 
 class StewartBallReset(ManagerTermBase):

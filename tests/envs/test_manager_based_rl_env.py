@@ -1530,19 +1530,19 @@ def test_scene_read_plan_refreshes_once_per_phase_and_after_mutations() -> None:
         assert obs["obs"].shape == (2, 2)
 
         state = env.step(torch.zeros((2, 1), dtype=torch.float32))
-        # The action phase packs all body reads once. NumPy legacy observation
-        # terms do not request the scene plan, and update_state reuses the same
-        # ready packet when no mutation invalidates it.
-        assert backend.full_reads == 1
+        # The action phase packs body reads once, then ``step_tensor`` mutates
+        # backend state. update_state drops that stale packet and republishes
+        # one post-physics packet shared by all Manager terms.
+        assert backend.full_reads == 2
         assert state.obs["obs"].shape == (2, 2)
 
         cfg_events = env.cfg.events
         assert isinstance(cfg_events, dict)
         cfg_events["mutate"] = EventTermCfg(func=_mutate_backend_tensor_state, mode="step")
         state = env.step(torch.zeros((2, 1), dtype=torch.float32))
-        # A runtime event invalidates the action packet, then the bounded
-        # mutation refresh republishes it before the legacy read phase.
-        assert backend.full_reads == 2
+        # Each control step owns two phases: pre-action and post-physics. The
+        # bounded mutation adds one refresh before the legacy read phase.
+        assert backend.full_reads == 4
         assert state.obs["obs"].shape == (2, 2)
 
         plan.close()

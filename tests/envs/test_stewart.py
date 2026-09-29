@@ -295,15 +295,11 @@ def test_stewart_action_smoothing_and_center_authority_match_legacy_equations() 
         torch.testing.assert_close(
             action.executed_action, torch.full_like(action.executed_action, 0.6), atol=1e-6, rtol=0
         )
-        ratio = np.clip(observation.relative_xy / 0.25, 0.0, 1.0)
+        ratio = torch.clamp(observation.relative_xy / 0.25, 0.0, 1.0)
         expected_gain = 0.15 + 0.85 * ratio
         torch.testing.assert_close(
             action.target_tilt_deg,
-            torch.as_tensor(
-                np.broadcast_to(0.6 * expected_gain[:, None] * 6.0, (2, 2)).copy(),
-                dtype=torch.float32,
-                device=action.target_tilt_deg.device,
-            ),
+            torch.broadcast_to(0.6 * expected_gain[:, None] * 6.0, (2, 2)).contiguous(),
             atol=1e-6,
             rtol=0,
         )
