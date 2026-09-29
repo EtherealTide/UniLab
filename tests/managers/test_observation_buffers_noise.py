@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import torch
 
 from unilab.managers import ObservationGroupCfg, ObservationManager, ObservationTermCfg
 from unilab.managers._buffers import CircularBuffer, DelayBuffer
@@ -185,15 +186,16 @@ def test_concatenated_result_owns_each_result_and_protects_term_buffers(
     )
 
     first = manager.compute(update_history=True)["policy"]
-    assert isinstance(first, np.ndarray)
-    first_address = first.ctypes.data
+    assert isinstance(first, torch.Tensor)
+    assert first.dtype == torch.float32
+    first_address = first.data_ptr()
     expected_first = np.concatenate((source.copy(), np.ones((fake_env.num_envs, 1))), axis=1)
     np.testing.assert_array_equal(first, expected_first)
 
     fake_env.obs += 100.0
     second = manager.compute(update_history=True)["policy"]
-    assert isinstance(second, np.ndarray)
-    assert second.ctypes.data != first_address
+    assert isinstance(second, torch.Tensor)
+    assert second.data_ptr() != first_address
     np.testing.assert_array_equal(first, expected_first)
     np.testing.assert_array_equal(second[:, :2], fake_env.obs)
     assert not np.shares_memory(second, fake_env.obs)
@@ -216,8 +218,8 @@ def test_concatenated_nan_sanitize_does_not_mutate_term_owned_input(
     )
 
     result = manager.compute(update_history=True)["policy"]
-    assert isinstance(result, np.ndarray)
-    assert np.isfinite(result).all()
+    assert isinstance(result, torch.Tensor)
+    assert torch.isfinite(result).all()
     assert np.isnan(source[0, 0])
 
 
@@ -312,7 +314,7 @@ def test_observation_finite_warn_sanitizes_and_disabled_preserves(
         fake_env,
     )
     warned = warn.compute()["policy"]
-    assert np.isfinite(warned).all()
+    assert torch.isfinite(warned).all()
     warning = capsys.readouterr().out
     assert "policy/bad" in warning
     assert "envs: [1]" in warning
@@ -325,7 +327,7 @@ def test_observation_finite_warn_sanitizes_and_disabled_preserves(
         },
         fake_env,
     )
-    assert np.isnan(disabled.compute()["policy"][1, 0])
+    assert torch.isnan(disabled.compute()["policy"][1, 0])
 
 
 def test_observation_explicit_sanitize_and_shape_error(fake_env: FakeEnv) -> None:
@@ -389,8 +391,8 @@ def test_identical_terms_share_raw_compute_across_groups() -> None:
     assert calls["n"] == 1
     np.testing.assert_array_equal(out["critic"], env.obs * 2.0)
     noise = out["policy"] - out["critic"]
-    assert np.abs(noise).max() <= 0.1 + 1e-6
-    assert np.abs(noise).max() > 0.0
+    assert torch.abs(noise).max() <= 0.1 + 1e-6
+    assert torch.abs(noise).max() > 0.0
 
     # The cache is per compute() call, not across calls.
     manager.compute(update_history=True)

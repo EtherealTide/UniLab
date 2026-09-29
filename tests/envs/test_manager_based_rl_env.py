@@ -1130,6 +1130,8 @@ def test_torch_env_owns_substeps_autoreset_and_final_observation() -> None:
     assert env.action_input_types and env.action_input_types[0] is np.ndarray
     assert isinstance(env.action_manager.action, torch.Tensor)
     assert env.action_manager.action.dtype == torch.float32
+    assert all(isinstance(value, torch.Tensor) for value in env.obs_buf.values())
+    assert all(value.device == env.device for value in env.obs_buf.values())
     assert backend.tensor_controls[0].dtype == torch.float32
     assert backend.tensor_controls[0].device == env.device
     assert backend.pre_step_control is None

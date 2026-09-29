@@ -235,7 +235,7 @@ def test_scene_entity_selector_is_resolved_once_by_observation_manager() -> None
     )
 
     result = manager.compute()["policy"]
-    assert isinstance(result, np.ndarray)
+    assert isinstance(result, torch.Tensor)
     assert result.shape == (2, 7)
     np.testing.assert_allclose(result[:, :2], backend.dof_pos[:, [2, 0]] - [0.3, 0.1])
     np.testing.assert_array_equal(result[:, 2:4], backend.dof_vel[:, [2, 0]])
@@ -274,8 +274,8 @@ def test_named_sensor_terms_bind_once_and_only_read_cached_views() -> None:
 
     first = manager.compute_group("policy")
     second = manager.compute_group("policy")
-    assert isinstance(first, np.ndarray)
-    assert isinstance(second, np.ndarray)
+    assert isinstance(first, torch.Tensor)
+    assert isinstance(second, torch.Tensor)
     expected = np.concatenate(
         [backend.sensor_values["gyro"], -backend.sensor_values["upvector"]], axis=1
     )
@@ -434,11 +434,11 @@ def _imu_misalignment_manager(
     )
 
 
-def _rotation_angle_rad(raw: np.ndarray, rotated: np.ndarray) -> np.ndarray:
-    cos = np.sum(raw * rotated, axis=-1) / (
-        np.linalg.norm(raw, axis=-1) * np.linalg.norm(rotated, axis=-1)
+def _rotation_angle_rad(raw: torch.Tensor, rotated: torch.Tensor) -> torch.Tensor:
+    cos = torch.sum(raw * rotated, dim=-1) / (
+        torch.linalg.norm(raw, dim=-1) * torch.linalg.norm(rotated, dim=-1)
     )
-    return np.arccos(np.clip(cos, -1.0, 1.0))
+    return torch.arccos(torch.clamp(cos, -1.0, 1.0))
 
 
 def test_imu_misaligned_terms_share_one_per_env_constant_quaternion() -> None:
@@ -449,8 +449,8 @@ def test_imu_misaligned_terms_share_one_per_env_constant_quaternion() -> None:
     obs = manager.compute()
     policy = obs["policy"]
     critic = obs["critic"]
-    assert isinstance(policy, np.ndarray)
-    assert isinstance(critic, np.ndarray)
+    assert isinstance(policy, torch.Tensor)
+    assert isinstance(critic, torch.Tensor)
     gyro_raw, gravity_raw = critic[:, :3], critic[:, 3:]
     gyro_rot, gravity_rot = policy[:, :3], policy[:, 3:]
 
@@ -466,8 +466,8 @@ def test_imu_misaligned_terms_share_one_per_env_constant_quaternion() -> None:
     # ...and the gyro/gravity inner product, proving both actor terms were
     # rotated by the SAME per-env quaternion.
     np.testing.assert_allclose(
-        np.sum(gyro_rot * gravity_rot, axis=-1),
-        np.sum(gyro_raw * gravity_raw, axis=-1),
+        torch.sum(gyro_rot * gravity_rot, dim=-1),
+        torch.sum(gyro_raw * gravity_raw, dim=-1),
         atol=1e-6,
     )
 
@@ -488,7 +488,7 @@ def test_imu_misalignment_is_constant_across_calls_and_episode_resets() -> None:
     manager.reset(np.arange(env.num_envs))
     after_reset = manager.compute_group("policy")
 
-    assert isinstance(first, np.ndarray)
+    assert isinstance(first, torch.Tensor)
     np.testing.assert_array_equal(first, second)
     np.testing.assert_array_equal(first, after_reset)
 
@@ -508,7 +508,7 @@ def test_imu_misalignment_zero_angle_is_identity() -> None:
 
     policy = _imu_misalignment_manager(env, max_angle_deg=0.0).compute_group("policy")
 
-    assert isinstance(policy, np.ndarray)
+    assert isinstance(policy, torch.Tensor)
     np.testing.assert_array_equal(policy[:, :3], backend.body_ang_vel_b[:, 0])
     np.testing.assert_allclose(policy[:, 3:], [[0.0, 0.0, -1.0], [0.0, -1.0, 0.0]], atol=1e-6)
 

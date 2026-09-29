@@ -7,9 +7,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Sequence
+from typing import TYPE_CHECKING, Literal, Sequence, cast
 
 import numpy as np
+import torch
 from prettytable import PrettyTable
 
 from unilab.base.config_overrides import (
@@ -136,6 +137,7 @@ class ObservationManager(ManagerBase):
     def __init__(self, cfg: dict[str, ObservationGroupCfg | None], env: ManagerBasedRlEnv):
         self.cfg = deepcopy(cfg)
         super().__init__(env=env)
+        self._device = getattr(env, "device", torch.device("cpu"))
 
         self._group_obs_dim: dict[str, tuple[int, ...] | list[tuple[int, ...]]] = dict()
 
@@ -156,7 +158,7 @@ class ObservationManager(ManagerBase):
             else:
                 self._group_obs_dim[group_name] = group_term_dims
 
-        self._obs_buffer: dict[str, np.ndarray | dict[str, np.ndarray]] | None = None
+        self._obs_buffer: dict[str, torch.Tensor | dict[str, torch.Tensor]] | None = None
 
     def __str__(self) -> str:
         msg = f"<ObservationManager> contains {len(self._group_obs_term_names)} groups.\n"
@@ -192,7 +194,7 @@ class ObservationManager(ManagerBase):
         if self._obs_buffer is None:
             self.compute()
         assert self._obs_buffer is not None
-        obs_buffer: dict[str, np.ndarray | dict[str, np.ndarray]] = self._obs_buffer
+        obs_buffer: dict[str, torch.Tensor | dict[str, torch.Tensor]] = self._obs_buffer
 
         for group_name, _ in self.group_obs_dim.items():
             if not self.group_obs_concatenate[group_name]:
@@ -204,7 +206,7 @@ class ObservationManager(ManagerBase):
 
             idx = 0
             data = obs_buffer[group_name]
-            assert isinstance(data, np.ndarray)
+            assert isinstance(data, torch.Tensor)
             for name, shape in zip(
                 self._group_obs_term_names[group_name],
                 self._group_obs_term_dim[group_name],
@@ -341,7 +343,7 @@ class ObservationManager(ManagerBase):
         self,
         update_history: bool = False,
         env_ids: np.ndarray | None = None,
-    ) -> dict[str, np.ndarray | dict[str, np.ndarray]]:
+    ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
         """Compute observations for all groups.
 
         With env_ids=None (the per-step path), history and delay buffers advance
@@ -365,7 +367,7 @@ class ObservationManager(ManagerBase):
         if not update_history and self._obs_buffer is not None:
             return self._obs_buffer
 
-        obs_buffer: dict[str, np.ndarray | dict[str, np.ndarray]] = dict()
+        obs_buffer: dict[str, torch.Tensor | dict[str, torch.Tensor]] = dict()
         # Cross-group sharing of identical term computations (issue #1351):
         # within one compute() call, terms with the same func and params yield
         # the same raw output (the per-term pipeline never mutates func outputs
@@ -386,7 +388,7 @@ class ObservationManager(ManagerBase):
         env_ids: np.ndarray | None = None,
         *,
         share_cache: dict[tuple, np.ndarray] | None = None,
-    ) -> np.ndarray | dict[str, np.ndarray]:
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
         group_cfg = self.cfg[group_name]
         if group_cfg is None:
             raise KeyError(f"Observation group '{group_name}' is disabled.")
@@ -579,7 +581,19 @@ class ObservationManager(ManagerBase):
             else:
                 result = result[env_ids]
 
-        return result
+        return self._observations_to_tensor_boundary(result)
+
+    def _observations_to_tensor_boundary(
+        self, values: np.ndarray | dict[str, np.ndarray]
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
+        """Publish completed NumPy observation pipelines to the public Torch carrier."""
+        if isinstance(values, dict):
+            mapped = {
+                name: self._observations_to_tensor_boundary(value) for name, value in values.items()
+            }
+            return cast("torch.Tensor | dict[str, torch.Tensor]", mapped)
+        host = np.array(values, order="C", copy=True)
+        return torch.from_numpy(host).to(device=self._device, dtype=torch.float32)
 
     def _prepare_terms(self) -> None:
         self._group_obs_term_names: dict[str, list[str]] = dict()

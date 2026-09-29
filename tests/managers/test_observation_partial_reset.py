@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import torch
 
 from unilab.managers import ObservationGroupCfg, ObservationManager, ObservationTermCfg
 from unilab.managers._noise import UniformNoiseCfg
@@ -172,4 +173,5 @@ def test_partial_reset_nan_on_untouched_row_is_not_rechecked() -> None:
     # already checked by the per-step compute of their control step.
     rows = manager.compute(update_history=True, env_ids=np.array([0, 2], dtype=np.int32))
     assert rows["policy"].shape == (2, env.obs.shape[1])
-    assert np.isfinite(rows["policy"]).all()
+    assert isinstance(rows["policy"], torch.Tensor)
+    assert torch.isfinite(rows["policy"]).all()
