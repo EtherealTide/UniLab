@@ -9,9 +9,17 @@ from types import SimpleNamespace
 import gymnasium as gym
 import numpy as np
 import pytest
+import torch
+from unisim.backend.base import (
+    SimBackend,
+    TensorDataPlane,
+    TensorExecution,
+    TensorLifecycleCapabilities,
+)
 
 import unilab.base.registry as registry_mod
-from unilab.base.base import ABEnv, EnvCfg
+from unilab.base.base import EnvCfg
+from unilab.base.torch_env import TorchEnv
 
 # ---------------------------------------------------------------------------
 # Helpers: local env stubs registered only for these tests
@@ -31,10 +39,24 @@ class _TestCfgB(EnvCfg):
     pass
 
 
-class _TestEnvA(ABEnv):
+class _TestEnvA(TorchEnv):
     def __init__(self, cfg, num_envs=1, backend_type="mujoco"):
-        self._cfg = cfg
-        self._num_envs = num_envs
+        from unittest.mock import MagicMock
+
+        backend = MagicMock(spec=SimBackend)
+        backend.tensor_execution.return_value = TensorExecution.HOST_BRIDGE
+        backend.get_tensor_capabilities.return_value = TensorLifecycleCapabilities(
+            execution=TensorExecution.HOST_BRIDGE,
+            state_fields=frozenset({"qpos", "qvel"}),
+            stepping=True,
+            selected_reset=True,
+            packed_host_bridge=True,
+            data_plane=TensorDataPlane.HOST_BRIDGE,
+            stream_event_ownership="registry-test",
+            torch_devices=("cpu",),
+        )
+        backend.step_tensor.return_value = None
+        super().__init__(cfg, backend, num_envs, device="cpu")
 
     @property
     def num_envs(self):
@@ -63,8 +85,21 @@ class _TestEnvA(ABEnv):
     def init_state(self):
         return None
 
-    def step(self, actions):
-        return None
+    def apply_action(self, actions, state):
+        return actions
+
+    def update_state(self, state):
+        return state
+
+    def reset(self, env_indices=None):
+        rows = self._normalize_reset_indices(env_indices)
+        return (
+            {
+                name: torch.zeros((rows.numel(), dim), device=self.device)
+                for name, dim in self.obs_groups_spec.items()
+            },
+            {},
+        )
 
     def close(self):
         pass
@@ -155,7 +190,7 @@ def test_env_decorator_registers_plain_factory_and_returns_it_unchanged():
     _name = "_TestDecoratorEnvFactory"
     registry_mod.register_env_config(_name, _TestCfgA)
 
-    def make_env(cfg: EnvCfg, num_envs: int = 1, backend_type: str = "mujoco") -> ABEnv:
+    def make_env(cfg: EnvCfg, num_envs: int = 1, backend_type: str = "mujoco") -> TorchEnv:
         return _TestEnvA(cfg, num_envs=num_envs, backend_type=backend_type)
 
     registered = registry_mod.env(_name, "mujoco")(make_env)
@@ -275,7 +310,7 @@ def test_make_calls_plain_factory_with_cfg_num_envs_and_backend():
     _name = "_TestCallableEnvFactory"
     received: dict[str, object] = {}
 
-    def make_env(cfg: EnvCfg, num_envs: int = 1, backend_type: str = "mujoco") -> ABEnv:
+    def make_env(cfg: EnvCfg, num_envs: int = 1, backend_type: str = "mujoco") -> TorchEnv:
         received.update(cfg=cfg, num_envs=num_envs, backend_type=backend_type)
         return _TestEnvA(cfg, num_envs=num_envs, backend_type=backend_type)
 
@@ -308,7 +343,7 @@ def test_make_rejects_invalid_factory_output_at_registry_boundary():
 
     with pytest.raises(
         TypeError,
-        match=r"_TestInvalidEnvFactoryOutput.*mujoco.*make_invalid_env.*object.*ABEnv",
+        match=r"_TestInvalidEnvFactoryOutput.*mujoco.*make_invalid_env.*object.*TorchEnv",
     ):
         registry_mod.make(_name, sim_backend="mujoco")
 
