@@ -178,7 +178,9 @@ class ManagerScene(Protocol):
 
 class ManagerActionTerm(Protocol):
     @property
-    def raw_action(self) -> np.ndarray: ...
+    def raw_action(self) -> np.ndarray | torch.Tensor: ...
+
+    def process_actions(self, actions: np.ndarray | torch.Tensor) -> None: ...
 
 
 class ManagerActionManager(Protocol):

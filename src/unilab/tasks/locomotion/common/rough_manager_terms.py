@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from weakref import WeakKeyDictionary
 
 import numpy as np
+import torch
 from unisim.backend.base import BackendTerrainSpawnData
 from unisim.terrain.generator import SubTerrainCfg, TerrainGeneratorCfg
 
@@ -498,18 +499,20 @@ class RoughJointPositionAction(JointPositionAction):
             strict_minimum=True,
         )
         super().__init__(cfg, env)
-        self._clipped_input = np.empty_like(self.raw_action)
+        self._clipped_input = torch.empty_like(self.raw_action)
 
-    def process_actions(self, actions: np.ndarray) -> None:
-        if not isinstance(actions, np.ndarray):
+    def process_actions(self, actions: torch.Tensor) -> None:
+        if not isinstance(actions, torch.Tensor):
             raise TypeError(
-                f"RoughJointPositionAction expected np.ndarray, got {type(actions).__name__}"
+                f"RoughJointPositionAction expected torch.Tensor, got {type(actions).__name__}"
             )
         if actions.shape != self._clipped_input.shape:
             raise ValueError(
                 f"RoughJointPositionAction expected shape {self._clipped_input.shape}, got {actions.shape}"
             )
-        np.clip(actions, -self._clip_actions, self._clip_actions, out=self._clipped_input)
+        torch.clamp(
+            actions, min=-self._clip_actions, max=self._clip_actions, out=self._clipped_input
+        )
         super().process_actions(self._clipped_input)
 
 

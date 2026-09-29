@@ -607,38 +607,32 @@ class MotionJointPositionAction(JointPositionAction):
             raise TypeError("MotionJointPositionActionCfg simulate_action_latency must be bool")
         super().__init__(cfg, env)
         self._motion_command = _command(env, cfg.command_name)
-        self._previous_raw_actions = np.zeros_like(self._raw_actions)
+        self._previous_raw_actions = torch.zeros_like(self._raw_actions)
 
     @property
     def target(self) -> np.ndarray:
         """Most recently applied physical joint target in entity joint order."""
         return self._target
 
-    def process_actions(self, actions: np.ndarray) -> None:
-        self._previous_raw_actions[:] = self._raw_actions
+    def process_actions(self, actions: torch.Tensor) -> None:
+        self._previous_raw_actions.copy_(self._raw_actions)
         super().process_actions(actions)
         if not self.cfg.simulate_action_latency:
             return
-        np.multiply(self._previous_raw_actions, self._scale, out=self._processed_actions)
-        np.add(self._processed_actions, self._offset, out=self._processed_actions)
-        if self._clip is not None:
-            np.clip(
-                self._processed_actions,
-                self._clip[..., 0],
-                self._clip[..., 1],
-                out=self._processed_actions,
-            )
+        self._apply_affine(self._previous_raw_actions, self._processed_actions)
 
     def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
         super().reset(env_ids)
-        ids = slice(None) if env_ids is None else env_ids
-        self._previous_raw_actions[ids] = 0.0
+        selector = slice(None) if env_ids is None else self._reset_selector(env_ids)
+        self._previous_raw_actions[selector] = 0.0
 
     def apply_actions(self) -> None:
+        processed = self._entity_values(self._processed_actions)
         encoder_bias = self._entity.data.encoder_bias[:, self._target_ids]
+        default_bias = self._motion_command.joint_default_bias[:, self._target_ids]
         np.add(
-            self._processed_actions,
-            self._motion_command.joint_default_bias[:, self._target_ids],
+            processed,
+            default_bias,
             out=self._target,
         )
         self._target -= encoder_bias

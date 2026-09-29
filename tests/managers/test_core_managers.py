@@ -66,10 +66,20 @@ class FeedbackDummyAction(DummyAction):
     requires_substep_state_feedback = True
 
 
+class TensorDummyAction(DummyAction):
+    uses_tensor_actions = True
+
+
 @dataclass(kw_only=True)
 class FeedbackDummyActionCfg(DummyActionCfg):
     def build(self, env: FakeEnv) -> FeedbackDummyAction:
         return FeedbackDummyAction(self, env)
+
+
+@dataclass(kw_only=True)
+class TensorDummyActionCfg(DummyActionCfg):
+    def build(self, env: FakeEnv) -> TensorDummyAction:
+        return TensorDummyAction(self, env)
 
 
 def test_action_split_history_apply_and_partial_reset(fake_env: FakeEnv) -> None:
@@ -125,6 +135,16 @@ def test_action_feedback_declaration_must_be_bool(
         ActionManager({"invalid": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
 
 
+def test_tensor_action_declaration_must_be_bool(
+    fake_env: FakeEnv,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(DummyAction, "uses_tensor_actions", "yes")
+
+    with pytest.raises(TypeError, match="uses_tensor_actions must be bool"):
+        ActionManager({"invalid": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
+
+
 @pytest.mark.parametrize(
     "action,match",
     [
@@ -165,6 +185,26 @@ def test_action_term_errors_include_manager_and_term_context(fake_env: FakeEnv) 
         manager.process_action(torch.zeros((fake_env.num_envs, 1), dtype=torch.float32))
     with pytest.raises(NotImplementedError, match="ActionManager term 'broken'.*control write"):
         manager.apply_action()
+
+
+def test_action_manager_routes_tensor_and_host_terms_by_declaration(
+    fake_env: FakeEnv,
+) -> None:
+    manager = ActionManager(
+        {
+            "tensor": TensorDummyActionCfg(entity_name="robot", dim=1),
+            "legacy": DummyActionCfg(entity_name="robot", dim=1),
+        },
+        fake_env,
+    )
+    manager.process_action(torch.zeros((fake_env.num_envs, 2), dtype=torch.float32))
+
+    tensor_term = manager.get_term("tensor")
+    legacy_term = manager.get_term("legacy")
+    assert isinstance(tensor_term, TensorDummyAction)
+    assert isinstance(legacy_term, DummyAction)
+    assert tensor_term.input_types == [torch.Tensor]
+    assert legacy_term.input_types == [np.ndarray]
 
 
 class StatefulReward:
