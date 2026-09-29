@@ -336,7 +336,24 @@ class _SensorTensorBackend(_Backend):
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
         capabilities = super().get_tensor_capabilities()
+        if self._device_resident:
+            capabilities = dataclasses.replace(
+                capabilities,
+                execution=TensorExecution.DEVICE_RESIDENT,
+                data_plane=TensorDataPlane.DIRECT,
+                packed_host_bridge=False,
+            )
         return dataclasses.replace(capabilities, sensor_views=True)
+
+    def as_device_resident(self) -> None:
+        self._device_resident = True
+
+    _device_resident = False
+
+    def tensor_execution(self) -> TensorExecution:
+        if self._device_resident:
+            return TensorExecution.DEVICE_RESIDENT
+        return super().tensor_execution()
 
     def get_sensor_view(self, name: str, device: str | torch.device = "cpu") -> torch.Tensor:
         self.sensor_requests.append((name, torch.device(device)))
@@ -370,6 +387,7 @@ class _SensorTensorBackend(_Backend):
 
 def test_entity_sensor_and_body_tensor_views_validate_contract() -> None:
     backend = _SensorTensorBackend.create()
+    backend.as_device_resident()
     scene = EntityScene(
         {
             "robot": EntityCfg(
@@ -390,7 +408,36 @@ def test_entity_sensor_and_body_tensor_views_validate_contract() -> None:
     assert body.lin_vel_w.shape == (backend.num_envs, 1, 3)
     assert body.ang_vel_w.shape == (backend.num_envs, 1, 3)
     torch.testing.assert_close(body.pos_w[:, 0], backend._sensors["track_pos_w_hip"])
+    torch.testing.assert_close(body.quat_w[:, 0], backend._sensors["track_quat_w_hip"])
+    torch.testing.assert_close(body.lin_vel_w[:, 0], backend._sensors["track_linvel_w_hip"])
+    torch.testing.assert_close(body.ang_vel_w[:, 0], backend._sensors["track_angvel_w_hip"])
     assert all(device.type == "cpu" for _, device in backend.sensor_requests)
+
+
+def test_entity_body_tensor_view_fails_closed_on_host_bridge() -> None:
+    backend = _SensorTensorBackend.create()
+    scene = EntityScene(
+        {
+            "robot": EntityCfg(
+                joint_names=("hip",), body_names=("hip",), actuator_names=("hip_motor",)
+            )
+        },
+        cast(SimBackend, backend),
+    )
+
+    with pytest.raises(NotImplementedError, match="scene-owned packed host-bridge plan"):
+        scene["robot"].body_tensor_view("cpu")
+
+
+def test_entity_sensor_tensor_view_fails_closed_on_multi_name_host_bridge() -> None:
+    backend = _SensorTensorBackend.create()
+    scene = EntityScene(
+        {"robot": EntityCfg(joint_names=("hip",), actuator_names=("hip_motor",))},
+        cast(SimBackend, backend),
+    )
+
+    with pytest.raises(NotImplementedError, match="scene-owned packed host-bridge plan"):
+        scene["robot"].sensor_tensor_views("cpu", ("imu_gyro", "imu_accel"))
 
 
 def test_entity_sensor_and_body_tensor_views_fail_closed() -> None:
@@ -424,6 +471,7 @@ def test_entity_sensor_and_body_tensor_views_fail_closed() -> None:
 
 def test_entity_body_tensor_view_validates_width_dtype_device_and_finite_values() -> None:
     backend = _SensorTensorBackend.create()
+    backend.as_device_resident()
     scene = EntityScene(
         {
             "robot": EntityCfg(
