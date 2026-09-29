@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -317,6 +318,185 @@ def test_entity_joint_tensor_view_validates_layout_dtype_device_and_finite_value
     }
     with pytest.raises(TypeError, match="must be float32"):
         scene["robot"].joint_tensor_view(torch.device("cpu"))
+
+
+class _SensorTensorBackend(_Backend):
+    root_body_name = None
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sensor_requests: list[tuple[str, torch.device]] = []
+        self._sensors = {
+            "imu_gyro": torch.randn((self.num_envs, 3), dtype=torch.float32),
+            "track_pos_w_hip": torch.randn((self.num_envs, 3), dtype=torch.float32),
+            "track_quat_w_hip": torch.randn((self.num_envs, 4), dtype=torch.float32),
+            "track_linvel_w_hip": torch.randn((self.num_envs, 3), dtype=torch.float32),
+            "track_angvel_w_hip": torch.randn((self.num_envs, 3), dtype=torch.float32),
+        }
+
+    def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
+        capabilities = super().get_tensor_capabilities()
+        if self._device_resident:
+            capabilities = dataclasses.replace(
+                capabilities,
+                execution=TensorExecution.DEVICE_RESIDENT,
+                data_plane=TensorDataPlane.DIRECT,
+                packed_host_bridge=False,
+            )
+        return dataclasses.replace(capabilities, sensor_views=True)
+
+    def as_device_resident(self) -> None:
+        self._device_resident = True
+
+    _device_resident = False
+
+    def tensor_execution(self) -> TensorExecution:
+        if self._device_resident:
+            return TensorExecution.DEVICE_RESIDENT
+        return super().tensor_execution()
+
+    def get_sensor_view(self, name: str, device: str | torch.device = "cpu") -> torch.Tensor:
+        self.sensor_requests.append((name, torch.device(device)))
+        try:
+            return self._sensors[name]
+        except KeyError as exc:
+            raise KeyError(f"unknown sensor {name!r}") from exc
+
+    def get_body_ids(self, names) -> np.ndarray:
+        assert tuple(names) == ("hip",)
+        return np.asarray([0], dtype=np.int32)
+
+    def get_body_pos_w(self, body_ids) -> np.ndarray:
+        return np.zeros((self.num_envs, len(body_ids), 3), dtype=np.float32)
+
+    def get_body_quat_w(self, body_ids) -> np.ndarray:
+        quaternion = np.zeros((len(body_ids), 4), dtype=np.float32)
+        quaternion[:, 0] = 1.0
+        return np.broadcast_to(quaternion, (self.num_envs, len(body_ids), 4)).copy()
+
+    def get_body_lin_vel_w(self, body_ids) -> np.ndarray:
+        return np.zeros((self.num_envs, len(body_ids), 3), dtype=np.float32)
+
+    def get_body_ang_vel_w(self, body_ids) -> np.ndarray:
+        return np.zeros((self.num_envs, len(body_ids), 3), dtype=np.float32)
+
+    @classmethod
+    def create(cls) -> "_SensorTensorBackend":
+        return cls()
+
+
+def test_entity_sensor_and_body_tensor_views_validate_contract() -> None:
+    backend = _SensorTensorBackend.create()
+    backend.as_device_resident()
+    scene = EntityScene(
+        {
+            "robot": EntityCfg(
+                joint_names=("hip",), body_names=("hip",), actuator_names=("hip_motor",)
+            )
+        },
+        cast(SimBackend, backend),
+    )
+
+    sensors = scene["robot"].sensor_tensor_views(torch.device("cpu"), ("imu_gyro",))
+    assert sensors.names == ("imu_gyro",)
+    torch.testing.assert_close(sensors.values["imu_gyro"], backend._sensors["imu_gyro"])
+
+    body = scene["robot"].body_tensor_view(torch.device("cpu"))
+    assert body.body_names == ("hip",)
+    assert body.pos_w.shape == (backend.num_envs, 1, 3)
+    assert body.quat_w.shape == (backend.num_envs, 1, 4)
+    assert body.lin_vel_w.shape == (backend.num_envs, 1, 3)
+    assert body.ang_vel_w.shape == (backend.num_envs, 1, 3)
+    torch.testing.assert_close(body.pos_w[:, 0], backend._sensors["track_pos_w_hip"])
+    torch.testing.assert_close(body.quat_w[:, 0], backend._sensors["track_quat_w_hip"])
+    torch.testing.assert_close(body.lin_vel_w[:, 0], backend._sensors["track_linvel_w_hip"])
+    torch.testing.assert_close(body.ang_vel_w[:, 0], backend._sensors["track_angvel_w_hip"])
+    assert all(device.type == "cpu" for _, device in backend.sensor_requests)
+
+
+def test_entity_body_tensor_view_fails_closed_on_host_bridge() -> None:
+    backend = _SensorTensorBackend.create()
+    scene = EntityScene(
+        {
+            "robot": EntityCfg(
+                joint_names=("hip",), body_names=("hip",), actuator_names=("hip_motor",)
+            )
+        },
+        cast(SimBackend, backend),
+    )
+
+    with pytest.raises(NotImplementedError, match="scene-owned packed host-bridge plan"):
+        scene["robot"].body_tensor_view("cpu")
+
+
+def test_entity_sensor_tensor_view_fails_closed_on_multi_name_host_bridge() -> None:
+    backend = _SensorTensorBackend.create()
+    scene = EntityScene(
+        {"robot": EntityCfg(joint_names=("hip",), actuator_names=("hip_motor",))},
+        cast(SimBackend, backend),
+    )
+
+    with pytest.raises(NotImplementedError, match="scene-owned packed host-bridge plan"):
+        scene["robot"].sensor_tensor_views("cpu", ("imu_gyro", "imu_accel"))
+
+
+def test_entity_sensor_and_body_tensor_views_fail_closed() -> None:
+    backend = _SensorTensorBackend.create()
+    scene = EntityScene(
+        {
+            "robot": EntityCfg(
+                joint_names=("hip",), body_names=("hip",), actuator_names=("hip_motor",)
+            )
+        },
+        cast(SimBackend, backend),
+    )
+
+    with pytest.raises(TypeError, match="must be a sequence of strings"):
+        scene["robot"].sensor_tensor_views(torch.device("cpu"), "imu_gyro")
+    with pytest.raises(ValueError, match="must be unique"):
+        scene["robot"].sensor_tensor_views(torch.device("cpu"), ("imu_gyro", "imu_gyro"))
+    with pytest.raises(KeyError, match="tensor sensor"):
+        scene["robot"].sensor_tensor_views(torch.device("cpu"), ("missing",))
+    with pytest.raises(ValueError, match="are not declared"):
+        scene["robot"].body_tensor_view(torch.device("cpu"), ("missing",))
+
+    backend.get_tensor_capabilities = lambda: TensorLifecycleCapabilities(
+        execution=TensorExecution.UNSUPPORTED
+    )
+    with pytest.raises(
+        NotImplementedError, match="named sensor views are unavailable|tensor execution"
+    ):
+        scene["robot"].sensor_tensor_views(torch.device("cpu"), ("imu_gyro",))
+
+
+def test_entity_body_tensor_view_validates_width_dtype_device_and_finite_values() -> None:
+    backend = _SensorTensorBackend.create()
+    backend.as_device_resident()
+    scene = EntityScene(
+        {
+            "robot": EntityCfg(
+                joint_names=("hip",), body_names=("hip",), actuator_names=("hip_motor",)
+            )
+        },
+        cast(SimBackend, backend),
+    )
+    original = backend.get_sensor_view
+    backend.get_sensor_view = lambda name, device=None: torch.zeros(
+        (backend.num_envs, 2), dtype=torch.float32
+    )
+    with pytest.raises(ValueError, match="expected \\(2, 3\\)"):
+        scene["robot"].body_tensor_view(torch.device("cpu"))
+    backend.get_sensor_view = lambda name, device=None: torch.full(
+        (backend.num_envs, 3), torch.nan, dtype=torch.float32
+    )
+    with pytest.raises(ValueError, match="has NaN or Inf"):
+        scene["robot"].body_tensor_view(torch.device("cpu"))
+    backend.get_sensor_view = lambda name, device=None: torch.zeros(
+        (backend.num_envs, 3), dtype=torch.float64
+    )
+    with pytest.raises(TypeError, match="must be float32"):
+        scene["robot"].body_tensor_view(torch.device("cpu"))
+    backend.get_sensor_view = original
 
 
 @pytest.mark.parametrize("backend_type", ["mujoco", "motrix"])
