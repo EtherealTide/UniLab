@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.base import BackendRootStateLayout, SimBackend
 from unisim.dr.types import (
     RESET_TERM_BODY_INERTIA,
@@ -854,7 +855,9 @@ def test_min_step_count_gating_reuses_committed_field_values() -> None:
     second = backend.randomization_calls[-1]
     assert second is not None and second.body_mass is not None
     np.testing.assert_allclose(second.body_mass[:2], first.body_mass)
-    np.testing.assert_array_equal(manager._reset_term_last_triggered_step_id[0], [0, 0, 50])
+    torch.testing.assert_close(
+        manager._reset_term_last_triggered_step_id[0], torch.tensor([0, 0, 50], dtype=torch.int64)
+    )
 
     # Fully gated resets skip the field entirely; the backend keeps the
     # previously applied per-env values, so no dense payload is needed.
@@ -870,7 +873,10 @@ def test_min_step_count_gating_reuses_committed_field_values() -> None:
         manager.apply(mode="reset", env_ids=first_ids, global_env_step_count=200)
     fourth = backend.randomization_calls[-1]
     assert fourth is not None and fourth.body_mass is not None
-    np.testing.assert_array_equal(manager._reset_term_last_triggered_step_id[0], [200, 200, 50])
+    torch.testing.assert_close(
+        manager._reset_term_last_triggered_step_id[0],
+        torch.tensor([200, 200, 50], dtype=torch.int64),
+    )
     assert not np.allclose(fourth.body_mass, second.body_mass[:2])
 
 
@@ -901,7 +907,9 @@ def test_min_step_count_gating_applies_to_pd_gains_payload_rows() -> None:
     assert second is not None and second.kp is not None and second.kd is not None
     np.testing.assert_allclose(second.kp[:2], first.kp)
     np.testing.assert_allclose(second.kd[:2], first.kd)
-    np.testing.assert_array_equal(manager._reset_term_last_triggered_step_id[0], [0, 0, 10])
+    torch.testing.assert_close(
+        manager._reset_term_last_triggered_step_id[0], torch.tensor([0, 0, 10], dtype=torch.int64)
+    )
 
 
 def test_apply_body_impulse_lifecycle_stages_sustains_and_expires() -> None:
@@ -1119,7 +1127,7 @@ def test_velocity_push_uses_env_rng_and_interval_subset_plan() -> None:
         },
         env,
     )
-    manager._interval_term_time_left[0][:] = [0.0, 1.0, 0.0]
+    manager._interval_term_time_left[0][:] = torch.tensor([0.0, 1.0, 0.0])
 
     manager.apply(mode="interval", dt=0.1)
 
@@ -1151,7 +1159,7 @@ def test_velocity_push_dispatches_angular_delta_when_supported() -> None:
         },
         env,
     )
-    manager._interval_term_time_left[0][:] = [0.0, 1.0, 0.0]
+    manager._interval_term_time_left[0][:] = torch.tensor([0.0, 1.0, 0.0])
 
     manager.apply(mode="interval", dt=0.1)
 

@@ -91,7 +91,14 @@ def test_event_interval_rng_is_reproducible() -> None:
     }
     left = EventManager(cfg, FakeEnv(seed=17))
     right = EventManager(cfg, FakeEnv(seed=17))
-    np.testing.assert_array_equal(left._interval_term_time_left, right._interval_term_time_left)
+    assert len(left._interval_term_time_left) == len(right._interval_term_time_left)
+    for left_time, right_time in zip(
+        left._interval_term_time_left, right._interval_term_time_left, strict=True
+    ):
+        assert isinstance(left_time, torch.Tensor)
+        assert left_time.dtype == torch.float64
+        assert left_time.device.type == torch.device("cpu").type
+        torch.testing.assert_close(left_time, right_time)
 
 
 class DummyCommand(CommandTerm):
