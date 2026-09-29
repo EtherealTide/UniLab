@@ -159,6 +159,19 @@ def test_step_uses_backend_tensor_contract_and_autoreset() -> None:
     torch.testing.assert_close(state.info["steps"], torch.zeros(3, dtype=torch.int64))
     assert state.info["row_metric"].tolist() == [0.0, 1.0, 2.0]
     assert state.info["timing"]["reset_done_count"] == 3.0
+    for key in (
+        "apply_action_ms",
+        "apply_action_cpu_ms",
+        "step_core_ms",
+        "step_core_cpu_ms",
+        "update_state_ms",
+        "update_state_cpu_ms",
+        "reset_done_ms",
+        "reset_done_cpu_ms",
+        "env_step_other_cpu_ms",
+    ):
+        assert isinstance(state.info["timing"][key], float)
+        assert state.info["timing"][key] >= 0.0
     assert "final_observation" not in state.info
     assert "_final_observation" not in state.info
 

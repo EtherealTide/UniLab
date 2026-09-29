@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import abc
 import dataclasses
+import os
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -64,6 +65,11 @@ def _torch_dtype(dtype: np.dtype[Any]) -> torch.dtype:
     if dtype == np.dtype(np.float64):
         return torch.float64
     raise TypeError(f"Unsupported environment float dtype {dtype!r}")
+
+
+def _cpu_time() -> float:
+    process = os.times()
+    return process.user + process.system
 
 
 class TorchEnv(ABEnv):
@@ -202,6 +208,7 @@ class TorchEnv(ABEnv):
 
     def step(self, actions: torch.Tensor) -> TorchEnvState:
         started = time.perf_counter()
+        cpu_started = _cpu_time()
         self._validate_action(actions)
         self._bind_tensor_runtime()
         if self._state is None:
@@ -209,21 +216,27 @@ class TorchEnv(ABEnv):
         assert self._state is not None
 
         phase = time.perf_counter()
+        phase_cpu = _cpu_time()
         ctrl = self.apply_action(actions, self._state)
         self._validate_control(ctrl)
         apply_action_ms = (time.perf_counter() - phase) * 1000.0
+        apply_action_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
 
         self._state.truncated.fill_(False)
         self._clear_step_final_observation()
 
         phase = time.perf_counter()
+        phase_cpu = _cpu_time()
         backend_result = self._backend.step_tensor(ctrl, self._cfg.sim_substeps)
         step_core_ms = (time.perf_counter() - phase) * 1000.0
+        step_core_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
 
         phase = time.perf_counter()
+        phase_cpu = _cpu_time()
         self._state = self.update_state(self._state)
         self._validate_state(self._state)
         update_state_ms = (time.perf_counter() - phase) * 1000.0
+        update_state_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
 
         self._state.info["steps"] += 1
         self.step_counter += 1
@@ -231,19 +244,33 @@ class TorchEnv(ABEnv):
         self._state.truncated.logical_or_(truncated)
 
         phase = time.perf_counter()
+        phase_cpu = _cpu_time()
         did_reset = self._autoreset and bool((self._state.terminated | self._state.truncated).any())
         if did_reset:
             self._reset_done_envs()
         reset_done_ms = (time.perf_counter() - phase) * 1000.0
+        reset_done_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
 
         timing = self._state.info.setdefault("timing", {})
         if not did_reset:
             self._clear_reset_done_detail_timing(timing)
         timing["env_step_total_ms"] = (time.perf_counter() - started) * 1000.0
         timing["apply_action_ms"] = apply_action_ms
+        timing["apply_action_cpu_ms"] = apply_action_cpu_ms
         timing["step_core_ms"] = step_core_ms
+        timing["step_core_cpu_ms"] = step_core_cpu_ms
         timing["update_state_ms"] = update_state_ms
+        timing["update_state_cpu_ms"] = update_state_cpu_ms
         timing["reset_done_ms"] = reset_done_ms
+        timing["reset_done_cpu_ms"] = reset_done_cpu_ms
+        timing["env_step_other_cpu_ms"] = max(
+            (_cpu_time() - cpu_started) * 1000.0
+            - apply_action_cpu_ms
+            - step_core_cpu_ms
+            - update_state_cpu_ms
+            - reset_done_cpu_ms,
+            0.0,
+        )
         if isinstance(backend_result, dict):
             for key, value in backend_result.get("timing", {}).items():
                 timing[f"backend_{key}"] = value
