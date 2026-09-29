@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, Sequence
 
 import numpy as np
 import torch
@@ -56,6 +56,14 @@ class ActionTerm(ManagerTermBase):
     backend step. State-feedback terms must override this declaration with ``True``.
     """
 
+    uses_tensor_actions: ClassVar[bool] = False
+    """Whether this term consumes raw actions as Torch tensors.
+
+    ``False`` is the temporary NumPy term boundary used by task-owned action
+    terms that have not yet migrated. The manager must not guess this from the
+    runtime input type.
+    """
+
     def __init__(self, cfg: ActionTermCfg, env: ManagerBasedRlEnv):
         self.cfg = cfg
         super().__init__(env)
@@ -67,7 +75,7 @@ class ActionTerm(ManagerTermBase):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def process_actions(self, actions: np.ndarray) -> None:
+    def process_actions(self, actions: Any) -> None:
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -76,7 +84,7 @@ class ActionTerm(ManagerTermBase):
 
     @property
     @abc.abstractmethod
-    def raw_action(self) -> np.ndarray:
+    def raw_action(self) -> np.ndarray | torch.Tensor:
         raise NotImplementedError
 
 
@@ -198,15 +206,26 @@ class ActionManager(ManagerBase):
         self._prev_prev_action[:] = self._prev_action
         self._prev_action[:] = self._action
         self._action.copy_(action)
-        # Split the flat action vector and route each slice to its term.
-        host_action = self._actions_to_term_boundary(action)
+        # Split the flat action vector and route each slice to its term. Legacy
+        # terms share one full-batch host copy; tensor terms keep their slice
+        # on the environment device.
+        host_action: np.ndarray | None = None
         idx = 0
         for name, term in self._terms.items():
-            term_actions = host_action[:, idx : idx + term.action_dim]
-            try:
-                term.process_actions(term_actions)
-            except (TypeError, ValueError, NotImplementedError) as exc:
-                raise type(exc)(f"ActionManager term '{name}': {exc}") from exc
+            if term.uses_tensor_actions:
+                tensor_actions = action[:, idx : idx + term.action_dim]
+                try:
+                    term.process_actions(tensor_actions)
+                except (TypeError, ValueError, NotImplementedError) as exc:
+                    raise type(exc)(f"ActionManager term '{name}': {exc}") from exc
+            else:
+                if host_action is None:
+                    host_action = self._actions_to_term_boundary(action)
+                host_term_actions = host_action[:, idx : idx + term.action_dim]
+                try:
+                    term.process_actions(host_term_actions)
+                except (TypeError, ValueError, NotImplementedError) as exc:
+                    raise type(exc)(f"ActionManager term '{name}': {exc}") from exc
             idx += term.action_dim
 
     @staticmethod
@@ -272,6 +291,12 @@ class ActionManager(ManagerBase):
                     "ActionManager term "
                     f"'{term_name}' requires_substep_state_feedback must be bool, "
                     f"got {type(feedback).__name__}."
+                )
+            if not isinstance(term.uses_tensor_actions, bool):
+                raise TypeError(
+                    "ActionManager term "
+                    f"'{term_name}' uses_tensor_actions must be bool, "
+                    f"got {type(term.uses_tensor_actions).__name__}."
                 )
             self._term_names.append(term_name)
             self._terms[term_name] = term

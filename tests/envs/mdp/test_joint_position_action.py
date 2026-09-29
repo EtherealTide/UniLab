@@ -9,6 +9,7 @@ from typing import cast
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.base import SimBackend
 
 from unilab.assets import ASSETS_ROOT_PATH
@@ -112,14 +113,23 @@ def test_default_offset_encoder_bias_and_control_order() -> None:
     raw = np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
     scene["robot"].data.encoder_bias[:, 0] = np.asarray([0.05, 0.1])
 
-    action.process_actions(raw)
+    assert isinstance(action.raw_action, torch.Tensor)
+    assert isinstance(action.processed_action, torch.Tensor)
+    assert action.raw_action.dtype == torch.float32
+    assert action.processed_action.dtype == torch.float32
+    action.process_actions(torch.from_numpy(raw))
     action.apply_actions()
 
     assert action.target_names == ["hip", "knee"]
     np.testing.assert_array_equal(action.target_ids, [0, 1])
-    np.testing.assert_allclose(action.processed_action, raw * 2.0 + [0.1, 0.2])
-    np.testing.assert_allclose(control[:, 1], action.processed_action[:, 0] - [0.05, 0.1])
-    np.testing.assert_allclose(control[:, 0], action.processed_action[:, 1])
+    torch.testing.assert_close(
+        action.processed_action, torch.from_numpy(raw) * 2.0 + torch.tensor([0.1, 0.2])
+    )
+    np.testing.assert_allclose(
+        control[:, 1],
+        (action.processed_action[:, 0] - torch.tensor([0.05, 0.1])).numpy(),
+    )
+    np.testing.assert_allclose(control[:, 0], action.processed_action[:, 1].numpy())
     np.testing.assert_array_equal(control[:, 2], 0.0)
 
 
@@ -132,13 +142,27 @@ def test_regex_scale_offset_clip_and_local_reset() -> None:
     )
     raw = np.asarray([[2.0, 2.0], [-2.0, -2.0]], dtype=np.float32)
 
-    action.process_actions(raw)
+    action.process_actions(torch.from_numpy(raw))
 
     np.testing.assert_allclose(action.processed_action, [[1.0, 5.5], [-1.0, -6.5]])
     np.testing.assert_array_equal(action.raw_action, raw)
     action.reset(np.asarray([1], dtype=np.int32))
     np.testing.assert_array_equal(action.raw_action[0], raw[0])
     np.testing.assert_array_equal(action.raw_action[1], 0.0)
+
+
+def test_base_action_accepts_noncontiguous_term_slice() -> None:
+    action, _, _ = _action(scale=2.0)
+    sliced_action = torch.zeros((2, 4), dtype=torch.float32)[:, ::2]
+    assert not sliced_action.is_contiguous()
+
+    action.process_actions(sliced_action)
+
+    torch.testing.assert_close(action.raw_action, sliced_action)
+    torch.testing.assert_close(
+        action.processed_action,
+        sliced_action * 2.0 + torch.tensor([0.1, 0.2]),
+    )
 
 
 @pytest.mark.parametrize(
@@ -163,9 +187,9 @@ def test_invalid_action_config_fails_at_construction(overrides, error, message) 
 def test_non_finite_and_wrong_shape_actions_fail_before_control_write() -> None:
     action, control, _ = _action()
     with pytest.raises(ValueError, match="expected action shape"):
-        action.process_actions(np.zeros((2, 1), dtype=np.float32))
+        action.process_actions(torch.zeros((2, 1), dtype=torch.float32))
     with pytest.raises(ValueError, match="NaN or Inf"):
-        action.process_actions(np.full((2, 2), np.nan, dtype=np.float32))
+        action.process_actions(torch.full((2, 2), torch.nan, dtype=torch.float32))
     np.testing.assert_array_equal(control, 0.0)
 
 
@@ -183,7 +207,7 @@ def test_velocity_and_effort_actions_use_the_shared_joint_control_mapping(
     assert isinstance(action, action_type)
     raw = np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
 
-    action.process_actions(raw)
+    action.process_actions(torch.from_numpy(raw))
     action.apply_actions()
 
     np.testing.assert_allclose(control[:, 1], raw[:, 0] * 2.0)
@@ -199,7 +223,7 @@ def test_relative_joint_position_action_reads_current_position_at_apply_time() -
     )
     raw = np.asarray([[0.4, -0.8], [0.8, -0.4]], dtype=np.float32)
 
-    action.process_actions(raw)
+    action.process_actions(torch.from_numpy(raw))
     action.apply_actions()
 
     # Entity joint order is hip, knee, ankle while backend actuator order is
@@ -277,7 +301,7 @@ def test_go2_joint_targets_are_mapped_to_backend_control_order(backend_type: str
     ).build(env)
     raw = np.arange(24, dtype=np.float32).reshape(2, 12) / 10.0
 
-    action.process_actions(raw)
+    action.process_actions(torch.from_numpy(raw))
     action.apply_actions()
 
     target_index = {name: index for index, name in enumerate(joint_names)}
@@ -290,7 +314,7 @@ def test_go2_joint_targets_are_mapped_to_backend_control_order(backend_type: str
     np.testing.assert_allclose(control, expected)
 
 
-def test_action_module_has_no_runtime_or_backend_private_dependencies() -> None:
+def test_action_module_has_no_training_or_backend_private_dependencies() -> None:
     path = (
         Path(__file__).resolve().parents[3]
         / "src"
@@ -301,7 +325,7 @@ def test_action_module_has_no_runtime_or_backend_private_dependencies() -> None:
         / "actions.py"
     )
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    forbidden = ("torch", "uni_rl", "unilab.training", "unilab.base.backend")
+    forbidden = ("uni_rl", "unilab.training", "unilab.base.backend")
     imports = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)] + [
         alias.name
         for node in ast.walk(tree)
