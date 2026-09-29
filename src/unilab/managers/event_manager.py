@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
+import torch
 from prettytable import PrettyTable
 
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
@@ -76,6 +77,7 @@ class EventManager(ManagerBase):
 
     def __init__(self, cfg: dict[str, EventTermCfg | None], env: ManagerBasedRlEnv):
         self.cfg = deepcopy(cfg)
+        self._device = torch.device(getattr(env, "device", torch.device("cpu")))
         self._mode_term_names: dict[EventMode, list[str]] = dict()
         self._mode_term_cfgs: dict[EventMode, list[EventTermCfg]] = dict()
         self._mode_class_term_cfgs: dict[EventMode, list[EventTermCfg]] = dict()
@@ -141,7 +143,9 @@ class EventManager(ManagerBase):
                     assert term_cfg.interval_range_s is not None
                     lower, upper = term_cfg.interval_range_s
                     sampled_interval = self._env.rng.uniform(lower, upper, num_envs)
-                    self._interval_term_time_left[index][ids] = sampled_interval
+                    self._interval_term_time_left[index][ids] = torch.as_tensor(
+                        sampled_interval, dtype=torch.float64, device=self._device
+                    )
         return {}
 
     def apply(
@@ -179,7 +183,9 @@ class EventManager(ManagerBase):
                         assert term_cfg.interval_range_s is not None
                         lower, upper = term_cfg.interval_range_s
                         sampled_interval = self._env.rng.uniform(lower, upper, 1)
-                        self._interval_term_time_left[index][:] = sampled_interval
+                        self._interval_term_time_left[index][:] = torch.as_tensor(
+                            sampled_interval, dtype=torch.float64, device=self._device
+                        )
                         term_cfg.func(self._env, None, **term_cfg.params)
                 else:
                     valid_env_ids = np.flatnonzero(time_left < 1e-6)
@@ -187,7 +193,9 @@ class EventManager(ManagerBase):
                         assert term_cfg.interval_range_s is not None
                         lower, upper = term_cfg.interval_range_s
                         sampled_time = self._env.rng.uniform(lower, upper, len(valid_env_ids))
-                        self._interval_term_time_left[index][valid_env_ids] = sampled_time
+                        self._interval_term_time_left[index][valid_env_ids] = torch.as_tensor(
+                            sampled_time, dtype=torch.float64, device=self._device
+                        )
                         term_cfg.func(self._env, valid_env_ids, **term_cfg.params)
             elif mode == "step":
                 term_cfg.func(self._env, None, **term_cfg.params)
@@ -224,9 +232,9 @@ class EventManager(ManagerBase):
                 term_cfg.func(self._env, env_ids, **term_cfg.params)
 
     def _prepare_terms(self) -> None:
-        self._interval_term_time_left: list[np.ndarray] = list()
-        self._reset_term_last_triggered_step_id: list[np.ndarray] = list()
-        self._reset_term_last_triggered_once: list[np.ndarray] = list()
+        self._interval_term_time_left: list[torch.Tensor] = list()
+        self._reset_term_last_triggered_step_id: list[torch.Tensor] = list()
+        self._reset_term_last_triggered_once: list[torch.Tensor] = list()
 
         for term_name, term_cfg in self.cfg.items():
             if term_cfg is None:
@@ -257,15 +265,23 @@ class EventManager(ManagerBase):
                         f"{term_cfg.interval_range_s}."
                     )
                 if term_cfg.is_global_time:
-                    time_left = self._env.rng.uniform(lower, upper, 1)
+                    time_left = torch.as_tensor(
+                        self._env.rng.uniform(lower, upper, 1),
+                        dtype=torch.float64,
+                        device=self._device,
+                    )
                     self._interval_term_time_left.append(time_left)
                 else:
-                    time_left = self._env.rng.uniform(lower, upper, self.num_envs)
+                    time_left = torch.as_tensor(
+                        self._env.rng.uniform(lower, upper, self.num_envs),
+                        dtype=torch.float64,
+                        device=self._device,
+                    )
                     self._interval_term_time_left.append(time_left)
             elif term_cfg.mode == "reset":
-                step_count = np.zeros(self.num_envs, dtype=np.int64)
+                step_count = torch.zeros(self.num_envs, dtype=torch.int64, device=self._device)
                 self._reset_term_last_triggered_step_id.append(step_count)
-                no_trigger = np.zeros(self.num_envs, dtype=np.bool_)
+                no_trigger = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
                 self._reset_term_last_triggered_once.append(no_trigger)
 
             func = term_cfg.func
