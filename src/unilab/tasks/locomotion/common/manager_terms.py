@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, cast
 
 import numpy as np
+import torch
 
 from unilab.dtype_config import get_global_dtype
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
@@ -101,6 +102,8 @@ def _command(env: ManagerBasedRlEnv, term: str, command_name: str) -> np.ndarray
         raise KeyError(f"{term} command capability '{command_name}' is unavailable") from exc
     if command is None:
         raise KeyError(f"{term} command capability '{command_name}' is unavailable")
+    if isinstance(command, torch.Tensor):
+        command = command.detach().cpu().numpy()
     return _state(term, f"command '{command_name}'", command, (env.num_envs, 3))
 
 

@@ -8,15 +8,28 @@ from __future__ import annotations
 import abc
 import inspect
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence, cast
 
 import numpy as np
+import torch
 from prettytable import PrettyTable
 
 from unilab.managers.manager_base import ManagerBase, ManagerTermBase
 
 if TYPE_CHECKING:
     from unilab.managers._types import ManagerBasedRlEnv
+
+
+def _finite(values: np.ndarray | torch.Tensor) -> bool:
+    if isinstance(values, torch.Tensor):
+        return bool(torch.isfinite(values).all())
+    return bool(np.isfinite(values).all())
+
+
+def _mean(values: np.ndarray | torch.Tensor) -> float:
+    if isinstance(values, torch.Tensor):
+        return float(values.mean().item())
+    return float(np.mean(values))
 
 
 @dataclass(kw_only=True)
@@ -58,9 +71,10 @@ class CommandTerm(ManagerTermBase):
             )
         self._resampling_time_range = (lower, upper)
         self._check_update_command_signature()
-        self.metrics: dict[str, np.ndarray] = {}
-        self.time_left = np.zeros(self.num_envs, dtype=np.float32)
-        self.command_counter = np.zeros(self.num_envs, dtype=np.int64)
+        self._device = torch.device(getattr(self._env, "device", torch.device("cpu")))
+        self.metrics: dict[str, np.ndarray | torch.Tensor] = {}
+        self.time_left = torch.zeros(self.num_envs, dtype=torch.float32, device=self._device)
+        self.command_counter = torch.zeros(self.num_envs, dtype=torch.int64, device=self._device)
 
     @property
     @abc.abstractmethod
@@ -72,17 +86,19 @@ class CommandTerm(ManagerTermBase):
         extras = {}
         for metric_name, metric_value in self.metrics.items():
             metric_slice = metric_value[env_ids]
-            if not np.isfinite(metric_slice).all():
+            if not _finite(metric_slice):
                 raise ValueError(
                     f"CommandTerm '{self.name}' metric '{metric_name}' contains NaN or Inf."
                 )
-            extras[metric_name] = float(np.mean(metric_slice))
+            extras[metric_name] = float(_mean(metric_slice))
             metric_value[env_ids] = 0.0
         self.command_counter[env_ids] = 0
         self._resample(env_ids)
         return extras
 
-    def compute(self, dt: float | np.ndarray, env_ids: np.ndarray | None = None) -> None:
+    def compute(
+        self, dt: float | np.ndarray | torch.Tensor, env_ids: np.ndarray | None = None
+    ) -> None:
         """Advance the command state by dt.
 
         With env_ids=None (the per-step path) all envs are updated; with env_ids
@@ -96,43 +112,68 @@ class CommandTerm(ManagerTermBase):
         where freshly reset envs get zero to keep their timers full). A tensor
         dt requires env_ids=None.
         """
-        if isinstance(dt, np.ndarray):
+        tensor_dt = isinstance(dt, torch.Tensor)
+        dt_scalar: float | None = None
+        dt_tensor: torch.Tensor | None
+        if not tensor_dt:
+            host_dt = np.asarray(dt)
+            if host_dt.ndim == 1:
+                tensor_dt = True
+                dt_tensor = torch.as_tensor(host_dt, dtype=torch.float32, device=self._device)
+            else:
+                tensor_dt = False
+                dt_tensor = None
+                dt_scalar = float(host_dt.item())
+        else:
+            dt_tensor = cast(torch.Tensor, dt)
+        if dt_tensor is not None:
             if env_ids is not None:
                 raise ValueError("Per-environment command dt requires env_ids=None.")
-            if dt.shape != (self.num_envs,):
+            if dt_tensor.shape != (self.num_envs,):
                 raise ValueError(
                     f"CommandTerm '{self.name}' expected dt shape ({self.num_envs},), "
-                    f"received {dt.shape}."
+                    f"received {dt_tensor.shape}."
                 )
-        dt_is_finite = np.isfinite(dt).all() if isinstance(dt, np.ndarray) else np.isfinite(dt)
+        if tensor_dt:
+            assert dt_tensor is not None
+            dt_is_finite = bool(torch.isfinite(dt_tensor).all())
+        else:
+            host_dt = np.asarray(dt)
+            assert host_dt.ndim == 0
+            dt_scalar = float(host_dt.item())
+            dt_is_finite = bool(np.isfinite(dt_scalar))
         if not dt_is_finite:
             raise ValueError(f"CommandTerm '{self.name}' received non-finite dt.")
         self._update_metrics(env_ids)
         self._validate_metrics()
         if env_ids is None:
-            self.time_left -= dt
-            resample_env_ids = np.flatnonzero(self.time_left <= 0.0)
+            if dt_tensor is not None:
+                self.time_left -= dt_tensor
+            else:
+                assert dt_scalar is not None
+                self.time_left -= dt_scalar
+            resample_env_ids = torch.nonzero(self.time_left <= 0.0, as_tuple=False).flatten()
+            resample_env_ids = resample_env_ids.detach().cpu().numpy()
         else:
-            assert not isinstance(dt, np.ndarray)
-            self.time_left[env_ids] -= dt
-            resample_env_ids = env_ids[self.time_left[env_ids] <= 0.0]
+            assert not tensor_dt
+            assert dt_scalar is not None
+            self.time_left[env_ids] -= dt_scalar
+            expired = self.time_left[env_ids] <= 0.0
+            if isinstance(expired, torch.Tensor):
+                expired = expired.detach().cpu().numpy()
+            resample_env_ids = np.asarray(env_ids)[expired]
         if len(resample_env_ids) > 0:
             self._resample(resample_env_ids)
         self._update_command(env_ids)
 
     def _validate_metrics(self) -> None:
         for metric_name, metric_value in self.metrics.items():
-            if not isinstance(metric_value, np.ndarray):
-                raise TypeError(
-                    f"CommandTerm '{self.name}' metric '{metric_name}' returned "
-                    f"{type(metric_value).__name__}, expected np.ndarray."
-                )
             if metric_value.ndim == 0 or metric_value.shape[0] != self.num_envs:
                 raise ValueError(
                     f"CommandTerm '{self.name}' metric '{metric_name}' returned shape "
                     f"{metric_value.shape}, expected leading dimension {self.num_envs}."
                 )
-            if not np.isfinite(metric_value).all():
+            if not _finite(metric_value):
                 raise ValueError(
                     f"CommandTerm '{self.name}' metric '{metric_name}' contains NaN or Inf."
                 )
@@ -154,7 +195,10 @@ class CommandTerm(ManagerTermBase):
     def _resample(self, env_ids: np.ndarray) -> None:
         if len(env_ids) != 0:
             lower, upper = self._resampling_time_range
-            self.time_left[env_ids] = self._env.rng.uniform(lower, upper, len(env_ids))
+            sampled = self._env.rng.uniform(lower, upper, len(env_ids))
+            self.time_left[env_ids] = torch.as_tensor(
+                sampled, dtype=torch.float32, device=self._device
+            )
             self._resample_command(env_ids)
             self.command_counter[env_ids] += 1
 
@@ -201,6 +245,7 @@ class CommandManager(ManagerBase):
         self._terms: dict[str, CommandTerm] = dict()
 
         self.cfg = cfg
+        self._device = torch.device(getattr(env, "device", torch.device("cpu")))
         super().__init__(env)
 
     def __str__(self) -> str:
@@ -224,7 +269,7 @@ class CommandManager(ManagerBase):
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:
         terms = []
         for name, term in self._terms.items():
-            command = self._validate_command(name, term.command)
+            command = self._validate_command(name, term.command).detach().cpu().numpy()
             terms.append((name, command[env_idx].tolist()))
         return terms
 
@@ -250,7 +295,7 @@ class CommandManager(ManagerBase):
         for term in self._terms.values():
             term.post_compute()
 
-    def get_command(self, name: str) -> np.ndarray:
+    def get_command(self, name: str) -> torch.Tensor:
         return self._validate_command(name, self._terms[name].command)
 
     def get_term(self, name: str) -> CommandTerm:
@@ -279,18 +324,22 @@ class CommandManager(ManagerBase):
                 )
             self._terms[term_name] = term
 
-    def _validate_command(self, name: str, command: np.ndarray) -> np.ndarray:
-        if not isinstance(command, np.ndarray):
+    def _validate_command(self, name: str, command: torch.Tensor) -> torch.Tensor:
+        if isinstance(command, np.ndarray):
+            command = torch.from_numpy(np.ascontiguousarray(command)).to(
+                dtype=torch.float32, device=self._device
+            )
+        if not isinstance(command, torch.Tensor):
             raise TypeError(
                 f"CommandManager term '{name}' returned {type(command).__name__}, "
-                "expected np.ndarray."
+                "expected torch.Tensor."
             )
         if command.ndim < 1 or command.shape[0] != self.num_envs:
             raise ValueError(
                 f"CommandManager term '{name}' returned shape {command.shape}, "
                 f"expected leading dimension {self.num_envs}."
             )
-        if not np.isfinite(command).all():
+        if not bool(torch.isfinite(command).all()):
             raise ValueError(f"CommandManager term '{name}' returned NaN or Inf.")
         return command
 
@@ -315,7 +364,9 @@ class NullCommandManager:
     def reset(self, env_ids: np.ndarray | None = None) -> dict[str, np.ndarray]:
         return {}
 
-    def compute(self, dt: float | np.ndarray, env_ids: np.ndarray | None = None) -> None:
+    def compute(
+        self, dt: float | np.ndarray | torch.Tensor, env_ids: np.ndarray | None = None
+    ) -> None:
         pass
 
     def post_compute(self) -> None:
