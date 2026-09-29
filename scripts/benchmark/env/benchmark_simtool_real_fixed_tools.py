@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
 if str(ROOT_DIR) not in sys.path:
@@ -59,7 +60,7 @@ def run_benchmark(
     first_reset_seconds = time.perf_counter() - reset_started
     rss_after_construction = _rss_bytes()
 
-    actions = np.zeros((num_envs, 1), dtype=np.float32)
+    actions = torch.zeros((num_envs, 1), dtype=torch.float32, device=env.device)
     for _ in range(warmup_steps):
         env.step(actions)
     step_started = time.perf_counter()
@@ -77,7 +78,10 @@ def run_benchmark(
         "steps": steps,
         "warmup_steps": warmup_steps,
         "unique_assigned_variants": len(set(int(value) for value in plan.assignment)),
-        "finite": bool(np.isfinite(state.obs["obs"]).all() and np.isfinite(state.reward).all()),
+        "finite": bool(
+            torch.isfinite(state.obs["obs"]).all().item()
+            and torch.isfinite(state.reward).all().item()
+        ),
         "timings": {
             "source_materialization_seconds": source_materialization_seconds,
             "env_construction_seconds": env_construction_seconds,
