@@ -7,6 +7,7 @@ import re
 
 import numpy as np
 import pytest
+import torch
 
 
 class FakeEntity:
@@ -50,6 +51,7 @@ class FakeEnv:
         self.calls: list[tuple[str, np.ndarray | None]] = []
         self.obs_buf: dict[str, np.ndarray] = {}
         self.reset_buf = np.zeros(num_envs, dtype=np.bool_)
+        self.device = torch.device("cpu")
 
 
 @pytest.fixture
