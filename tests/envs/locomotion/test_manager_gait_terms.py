@@ -8,9 +8,9 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.base import BackendSensorView
 
-from unilab.dtype_config import get_global_dtype
 from unilab.managers import (
     ObservationGroupCfg,
     ObservationManager,
@@ -344,8 +344,13 @@ def test_base_reward_terms_match_go2_flat_equations() -> None:
     }
     for name in expected:
         assert actual[name].shape == (2,)
-        assert actual[name].dtype == np.dtype(get_global_dtype())
-        np.testing.assert_allclose(actual[name], expected[name], rtol=1e-6, atol=1e-7)
+        assert actual[name].dtype == torch.float32
+        torch.testing.assert_close(
+            actual[name],
+            torch.from_numpy(np.ascontiguousarray(expected[name])),
+            rtol=1e-6,
+            atol=1e-7,
+        )
 
 
 def test_base_reward_terms_fail_closed_at_nearest_boundary() -> None:

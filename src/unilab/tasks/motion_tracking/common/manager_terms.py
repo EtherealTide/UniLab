@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
+import torch
 
 from unilab.envs.mdp.actions import JointPositionAction, JointPositionActionCfg
 from unilab.managers import CommandTerm, CommandTermCfg, ManagerTermBase, ManagerTermBaseCfg
@@ -571,7 +572,10 @@ class MotionCommand(CommandTerm):
                 self._refresh_motion(env_ids)
             return
         self._resample_ingested_ids = None
-        self.sampler.update_failure_stats(self._env.termination_manager.terminated)
+        terminated = self._env.termination_manager.terminated
+        if isinstance(terminated, torch.Tensor):
+            terminated = terminated.detach().cpu().numpy()
+        self.sampler.update_failure_stats(terminated)
         active_ids = np.flatnonzero(~self._env.reset_buf).astype(np.int32, copy=False)
         wrap_ids = self.sampler.step(active_ids)
         if len(wrap_ids) and not self.cfg.params.truncate_on_clip_end:

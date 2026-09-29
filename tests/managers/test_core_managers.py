@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pytest
+import torch
 
 from unilab.managers import (
     ActionManager,
@@ -169,7 +170,10 @@ class StatefulReward:
 def test_reward_dt_scaling_reset_and_config_immutability(fake_env: FakeEnv) -> None:
     cfg = {"stateful": RewardTermCfg(func=StatefulReward, weight=2.0)}
     manager = RewardManager(cfg, fake_env)
-    np.testing.assert_allclose(manager.compute(dt=0.25), fake_env.value * 0.5)
+    reward = manager.compute(dt=0.25)
+    assert isinstance(reward, torch.Tensor)
+    assert reward.device.type == "cpu"
+    torch.testing.assert_close(reward, torch.tensor(fake_env.value * 0.5))
     assert manager.get_active_iterable_terms(2) == [("stateful", [4.0])]
     reset_ids = np.array([1, 2])
     extras = manager.reset(reset_ids)
@@ -212,6 +216,26 @@ def test_reward_nonfinite_is_an_error(fake_env: FakeEnv, bad: float) -> None:
         manager.compute(0.01)
 
 
+def test_tensor_manager_terms_require_declared_dtype(fake_env: FakeEnv) -> None:
+    reward = RewardManager(
+        {
+            "bad": RewardTermCfg(
+                func=lambda env: torch.ones(env.num_envs, dtype=torch.float64), weight=1.0
+            )
+        },
+        fake_env,
+    )
+    with pytest.raises(TypeError, match="expected float32"):
+        reward.compute(0.1)
+
+    termination = TerminationManager(
+        {"bad": TerminationTermCfg(func=lambda env: torch.ones(env.num_envs, dtype=torch.uint8))},
+        fake_env,
+    )
+    with pytest.raises(TypeError, match="expected bool"):
+        termination.compute()
+
+
 def test_reward_and_termination_shape_validation(fake_env: FakeEnv) -> None:
     reward = RewardManager(
         {"bad": RewardTermCfg(func=lambda env: np.zeros((env.num_envs, 1)), weight=1.0)},
@@ -237,9 +261,12 @@ def test_termination_splits_timeouts_and_failures(fake_env: FakeEnv) -> None:
         },
         fake_env,
     )
-    np.testing.assert_array_equal(manager.compute(), timeout | failure)
-    np.testing.assert_array_equal(manager.time_outs, timeout)
-    np.testing.assert_array_equal(manager.terminated, failure)
+    dones = manager.compute()
+    assert isinstance(dones, torch.Tensor)
+    assert dones.dtype == torch.bool
+    torch.testing.assert_close(dones, torch.from_numpy(timeout | failure))
+    torch.testing.assert_close(manager.time_outs, torch.from_numpy(timeout))
+    torch.testing.assert_close(manager.terminated, torch.from_numpy(failure))
     assert manager.reset(np.array([0, 1])) == {
         "Episode_Termination/timeout": 1,
         "Episode_Termination/failure": 1,
