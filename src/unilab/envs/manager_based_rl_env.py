@@ -625,13 +625,16 @@ class ManagerBasedRlEnv(TorchEnv):
 
         manager_obs = self.observation_manager.compute(update_history=True)
 
-        self.obs_buf = self._map_observations(manager_obs)
+        mapped_obs = self._map_observations(manager_obs)
+        self.obs_buf = {
+            name: self._observations_to_host_boundary(values) for name, values in mapped_obs.items()
+        }
         self._has_transition = True
 
         return state.replace(
             obs={
                 name: self._manager_tensor(values, dtype=self._dtype)
-                for name, values in self.obs_buf.items()
+                for name, values in mapped_obs.items()
             },
             reward=self._manager_tensor(self.reward_buf, dtype=self._dtype),
             terminated=self._manager_tensor(self.reset_terminated, dtype=torch.bool),
@@ -740,10 +743,13 @@ class ManagerBasedRlEnv(TorchEnv):
                 self.reset_terminated[ids] = False
                 self.reset_time_outs[ids] = False
         if not self.obs_buf or set(self.obs_buf) != set(mapped_obs):
-            self.obs_buf = {name: values.copy() for name, values in mapped_obs.items()}
+            self.obs_buf = {
+                name: self._observations_to_host_boundary(values)
+                for name, values in mapped_obs.items()
+            }
         else:
             for name, values in mapped_obs.items():
-                self.obs_buf[name][ids] = values
+                self.obs_buf[name][ids] = self._observations_to_host_boundary(values)
         self.extras = self._state.info if self._state is not None else {"log": log}
         self.recorder_manager.record_post_reset(ids)
         return reset_obs, {"log": log}
@@ -755,19 +761,19 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def _map_observations(
         self,
-        manager_obs: dict[str, np.ndarray | dict[str, np.ndarray]],
+        manager_obs: dict[str, torch.Tensor | dict[str, torch.Tensor]],
         num_rows: int | None = None,
-    ) -> dict[str, np.ndarray]:
+    ) -> dict[str, torch.Tensor]:
         mapping = {"obs": self._cfg.policy_observation_group}
         if self._cfg.critic_observation_group is not None:
             mapping["critic"] = self._cfg.critic_observation_group
-        mapped: dict[str, np.ndarray] = {}
+        mapped: dict[str, torch.Tensor] = {}
         for output_name, group_name in mapping.items():
             value = manager_obs[group_name]
-            if not isinstance(value, np.ndarray):
+            if not isinstance(value, torch.Tensor):
                 raise TypeError(
                     f"ManagerBasedRlEnv observation group '{group_name}' returned "
-                    f"{type(value).__name__}, expected np.ndarray"
+                    f"{type(value).__name__}, expected torch.Tensor"
                 )
             expected = (
                 self.num_envs if num_rows is None else num_rows,
@@ -780,6 +786,11 @@ class ManagerBasedRlEnv(TorchEnv):
                 )
             mapped[output_name] = value
         return mapped
+
+    @staticmethod
+    def _observations_to_host_boundary(values: torch.Tensor) -> np.ndarray:
+        """Publish Torch observations to the temporary NumPy recorder scratch."""
+        return np.array(values.detach().cpu().numpy(), order="C", copy=True)
 
     def get_observations(self) -> dict[str, torch.Tensor]:
         if self._state is None:
