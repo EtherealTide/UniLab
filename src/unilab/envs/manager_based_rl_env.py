@@ -740,7 +740,22 @@ class ManagerBasedRlEnv(TorchEnv):
 
         log: dict[str, Any] = {}
         self.curriculum_manager.compute(env_ids=ids)
-        with self._reset_state.scoped(ids):
+        read_plan = self.scene._tensor_read_plan
+        use_packed_reset = (
+            read_plan is not None
+            and read_plan.host_plan is not None
+            # Force eager default materialization: a backend with different
+            # native and public layouts must fall back before terms run.
+            and self._reset_state.can_commit_packed(term_name="reset")
+        )
+        if use_packed_reset:
+            assert read_plan is not None
+            assert read_plan.host_plan is not None
+            self._reset_state.declare_packed_reset_device(read_plan.device)
+            reset_context = self._reset_state.scoped_tensor(ids, read_plan.host_plan)
+        else:
+            reset_context = self._reset_state.scoped(ids)
+        with reset_context:
             if "reset" in self.event_manager.available_modes:
                 self.event_manager.apply(
                     mode="reset",
@@ -775,12 +790,13 @@ class ManagerBasedRlEnv(TorchEnv):
         with self.scene._scoped_state_reads():
             read_plan = self.scene._tensor_read_plan
             if read_plan is not None:
-                # Reset-state terms currently commit through the NumPy reset
-                # transaction, so a backend packed plan has no selected-row D2H
-                # payload to pair with ``refresh_selected``. Repack from the
-                # post-reset authoritative host state instead of inventing a
-                # second reset protocol.
-                read_plan.refresh()
+                # A host-bridge plan owns the paired selected-row boundary from
+                # ``apply_reset``. Device-resident plans have no selected packet
+                # and refresh their stable public views normally.
+                if use_packed_reset:
+                    read_plan.refresh_selected()
+                else:
+                    read_plan.refresh()
             self.command_manager.compute(dt=0.0, env_ids=ids)
             self.command_manager.post_compute()
             # Row-scoped reset rebuild (issue #1259 R2): the observation manager

@@ -247,6 +247,9 @@ class _ScenePlanBackend(_StateBackend):
         self.full_reads = 0
         self.selected_reads = 0
         self.plan_closes = 0
+        self.reset_calls: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        self.nq = 4
+        self.nv = 3
         self.sensors = {
             "track_pos_w_platform": torch.zeros((num_envs, 3), dtype=torch.float32),
             "track_quat_w_platform": torch.tile(
@@ -358,6 +361,13 @@ class _ScenePlanBackend(_StateBackend):
                 return None
 
             def apply_reset(self, env_indices, qpos, qvel, randomization=None):
+                backend.reset_calls.append(
+                    (
+                        env_indices.detach().clone(),
+                        qpos.detach().clone(),
+                        qvel.detach().clone(),
+                    )
+                )
                 return None
 
             def close(self) -> None:
@@ -1517,13 +1527,15 @@ def test_scene_read_plan_refreshes_once_per_phase_and_after_mutations() -> None:
         assert plan is not None
 
         obs, _ = env.reset()
-        assert backend.full_reads == 1
+        assert backend.full_reads == 0
+        assert backend.selected_reads == 1
         assert obs["obs"].shape == (2, 2)
 
         state = env.step(torch.zeros((2, 1), dtype=torch.float32))
         # The action phase packs all body reads once. NumPy legacy observation
-        # terms do not request the scene plan, so no second full packet is made.
-        assert backend.full_reads == 2
+        # terms do not request the scene plan, and update_state reuses the same
+        # ready packet when no mutation invalidates it.
+        assert backend.full_reads == 1
         assert state.obs["obs"].shape == (2, 2)
 
         cfg_events = env.cfg.events
@@ -1532,13 +1544,65 @@ def test_scene_read_plan_refreshes_once_per_phase_and_after_mutations() -> None:
         state = env.step(torch.zeros((2, 1), dtype=torch.float32))
         # A runtime event invalidates the action packet, then the bounded
         # mutation refresh republishes it before the legacy read phase.
-        assert backend.full_reads == 4
+        assert backend.full_reads == 2
         assert state.obs["obs"].shape == (2, 2)
 
         plan.close()
         env.scene._tensor_read_plan = None
         state = env.step(torch.zeros((2, 1), dtype=torch.float32))
         assert state.obs["obs"].shape == (2, 2)
+    finally:
+        if env.scene._tensor_read_plan is not None:
+            env.scene._tensor_read_plan.close()
+            env.scene._tensor_read_plan = None
+        env.close()
+
+
+def test_scene_read_plan_pairs_reset_with_selected_packed_transfer() -> None:
+    cfg = _make_cfg(include_optional_managers=False)
+    cfg.actions = {
+        "tilt": _TensorBodyActionCfg(
+            entity_name="robot",
+            top_body_name="platform",
+            ball_body_name="ball",
+        )
+    }
+    cfg.scene.entities["robot"] = EntityCfg(
+        root_body_name="base",
+        joint_names=("joint",),
+        body_names=("platform", "ball"),
+        actuator_names=("motor",),
+    )
+    cfg.events = {"joint_state": EventTermCfg(func=_write_reset_joint_state, mode="reset")}
+    backend = _ScenePlanBackend(2)
+    env = _TestEnv(cfg, cast(SimBackend, backend), 2)
+    try:
+        plan = env.scene._tensor_read_plan
+        assert plan is not None
+        assert plan.host_plan is not None
+
+        env.reset()
+
+        assert backend.set_state_calls == []
+        assert len(backend.reset_calls) == 1
+        rows, qpos, qvel = backend.reset_calls[0]
+        torch.testing.assert_close(rows, torch.tensor([0, 1], dtype=torch.int64))
+        torch.testing.assert_close(
+            qpos,
+            torch.tensor([[0.0, 0.0, 0.5, 0.25], [0.0, 0.0, 0.5, 0.25]], dtype=torch.float32),
+        )
+        torch.testing.assert_close(
+            qvel, torch.tensor([[0.0, 0.0, -0.5], [0.0, 0.0, -0.5]], dtype=torch.float32)
+        )
+        assert backend.full_reads == 0
+        assert backend.selected_reads == 1
+        assert plan.transfer_stats["selected_post_reset_h2d"] == 1
+
+        env.reset(env_indices=torch.tensor([1], dtype=torch.int64))
+        assert len(backend.reset_calls) == 2
+        torch.testing.assert_close(backend.reset_calls[1][0], torch.tensor([1], dtype=torch.int64))
+        assert backend.full_reads == 0
+        assert backend.selected_reads == 2
     finally:
         if env.scene._tensor_read_plan is not None:
             env.scene._tensor_read_plan.close()
