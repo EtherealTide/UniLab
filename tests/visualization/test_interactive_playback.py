@@ -16,6 +16,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 from unilab.visualization.interactive_playback import (
     KeyboardCommander,
+    OffPolicyPlaybackSession,
     PlaybackControls,
     RslRlPlaybackConfig,
     RslRlPlaybackSession,
@@ -219,6 +220,56 @@ class _RslRlTestWrapper:
         return "obs", 0.0, False, {}
 
 
+class _StrictTensorPlaybackEnv:
+    device = torch.device("cpu")
+
+    def __init__(self) -> None:
+        self.num_envs = 2
+        self.obs_groups_spec = {"obs": 3, "critic": 5}
+        self.action_space = SimpleNamespace(
+            shape=(4,),
+            low=torch.full((4,), -1.0),
+            high=torch.full((4,), 2.0),
+        )
+        self.state = SimpleNamespace(info={"timing": {}})
+        self.reset_indices: list[torch.Tensor] = []
+        self.actions: list[torch.Tensor] = []
+
+    def init_state(self):
+        self.state = SimpleNamespace(info={"timing": {}})
+
+    def reset(self, env_indices):
+        self.reset_indices.append(env_indices)
+        return {
+            "obs": torch.arange(6, dtype=torch.float32).reshape(2, 3),
+            "critic": torch.zeros((2, 5), dtype=torch.float32),
+        }, {"reset": True}
+
+    def step(self, actions):
+        self.actions.append(actions)
+        return SimpleNamespace(
+            obs={
+                "obs": torch.arange(6, dtype=torch.float32).reshape(2, 3) + 1,
+                "critic": torch.zeros((2, 5), dtype=torch.float32),
+            },
+            info={"timing": {}},
+        )
+
+    def get_physics_state_snapshot(self):
+        return torch.zeros((2, 7), dtype=torch.float64)
+
+
+class _ConstantActor:
+    def __init__(self, value: float = 0.5) -> None:
+        self.value = value
+        self.observations: list[torch.Tensor] = []
+
+    def explore(self, obs, deterministic=False):
+        assert deterministic is True
+        self.observations.append(obs)
+        return torch.full_like(obs[:, :1], self.value).expand(-1, 4).contiguous()
+
+
 def _rsl_rl_session_kwargs(tmp_path: Path) -> dict[str, Any]:
     return dict(
         playback_cfg=RslRlPlaybackConfig(
@@ -394,6 +445,82 @@ def test_sac_playback_session_runs_sim2sim_preflight(
     assert resolved == str(checkpoint)
     assert resolved_runs == ["run"]
     assert preflight_calls == [(str(tmp_path), "sac")]
+
+
+def test_offpolicy_playback_keeps_policy_io_on_env_device() -> None:
+    env = _StrictTensorPlaybackEnv()
+    actor = _ConstantActor(0.5)
+    session = OffPolicyPlaybackSession(
+        env=env,
+        device="cpu",
+        action_mode="policy",
+        actor=actor,
+        actor_algo_type="sac",
+        normalizer=None,
+        num_envs=2,
+        obs_extractor=lambda obs: obs["obs"],
+    )
+
+    obs = session.reset()
+
+    assert torch.equal(obs, torch.arange(6, dtype=torch.float32).reshape(2, 3))
+    assert obs.device == env.device
+    assert len(env.reset_indices) == 1
+    assert torch.equal(env.reset_indices[0], torch.arange(2, dtype=torch.int64, device=env.device))
+
+    next_obs = session.step_once()
+
+    assert torch.equal(next_obs, obs + 1)
+    assert len(actor.observations) == 1
+    assert actor.observations[0].device == session.policy_device
+    assert env.actions[0].shape == (2, 4)
+    assert env.actions[0].device == env.device
+    assert env.actions[0].dtype == torch.float32
+    assert torch.allclose(env.actions[0], torch.full((2, 4), 0.5))
+
+
+def test_offpolicy_playback_random_and_zero_actions_use_tensors() -> None:
+    for mode, expected in (("random", None), ("zero", 0.0)):
+        env = _StrictTensorPlaybackEnv()
+        session = OffPolicyPlaybackSession(
+            env=env,
+            device="cpu",
+            action_mode=mode,
+            actor=None,
+            actor_algo_type="sac",
+            normalizer=None,
+            num_envs=2,
+            obs_extractor=lambda obs: obs["obs"],
+        )
+        session.reset()
+        session.step_once()
+
+        action = env.actions[0]
+        assert isinstance(action, torch.Tensor)
+        assert action.shape == (2, 4)
+        assert action.device == env.device
+        assert action.dtype == torch.float32
+        if expected is None:
+            assert torch.all(action >= -1.0) and torch.all(action <= 2.0)
+        else:
+            assert torch.count_nonzero(action) == 0
+
+
+def test_offpolicy_playback_rejects_numpy_observation_boundary() -> None:
+    env = _StrictTensorPlaybackEnv()
+    session = OffPolicyPlaybackSession(
+        env=env,
+        device="cpu",
+        action_mode="zero",
+        actor=None,
+        actor_algo_type="sac",
+        normalizer=None,
+        num_envs=2,
+        obs_extractor=lambda obs: np.ones((2, 3), dtype=np.float32),
+    )
+
+    with pytest.raises(TypeError, match="must be torch tensors"):
+        session.reset()
 
 
 def test_keyboard_commander_nudges_stack_and_clamp_to_vel_limit() -> None:

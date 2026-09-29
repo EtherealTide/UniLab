@@ -287,35 +287,41 @@ class OffPolicyPlaybackSession:
         actor_algo_type: str,
         normalizer: Any | None,
         num_envs: int,
-        obs_extractor: Callable[[dict[str, np.ndarray]], np.ndarray],
+        obs_extractor: Callable[[dict[str, torch.Tensor]], torch.Tensor],
     ) -> None:
         self.env = env
-        self.device = device
+        # A backend may remap a generic CUDA request to a concrete device.
+        # ``env.device`` is authoritative once the environment exists.
+        self.policy_device = (
+            torch.device(device)
+            if getattr(env, "device", None) is None
+            else torch.device(env.device)
+        )
         self.action_mode = action_mode
         self.actor = actor
         self.actor_algo_type = str(actor_algo_type)
         self.normalizer = normalizer
         self.num_envs = int(num_envs)
         self.obs_extractor = obs_extractor
-        self.obs: np.ndarray | None = None
+        self.obs: torch.Tensor | None = None
         self.step_count = 0
 
-    def reset(self) -> np.ndarray:
+    def reset(self) -> torch.Tensor:
         if self.env.state is None:
             self.env.init_state()
-        env_indices = np.arange(self.num_envs, dtype=np.int32)
+        env_indices = torch.arange(self.num_envs, dtype=torch.int64, device=self.env.device)
         reset_result = self.env.reset(env_indices)
         if not isinstance(reset_result, tuple) or len(reset_result) != 2:
             raise ValueError(f"Unexpected env.reset return format: {type(reset_result)!r}")
         obs_out, _ = reset_result
-        self.obs = np.asarray(self.obs_extractor(obs_out), dtype=np.float32)
+        self.obs = _to_play_tensor(self.obs_extractor(obs_out), device=self.policy_device)
         self.step_count = 0
         return self.obs
 
-    def step_once(self) -> np.ndarray:
+    def step_once(self) -> torch.Tensor:
         actions = self._build_actions()
         state = self.env.step(actions)
-        self.obs = np.asarray(self.obs_extractor(state.obs), dtype=np.float32)
+        self.obs = _to_play_tensor(self.obs_extractor(state.obs), device=self.policy_device)
         self.step_count += 1
         return self.obs
 
@@ -334,26 +340,33 @@ class OffPolicyPlaybackSession:
         info = getattr(state, "info", None)
         return info if isinstance(info, dict) else {}
 
-    def _build_actions(self) -> np.ndarray:
+    def _build_actions(self) -> torch.Tensor:
         if self.obs is None:
             raise RuntimeError("Playback session must be reset before stepping.")
         action_space = self.env.action_space
         action_dim = int(action_space.shape[0])
         if self.action_mode == "policy" and self.actor is not None:
-            obs_torch = torch.from_numpy(self.obs).to(self.device)
-            if obs_torch.dtype != torch.float32:
-                obs_torch = obs_torch.float()
+            obs_torch = self.obs.to(device=self.policy_device, dtype=torch.float32)
             if self.normalizer is not None:
                 obs_torch = self.normalizer(obs_torch, update=False)
             actions = self.actor.explore(obs_torch, deterministic=True)
-            return actions.detach().cpu().numpy().astype(np.float32)
+            return actions.detach().to(device=self.env.device, dtype=torch.float32).contiguous()
         if self.action_mode == "random":
-            return np.random.uniform(
-                action_space.low,
-                action_space.high,
-                size=(self.num_envs, action_dim),
-            ).astype(np.float32)
-        return np.zeros((self.num_envs, action_dim), dtype=np.float32)
+            low = torch.as_tensor(action_space.low, device=self.env.device).to(torch.float32)
+            high = torch.as_tensor(action_space.high, device=self.env.device).to(torch.float32)
+            return low + (high - low) * torch.rand(
+                (self.num_envs, action_dim), device=self.env.device, dtype=torch.float32
+            )
+        return torch.zeros((self.num_envs, action_dim), dtype=torch.float32, device=self.env.device)
+
+
+def _to_play_tensor(value: Any, *, device: torch.device) -> torch.Tensor:
+    if not isinstance(value, torch.Tensor):
+        raise TypeError(
+            "Off-policy playback observations must be torch tensors; "
+            f"received {type(value).__name__}"
+        )
+    return value.to(device=device, dtype=torch.float32).contiguous()
 
 
 def make_sim2sim_preflight(
@@ -766,11 +779,18 @@ def resolve_play_obs_dims(obs_groups_spec: dict[str, int]) -> tuple[int, int]:
     return int(obs_dim), int(critic_obs_dim)
 
 
-def extract_play_obs(obs_dict):
+def extract_play_obs(obs_dict: dict[str, torch.Tensor]) -> torch.Tensor:
     from uni_rl.utils.observations import split_obs_dict
 
     obs_out, _ = split_obs_dict(obs_dict)
     return obs_out
+
+
+def resolve_playback_device(env_device: Any, requested_device: str) -> torch.device:
+    """Resolve actor placement from the authoritative TorchEnv device."""
+    if env_device is None:
+        return torch.device(requested_device)
+    return torch.device(env_device)
 
 
 def resolve_play_actor_spec(
@@ -934,6 +954,7 @@ def create_sac_playback_session(
     if action_shape is None:
         raise ValueError("env.action_space.shape must be defined")
     action_dim = int(action_shape[0])
+    session_device = resolve_playback_device(getattr(env, "device", None), device_name)
     actor_algo_type, actor_kwargs = resolve_play_actor_spec(
         algo_name,
         cfg,
@@ -955,7 +976,7 @@ def create_sac_playback_session(
     if bool(getattr(cfg.algo, "obs_normalization", False)):
         from uni_rl.algos.common.normalization import EmpiricalNormalization
 
-        normalizer = EmpiricalNormalization(shape=obs_dim, device=device_name)
+        normalizer = EmpiricalNormalization(shape=obs_dim, device=session_device)
     if playback_cfg.action_mode == "policy":
         actor = build_actor(
             actor_algo_type,
@@ -963,7 +984,7 @@ def create_sac_playback_session(
             action_dim,
             cfg.algo.actor_hidden_dim,
             cfg.algo.use_layer_norm,
-            device_name,
+            str(session_device),
             **actor_kwargs,
         )
         actor.eval()
@@ -986,7 +1007,7 @@ def create_sac_playback_session(
                 algo_name=algo_name,
                 strict=bool(getattr(cfg.training, "sim2sim_strict", True)),
             )
-            checkpoint = torch.load(checkpoint_path, map_location=device_name, weights_only=True)
+            checkpoint = torch.load(checkpoint_path, map_location=session_device, weights_only=True)
             with policy_load_dim_guard(
                 env_obs_dim=obs_dim,
                 env_action_dim=action_dim,
