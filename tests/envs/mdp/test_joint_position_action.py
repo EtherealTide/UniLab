@@ -10,7 +10,13 @@ from typing import cast
 import numpy as np
 import pytest
 import torch
-from unisim.backend.base import SimBackend
+from unisim.backend.base import (
+    SimBackend,
+    TensorDataPlane,
+    TensorExecution,
+    TensorLifecycleCapabilities,
+    TensorProcessTopology,
+)
 
 from unilab.assets import ASSETS_ROOT_PATH
 from unilab.base.backend_factory import create_backend
@@ -72,6 +78,35 @@ class _Backend:
 
     def get_joint_range(self) -> np.ndarray:
         return np.tile(np.asarray([[-1.0, 1.0]], dtype=np.float32), (3, 1))
+
+    def get_joint_state_qpos_indices(self, names) -> np.ndarray:
+        return np.asarray([self.joint_index[name] for name in names], dtype=np.int32)
+
+    def get_joint_state_qvel_indices(self, names) -> np.ndarray:
+        return self.get_joint_state_qpos_indices(names)
+
+    def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
+        return TensorLifecycleCapabilities(
+            execution=TensorExecution.HOST_BRIDGE,
+            state_views=True,
+            state_fields=frozenset(("qpos", "qvel")),
+            stepping=True,
+            selected_reset=True,
+            host_pre_step_control=True,
+            packed_host_bridge=True,
+            process_topology=TensorProcessTopology.IN_PROCESS,
+            data_plane=TensorDataPlane.HOST_BRIDGE,
+            stream_event_ownership="caller owns Torch stream",
+            torch_devices=("cpu",),
+        )
+
+    def get_state_views(self, fields, device=None) -> dict[str, torch.Tensor]:
+        assert set(fields) == {"qpos", "qvel"}
+        target = torch.device(device) if device is not None else torch.device("cpu")
+        return {
+            "qpos": torch.from_numpy(self.dof_pos.copy()).to(target),
+            "qvel": torch.zeros(self.dof_pos.shape, dtype=torch.float32, device=target),
+        }
 
 
 def _action(
@@ -235,6 +270,53 @@ def test_relative_joint_position_action_reads_current_position_at_apply_time() -
 def test_relative_joint_position_action_rejects_nonzero_offsets() -> None:
     with pytest.raises(ValueError, match="does not support a non-zero offset"):
         _build_action(RelativeJointPositionActionCfg, offset={"hip": 0.1})
+
+
+def test_entity_joint_tensor_view_fails_closed_on_missing_tensor_capability() -> None:
+    class UnsupportedBackend(_Backend):
+        def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
+            return TensorLifecycleCapabilities(execution=TensorExecution.UNSUPPORTED)
+
+    backend = UnsupportedBackend()
+    scene = EntityScene(
+        {"robot": EntityCfg(joint_names=("hip",), actuator_names=("hip_motor",))},
+        cast(SimBackend, backend),
+    )
+
+    with pytest.raises(NotImplementedError, match="tensor execution is TensorExecution"):
+        scene["robot"].joint_tensor_view(torch.device("cpu"))
+
+
+def test_entity_joint_tensor_view_validates_layout_dtype_device_and_finite_values() -> None:
+    class InvalidLayoutBackend(_Backend):
+        def get_joint_state_qpos_indices(self, names) -> np.ndarray:
+            return np.asarray([99 for _ in names], dtype=np.int32)
+
+    backend = InvalidLayoutBackend()
+    scene = EntityScene(
+        {"robot": EntityCfg(joint_names=("hip",), actuator_names=("hip_motor",))},
+        cast(SimBackend, backend),
+    )
+
+    with pytest.raises(ValueError, match="columns exceed backend width"):
+        scene["robot"].joint_tensor_view(torch.device("cpu"))
+
+    backend.get_state_views = lambda fields, device=None: {
+        "qpos": torch.full((2, 1), torch.nan),
+        "qvel": torch.zeros((2, 1)),
+    }
+    backend.get_joint_state_qpos_indices = super(
+        InvalidLayoutBackend, backend
+    ).get_joint_state_qpos_indices
+    with pytest.raises(ValueError, match="tensor joint_pos has NaN or Inf"):
+        scene["robot"].joint_tensor_view(torch.device("cpu"))
+
+    backend.get_state_views = lambda fields, device=None: {
+        "qpos": torch.zeros((2, 1), dtype=torch.float64),
+        "qvel": torch.zeros((2, 1)),
+    }
+    with pytest.raises(TypeError, match="must be float32"):
+        scene["robot"].joint_tensor_view(torch.device("cpu"))
 
 
 @pytest.mark.parametrize("backend_type", ["mujoco", "motrix"])
