@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 
 import unilab.managers as managers
 from unilab.envs.mdp.recorders import LifecycleCounterRecorder
@@ -174,6 +175,9 @@ def test_metrics_reductions_substeps_reset_and_finite_failure(fake_env: FakeEnv)
     fake_env.value += 2
     manager.compute_substep()
     manager.compute()
+    assert isinstance(manager._step_values, torch.Tensor)
+    assert manager._step_values.device.type == "cpu"
+    assert all(isinstance(values, torch.Tensor) for values in manager._episode_sums.values())
     extras = manager.reset(np.array([1, 2]))
     assert extras["Episode_Metrics/mean"] == pytest.approx(3.5)
     assert extras["Episode_Metrics/max"] == pytest.approx(3.5)
@@ -264,7 +268,10 @@ def test_public_exports_and_repository_import_boundary() -> None:
     assert expected <= set(vars(managers))
 
     package_root = Path(managers.__file__).parent
-    forbidden_roots = {"torch", "mjlab"}
+    # ADR-0011 supersedes ADR-0006's NumPy-only Manager constraint. Torch is
+    # the target execution carrier; mjlab remains a cold-path source baseline,
+    # not a runtime dependency.
+    forbidden_roots = {"mjlab"}
     forbidden_unilab = {"uni_rl", "unilab.runners", "unilab.scripts", "unilab.base.backend"}
     for path in package_root.rglob("*.py"):
         tree = ast.parse(path.read_text())
