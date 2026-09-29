@@ -190,6 +190,16 @@ def test_metrics_reductions_substeps_reset_and_finite_failure(fake_env: FakeEnv)
     )
     with pytest.raises(ValueError, match="MetricsManager term 'bad'"):
         bad.compute()
+    wrong_dtype = MetricsManager(
+        {
+            "wrong_dtype": MetricsTermCfg(
+                func=lambda env: torch.ones(env.num_envs, dtype=torch.float64)
+            )
+        },
+        fake_env,
+    )
+    with pytest.raises(TypeError, match="expected float32"):
+        wrong_dtype.compute()
     assert NullMetricsManager().reset() == {}
 
 

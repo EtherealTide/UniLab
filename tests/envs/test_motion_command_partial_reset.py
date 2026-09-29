@@ -167,7 +167,7 @@ def test_motion_command_partial_reset_row_parity(
         assert env.state is not None
         for group, values in reset_obs.items():
             assert values.shape[0] == len(reset_ids)
-            assert np.isfinite(values).all()
+            assert torch.isfinite(values).all()
             np.testing.assert_array_equal(env.state.obs[group][reset_ids], values)
 
         # Reference: a full recompute of the post-reset state (the pre-#1261

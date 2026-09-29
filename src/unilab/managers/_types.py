@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
 import numpy as np
+import torch
 
 
 class ManagerEntity(Protocol):
@@ -209,7 +210,7 @@ class ManagerEventManager(Protocol):
 
 class ManagerTerminationManager(Protocol):
     @property
-    def terminated(self) -> np.ndarray: ...
+    def terminated(self) -> torch.Tensor: ...
 
     def get_term_cfg(self, term_name: str) -> Any: ...
 

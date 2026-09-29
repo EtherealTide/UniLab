@@ -105,8 +105,7 @@ _NUMPY_MDP_MODULES = (
     "envs/mdp/terminations.py",
     "envs/mdp/commands/velocity_command.py",
 )
-_NUMPY_MDP_FORBIDDEN_LAYERS = (
-    "torch",
+_MDP_FORBIDDEN_LAYERS = (
     "uni_rl",
     "unilab.training",
     "unilab.base.backend",
@@ -114,7 +113,7 @@ _NUMPY_MDP_FORBIDDEN_LAYERS = (
 
 
 @pytest.mark.parametrize("relative_path", _NUMPY_MDP_MODULES)
-def test_numpy_mdp_modules_do_not_import_runtime_layers(relative_path: str) -> None:
+def test_mdp_modules_do_not_import_training_or_ipc_layers(relative_path: str) -> None:
     path = _LIBRARY_PACKAGE / relative_path
     imports = _imports(path)
     violations = sorted(
@@ -122,7 +121,7 @@ def test_numpy_mdp_modules_do_not_import_runtime_layers(relative_path: str) -> N
         for module in imports
         if any(
             module == forbidden or module.startswith(f"{forbidden}.")
-            for forbidden in _NUMPY_MDP_FORBIDDEN_LAYERS
+            for forbidden in _MDP_FORBIDDEN_LAYERS
         )
     )
 

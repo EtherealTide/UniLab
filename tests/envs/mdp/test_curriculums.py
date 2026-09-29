@@ -141,7 +141,7 @@ def test_reapplication_is_idempotent(fake_env: _FakeEnv) -> None:
 
 def test_ramped_weight_changes_computed_reward(fake_env: _FakeEnv) -> None:
     manager = _reward_curriculum_manager(fake_env, [{"step": 0, "weight": -1.0}])
-    before = fake_env.reward_manager.compute(dt=1.0).copy()
+    before = fake_env.reward_manager.compute(dt=1.0).clone()
     manager.compute()
     after = fake_env.reward_manager.compute(dt=1.0)
     np.testing.assert_allclose(after, before * 10.0)

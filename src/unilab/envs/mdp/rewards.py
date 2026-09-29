@@ -2,7 +2,7 @@
 # src/mjlab/envs/mdp/rewards.py and src/mjlab/tasks/velocity/mdp/rewards.py.
 # Copyright 2025, The mjlab Developers.
 # Modified by UniLab for NumPy and the base-owned entity facade; Apache-2.0.
-"""Community-style reward terms for the NumPy manager runtime."""
+"""Community-style reward terms for the Manager runtime."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import re
 from typing import TYPE_CHECKING, ClassVar, cast
 
 import numpy as np
+import torch
 
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
@@ -90,11 +91,15 @@ def _command(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray:
 
 def is_alive(env: ManagerBasedRlEnv) -> np.ndarray:
     """Reward environments that have not reached a non-timeout termination."""
+    if isinstance(env.termination_manager.terminated, torch.Tensor):
+        return (~env.termination_manager.terminated).to(torch.float32)
     return np.logical_not(env.termination_manager.terminated).astype(np.float32, copy=False)
 
 
 def is_terminated(env: ManagerBasedRlEnv) -> np.ndarray:
     """Return one for non-timeout terminations."""
+    if isinstance(env.termination_manager.terminated, torch.Tensor):
+        return env.termination_manager.terminated.to(torch.float32)
     return env.termination_manager.terminated.astype(np.float32, copy=False)
 
 

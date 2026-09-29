@@ -219,7 +219,16 @@ class MetricsManager(ManagerBase):
         term_cfg = self._term_cfgs[idx]
         value = term_cfg.func(self._env, **term_cfg.params)
         if isinstance(value, torch.Tensor):
-            result = value.to(device=self._device, dtype=torch.float32, copy=True)
+            if value.dtype != torch.float32:
+                raise TypeError(
+                    f"MetricsManager term '{name}' returned dtype {value.dtype}, expected float32."
+                )
+            if value.device != self._device:
+                raise ValueError(
+                    f"MetricsManager term '{name}' returned device {value.device}, "
+                    f"expected {self._device}."
+                )
+            result = value.clone()
         else:
             host = np.array(value, dtype=np.float32, order="C", copy=True)
             result = torch.from_numpy(host).to(device=self._device)

@@ -533,9 +533,10 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def _manager_tensor(self, values: np.ndarray, *, dtype: torch.dtype) -> torch.Tensor:
         """Copy one completed NumPy Manager result across the public Torch boundary."""
+        if isinstance(values, torch.Tensor):
+            return values.to(device=self.device, dtype=dtype, copy=True)
         host = np.array(values, order="C", copy=True)
-        tensor = torch.from_numpy(host)
-        return tensor.to(device=self.device, dtype=dtype, copy=True)
+        return torch.from_numpy(host).to(device=self.device, dtype=dtype, copy=True)
 
     def _tensor_flags_to_manager_boundary(self, values: torch.Tensor) -> np.ndarray:
         """Publish public Torch flags to temporary NumPy Manager/recorder scratch."""
@@ -588,16 +589,14 @@ class ManagerBasedRlEnv(TorchEnv):
         self._sim_step_counter = self.common_step_counter * self._cfg.sim_substeps
 
         self.termination_manager.compute()
+        terminated = self._tensor_flags_to_manager_boundary(self.termination_manager.terminated)
+        time_outs = self._tensor_flags_to_manager_boundary(self.termination_manager.time_outs)
         if self._cfg.is_finite_horizon:
-            np.logical_or(
-                self.termination_manager.terminated,
-                self.termination_manager.time_outs,
-                out=self.reset_terminated,
-            )
+            np.logical_or(terminated, time_outs, out=self.reset_terminated)
             self.reset_time_outs.fill(False)
         else:
-            np.copyto(self.reset_terminated, self.termination_manager.terminated)
-            np.copyto(self.reset_time_outs, self.termination_manager.time_outs)
+            np.copyto(self.reset_terminated, terminated)
+            np.copyto(self.reset_time_outs, time_outs)
         np.logical_or(self.reset_terminated, self.reset_time_outs, out=self.reset_buf)
 
         self.reward_buf = self.reward_manager.compute(dt=self.step_dt)
