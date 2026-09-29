@@ -1,26 +1,26 @@
-"""MuJoCo NpEnv multi-shard CPU throughput benchmark (issue #960).
+"""MuJoCo TorchEnv multi-shard CPU throughput benchmark (issue #960).
 
 Splits a fixed global number of env rows evenly across ``S = 1/2/4/...``
 shards. Each shard runs in its own process, pins itself to a disjoint CPU set
-(``os.sched_setaffinity``) *before* creating its NpEnv, and then steps a real
-MuJoCo NpEnv (``g1_walk_flat`` / ``g1_motion_tracking``) with NumPy actions
+(``os.sched_setaffinity``) *before* creating its TorchEnv, and then steps a real
+MuJoCo TorchEnv (``g1_walk_flat`` / ``g1_motion_tracking``) with Torch actions
 prepared outside the timed window. The timed window covers only the full
-NpEnv ``step/reset/postprocess`` hot path.
+TorchEnv ``step/update-state/reset-done`` hot path.
 
 Total throughput is ``global env rows x measured steps / paired wall time``,
 where paired wall time spans from the synchronized start signal until the last
 shard reports done — so shard-wait losses are included in the scaling numbers.
 
-No learner / actor / torch / CUDA / runner lifecycle is involved.
+No learner / actor / CUDA / runner lifecycle is involved.
 
 Run:
-    uv run scripts/benchmark/env/benchmark_np_env_shard_throughput.py
+    uv run scripts/benchmark/env/benchmark_torch_env_shard_throughput.py
 
     # subset + tuning:
-    uv run scripts/benchmark/env/benchmark_np_env_shard_throughput.py \
+    uv run scripts/benchmark/env/benchmark_torch_env_shard_throughput.py \
         --tasks g1_walk_flat --num-envs 8192 --shards 1,2,4 \
         --warmup-steps 10 --measured-steps 100 --repeats 1 \
-        --out-json tmp/np_env_shard.json
+        --out-json tmp/torch_env_shard.json
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ import argparse
 import multiprocessing as mp
 import os
 import queue
+import statistics
 import subprocess
 import sys
 import time
@@ -36,7 +37,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Sequence
 
-import numpy as np
+import torch
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
 if str(ROOT_DIR) not in sys.path:
@@ -46,7 +47,7 @@ from scripts.benchmark.core.device_info import get_device_info_dict, get_device_
 from scripts.benchmark.core.output import print_table, save_json
 
 DEFAULT_OUTPUT_JSON = (
-    ROOT_DIR / "scripts" / "benchmark" / "outputs" / "np_env_shard_throughput" / "results.json"
+    ROOT_DIR / "scripts" / "benchmark" / "outputs" / "torch_env_shard_throughput" / "results.json"
 )
 
 BACKEND = "mujoco"
@@ -102,13 +103,18 @@ def shard_cpu_sets(available_cpus: Sequence[int], num_shards: int) -> list[froze
     return sets
 
 
-def prepare_actions(seed: int, num_steps: int, num_envs: int, action_dim: int) -> np.ndarray:
-    """Pre-sample legal NumPy actions for ``num_steps`` steps (outside timing)."""
-    rng = np.random.default_rng(seed)
-    return rng.uniform(-1.0, 1.0, size=(num_steps, num_envs, action_dim)).astype(np.float32)
+def prepare_actions(seed: int, num_steps: int, num_envs: int, action_dim: int) -> torch.Tensor:
+    """Pre-sample legal Torch actions for ``num_steps`` steps (outside timing)."""
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed)
+    return (
+        torch.rand((num_steps, num_envs, action_dim), generator=generator, dtype=torch.float32)
+        * 2.0
+        - 1.0
+    )
 
 
-def run_measured_steps(step_fn: Any, actions: np.ndarray) -> float:
+def run_measured_steps(step_fn: Any, actions: torch.Tensor) -> float:
     """Run the timed hot path over pre-prepared actions; returns elapsed seconds."""
     t0 = time.perf_counter()
     for i in range(actions.shape[0]):
@@ -126,12 +132,11 @@ def total_throughput(total_envs: int, measured_steps: int, wall_time_s: float) -
 def summarize_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate per-repeat total throughput of one case."""
     values = [float(r["total_env_steps_per_s"]) for r in runs]
-    arr = np.asarray(values, dtype=np.float64)
     return {
         "num_runs": len(values),
-        "mean_env_steps_per_s": float(arr.mean()),
-        "min_env_steps_per_s": float(arr.min()),
-        "max_env_steps_per_s": float(arr.max()),
+        "mean_env_steps_per_s": statistics.fmean(values),
+        "min_env_steps_per_s": min(values),
+        "max_env_steps_per_s": max(values),
         "scaling_vs_s1": None,
     }
 
@@ -182,7 +187,7 @@ def _shard_worker(
     msg_queue: Any,
     start_event: Any,
 ) -> None:
-    """Pin CPUs, build one NpEnv, then step pre-prepared actions on signal."""
+    """Pin CPUs, build one TorchEnv, then step pre-prepared actions on signal."""
     try:
         if not hasattr(os, "sched_setaffinity"):
             raise RuntimeError("os.sched_setaffinity is required (Linux only)")
@@ -198,7 +203,7 @@ def _shard_worker(
         env = task_config.env_cls_factory()(cfg, num_envs=shard_rows, backend_type=BACKEND)
         try:
             env.init_state()
-            action_dim = env._backend.num_actuators  # type: ignore[reportAttributeAccessIssue]
+            action_dim = int(env.action_space.shape[-1])
             # Action preparation happens before the timed window by construction.
             actions = prepare_actions(
                 seed + shard_index, warmup_steps + measured_steps, shard_rows, action_dim
@@ -413,7 +418,7 @@ def _parse_int_list(text: str, name: str) -> list[int]:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="MuJoCo NpEnv multi-shard CPU throughput benchmark (issue #960)."
+        description="MuJoCo TorchEnv multi-shard CPU throughput benchmark (issue #960)."
     )
     parser.add_argument("--tasks", default=DEFAULT_TASKS, help="comma-separated task ids")
     parser.add_argument("--num-envs", default=DEFAULT_NUM_ENVS, help="comma-separated totals")
@@ -493,7 +498,7 @@ def main(argv: list[str] | None = None) -> list[dict[str, Any]]:
         args.out_json,
         records,
         {
-            "benchmark": "np_env_shard_throughput",
+            "benchmark": "torch_env_shard_throughput",
             "issue": 960,
             "commit": git_commit(),
             "device": get_device_info_dict(),
