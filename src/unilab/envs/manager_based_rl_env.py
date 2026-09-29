@@ -624,6 +624,9 @@ class ManagerBasedRlEnv(TorchEnv):
         # Physics stepping and reset/set_state lifecycles sit outside this private
         # scope. In-phase mutations explicitly invalidate it below.
         with self.scene._scoped_state_reads():
+            read_plan = self.scene._tensor_read_plan
+            if read_plan is not None and not read_plan.ready:
+                read_plan.refresh()
             return self._update_state_in_read_phase(state)
 
     def _update_state_in_read_phase(self, state: TorchEnvState) -> TorchEnvState:
@@ -665,6 +668,7 @@ class ManagerBasedRlEnv(TorchEnv):
             # interval/step capabilities; EventManager does not expose whether a
             # particular interval fired, so this boundary stays fail-closed.
             self.scene._invalidate_state_reads()
+            self._refresh_tensor_reads_after_mutation()
 
         self._command_dt.fill(self.step_dt)
         self._command_dt[self.reset_buf] = 0.0
@@ -672,6 +676,7 @@ class ManagerBasedRlEnv(TorchEnv):
             self.command_manager.compute(dt=self._command_dt)
         if self._reset_state.last_commit_had_writes:
             self.scene._invalidate_state_reads()
+            self._refresh_tensor_reads_after_mutation()
         self.command_manager.post_compute()
 
         manager_obs = self.observation_manager.compute(update_history=True)
@@ -689,6 +694,12 @@ class ManagerBasedRlEnv(TorchEnv):
             terminated=self._manager_tensor(self.reset_terminated, dtype=torch.bool),
             truncated=self._manager_tensor(self.reset_time_outs, dtype=torch.bool),
         )
+
+    def _refresh_tensor_reads_after_mutation(self) -> None:
+        """Repack scene tensor reads after an in-phase simulation mutation."""
+        read_plan = self.scene._tensor_read_plan
+        if read_plan is not None:
+            read_plan.refresh()
 
     def _compute_truncated(self, state: TorchEnvState) -> torch.Tensor:
         del state
@@ -762,6 +773,14 @@ class ManagerBasedRlEnv(TorchEnv):
         # committed, so cached getter values are post-set_state reads shared
         # across terms (issue #1295).
         with self.scene._scoped_state_reads():
+            read_plan = self.scene._tensor_read_plan
+            if read_plan is not None:
+                # Reset-state terms currently commit through the NumPy reset
+                # transaction, so a backend packed plan has no selected-row D2H
+                # payload to pair with ``refresh_selected``. Repack from the
+                # post-reset authoritative host state instead of inventing a
+                # second reset protocol.
+                read_plan.refresh()
             self.command_manager.compute(dt=0.0, env_ids=ids)
             self.command_manager.post_compute()
             # Row-scoped reset rebuild (issue #1259 R2): the observation manager

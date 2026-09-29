@@ -3551,6 +3551,8 @@ class EntityScene(Mapping[str, Entity]):
     def _invalidate_state_reads(self) -> None:
         """Discard cached backend state after an in-phase simulation mutation."""
         self._state_read_cache.invalidate()
+        if self._tensor_read_plan is not None:
+            self._tensor_read_plan.invalidate()
 
     def reset_to_default(self, env_ids: np.ndarray, *, term_name: str) -> None:
         """Stage a full-scene default state in the active reset transaction."""
