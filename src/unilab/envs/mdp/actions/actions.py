@@ -86,9 +86,12 @@ class BaseAction(ActionTerm):
         target_ids, target_names = self._entity.find_joints_by_actuator_names(cfg.actuator_names)
         self._target_ids = np.asarray(target_ids, dtype=np.intp)
         self._target_ids.setflags(write=False)
+        self._device = getattr(env, "device", torch.device("cpu"))
+        self._target_index = torch.from_numpy(self._target_ids.copy()).to(
+            dtype=torch.int64, device=self._device
+        )
         self._target_names = list(target_names)
         self._action_dim = len(target_ids)
-        self._device = getattr(env, "device", torch.device("cpu"))
         self._raw_actions = torch.zeros(
             (self.num_envs, self.action_dim), dtype=torch.float32, device=self._device
         )
@@ -288,9 +291,13 @@ class RelativeJointPositionAction(BaseAction):
     """Control joints via position targets relative to current positions."""
 
     def apply_actions(self) -> None:
-        current = self._entity.data.joint_pos[:, self._target_ids]
-        target = current + self._entity_values(self._processed_actions)
-        self._entity.set_joint_position_target(target, joint_ids=self._target_ids)
+        joint_state = self._entity.joint_tensor_view(self._device)
+        target = joint_state.joint_pos.index_select(1, self._target_index) + (
+            self._processed_actions
+        )
+        self._entity.set_joint_position_target(
+            self._entity_values(target), joint_ids=self._target_ids
+        )
 
 
 @dataclass(kw_only=True)

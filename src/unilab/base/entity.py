@@ -16,7 +16,14 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import numpy as np
-from unisim.backend.base import BackendRootStateLayout, BackendSensorView, SimBackend
+import torch
+from unisim.backend.base import (
+    BackendRootStateLayout,
+    BackendSensorView,
+    SimBackend,
+    TensorExecution,
+    tensor_device_matches,
+)
 from unisim.dr.types import IntervalRandomizationPlan
 
 from unilab.utils.rotation import np_quat_apply, np_quat_apply_inverse, np_yaw_from_quat
@@ -148,6 +155,14 @@ def _resolve_matching_names(
 
 
 _StateReadKey = tuple[str, tuple[int, ...] | None]
+
+
+@dataclass(frozen=True)
+class EntityTensorStateView:
+    """Entity-scoped Torch qpos/qvel-derived joint state for one read phase."""
+
+    joint_pos: torch.Tensor
+    joint_vel: torch.Tensor
 
 
 class _EntityStateReadCache:
@@ -650,6 +665,7 @@ class Entity:
                 self._joint_names,
                 backend.get_joint_dof_vel_indices,
             )
+        self._joint_dof_ids = (joint_pos_ids, joint_vel_ids)
 
         body_ids = None
         if self._body_names is not None:
@@ -685,6 +701,7 @@ class Entity:
             joint_pos_ids,
             default_qpos,
         )
+
         default_joint_vel = self._materialize_default_joint_vel(backend, joint_vel_ids)
         soft_joint_pos_limits = self._materialize_soft_joint_pos_limits(backend, joint_pos_ids)
         gravity_vec_w = self._materialize_gravity_vector(backend, root_body_ids)
@@ -749,6 +766,107 @@ class Entity:
             f"Entity '{self.name}' capability '{capability}' is unavailable on "
             f"backend '{self._backend_type}': {detail}"
         )
+
+    def joint_tensor_view(self, device: torch.device) -> EntityTensorStateView:
+        """Read entity joint state as validated Torch tensors on ``device``.
+
+        The backend owns the transfer topology: host bridges return packed
+        copies and device-resident adapters return stable live views.  This
+        facade resolves entity joint columns and validates layout, dtype,
+        device, and finite values without exposing the backend.
+        """
+        names = self._joint_names
+        if names is None:
+            raise self._capability_error(
+                "joint tensor state", "joint_names were not declared in EntityCfg"
+            )
+        if self._joint_dof_ids[0] is None or self._joint_dof_ids[1] is None:
+            raise self._capability_error(
+                "joint tensor state", "joint position/velocity state was not materialized"
+            )
+        try:
+            qpos_ids = self._backend.get_joint_state_qpos_indices(names)
+            qvel_ids = self._backend.get_joint_state_qvel_indices(names)
+        except (AttributeError, NotImplementedError) as exc:
+            raise self._capability_error("joint tensor state layout", str(exc)) from exc
+        expected = (len(names),)
+        if qpos_ids.shape != expected or qvel_ids.shape != expected:
+            raise ValueError(
+                f"Entity '{self.name}' tensor joint-state layout on backend "
+                f"'{self._backend_type}' returned shapes {qpos_ids.shape} and "
+                f"{qvel_ids.shape}; expected {expected}"
+            )
+        if np.any(qpos_ids < 0) or np.any(qvel_ids < 0):
+            raise ValueError(
+                f"Entity '{self.name}' tensor joint-state layout contains negative columns"
+            )
+
+        capabilities = self._backend.get_tensor_capabilities()
+        state_fields = ("qpos", "qvel")
+        if capabilities.execution not in {
+            TensorExecution.HOST_BRIDGE,
+            TensorExecution.DEVICE_RESIDENT,
+        }:
+            raise self._capability_error(
+                "joint tensor state", f"tensor execution is {capabilities.execution}"
+            )
+        if not capabilities.state_views or not set(state_fields).issubset(
+            capabilities.state_fields
+        ):
+            raise self._capability_error("joint tensor state", "qpos/qvel views are unavailable")
+        if not tensor_device_matches(capabilities.torch_devices, device):
+            raise ValueError(
+                f"Entity '{self.name}' tensor joint-state device {device} is "
+                f"unsupported on backend '{self._backend_type}'; "
+                f"accepted={capabilities.torch_devices}"
+            )
+        try:
+            views = self._backend.get_state_views(state_fields, device=device)
+        except (AttributeError, KeyError, TypeError, ValueError, NotImplementedError) as exc:
+            raise type(exc)(
+                f"Entity '{self.name}' tensor joint-state read on backend "
+                f"'{self._backend_type}': {exc}"
+            ) from exc
+
+        result: dict[str, torch.Tensor] = {}
+        expected_width = len(names)
+        for field, state_field, columns in (
+            ("joint_pos", "qpos", qpos_ids),
+            ("joint_vel", "qvel", qvel_ids),
+        ):
+            raw = views[state_field]
+            if not isinstance(raw, torch.Tensor):
+                raise TypeError(
+                    f"Entity '{self.name}' tensor {field} view on backend "
+                    f"'{self._backend_type}' is {type(raw).__name__}, expected torch.Tensor"
+                )
+            expected_shape = (self._backend.num_envs, expected_width)
+            if raw.ndim != 2 or raw.shape[0] != expected_shape[0]:
+                raise ValueError(
+                    f"Entity '{self.name}' tensor {field} view on backend "
+                    f"'{self._backend_type}' has shape {tuple(raw.shape)}; expected "
+                    f"{expected_shape} after entity column selection"
+                )
+            if int(np.max(columns)) >= raw.shape[1]:
+                raise ValueError(
+                    f"Entity '{self.name}' tensor {field} columns exceed backend "
+                    f"width {raw.shape[1]}"
+                )
+            if raw.dtype != torch.float32 or raw.device != torch.device(device):
+                raise TypeError(
+                    f"Entity '{self.name}' tensor {field} view must be float32 "
+                    f"on {device}; got {raw.dtype} on {raw.device}"
+                )
+            selected = raw[:, np.asarray(columns, dtype=np.intp)]
+            if tuple(selected.shape) != expected_shape:
+                raise ValueError(
+                    f"Entity '{self.name}' tensor {field} selected shape "
+                    f"{tuple(selected.shape)} does not match {expected_shape}"
+                )
+            if not bool(torch.isfinite(selected).all()):
+                raise ValueError(f"Entity '{self.name}' tensor {field} has NaN or Inf")
+            result[field] = selected
+        return EntityTensorStateView(**result)
 
     def _resolve_ids(self, capability: str, names: tuple[str, ...], resolver) -> np.ndarray:
         try:
@@ -2685,4 +2803,10 @@ class EntityScene(Mapping[str, Entity]):
         return len(self._entities)
 
 
-__all__ = ["Entity", "EntityCfg", "EntityData", "EntityScene"]
+__all__ = [
+    "Entity",
+    "EntityCfg",
+    "EntityData",
+    "EntityScene",
+    "EntityTensorStateView",
+]
