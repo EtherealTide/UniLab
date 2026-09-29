@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from unisim.backend.mjwarp.dependencies import load_mjwarp_dependencies
@@ -229,14 +230,14 @@ def test_g1_walk_flat_owner_one_step(
     )
 
     action_dim = int(env.action_space.shape[-1])
-    state = env.step(np.zeros((2, action_dim), dtype=np.float32))
+    state = env.step(torch.zeros((2, action_dim), dtype=torch.float32, device=env.device))
 
     assert set(state.obs) == {"obs", "critic"}
     assert state.obs["obs"].shape == (2, 98)
     assert state.obs["critic"].shape == (2, 101)
-    assert np.isfinite(state.obs["obs"]).all()
-    assert np.isfinite(state.obs["critic"]).all()
-    assert np.isfinite(state.reward).all()
+    assert torch.isfinite(state.obs["obs"]).all()
+    assert torch.isfinite(state.obs["critic"]).all()
+    assert torch.isfinite(state.reward).all()
 
 
 def test_body_state_matches_mujoco_backend() -> None:

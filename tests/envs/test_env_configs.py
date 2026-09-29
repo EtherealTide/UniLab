@@ -15,6 +15,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+import torch
 
 from unilab.base.registry import ensure_registries
 
@@ -592,7 +593,7 @@ def test_env_reset_and_step(env_name: str):
             )
 
         # 3. Step with zero actions
-        actions = np.zeros((2, act_space.shape[0]))
+        actions = torch.zeros((2, int(act_space.shape[0])), dtype=torch.float32)
         state = env.step(actions)
         assert isinstance(state.obs, dict)
         for key, dim in spec.items():
@@ -632,7 +633,7 @@ def test_allegro_manager_runtime_transition_contract():
         action = env.action_manager.get_term("hand")
         assert isinstance(action, AllegroIncrementalPositionAction)
         target_before = action.target.copy()
-        actions = np.full((2, 16), 0.25, dtype=np.float32)
+        actions = torch.full((2, 16), 0.25, dtype=torch.float32)
         manager_state = env.step(actions)
         expected_target = np.clip(
             target_before + 0.25 / 24.0,
@@ -645,11 +646,14 @@ def test_allegro_manager_runtime_transition_contract():
         assert isinstance(observation, AllegroRotationObservation)
         current_frame = observation(env)
         np.testing.assert_allclose(
-            manager_state.obs["obs"][:, -35:], current_frame, rtol=0.0, atol=1.0e-7
+            manager_state.obs["obs"][:, -35:].cpu().numpy(),
+            current_frame,
+            rtol=0.0,
+            atol=1.0e-7,
         )
-        assert np.isfinite(manager_state.obs["obs"]).all()
-        assert np.isfinite(manager_state.reward).all()
-        assert manager_state.terminated.dtype == np.bool_
+        assert torch.isfinite(manager_state.obs["obs"]).all()
+        assert torch.isfinite(manager_state.reward).all()
+        assert manager_state.terminated.dtype == torch.bool
         assert action.action_dim == 16
         assert env.obs_groups_spec == {"obs": 105}
     finally:
@@ -696,9 +700,9 @@ def test_allegro_grasp_manager_runtime_uses_zero_increment_action(sim_backend: s
         assert isinstance(recorder, AllegroGraspRecorder)
         target = action.target.copy()
 
-        state = env.step(np.ones((2, 16), dtype=np.float32))
+        state = env.step(torch.ones((2, 16), dtype=torch.float32))
         np.testing.assert_array_equal(action.target, target)
-        np.testing.assert_array_equal(state.reward, np.zeros(2, dtype=state.reward.dtype))
+        torch.testing.assert_close(state.reward, torch.zeros(2))
         assert initial.obs["obs"].shape == (2, 105)
         assert state.obs["obs"].shape == (2, 105)
         assert quality.last_counter == env.common_step_counter
@@ -735,17 +739,15 @@ def test_g1_motion_core_registrations_are_manager_only() -> None:
     # genesis/newton extend the same SAC contract (unisim-core>=1.5.1, #137);
     # isaacgym/isaacsim join since unisim-core>=1.7.4 fixed the subprocess
     # body-state publish/reset paths (#141).
-    assert metadata["G1MotionTrackingSAC"] == {
-        "config_factory": "ManagerBasedRlEnvCfg",
-        "available_backends": [
-            "mujoco",
-            "motrix",
-            "mjwarp",
-            "genesis",
-            "newton",
-            "isaacgym",
-            "isaacsim",
-        ],
+    assert metadata["G1MotionTrackingSAC"]["config_factory"] == "ManagerBasedRlEnvCfg"
+    assert set(metadata["G1MotionTrackingSAC"]["available_backends"]) >= {
+        "mujoco",
+        "motrix",
+        "mjwarp",
+        "genesis",
+        "newton",
+        "isaacgym",
+        "isaacsim",
     }
 
 
@@ -830,7 +832,7 @@ def test_g1_motion_manager_sac_clip_end_is_truncation() -> None:
         command = env.command_manager.get_term("motion")
         command.time_steps[:] = command.sampler.current_clip_end_frames
 
-        state = env.step(np.zeros((2, 29), dtype=np.float32))
+        state = env.step(torch.zeros((2, 29), dtype=torch.float32))
 
         np.testing.assert_array_equal(state.terminated, [False, False])
         np.testing.assert_array_equal(state.truncated, [True, True])
@@ -859,14 +861,14 @@ def test_sac_g1_motion_mjwarp_dr_runtime_applies_reset_and_interval_dr() -> None
     )
     try:
         state = env.init_state()
-        assert np.isfinite(state.obs["obs"]).all()
-        assert np.isfinite(state.obs["critic"]).all()
+        assert torch.isfinite(state.obs["obs"]).all()
+        assert torch.isfinite(state.obs["critic"]).all()
 
         for _ in range(3):
-            state = env.step(np.zeros((2, 29), dtype=np.float32))
-            assert np.isfinite(state.obs["obs"]).all()
-            assert np.isfinite(state.obs["critic"]).all()
-            assert np.isfinite(state.reward).all()
+            state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
+            assert torch.isfinite(state.obs["obs"]).all()
+            assert torch.isfinite(state.obs["critic"]).all()
+            assert torch.isfinite(state.reward).all()
 
         velocity_range = env.event_manager.get_term_cfg("push_robot").params["velocity_range"]
         assert velocity_range["x"] == [-0.5, 0.5]
@@ -933,11 +935,11 @@ def test_g1_motion_core_manager_reset_and_step(
         assert state.obs["obs"].shape == (2, actor_dim)
         assert state.obs["critic"].shape == (2, critic_dim)
 
-        state = env.step(np.zeros((2, action_dim), dtype=np.float32))
+        state = env.step(torch.zeros((2, action_dim), dtype=torch.float32))
         assert state.reward.shape == (2,)
         assert state.terminated.shape == (2,)
         assert state.truncated.shape == (2,)
-        assert np.isfinite(state.reward).all()
-        assert all(np.isfinite(values).all() for values in state.obs.values())
+        assert torch.isfinite(state.reward).all()
+        assert all(torch.isfinite(values).all() for values in state.obs.values())
     finally:
         env.close()

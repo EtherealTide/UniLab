@@ -1,4 +1,4 @@
-"""Adapter from the UniLab numpy env contract to the RSL-RL VecEnv contract."""
+"""Adapter from the UniLab env contracts to the RSL-RL VecEnv contract."""
 
 from __future__ import annotations
 
@@ -99,20 +99,26 @@ class RslRlVecEnvAdapter:
         self.episode_lengths = value
         set_env_episode_lengths = getattr(self.env, "set_episode_length_buf", None)
         if callable(set_env_episode_lengths):
-            set_env_episode_lengths(_to_numpy(value).astype(np.int64))
+            env_device = getattr(self.env, "device", None)
+            if env_device is not None:
+                set_env_episode_lengths(value.to(device=env_device, dtype=torch.int64).contiguous())
+            else:
+                set_env_episode_lengths(_to_numpy(value).astype(np.int64))
 
     def _policy_obs(self, obs: dict[str, Any]) -> torch.Tensor:
         if self.policy_obs_mode == "actor":
             return _to_torch(obs["obs"], self.device)
 
         policy_groups = [
-            _to_numpy(value) for group_name, value in obs.items() if group_name != "critic"
+            _to_torch(value, self.device)
+            for group_name, value in obs.items()
+            if group_name != "critic"
         ]
         if not policy_groups:
             raise KeyError("Observation dict must contain at least one non-critic group")
         if len(policy_groups) == 1:
-            return _to_torch(policy_groups[0], self.device)
-        return _to_torch(np.concatenate(policy_groups, axis=1), self.device)
+            return policy_groups[0]
+        return torch.cat(policy_groups, dim=-1)
 
     def _obs_to_tensordict(self, obs: dict[str, Any]) -> TensorDict:
         td_dict: dict[str, torch.Tensor] = {
@@ -126,8 +132,11 @@ class RslRlVecEnvAdapter:
     def step(
         self, actions: torch.Tensor | np.ndarray
     ) -> tuple[TensorDict, torch.Tensor, torch.Tensor, dict]:
-        actions_np = _to_numpy(actions)
-        state = self.env.step(actions_np)
+        env_device = getattr(self.env, "device", self.device)
+        action_tensor = torch.as_tensor(
+            actions, dtype=torch.float32, device=env_device
+        ).contiguous()
+        state = self.env.step(action_tensor)
         rewards = _to_torch(state.reward, self.device)
         dones = _to_torch(state.terminated | state.truncated, self.device).bool()
 
@@ -150,7 +159,12 @@ class RslRlVecEnvAdapter:
         if self.env.state is None:
             self.env.init_state()
 
-        env_indices = np.arange(self.num_envs, dtype=np.int32)
+        env_device = getattr(self.env, "device", None)
+        env_indices = (
+            torch.arange(self.num_envs, dtype=torch.int64, device=env_device)
+            if env_device is not None
+            else np.arange(self.num_envs, dtype=np.int32)
+        )
         obs_out, info = self.env.reset(env_indices)
         self.episode_returns[:] = 0
         self.episode_lengths[:] = 0

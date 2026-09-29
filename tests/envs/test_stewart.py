@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
@@ -240,7 +241,7 @@ def test_stewart_real_manager_runtime_preserves_io_reset_and_level_ik(backend: s
         obs, info = env.reset(seed=7)
         assert {name: value.shape for name, value in obs.items()} == {"obs": (2, 15)}
         assert isinstance(info, dict)
-        assert np.isfinite(obs["obs"]).all()
+        assert torch.isfinite(obs["obs"]).all()
 
         entity = env.scene["stewart"]
         ball_id = entity.find_bodies("ball")[0][0]
@@ -255,13 +256,13 @@ def test_stewart_real_manager_runtime_preserves_io_reset_and_level_ik(backend: s
         level_control = action.leg_control_for_tilt(np.zeros((2, 2), dtype=np.float32))
         np.testing.assert_allclose(level_control, 0.0, atol=1e-4)
 
-        state = env.step(np.zeros((2, 2), dtype=np.float32))
+        state = env.step(torch.zeros((2, 2), dtype=torch.float32))
         for _ in range(19):
-            state = env.step(np.zeros((2, 2), dtype=np.float32))
+            state = env.step(torch.zeros((2, 2), dtype=torch.float32))
         assert state.obs["obs"].shape == (2, 15)
-        assert np.isfinite(state.obs["obs"]).all()
-        assert np.isfinite(state.reward).all()
-        assert state.terminated.dtype == np.bool_
+        assert torch.isfinite(state.obs["obs"]).all()
+        assert torch.isfinite(state.reward).all()
+        assert state.terminated.dtype == torch.bool
         top_z = entity.data.body_link_pos_w[:, top_id, 2]
         assert np.all(np.abs(top_z - 1.0) < 0.1)
     finally:
@@ -376,7 +377,7 @@ def test_stewart_solver_stable_under_random_actions() -> None:
     try:
         rng = np.random.default_rng(0)
         for _ in range(400):
-            state = env.step(rng.uniform(-1.0, 1.0, (8, 2)).astype(np.float32))
-            assert np.isfinite(state.obs["obs"]).all()
+            state = env.step(torch.tensor(rng.uniform(-1.0, 1.0, (8, 2)), dtype=torch.float32))
+            assert torch.isfinite(state.obs["obs"]).all()
     finally:
         env.close()

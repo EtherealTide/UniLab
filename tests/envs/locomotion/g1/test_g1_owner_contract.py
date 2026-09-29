@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
@@ -621,10 +622,10 @@ def test_g1_registry_executes_real_manager_runtime(
         }
         assert isinstance(info, dict)
         for _ in range(5):
-            state = env.step(np.zeros((2, num_dof), dtype=np.float32))
+            state = env.step(torch.zeros((2, num_dof), dtype=torch.float32))
         for value in (*state.obs.values(), state.reward):
-            assert isinstance(value, np.ndarray)
-            assert np.isfinite(value).all()
+            assert isinstance(value, torch.Tensor)
+            assert torch.isfinite(value).all()
 
         # The command and gait-phase segments pin the legacy obs layout tail.
         command = env.command_manager.get_command("twist")
@@ -650,7 +651,7 @@ def test_g1_walk_profile_runtime_obs_scaling_matches_legacy_layout() -> None:
 
     try:
         env.reset(seed=3)
-        state = env.step(np.zeros((2, 29), dtype=np.float32))
+        state = env.step(torch.zeros((2, 29), dtype=torch.float32))
         gyro = env._backend.get_sensor_data("torso_gyro")
         upvector = env._backend.get_sensor_data("torso_upvector")
         dof_vel = env._backend.get_dof_vel()
@@ -686,7 +687,7 @@ def test_g1_legacy_profile_runtime_obs_scaling_matches_legacy_layout() -> None:
 
     try:
         env.reset(seed=3)
-        state = env.step(np.zeros((2, 29), dtype=np.float32))
+        state = env.step(torch.zeros((2, 29), dtype=torch.float32))
         gyro = env._backend.get_sensor_data("torso_gyro")
         dof_vel = env._backend.get_dof_vel()
         linvel = env._backend.get_sensor_data("pelvis_local_linvel")
@@ -731,7 +732,7 @@ def test_g1_penalty_curriculum_scales_negative_weights_from_start() -> None:
         # The shared override dict is never mutated in place.
         assert env_override == override_snapshot
 
-        state = env.step(np.zeros((2, 29), dtype=np.float32))
+        state = env.step(torch.zeros((2, 29), dtype=torch.float32))
         log = state.info["log"]
         for name in _OFFPOLICY_REWARDS:
             assert f"reward/{name}" in log
@@ -859,13 +860,13 @@ try:
         "critic": (2, 101),
     }
     for _ in range(12):
-        state = env.step(np.zeros((2, 29), dtype=np.float32))
+        state = env.step(torch.zeros((2, 29), dtype=torch.float32))
         assert set(state.obs) == {"obs", "critic"}
         assert state.obs["obs"].shape == (2, 98)
         assert state.obs["critic"].shape == (2, 101)
         for value in (*state.obs.values(), state.reward):
-            assert isinstance(value, np.ndarray)
-            assert np.isfinite(value).all()
+            assert isinstance(value, torch.Tensor)
+            assert torch.isfinite(value).all()
 
     # Play path: mode none enters safely as a no-op; record resolves to the
     # native offscreen plan and validates its required fields.

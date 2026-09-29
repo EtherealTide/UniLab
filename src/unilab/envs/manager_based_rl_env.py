@@ -1,8 +1,8 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681),
 # src/mjlab/envs/manager_based_rl_env.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for the NumPy NpEnv/SimBackend contracts; Apache-2.0.
-"""Community-compatible manager lifecycle on UniLab's NumPy runtime."""
+# Modified by UniLab for the Manager-Based/Torch runtime contracts; Apache-2.0.
+"""Community-compatible Manager-Based lifecycle with a Torch public contract."""
 
 from __future__ import annotations
 
@@ -15,7 +15,8 @@ from typing import Any
 
 import gymnasium as gym
 import numpy as np
-from unisim.backend.base import DebugOverlayGetter, DebugPrimitive, SimBackend
+import torch
+from unisim.backend.base import DebugOverlayGetter, DebugPrimitive, SimBackend, TensorExecution
 
 from unilab.base.backend_factory import create_backend, env_backend_kwargs
 from unilab.base.base import EnvCfg
@@ -25,9 +26,9 @@ from unilab.base.config_overrides import (
 )
 from unilab.base.cpu_runtime import apply_env_cpu_runtime
 from unilab.base.entity import EntityCfg, EntityScene
-from unilab.base.np_env import NpEnv, NpEnvState
 from unilab.base.reset_state import ResetStateTransaction
 from unilab.base.scene import SceneCfg, resolve_scene_default_qpos
+from unilab.base.torch_env import TorchEnv, TorchEnvState
 from unilab.base.variants import (
     _build_fixed_variant_plan,
     _require_fixed_variant_support,
@@ -253,8 +254,15 @@ def _resolve_backend_entity_contract(
     return (primary_root or root_entities[0])[1], body_state_requested, selected_names
 
 
-class ManagerBasedRlEnv(NpEnv):
-    """Manager-Based API adapter that reuses the single :class:`NpEnv` lifecycle."""
+class ManagerBasedRlEnv(TorchEnv):
+    """Manager-Based runtime with a Torch public lifecycle.
+
+    P1 keeps Manager terms, Entity state, reset transactions, and recorder
+    scratch on an explicit NumPy host boundary. Public action/reset inputs,
+    backend control, state, observations, reward, termination, truncation, and
+    final observations are Torch tensors. This is a migration boundary, not a
+    durable NumPy fallback: unsupported tensor capabilities fail closed.
+    """
 
     is_vector_env = True
     _cfg: ManagerBasedRlEnvCfg
@@ -284,7 +292,13 @@ class ManagerBasedRlEnv(NpEnv):
                 f"'{backend.backend_type}' num_envs={backend.num_envs}"
             )
 
-        super().__init__(cfg, backend, num_envs)
+        initial_capabilities = backend.get_tensor_capabilities()
+        runtime_device = (
+            torch.device("cuda", index=torch.cuda.current_device())
+            if initial_capabilities.execution is TensorExecution.DEVICE_RESIDENT
+            else torch.device("cpu")
+        )
+        super().__init__(cfg, backend, num_envs, device=runtime_device)
         actual_seed = cfg.seed if cfg.seed is not None else secrets.randbits(63)
         cfg.seed = actual_seed
         self.rng = np.random.default_rng(actual_seed)
@@ -317,12 +331,10 @@ class ManagerBasedRlEnv(NpEnv):
         self.obs_buf: dict[str, np.ndarray] = {}
         self.extras: dict[str, Any] = {"log": {}}
         self._command_dt = np.zeros(num_envs, dtype=get_global_dtype())
-        self._no_truncation = np.zeros(num_envs, dtype=np.bool_)
         self._manual_reset_pending = np.zeros(num_envs, dtype=np.bool_)
         self._all_env_ids = np.arange(num_envs, dtype=np.int32)
         self._all_env_ids.setflags(write=False)
         self._has_transition = False
-        self._uses_pre_step_control = False
 
         self._load_managers()
         self._mapped_obs_dims = self._validate_observation_mapping()
@@ -333,6 +345,11 @@ class ManagerBasedRlEnv(NpEnv):
         if "startup" in self.event_manager.available_modes:
             self.event_manager.apply(mode="startup")
         self._materialize_backend()
+        self._validate_manager_tensor_runtime()
+
+    def _validate_manager_tensor_runtime(self) -> None:
+        """Bind the tensor lifecycle after backend materialization."""
+        self._bind_tensor_runtime()
 
     def _materialize_backend(self) -> None:
         """Finalize backend runtime resources before the first reset or step."""
@@ -465,13 +482,13 @@ class ManagerBasedRlEnv(NpEnv):
             if not self.observation_manager.group_obs_concatenate[group_name]:
                 raise ValueError(
                     f"ManagerBasedRlEnv observation group '{group_name}' mapped to "
-                    f"NpEnvState.obs['{output_name}'] must concatenate terms"
+                    f"TorchEnvState.obs['{output_name}'] must concatenate terms"
                 )
             group_dim = self.observation_manager.group_obs_dim[group_name]
             if not isinstance(group_dim, tuple) or len(group_dim) != 1:
                 raise ValueError(
                     f"ManagerBasedRlEnv observation group '{group_name}' mapped to "
-                    f"NpEnvState.obs['{output_name}'] must be one-dimensional; got {group_dim}"
+                    f"TorchEnvState.obs['{output_name}'] must be one-dimensional; got {group_dim}"
                 )
             dims[output_name] = int(group_dim[0])
         return dims
@@ -490,43 +507,50 @@ class ManagerBasedRlEnv(NpEnv):
                 "declare a post-substep hook."
             )
 
-    def _configure_action_control(self) -> None:
-        if (
-            self._cfg.sim_substeps <= 1
-            or not self.action_manager.active_terms
-            or not self.action_manager.requires_substep_state_feedback
-        ):
-            return
-        try:
-            self._backend.set_pre_step_control(self._apply_manager_control)
-        except NotImplementedError as exc:
+        if self._cfg.sim_substeps > 1 and self.action_manager.requires_substep_state_feedback:
             raise NotImplementedError(
-                "ActionManager capability 'state-feedback actions on every physics substep' is "
-                f"unavailable on backend '{self._backend.backend_type}': {exc}"
-            ) from exc
-        self._uses_pre_step_control = True
+                "ManagerBasedRlEnv Torch lifecycle P1 does not support state-feedback "
+                "actions on every physics substep"
+            )
 
-    def _apply_manager_control(
-        self,
-        backend: SimBackend,
-        control: np.ndarray,
-    ) -> np.ndarray:
-        del backend, control
-        self._sim_step_counter += 1
-        self.action_manager.apply_action()
-        return self._control
+    def _configure_action_control(self) -> None:
+        # Tensor Manager stepping consumes one control tensor per control step in
+        # P1; multi-substep state feedback fails closed during validation.
+        return
+
+    def _actions_to_manager_boundary(self, actions: torch.Tensor) -> np.ndarray:
+        """Publish a validated Torch action to the temporary NumPy Manager host."""
+        return np.array(actions.detach().cpu().numpy(), dtype=np.float32, order="C", copy=True)
+
+    def _control_to_backend_boundary(self) -> torch.Tensor:
+        """Publish NumPy Manager control as one contiguous backend Torch tensor."""
+        host = np.array(self._control, dtype=np.float32, order="C", copy=True)
+        return torch.from_numpy(host).to(device=self.device)
+
+    def _reset_rows_to_manager_boundary(self, rows: torch.Tensor) -> np.ndarray:
+        """Publish validated Torch reset rows to the NumPy Manager host."""
+        return np.array(rows.detach().cpu().numpy(), dtype=np.int32, order="C", copy=True)
+
+    def _manager_tensor(self, values: np.ndarray, *, dtype: torch.dtype) -> torch.Tensor:
+        """Copy one completed NumPy Manager result across the public Torch boundary."""
+        host = np.array(values, order="C", copy=True)
+        tensor = torch.from_numpy(host)
+        return tensor.to(device=self.device, dtype=dtype, copy=True)
+
+    def _tensor_flags_to_manager_boundary(self, values: torch.Tensor) -> np.ndarray:
+        """Publish public Torch flags to temporary NumPy Manager/recorder scratch."""
+        return np.array(values.detach().cpu().numpy(), order="C", copy=True)
 
     def _initial_episode_steps(self) -> np.ndarray:
         return np.zeros((self.num_envs,), dtype=np.uint32)
 
-    def init_state(self) -> NpEnvState:
+    def init_state(self) -> TorchEnvState:
         state = super().init_state()
-        self.obs_buf = state.obs
-        self.reward_buf = state.reward
+        self.reward_buf = np.zeros(self.num_envs, dtype=get_global_dtype())
         self.extras = state.info
         return state
 
-    def step(self, actions: np.ndarray) -> NpEnvState:
+    def step(self, actions: torch.Tensor) -> TorchEnvState:
         if not self._autoreset and np.any(self._manual_reset_pending):
             pending = np.flatnonzero(self._manual_reset_pending).tolist()
             raise RuntimeError(
@@ -535,30 +559,31 @@ class ManagerBasedRlEnv(NpEnv):
             )
         state = super().step(actions)
         if not self._autoreset:
-            self._manual_reset_pending |= state.terminated | state.truncated
+            self._manual_reset_pending |= self._tensor_flags_to_manager_boundary(
+                state.terminated | state.truncated
+            )
         self.recorder_manager.record_post_step()
         return state
 
-    def apply_action(self, actions: np.ndarray, state: NpEnvState) -> np.ndarray:
+    def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:
         del state
-        self.action_manager.process_action(actions)
-        if not self._uses_pre_step_control:
-            self._sim_step_counter += self._cfg.sim_substeps
-            self.action_manager.apply_action()
-        return self._control
+        self.action_manager.process_action(self._actions_to_manager_boundary(actions))
+        self._sim_step_counter += self._cfg.sim_substeps
+        self.action_manager.apply_action()
+        return self._control_to_backend_boundary()
 
-    def update_state(self, state: NpEnvState) -> NpEnvState:
+    def update_state(self, state: TorchEnvState) -> TorchEnvState:
         # Physics stepping and reset/set_state lifecycles sit outside this private
         # scope. In-phase mutations explicitly invalidate it below.
         with self.scene._scoped_state_reads():
             return self._update_state_in_read_phase(state)
 
-    def _update_state_in_read_phase(self, state: NpEnvState) -> NpEnvState:
+    def _update_state_in_read_phase(self, state: TorchEnvState) -> TorchEnvState:
         log: dict[str, Any] = {}
         state.info["log"] = log
         self.extras = state.info
 
-        np.add(state.info["steps"], 1, out=self.episode_length_buf)
+        self.episode_length_buf = self._tensor_steps_to_manager_boundary(state) + 1
         self.common_step_counter = self.step_counter + 1
         self._sim_step_counter = self.common_step_counter * self._cfg.sim_substeps
 
@@ -609,33 +634,42 @@ class ManagerBasedRlEnv(NpEnv):
         self._has_transition = True
 
         return state.replace(
-            obs=self.obs_buf,
-            reward=self.reward_buf,
-            terminated=self.reset_terminated,
-            truncated=self.reset_time_outs,
-            info=state.info,
+            obs={
+                name: self._manager_tensor(values, dtype=self._dtype)
+                for name, values in self.obs_buf.items()
+            },
+            reward=self._manager_tensor(self.reward_buf, dtype=self._dtype),
+            terminated=self._manager_tensor(self.reset_terminated, dtype=torch.bool),
+            truncated=self._manager_tensor(self.reset_time_outs, dtype=torch.bool),
         )
 
-    def _compute_truncated(self, state: NpEnvState) -> np.ndarray:
+    def _compute_truncated(self, state: TorchEnvState) -> torch.Tensor:
         del state
-        self._no_truncation.fill(False)
-        return self._no_truncation
+        return torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+
+    def _tensor_steps_to_manager_boundary(self, state: TorchEnvState) -> np.ndarray:
+        return np.array(
+            state.info["steps"].detach().cpu().numpy(),
+            dtype=np.int64,
+            order="C",
+            copy=True,
+        )
 
     def reset(
         self,
-        env_indices: np.ndarray | None = None,
+        env_indices: torch.Tensor | None = None,
         *,
         seed: int | None = None,
-        env_ids: np.ndarray | None = None,
         options: dict[str, Any] | None = None,
-    ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
         del options
-        ids = self._normalize_reset_ids(env_indices, env_ids)
+        rows = self._normalize_reset_indices(env_indices)
+        ids = self._reset_rows_to_manager_boundary(rows)
         if seed is not None:
             self.seed(seed)
         if self._state is None:
-            all_ids = np.arange(self.num_envs, dtype=np.int32)
-            if not np.array_equal(ids, all_ids):
+            all_rows = torch.arange(self.num_envs, dtype=torch.int64, device=self.device)
+            if not torch.equal(rows, all_rows):
                 raise RuntimeError(
                     "ManagerBasedRlEnv requires a full reset before the first partial reset"
                 )
@@ -687,11 +721,14 @@ class ManagerBasedRlEnv(NpEnv):
             # returns only the reset rows, so no full-batch slice is needed here.
             manager_obs = self.observation_manager.compute(update_history=True, env_ids=ids)
         mapped_obs = self._map_observations(manager_obs, num_rows=len(ids))
-        reset_obs = {name: values.copy() for name, values in mapped_obs.items()}
+        reset_obs = {
+            name: self._manager_tensor(values, dtype=self._dtype)
+            for name, values in mapped_obs.items()
+        }
 
         if self._state is not None:
-            for name, values in reset_obs.items():
-                self._state.obs[name][ids] = values
+            for name in mapped_obs:
+                self._state.obs[name].index_copy_(0, rows, reset_obs[name])
             if self._autoreset_reset_active:
                 # Autoreset runs at the tail of step(): keep this step's
                 # per-step log entries (reward/* etc., computed pre-reset) and
@@ -702,12 +739,16 @@ class ManagerBasedRlEnv(NpEnv):
                     log = {**step_log, **log}
             self._state.info["log"] = log
             if not self._autoreset_reset_active:
-                self._state.terminated[ids] = False
-                self._state.truncated[ids] = False
+                self._state.terminated[rows] = False
+                self._state.truncated[rows] = False
                 self.reset_buf[ids] = False
                 self.reset_terminated[ids] = False
                 self.reset_time_outs[ids] = False
-        self.obs_buf = self._state.obs if self._state is not None else mapped_obs
+        if not self.obs_buf or set(self.obs_buf) != set(mapped_obs):
+            self.obs_buf = {name: values.copy() for name, values in mapped_obs.items()}
+        else:
+            for name, values in mapped_obs.items():
+                self.obs_buf[name][ids] = values
         self.extras = self._state.info if self._state is not None else {"log": log}
         self.recorder_manager.record_post_reset(ids)
         return reset_obs, {"log": log}
@@ -716,36 +757,6 @@ class ManagerBasedRlEnv(NpEnv):
         timing = dict(super()._collect_reset_backend_timing_ms())
         timing.update(self._reset_state.last_set_state_timing_ms)
         return timing
-
-    def _normalize_reset_ids(
-        self,
-        env_indices: np.ndarray | None,
-        env_ids: np.ndarray | None,
-    ) -> np.ndarray:
-        if env_indices is not None and env_ids is not None:
-            raise ValueError("Pass either env_indices or env_ids, not both")
-        values = env_ids if env_ids is not None else env_indices
-        if values is None:
-            return np.arange(self.num_envs, dtype=np.int32)
-        raw = np.asarray(values)
-        if (
-            raw.ndim != 1
-            or not np.issubdtype(raw.dtype, np.integer)
-            or np.issubdtype(raw.dtype, np.bool_)
-        ):
-            raise TypeError(
-                "ManagerBasedRlEnv reset env IDs must be a 1-D integer np.ndarray; "
-                f"got shape={raw.shape}, dtype={raw.dtype}"
-            )
-        ids = np.asarray(raw, dtype=np.int32)
-        if np.any(ids < 0) or np.any(ids >= self.num_envs):
-            raise IndexError(
-                f"ManagerBasedRlEnv reset env IDs out of range for {self.num_envs} envs: "
-                f"{ids.tolist()}"
-            )
-        if np.unique(ids).size != ids.size:
-            raise ValueError(f"ManagerBasedRlEnv reset env IDs contain duplicates: {ids.tolist()}")
-        return ids
 
     def _map_observations(
         self,
@@ -770,18 +781,17 @@ class ManagerBasedRlEnv(NpEnv):
             if value.shape != expected:
                 raise ValueError(
                     f"ManagerBasedRlEnv observation group '{group_name}' returned shape "
-                    f"{value.shape}, expected {expected} for NpEnvState.obs['{output_name}']"
+                    f"{value.shape}, expected {expected} for TorchEnvState.obs['{output_name}']"
                 )
             mapped[output_name] = value
         return mapped
 
-    def get_observations(self) -> dict[str, np.ndarray]:
+    def get_observations(self) -> dict[str, torch.Tensor]:
         if self._state is None:
             return self.init_state().obs
-        self.obs_buf = self._state.obs
-        return self.obs_buf
+        return self._state.obs
 
-    def set_episode_length_buf(self, values: np.ndarray) -> None:
+    def set_episode_length_buf(self, values: torch.Tensor) -> None:
         """Overwrite per-env episode counters (cold path, runner-init only).
 
         ``episode_length_buf`` mirrors ``state.info["steps"]``: each step writes
@@ -790,18 +800,26 @@ class ManagerBasedRlEnv(NpEnv):
         ``init_at_random_ep_len``) call this once before learning starts to
         stagger initial episode lengths across envs.
         """
-        values = np.asarray(values)
+        if not isinstance(values, torch.Tensor):
+            raise TypeError(
+                "ManagerBasedRlEnv episode counters must be a torch.Tensor, "
+                f"got {type(values).__name__}"
+            )
         if values.shape != (self.num_envs,):
             raise ValueError(
                 f"ManagerBasedRlEnv.set_episode_length_buf expects shape "
                 f"({self.num_envs},), got {values.shape}"
             )
-        values = values.astype(np.int64)
-        if np.any(values < 0):
+        if values.dtype != torch.int64 or values.device != self.device:
+            raise TypeError(
+                f"ManagerBasedRlEnv episode counters must be int64 tensors on {self.device}"
+            )
+        if bool((values < 0).any()):
             raise ValueError("episode length counters must be non-negative")
-        np.copyto(self.episode_length_buf, values)
+        host_values = np.array(values.detach().cpu().numpy(), dtype=np.int64, copy=True)
+        np.copyto(self.episode_length_buf, host_values)
         if self._state is not None:
-            np.copyto(self._state.info["steps"], values, casting="unsafe")
+            self._state.info["steps"].copy_(values)
 
     def seed(self, seed: int = -1) -> int:
         if seed == -1:
@@ -821,9 +839,6 @@ class ManagerBasedRlEnv(NpEnv):
 
     def close(self) -> None:
         self.recorder_manager.close()
-        if self._uses_pre_step_control:
-            self._backend.set_pre_step_control(None)
-            self._uses_pre_step_control = False
         super().close()
 
 

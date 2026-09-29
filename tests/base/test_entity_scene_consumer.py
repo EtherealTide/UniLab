@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 from omegaconf import OmegaConf
 from unisim.entities import EntityVariantBinding, SceneEntitySpec
 
@@ -190,8 +191,8 @@ def test_per_environment_entity_defaults_are_not_broadcast_from_first_variant():
         np.testing.assert_allclose(env.scene["object"].data.default_joint_pos[:, 0], [0.1, 0.3])
         np.testing.assert_allclose(env.scene["object"].data.joint_pos[:, 0], [0.1, 0.3])
         np.testing.assert_allclose(env._control[:, 0], [0.37, 0.37])
-        env.step(np.full((2, 1), 0.1, dtype=np.float32))
-        env.reset(env_ids=np.array([1]))
+        env.step(torch.full((2, 1), 0.1, dtype=torch.float32))
+        env.reset(env_indices=torch.tensor([1], dtype=torch.int64))
         np.testing.assert_allclose(env.scene["object"].data.joint_pos[1, 0], 0.3)
         np.testing.assert_allclose(env._control[:, 0], [0.1, 0.37])
     finally:

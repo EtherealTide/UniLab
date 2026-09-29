@@ -6,6 +6,7 @@ in this reference, read this one.
 | Symbol | Role |
 |---|---|
 | `NpEnv` / `NpEnvState` | The env contract every task implements |
+| `TorchEnv` / `TorchEnvState` | The Manager-Based migration and target runtime contract |
 | `SimBackend` | Abstract backend interface (MuJoCo / Motrix implement it) |
 | `Registry` | Task / backend / algorithm registration and lookup |
 | `Scene` | Cold-path scene materialization |

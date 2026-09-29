@@ -1,19 +1,25 @@
 # Env Contract
 
-The env contract is code-owned by `src/unilab/base/base.py` and
+The migration env contract is code-owned by `src/unilab/base/base.py`,
+`src/unilab/base/torch_env.py`, and the remaining legacy owner
 `src/unilab/base/np_env.py`. Observation semantics are recorded in
-{doc}`/adr/ADR-0005-unified-obs-critic-env-and-ipc-contract`.
+{doc}`/adr/ADR-0005-unified-obs-critic-env-and-ipc-contract` and superseded by
+{doc}`/adr/ADR-0011-torch-only-manager-based-runtime`.
 
 ## Required Shape
 
-- `NpEnvState.obs` is `dict[str, np.ndarray]`. It is not a flat tensor.
+- `TorchEnvState.obs` is `dict[str, torch.Tensor]`. It is not a flat tensor.
 - The required actor observation key is `obs`.
 - The only optional critic-only observation key is `critic`.
 - `obs_groups_spec` maps each observation group name to its flat dimension.
   Wrappers and learners use this map to size actor and critic paths.
-- `reset(env_indices)` returns `(obs_dict, info_dict)` for the reset env rows.
-- `step(actions)` on `NpEnv` returns `NpEnvState`; external adapters may map that
-  state into third-party trainer APIs at the adapter boundary.
+- `reset(env_indices)` accepts a one-dimensional Torch integer tensor (or
+  `None`) and returns `(obs_dict, info_dict)` for the reset rows.
+- `step(actions)` on `TorchEnv` accepts a contiguous float32 Torch tensor and
+  returns `TorchEnvState`; external adapters may transfer tensors to a trainer
+  device only at the adapter boundary.
+- During roadmap #1701, legacy `NpEnv` remains only for not-yet-migrated owners;
+  it is not a fallback from `TorchEnv`.
 
 ## Owner Responsibilities
 
@@ -27,8 +33,10 @@ The env contract is code-owned by `src/unilab/base/base.py` and
 ## Evidence In Repo
 
 - Env base contract: `src/unilab/base/base.py`
-- Numpy env state: `src/unilab/base/np_env.py`
+- Torch env lifecycle: `src/unilab/base/torch_env.py`
+- Legacy NumPy env pending deletion: `src/unilab/base/np_env.py`
 - RSL-RL adapter boundary: `src/unilab/rl/vec_env.py`
 - Final observation helper: `src/unilab/base/final_observation.py`
-- Tests: `tests/base/test_np_env.py`, `tests/utils/test_final_observation.py`,
-  `tests/ipc/`
+- Tests: `tests/base/test_torch_env.py`,
+  `tests/envs/test_manager_based_rl_env.py`,
+  `tests/utils/test_final_observation.py`, `tests/ipc/`

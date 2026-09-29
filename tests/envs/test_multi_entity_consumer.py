@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 from unisim.dr.types import FixedVariantPlan, ModelSourceDescriptor
 from unisim.entities import EntityInitialState, EntityVariantBinding, SceneEntitySpec
 from unisim.scene_compiler import PORTABLE_MJCF_PROFILE_ID
@@ -198,7 +199,7 @@ def test_registry_factory_mujoco_multi_entity_reset_isolation(num_envs):
         assert state.obs["obs"].shape == (num_envs, 4)
         assert env.action_space.shape == (1,)
         assert env.scene["object"].data.joint_pos.shape == (num_envs, 1)
-        env.step(np.full((num_envs, 1), 0.2, dtype=np.float32))
+        env.step(torch.full((num_envs, 1), 0.2, dtype=torch.float32))
         robot_before = env.scene["robot"].data.joint_pos.copy()
         object_before = env.scene["object"].data.root_link_pose_w.copy()
         with env._reset_state.scoped(np.array([1])):
@@ -238,9 +239,9 @@ def test_registry_factory_mujoco_consumes_portable_profile_operation_fixture():
         np.testing.assert_allclose(env.scene["object"].data.root_link_pos_w[3], [0.4, -0.2, 1.5])
         np.testing.assert_array_equal(env.scene["target"].data.root_link_pose_w, mirror_before)
 
-        env.step(np.full((5, 1), 0.25, dtype=np.float32))
+        env.step(torch.full((5, 1), 0.25, dtype=torch.float32))
         np.testing.assert_allclose(env._control, 0.25)
-        env.reset(env_ids=np.array([2]))
+        env.reset(env_indices=torch.tensor([2], dtype=torch.int64))
         np.testing.assert_allclose(env._control[:, 0], [0.25, 0.25, 0.0, 0.25, 0.25])
 
         report = env._backend.get_import_report()
@@ -311,7 +312,7 @@ def test_native_isaacsim_same_manager_task(passive, tmp_path):
         state = env.init_state()
         assert state.obs["obs"].shape == (2, 4)
         assert env.action_space.shape == (1,)
-        env.step(np.zeros((2, 1), dtype=np.float32))
+        env.step(torch.zeros((2, 1), dtype=torch.float32))
         before = env.scene["robot"].data.joint_pos.copy()
         with env._reset_state.scoped(np.array([1])):
             env.scene["object"].write_root_link_pose_to_sim(

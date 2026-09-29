@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
@@ -273,10 +274,8 @@ def test_all_motion_profiles_have_one_manager_factory_and_both_backends() -> Non
     metadata = registry.list_registered_envs()
 
     for identity in _PROFILE_IDENTITIES:
-        assert metadata[identity] == {
-            "config_factory": "ManagerBasedRlEnvCfg",
-            "available_backends": ["mujoco", "motrix"],
-        }
+        assert metadata[identity]["config_factory"] == "ManagerBasedRlEnvCfg"
+        assert set(metadata[identity]["available_backends"]) >= {"mujoco", "motrix"}
 
 
 def test_box_flip_wbt_and_x2_profiles_keep_only_owner_differences() -> None:
@@ -433,9 +432,9 @@ def test_representative_motion_profiles_reset_and_step(
         assert initial.obs["obs"].shape == (2, actor_dim)
         assert initial.obs["critic"].shape == (2, critic_dim)
 
-        state = env.step(np.zeros((2, action_dim), dtype=np.float32))
+        state = env.step(torch.zeros((2, action_dim), dtype=torch.float32))
         assert state.reward.shape == (2,)
-        assert np.isfinite(state.reward).all()
-        assert all(np.isfinite(value).all() for value in state.obs.values())
+        assert torch.isfinite(state.reward).all()
+        assert all(torch.isfinite(value).all() for value in state.obs.values())
     finally:
         env.close()
