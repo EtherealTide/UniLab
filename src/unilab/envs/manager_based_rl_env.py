@@ -518,10 +518,6 @@ class ManagerBasedRlEnv(TorchEnv):
         # P1; multi-substep state feedback fails closed during validation.
         return
 
-    def _actions_to_manager_boundary(self, actions: torch.Tensor) -> np.ndarray:
-        """Publish a validated Torch action to the temporary NumPy Manager host."""
-        return np.array(actions.detach().cpu().numpy(), dtype=np.float32, order="C", copy=True)
-
     def _control_to_backend_boundary(self) -> torch.Tensor:
         """Publish NumPy Manager control as one contiguous backend Torch tensor."""
         host = np.array(self._control, dtype=np.float32, order="C", copy=True)
@@ -568,7 +564,7 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:
         del state
-        self.action_manager.process_action(self._actions_to_manager_boundary(actions))
+        self.action_manager.process_action(actions)
         self._sim_step_counter += self._cfg.sim_substeps
         self.action_manager.apply_action()
         return self._control_to_backend_boundary()

@@ -32,6 +32,7 @@ class DummyAction(ActionTerm):
         self._raw = np.zeros((env.num_envs, cfg.dim), dtype=np.float32)
         self.applied = 0
         self.reset_ids: np.ndarray | slice | None = None
+        self.input_types: list[type] = []
 
     @property
     def action_dim(self) -> int:
@@ -42,6 +43,7 @@ class DummyAction(ActionTerm):
         return self._raw
 
     def process_actions(self, actions: np.ndarray) -> None:
+        self.input_types.append(type(actions))
         self._raw[:] = actions
 
     def apply_actions(self) -> None:
@@ -81,18 +83,24 @@ def test_action_split_history_apply_and_partial_reset(fake_env: FakeEnv) -> None
     )
     assert manager.active_terms == ["legs", "arm"]
     assert not manager.requires_substep_state_feedback
-    first = np.arange(12, dtype=np.float32).reshape(4, 3)
+    first = torch.arange(12, dtype=torch.float32).reshape(4, 3)
     second = first + 20
     manager.process_action(first)
     manager.process_action(second)
-    np.testing.assert_array_equal(manager.prev_action, first)
-    np.testing.assert_array_equal(manager.action, second)
+    assert isinstance(manager.action, torch.Tensor)
+    assert manager.action.dtype == torch.float32
+    assert all(
+        term.input_types and term.input_types[0] is np.ndarray
+        for term in (manager.get_term("legs"), manager.get_term("arm"))
+    )
+    torch.testing.assert_close(manager.prev_action, first)
+    torch.testing.assert_close(manager.action, second)
     np.testing.assert_array_equal(manager.get_term("legs").raw_action, second[:, :2])
     manager.apply_action()
     assert manager.get_term("legs").applied == 1
     manager.reset(np.array([1, 3]))
-    np.testing.assert_array_equal(manager.action[[1, 3]], 0.0)
-    np.testing.assert_array_equal(manager.action[[0, 2]], second[[0, 2]])
+    torch.testing.assert_close(manager.action[[1, 3]], torch.zeros(2, 3))
+    torch.testing.assert_close(manager.action[[0, 2]], second[[0, 2]])
 
 
 def test_action_manager_aggregates_substep_state_feedback(fake_env: FakeEnv) -> None:
@@ -120,13 +128,16 @@ def test_action_feedback_declaration_must_be_bool(
 @pytest.mark.parametrize(
     "action,match",
     [
-        (np.zeros((4, 2), dtype=np.float32), "Invalid action shape"),
-        (np.full((4, 3), np.nan, dtype=np.float32), "NaN or Inf"),
+        (torch.zeros((4, 2), dtype=torch.float32), "Invalid action shape"),
+        (torch.full((4, 3), torch.nan, dtype=torch.float32), "NaN or Inf"),
+        (np.zeros((4, 3), dtype=np.float32), "torch.Tensor"),
+        (torch.zeros((4, 3), dtype=torch.float64), "contiguous float32"),
+        (torch.zeros((4, 6), dtype=torch.float32)[:, ::2], "contiguous float32"),
     ],
 )
 def test_action_rejects_invalid_input(fake_env: FakeEnv, action: np.ndarray, match: str) -> None:
     manager = ActionManager({"a": DummyActionCfg(entity_name="robot", dim=3)}, fake_env)
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises((TypeError, ValueError), match=match):
         manager.process_action(action)
 
 
@@ -151,7 +162,7 @@ def test_action_term_errors_include_manager_and_term_context(fake_env: FakeEnv) 
         fake_env,
     )
     with pytest.raises(ValueError, match="ActionManager term 'broken'.*invalid processed"):
-        manager.process_action(np.zeros((fake_env.num_envs, 1), dtype=np.float32))
+        manager.process_action(torch.zeros((fake_env.num_envs, 1), dtype=torch.float32))
     with pytest.raises(NotImplementedError, match="ActionManager term 'broken'.*control write"):
         manager.apply_action()
 
