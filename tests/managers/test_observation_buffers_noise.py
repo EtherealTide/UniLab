@@ -167,6 +167,70 @@ def test_observation_groups_pipeline_order_and_history(fake_env: FakeEnv) -> Non
     assert manager.get_active_iterable_terms(0)[0][0] == "policy-state"
 
 
+def test_non_temporal_tensor_terms_stay_on_device_for_clip_scale_concat(
+    fake_env: FakeEnv,
+) -> None:
+    device = fake_env.device
+    source = torch.arange(fake_env.num_envs * 2, dtype=torch.float32, device=device).reshape(
+        fake_env.num_envs, 2
+    )
+    manager = ObservationManager(
+        {
+            "policy": ObservationGroupCfg(
+                terms={
+                    "state": ObservationTermCfg(
+                        func=lambda env: source,
+                        clip=(-1.0, 2.0),
+                        scale=(2.0, 3.0),
+                    ),
+                    "constant": ObservationTermCfg(
+                        func=lambda env: torch.ones((env.num_envs, 1), device=device)
+                    ),
+                }
+            )
+        },
+        fake_env,
+    )
+
+    result = manager.compute(update_history=True)["policy"]
+
+    assert isinstance(result, torch.Tensor)
+    assert result.device == device
+    assert result.dtype == torch.float32
+    torch.testing.assert_close(
+        result,
+        torch.cat(
+            (
+                source.clamp(-1.0, 2.0) * torch.tensor([2.0, 3.0], device=device),
+                torch.ones((fake_env.num_envs, 1), device=device),
+            ),
+            dim=1,
+        ),
+    )
+    assert source.isfinite().all()
+
+
+def test_tensor_terms_are_row_scoped_on_reset(fake_env: FakeEnv) -> None:
+    device = fake_env.device
+    source = torch.arange(fake_env.num_envs * 2, dtype=torch.float32, device=device).reshape(
+        fake_env.num_envs, 2
+    )
+    manager = ObservationManager(
+        {
+            "policy": ObservationGroupCfg(
+                terms={"state": ObservationTermCfg(func=lambda env: source)}
+            )
+        },
+        fake_env,
+    )
+
+    rows = manager.compute(update_history=True, env_ids=np.array([1]))["policy"]
+
+    assert isinstance(rows, torch.Tensor)
+    assert rows.device == device
+    torch.testing.assert_close(rows, source[[1]])
+
+
 def test_concatenated_result_owns_each_result_and_protects_term_buffers(
     fake_env: FakeEnv,
 ) -> None:
