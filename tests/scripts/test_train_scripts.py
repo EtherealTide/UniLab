@@ -1221,14 +1221,12 @@ def test_build_appo_runner_kwargs_forwards_sim_backend():
 
 
 def test_run_motrix_play_loop_runs_without_physics_state():
-    import numpy as np
-    import torch
-
     mod = _train_appo()
 
     class FakeActor:
         def __call__(self, td):
             batch = td.batch_size[0]
+            assert td["policy"].device.type == "cpu"
             return torch.zeros((batch, 3), dtype=torch.float32)
 
     class FakeBackend:
@@ -1245,10 +1243,11 @@ def test_run_motrix_play_loop_runs_without_physics_state():
 
     class FakeState:
         def __init__(self):
-            self.obs = {"obs": np.ones((2, 5), dtype=np.float32)}
+            self.obs = {"obs": torch.ones((2, 5), dtype=torch.float32)}
 
     class FakeEnv:
         def __init__(self):
+            self.device = torch.device("cpu")
             self.state = None
             self._renderer = FakeBackend()
             self.init_state_calls = 0
@@ -1262,11 +1261,15 @@ def test_run_motrix_play_loop_runs_without_physics_state():
         def reset(self, env_indices):
             self.reset_calls += 1
             assert env_indices.shape == (2,)
-            return {"obs": np.ones((2, 5), dtype=np.float32)}, {}
+            assert env_indices.dtype == torch.int64
+            assert env_indices.device == self.device
+            return {"obs": torch.ones((2, 5), dtype=torch.float32, device=self.device)}, {}
 
         def step(self, actions):
             self.step_calls += 1
             assert actions.shape == (2, 3)
+            assert actions.dtype == torch.float32
+            assert actions.device == self.device
             return FakeState()
 
         def init_play_renderer(self, render_spacing=None, render_offset_mode=None):

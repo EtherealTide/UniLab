@@ -131,33 +131,57 @@ def run_motrix_play_loop(
     play_env_num: int,
     num_steps: int | None = None,
 ) -> None:
-    import numpy as np
-    from tensordict import TensorDict
-
     if env.state is None:
         env.init_state()
 
     with torch.inference_mode():
         env.run_playback(
             num_steps=num_steps,
-            initialize=lambda: np.asarray(
-                env.reset(np.arange(play_env_num, dtype=np.int32))[0]["obs"],
-                dtype=np.float32,
+            initialize=lambda: _motrix_playback_obs(
+                env.reset(torch.arange(play_env_num, dtype=torch.int64, device=env.device))
             ),
-            step=lambda obs_np: np.asarray(
-                env.step(
-                    actor(
-                        TensorDict(
-                            {"policy": torch.from_numpy(obs_np).to(device)}, batch_size=play_env_num
-                        )
-                    )
-                    .cpu()
-                    .numpy()
-                    .astype(np.float32)
-                ).obs["obs"],
-                dtype=np.float32,
+            step=lambda obs: _motrix_playback_step(
+                env=env,
+                actor=actor,
+                device=device,
+                play_env_num=play_env_num,
+                obs=obs,
             ),
         )
+
+
+def _motrix_playback_obs(state: Any) -> torch.Tensor:
+    """Extract the actor observation tensor from a TorchEnv reset result."""
+    obs = state[0].obs if hasattr(state[0], "obs") else state[0]["obs"]
+    if not isinstance(obs, torch.Tensor):
+        raise TypeError(
+            f"APPO playback reset observation must be a tensor, got {type(obs).__name__}"
+        )
+    return obs
+
+
+def _motrix_playback_step(
+    *,
+    env: Any,
+    actor: Callable[[Any], Any],
+    device: str,
+    play_env_num: int,
+    obs: Any,
+) -> torch.Tensor:
+    """Run one APPO policy step and return the next actor observation tensor."""
+    from tensordict import TensorDict
+
+    if not isinstance(obs, torch.Tensor):
+        raise TypeError(
+            f"APPO playback step observation must be a tensor, got {type(obs).__name__}"
+        )
+    action = actor(
+        TensorDict(
+            {"policy": obs.to(device=device, dtype=torch.float32)},
+            batch_size=play_env_num,
+        )
+    ).to(device=env.device, dtype=torch.float32)
+    return _motrix_playback_obs((env.step(action.contiguous()).obs, None))
 
 
 def _get_log_root(cfg: DictConfig) -> str:
