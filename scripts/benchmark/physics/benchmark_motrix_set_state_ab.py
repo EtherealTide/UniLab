@@ -46,7 +46,7 @@ from unilab.base.scene import SceneCfg  # noqa: E402
 
 _G1_MODEL_FILE = str(ASSETS_ROOT_PATH / "robots" / "g1" / "scene_flat.xml")
 
-# Schema mirrors BACKEND_SET_STATE_DETAIL_TIMING_KEYS in np_env.py; keys that
+# Schema mirrors BACKEND_SET_STATE_DETAIL_TIMING_KEYS in backend_timing.py; keys that
 # don't apply to motrix stay at 0.0.
 _TIMING_KEYS = (
     "set_state_mask_ms",

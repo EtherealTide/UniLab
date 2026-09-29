@@ -1,13 +1,18 @@
 import abc
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from os import PathLike
 from typing import Any, Optional
 
 import gymnasium as gym
 import numpy as np
-from unisim.backend.base import BackendPlayRenderPlan, CameraCfg, DebugOverlayGetter
+from unisim.backend.base import (
+    BackendPlayRenderPlan,
+    CameraCfg,
+    DebugOverlayGetter,
+    DebugPrimitive,
+)
 
 from .scene import SceneCfg
 from .variants import FixedModelVariantCatalogCfg
@@ -490,8 +495,13 @@ class ABEnv(abc.ABC):
         """Initialize environment and return initial state"""
 
     @abc.abstractmethod
-    def step(self, actions: np.ndarray) -> Any:
-        """Step the environment with given actions, return new state"""
+    def step(self, actions: Any) -> Any:
+        """Step the environment with owner-declared action carrier.
+
+        The abstract base stays runtime-neutral during the staged NumPy-to-Torch
+        migration. Concrete owners validate the declared carrier; the final
+        Torch-only lifecycle accepts only Torch tensors.
+        """
 
     @abc.abstractmethod
     def close(self) -> None:

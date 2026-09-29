@@ -16,6 +16,7 @@ from unisim.backend.base import (
 
 from unilab.base.config_adapter import BackendAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
+from unilab.base.torch_env import TorchEnvState
 from unilab.base.variants import FixedModelVariantCatalogCfg, FixedModelVariantCfg
 from unilab.envs import ManagerBasedRlEnvCfg
 from unilab.tasks.motion_tracking.g1 import torch_flashsac_env as module
@@ -200,7 +201,7 @@ def test_manual_torch_reset_clears_only_selected_done_flags(
     env = module.TorchG1MotionTrackingFlashSACEnv.__new__(module.TorchG1MotionTrackingFlashSACEnv)
     env._num_envs = 3
     env.device = torch.device("cpu")
-    env._state = module.TorchEnvState(
+    env._state = TorchEnvState(
         obs={"obs": torch.zeros((3, 2))},
         reward=torch.zeros(3),
         terminated=torch.tensor([True, False, False]),

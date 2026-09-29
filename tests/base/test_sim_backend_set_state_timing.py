@@ -6,7 +6,7 @@ module locks in three invariants:
 
 1. Both MuJoCo and Motrix ``set_state`` return a dict with a ``"timing"`` sub-dict
    whose keys are the schema documented in
-   ``unilab.base.np_env.BACKEND_SET_STATE_DETAIL_TIMING_KEYS``.
+   ``unilab.base.backend_timing.BACKEND_SET_STATE_DETAIL_TIMING_KEYS``.
 2. Every reported sub-timing is a non-negative float.
 3. The reported sub-timings sum to within ~5 ms of the outer wall-clock cost
    (``set_state_internal_gap_ms`` catches the residual). This is the same
@@ -27,7 +27,7 @@ import pytest
 from unisim.dr.types import ResetRandomizationPayload
 
 from unilab.assets import ASSETS_ROOT_PATH
-from unilab.base.np_env import BACKEND_SET_STATE_DETAIL_TIMING_KEYS
+from unilab.base.backend_timing import BACKEND_SET_STATE_DETAIL_TIMING_KEYS
 from unilab.base.scene import SceneCfg
 
 pytest.importorskip("mujoco", reason="mujoco not installed")
