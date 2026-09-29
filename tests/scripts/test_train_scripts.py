@@ -2794,6 +2794,85 @@ def test_play_interactive_sac_overrides_pass_through():
     ]
 
 
+def test_play_interactive_keyboard_commands_write_device_tensors():
+    import types
+
+    mod = _play_interactive()
+    commands = torch.zeros((2, 3), dtype=torch.float32)
+    cfg = types.SimpleNamespace(
+        heading_command=True,
+        resampling_time=2.0,
+        vel_limit=np.array([[-1.0, -0.5, -1.0], [1.0, 0.5, 1.0]]),
+    )
+    env = types.SimpleNamespace(state=types.SimpleNamespace(info={"commands": commands}), cfg=cfg)
+    env.cfg.commands = cfg
+    args = types.SimpleNamespace(
+        keyboard=True,
+        keyboard_step_lin=0.25,
+        keyboard_step_ang=0.5,
+    )
+
+    commander = mod._build_keyboard_commander(env, args)
+
+    assert commander is not None
+    commander.nudge(mod.KeyboardCommander.AXIS_VX, +1.0)
+    commander.nudge(mod.KeyboardCommander.AXIS_VYAW, +1.0)
+    mod._write_keyboard_command(env, commander)
+
+    torch.testing.assert_close(
+        commands,
+        torch.tensor([[0.25, 0.0, 0.5], [0.25, 0.0, 0.5]], dtype=torch.float32),
+    )
+
+
+def test_play_interactive_velocity_overlay_reads_tensors_at_render_boundary():
+    import types
+
+    mod = _play_interactive()
+
+    class VizData:
+        xmat = np.tile(np.eye(3, dtype=np.float64), (4, 1, 1))
+        xpos = np.zeros((4, 3), dtype=np.float64)
+
+    env = types.SimpleNamespace(
+        state=types.SimpleNamespace(
+            info={"commands": torch.tensor([[1.0, -0.5, 0.2], [0.0, 0.0, 0.0]])}
+        ),
+        get_local_linvel=lambda: torch.tensor([[0.25, 0.1, 0.0], [0.0, 0.0, 0.0]]),
+    )
+
+    primitives = mod._velocity_command_primitives(
+        VizData(),
+        focus_body_id=0,
+        env=env,
+        height=0.5,
+        scale=1.0,
+        lateral_offset=0.1,
+    )
+
+    assert len(primitives) == 2
+    lengths = [primitive.size[0] for primitive in primitives]
+    assert np.allclose(lengths, [np.linalg.norm([1.0, -0.5]), np.linalg.norm([0.25, 0.1])])
+
+
+def test_play_interactive_velocity_command_contract_rejects_numpy() -> None:
+    import types
+
+    mod = _play_interactive()
+    env = types.SimpleNamespace(
+        state=types.SimpleNamespace(info={"commands": np.zeros((2, 3), dtype=np.float32)}),
+        cfg=types.SimpleNamespace(vel_limit=np.array([[-1.0] * 3, [1.0] * 3])),
+    )
+
+    assert (
+        mod._build_keyboard_commander(
+            env,
+            types.SimpleNamespace(keyboard=True, keyboard_step_lin=0.1, keyboard_step_ang=0.2),
+        )
+        is None
+    )
+
+
 def test_play_interactive_runner_log_dir_uses_algo_log_name(monkeypatch: pytest.MonkeyPatch):
     import types
 
