@@ -358,7 +358,7 @@ def _episode_step_observation(env: ManagerBasedRlEnv) -> np.ndarray:
 
 
 def _reward(env: _TestEnv) -> np.ndarray:
-    return env.action_manager.action[:, 0].copy()
+    return env.action_manager.action[:, 0].clone()
 
 
 def _joint_state_obs(env: _TestEnv) -> np.ndarray:
@@ -1128,6 +1128,8 @@ def test_torch_env_owns_substeps_autoreset_and_final_observation() -> None:
 
     state = env.step(torch.tensor([[0.25], [0.5]], dtype=torch.float32))
     assert env.action_input_types and env.action_input_types[0] is np.ndarray
+    assert isinstance(env.action_manager.action, torch.Tensor)
+    assert env.action_manager.action.dtype == torch.float32
     assert backend.tensor_controls[0].dtype == torch.float32
     assert backend.tensor_controls[0].device == env.device
     assert backend.pre_step_control is None

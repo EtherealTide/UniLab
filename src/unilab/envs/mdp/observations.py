@@ -10,6 +10,7 @@ import weakref
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
+import torch
 
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
@@ -241,11 +242,18 @@ def joint_vel_rel(
 
 def last_action(env: ManagerBasedRlEnv, action_name: str | None = None) -> np.ndarray:
     if action_name is None:
-        return env.action_manager.action
+        return _action_to_host_boundary(env.action_manager.action)
     try:
-        return env.action_manager.get_term(action_name).raw_action
+        action = env.action_manager.get_term(action_name).raw_action
     except KeyError as exc:
         raise KeyError(f"Action term '{action_name}' not found") from exc
+    return _action_to_host_boundary(action)
+
+
+def _action_to_host_boundary(action: np.ndarray | torch.Tensor) -> np.ndarray:
+    if isinstance(action, torch.Tensor):
+        return action.detach().cpu().numpy()
+    return action
 
 
 def generated_commands(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray:

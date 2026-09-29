@@ -121,19 +121,23 @@ def joint_vel_l2(
     return np.sum(np.square(asset.data.joint_vel[:, asset_cfg.joint_ids]), axis=1)
 
 
-def action_rate_l2(env: ManagerBasedRlEnv) -> np.ndarray:
+def action_rate_l2(env: ManagerBasedRlEnv) -> np.ndarray | torch.Tensor:
     """Penalize the first difference of raw policy actions."""
     delta = env.action_manager.action - env.action_manager.prev_action
+    if isinstance(delta, torch.Tensor):
+        return torch.sum(torch.square(delta), dim=1)
     return np.sum(np.square(delta), axis=1)
 
 
-def action_acc_l2(env: ManagerBasedRlEnv) -> np.ndarray:
+def action_acc_l2(env: ManagerBasedRlEnv) -> np.ndarray | torch.Tensor:
     """Penalize the second difference of raw policy actions."""
     action_acc = (
         env.action_manager.action
         - 2.0 * env.action_manager.prev_action
         + env.action_manager.prev_prev_action
     )
+    if isinstance(action_acc, torch.Tensor):
+        return torch.sum(torch.square(action_acc), dim=1)
     return np.sum(np.square(action_acc), axis=1)
 
 

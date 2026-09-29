@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.base import SimBackend
 
 from unilab.base.entity import EntityCfg, EntityScene
@@ -191,6 +192,20 @@ def test_root_joint_action_and_command_terms_match_numpy_contract() -> None:
     )
     np.testing.assert_array_equal(
         mdp.generated_commands(env, "twist"), env.command_manager.get_command("twist")
+    )
+
+
+def test_last_action_publishes_torch_history_to_numpy_observation_boundary() -> None:
+    env, _ = _env()
+    action = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    env.action_manager.action = action
+
+    result = mdp.last_action(env)
+
+    assert isinstance(result, np.ndarray)
+    np.testing.assert_array_equal(result, action.numpy())
+    np.testing.assert_array_equal(
+        mdp.last_action(env, "legs"), env.action_manager.get_term("legs").raw_action
     )
 
 
