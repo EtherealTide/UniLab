@@ -15,12 +15,13 @@ from typing import (
     TypeVar,
 )
 
-from .base import ABEnv, EnvCfg
+from .base import EnvCfg
 from .config_materialization import apply_cfg_overrides
 from .config_overrides import (
     CONFIG_MAPPING_POLICY_KEY,
     MANAGER_TERM_MAPPING_POLICY,
 )
+from .torch_env import TorchEnv
 
 EnvCfgFactory = Callable[[], EnvCfg]
 TEnvCfgFactory = TypeVar("TEnvCfgFactory", bound=EnvCfgFactory)
@@ -35,7 +36,7 @@ class EnvFactory(Protocol):
         *,
         num_envs: int = 1,
         backend_type: str = "mujoco",
-    ) -> ABEnv: ...
+    ) -> Any: ...
 
 
 TEnvFactory = TypeVar("TEnvFactory", bound=EnvFactory)
@@ -252,7 +253,7 @@ def make(
     sim_backend: Optional[str] = None,
     env_cfg_override: Optional[Dict[str, Any]] = None,
     num_envs: int = 1,
-) -> ABEnv:
+) -> Any:
     """
     Create an environment instance by name.
 
@@ -292,11 +293,11 @@ def make(
     # Create environment instance
     factory = meta.env_factory_dict[sim_backend]
     env = factory(env_cfg, num_envs=num_envs, backend_type=sim_backend)
-    if not isinstance(env, ABEnv):
+    if not isinstance(env, TorchEnv):
         raise TypeError(
             f"Environment '{name}' backend '{sim_backend}' factory "
             f"'{_env_factory_name(factory)}' returned {type(env).__name__}, "
-            "expected an ABEnv instance"
+            "expected a TorchEnv instance"
         )
     return env
 

@@ -68,8 +68,8 @@ def make_registry_env(
                 **env_cfg_override,
                 "genesis_device_id": int(bound.rsplit(":", 1)[1]),
             }
-    # ABEnv satisfies EnvProtocol at runtime (reset/set_nan_guard live on
-    # NpEnv); the declared ABEnv type predates the uni_rl protocol.
+    # TorchEnv satisfies EnvProtocol at runtime; registry.make enforces the
+    # sole tensor environment lifecycle before a collector can spawn.
     return cast(
         "EnvProtocol",
         registry.make(
