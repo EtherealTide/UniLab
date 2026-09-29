@@ -1,6 +1,6 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681), src/mjlab/utils/buffers/circular_buffer.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy and UniLab contracts; licensed under Apache-2.0.
+# Modified by UniLab for Torch temporal buffers and UniLab contracts; Apache-2.0.
 """Circular buffer for storing a history of batched tensor data.
 
 Understanding Dimensions
@@ -80,6 +80,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import numpy as np
+import torch
 
 
 class CircularBuffer:
@@ -130,10 +131,10 @@ class CircularBuffer:
         self._max_len = max_len
         self._batch_size = batch_size
         self._pointer: int = -1
-        self._buffer: np.ndarray | None = None
-        self._all_indices = np.arange(batch_size)
-        self._num_pushes = np.zeros(batch_size, dtype=np.int64)
-        self._max_len_array = np.full(batch_size, max_len, dtype=np.int64)
+        self._buffer: torch.Tensor | None = None
+        self._all_indices: torch.Tensor | None = None
+        self._num_pushes: torch.Tensor | None = None
+        self._max_len_array: torch.Tensor | None = None
 
     @property
     def batch_size(self) -> int:
@@ -144,9 +145,12 @@ class CircularBuffer:
         return self._max_len
 
     @property
-    def current_length(self) -> np.ndarray:
+    def current_length(self) -> torch.Tensor:
         """Per-batch count of valid frames. Shape: (batch_size,)."""
-        return np.minimum(self._num_pushes, self._max_len_array)
+        self._initialize_counters()
+        assert self._num_pushes is not None
+        assert self._max_len_array is not None
+        return torch.minimum(self._num_pushes, self._max_len_array)
 
     @property
     def is_initialized(self) -> bool:
@@ -154,7 +158,7 @@ class CircularBuffer:
         return self._buffer is not None
 
     @property
-    def buffer(self) -> np.ndarray:
+    def buffer(self) -> torch.Tensor:
         """History in chronological order (oldest to newest).
 
         Returns:
@@ -165,9 +169,8 @@ class CircularBuffer:
             raise RuntimeError("Buffer not initialized. Call append() first.")
 
         start = (self._pointer + 1) % self._max_len
-        idx = (np.arange(self._max_len) + start) % self._max_len
-        buf = self._buffer[idx]  # (max_len, batch, ...)
-        return np.swapaxes(buf, 0, 1)  # (batch, max_len, ...)
+        idx = (torch.arange(self._max_len, device=self._buffer.device) + start) % self._max_len
+        return self._buffer[idx].transpose(0, 1)
 
     def reset(self, batch_ids: Sequence[int] | np.ndarray | slice | None = None) -> None:
         """Zero out values and counters for specified batch rows.
@@ -175,12 +178,16 @@ class CircularBuffer:
         Args:
           batch_ids: Batch indices to reset, or None to reset all.
         """
-        ids: Sequence[int] | np.ndarray | slice = slice(None) if batch_ids is None else batch_ids
+        self._initialize_counters()
+        assert self._num_pushes is not None
+        ids: Sequence[int] | np.ndarray | torch.Tensor | slice = (
+            slice(None) if batch_ids is None else batch_ids
+        )
         self._num_pushes[ids] = 0
         if self._buffer is not None:
             self._buffer[:, ids] = 0.0
 
-    def backfill(self, data: np.ndarray, batch_ids: np.ndarray) -> None:
+    def backfill(self, data: np.ndarray | torch.Tensor, batch_ids: np.ndarray) -> None:
         """Fill the given rows' entire history with one frame, without advancing time.
 
         Unlike append, the global pointer does not move and other rows are
@@ -197,11 +204,14 @@ class CircularBuffer:
         if self._buffer is None:
             raise RuntimeError("Buffer not initialized. Call append() first.")
 
-        data = np.asarray(data)
-        self._buffer[:, batch_ids] = np.expand_dims(data[batch_ids], axis=0)
+        if not isinstance(data, torch.Tensor):
+            data = torch.from_numpy(np.ascontiguousarray(data))
+        self._initialize_counters(data.device)
+        assert self._num_pushes is not None
+        self._buffer[:, batch_ids] = data[batch_ids].unsqueeze(0)
         self._num_pushes[batch_ids] = 1
 
-    def append(self, data: np.ndarray) -> None:
+    def append(self, data: np.ndarray | torch.Tensor) -> None:
         """Append a new frame for all batch elements.
 
         Args:
@@ -210,11 +220,17 @@ class CircularBuffer:
         if data.shape[0] != self._batch_size:
             raise ValueError(f"Expected batch size {self._batch_size}, got {data.shape[0]}")
 
-        data = np.asarray(data)
+        if not isinstance(data, torch.Tensor):
+            data = torch.from_numpy(np.ascontiguousarray(data))
 
         if self._buffer is None:
             self._pointer = -1
-            self._buffer = np.empty((self._max_len, *data.shape), dtype=data.dtype)
+            self._buffer = torch.empty(
+                (self._max_len, *data.shape), dtype=data.dtype, device=data.device
+            )
+        self._initialize_counters(data.device)
+        assert self._num_pushes is not None
+        assert self._all_indices is not None
 
         self._pointer = (self._pointer + 1) % self._max_len
         self._buffer[self._pointer] = data
@@ -222,13 +238,13 @@ class CircularBuffer:
         # Backfill only newly initialized rows. After warm-up this branch avoids
         # scanning the full history buffer on every hot-path append.
         is_first_push = self._num_pushes == 0
-        if np.any(is_first_push):
-            first_ids = np.flatnonzero(is_first_push)
-            self._buffer[:, first_ids] = np.expand_dims(data[first_ids], axis=0)
+        if bool(is_first_push.any()):
+            first_ids = torch.nonzero(is_first_push, as_tuple=False).flatten()
+            self._buffer[:, first_ids] = data[first_ids].unsqueeze(0)
 
         self._num_pushes += 1
 
-    def __getitem__(self, key: np.ndarray | int) -> np.ndarray:
+    def __getitem__(self, key: torch.Tensor | np.ndarray | int) -> torch.Tensor:
         """Retrieve lagged frames per batch (LIFO).
 
         Args:
@@ -236,23 +252,40 @@ class CircularBuffer:
         """
         if self._buffer is None:
             raise RuntimeError("Buffer not initialized. Call append() first.")
+        self._initialize_counters(self._buffer.device)
+        assert self._num_pushes is not None
+        assert self._max_len_array is not None
+        assert self._all_indices is not None
 
         if isinstance(key, int):
-            key = np.full(self._batch_size, key, dtype=np.int64)
+            key = torch.full((self._batch_size,), key, dtype=torch.int64)
         else:
-            key = np.asarray(key, dtype=np.int64)
+            key = torch.as_tensor(np.asarray(key), dtype=torch.int64)
             if key.ndim == 0:
-                key = np.full(self._batch_size, key.item(), dtype=np.int64)
+                key = torch.full((self._batch_size,), int(key.item()), dtype=torch.int64)
 
-        if key.size != self._batch_size:
-            raise ValueError(f"Expected {self._batch_size} lags, got {key.size}")
+        if key.numel() != self._batch_size:
+            raise ValueError(f"Expected {self._batch_size} lags, got {key.numel()}")
 
         # Clamp to the oldest retained frame: without the max_len bound, a lag
         # beyond the buffer length would wrap around to a newer frame once
         # num_pushes exceeds max_len.
-        pushes = np.maximum(self._num_pushes, 1)
-        max_lag = np.minimum(pushes, self._max_len_array) - 1
-        valid = np.maximum(np.minimum(key, max_lag), 0)
+        if key.device != self._num_pushes.device:
+            key = key.to(device=self._num_pushes.device)
+        pushes = torch.maximum(self._num_pushes, torch.ones_like(self._num_pushes))
+        max_lag = torch.minimum(pushes, self._max_len_array) - 1
+        valid = torch.clamp(torch.minimum(key, max_lag), min=0)
 
-        idx = np.remainder(self._pointer - valid, self._max_len)
+        idx = torch.remainder(self._pointer - valid, self._max_len)
         return self._buffer[idx, self._all_indices]
+
+    def _initialize_counters(self, device: torch.device | None = None) -> None:
+        """Bind per-batch metadata to the first appended observation device."""
+        if self._num_pushes is not None and self._max_len_array is not None:
+            return
+        resolved = torch.device("cpu") if device is None else device
+        self._all_indices = torch.arange(self._batch_size, device=resolved)
+        self._num_pushes = torch.zeros(self._batch_size, dtype=torch.int64, device=resolved)
+        self._max_len_array = torch.full(
+            (self._batch_size,), self._max_len, dtype=torch.int64, device=resolved
+        )

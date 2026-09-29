@@ -559,29 +559,24 @@ class ObservationManager(ManagerBase):
                 )
 
             if term_cfg.delay_max_lag > 0:
-                if tensor_obs:
-                    obs = cast("torch.Tensor", obs).detach().cpu().numpy()
-                    tensor_obs = False
                 delay_buffer = self._group_obs_term_delay_buffer[group_name][term_name]
                 if env_ids is None or not delay_buffer.is_initialized:
-                    delay_buffer.append(cast("np.ndarray", obs))
+                    delay_buffer.append(obs)
                     obs = delay_buffer.compute()
                 else:
-                    delay_buffer.backfill(cast("np.ndarray", obs), env_ids)
+                    delay_buffer.backfill(obs, env_ids)
                     obs = delay_buffer.peek()
             if term_cfg.history_length > 0:
-                if tensor_obs:
-                    obs = cast("torch.Tensor", obs).detach().cpu().numpy()
-                    tensor_obs = False
                 circular_buffer = self._group_obs_term_history_buffer[group_name][term_name]
                 if env_ids is None or not circular_buffer.is_initialized:
                     if update_history or not circular_buffer.is_initialized:
-                        circular_buffer.append(cast("np.ndarray", obs))
+                        circular_buffer.append(obs)
                 else:
-                    circular_buffer.backfill(cast("np.ndarray", obs), env_ids)
+                    circular_buffer.backfill(obs, env_ids)
 
                 if term_cfg.flatten_history_dim:
-                    group_obs[term_name] = circular_buffer.buffer.reshape(self._env.num_envs, -1)
+                    history = circular_buffer.buffer
+                    group_obs[term_name] = history.reshape(self._env.num_envs, -1)
                 else:
                     group_obs[term_name] = circular_buffer.buffer
             else:

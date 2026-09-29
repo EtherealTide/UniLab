@@ -109,8 +109,8 @@ def test_partial_reset_temporal_group_falls_back_and_preserves_rows() -> None:
 
     ids = np.array([1], dtype=np.int32)
     keep_ids = np.array([0, 2, 3], dtype=np.int32)
-    history_before = manager._group_obs_term_history_buffer["policy"]["state"].buffer.copy()
-    delay_before = manager._group_obs_term_delay_buffer["policy"]["delayed"].peek().copy()
+    history_before = manager._group_obs_term_history_buffer["policy"]["state"].buffer.clone()
+    delay_before = manager._group_obs_term_delay_buffer["policy"]["delayed"].peek().clone()
 
     rng_state = env.rng.bit_generator.state
     rows = manager.compute(update_history=True, env_ids=ids)
