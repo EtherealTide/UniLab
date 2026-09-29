@@ -7,13 +7,21 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
-from unisim.backend.base import DebugPrimitive, SimBackend
+import torch
+from unisim.backend.base import (
+    DebugPrimitive,
+    SimBackend,
+    TensorDataPlane,
+    TensorExecution,
+    TensorLifecycleCapabilities,
+)
 
 import unilab.envs.manager_based_rl_env as manager_env_module
 from unilab.assets import ASSETS_ROOT_PATH
 from unilab.base.backend_factory import create_backend, env_backend_kwargs
 from unilab.base.entity import EntityCfg
 from unilab.base.scene import SceneCfg
+from unilab.base.torch_env import TorchEnv, TorchEnvState
 from unilab.envs import (
     ManagerBasedRLEnv,
     ManagerBasedRlEnv,
@@ -56,6 +64,7 @@ class _FakeBackend:
         self.reject_materialize = reject_materialize
         self.pre_step_control = None
         self.applied_controls: list[np.ndarray] = []
+        self.tensor_controls: list[torch.Tensor] = []
         self.step_nsteps: list[int] = []
         self.cleanup_calls = 0
         self.materialize_calls = 0
@@ -83,6 +92,25 @@ class _FakeBackend:
         if fn is not None and self.reject_pre_step:
             raise NotImplementedError("host callback disabled")
         self.pre_step_control = fn
+
+    def tensor_execution(self) -> TensorExecution:
+        return TensorExecution.HOST_BRIDGE
+
+    def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
+        return TensorLifecycleCapabilities(
+            execution=TensorExecution.HOST_BRIDGE,
+            state_fields=frozenset({"qpos", "qvel"}),
+            stepping=True,
+            selected_reset=True,
+            packed_host_bridge=True,
+            data_plane=TensorDataPlane.HOST_BRIDGE,
+            stream_event_ownership="test",
+            torch_devices=("cpu",),
+        )
+
+    def step_tensor(self, ctrl: torch.Tensor, nsteps: int = 1) -> None:
+        self.tensor_controls.append(ctrl.detach().clone())
+        self.step(ctrl.detach().cpu().numpy(), nsteps)
 
     def step(self, ctrl: np.ndarray, nsteps: int = 1) -> None:
         assert self.materialize_calls == 1
@@ -231,6 +259,7 @@ class _DriveAction(ActionTerm):
         return self._processed
 
     def process_actions(self, actions: np.ndarray) -> None:
+        self._env.action_input_types.append(type(actions))
         self._processed[:] = actions * cast(_DriveCfg, self.cfg).gain
 
     def apply_actions(self) -> None:
@@ -310,6 +339,7 @@ class _TestEnv(ManagerBasedRlEnv):
         self.trace: list[Any] = []
         self.command_update_ids: list[np.ndarray | None] = []
         self.action_sim_steps: list[int] = []
+        self.action_input_types: list[type] = []
         super().__init__(cfg, backend, num_envs)
 
 
@@ -463,7 +493,7 @@ def test_training_progress_restore_survives_next_step_and_rejects_invalid_state(
     env.import_training_state({"version": 1, "step_counter": 700})
     assert env.common_step_counter == 700
     assert env._sim_step_counter == 700 * env.cfg.sim_substeps
-    env.step(np.zeros((env.num_envs, 1), dtype=np.float32))
+    env.step(torch.zeros((env.num_envs, 1), dtype=torch.float32))
     assert env.step_counter == 701
     assert env.common_step_counter == 701
     assert env.export_training_state() == {"version": 1, "step_counter": 701}
@@ -477,6 +507,25 @@ def test_training_progress_restore_survives_next_step_and_rejects_invalid_state(
         with pytest.raises(ValueError):
             env.import_training_state(invalid)
         assert env.step_counter == env.common_step_counter == 701
+    env.close()
+
+
+def test_manager_public_inputs_and_episode_counters_are_tensor_first() -> None:
+    env, _ = _make_env()
+    env.reset()
+    assert env.state is not None
+
+    with pytest.raises(TypeError, match="torch.Tensor"):
+        env.step(np.zeros((env.num_envs, 1), dtype=np.float32))
+    with pytest.raises(TypeError, match="env_ids"):
+        env.reset(env_ids=np.array([0], dtype=np.int32))  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match="unique"):
+        env.reset(env_indices=torch.tensor([0, 0], dtype=torch.int64))
+
+    values = torch.tensor([2, 3], dtype=torch.int64)
+    env.set_episode_length_buf(values)
+    torch.testing.assert_close(env.state.info["steps"], values)
+    np.testing.assert_array_equal(env.episode_length_buf, values)
     env.close()
 
 
@@ -808,7 +857,7 @@ def test_backend_materializes_once_after_startup_and_before_runtime() -> None:
     assert backend.materialize_calls == 1
 
     env.reset()
-    env.step(np.zeros((2, 1), dtype=np.float32))
+    env.step(torch.zeros((2, 1), dtype=torch.float32))
     env.reset()
 
     assert backend.materialize_calls == 1
@@ -924,7 +973,7 @@ def test_named_keyframe_snapshot_is_shared_by_entity_and_reset_cold_path() -> No
 
     source_qpos[:] = 9.0
     env.reset()
-    env.reset(env_ids=np.array([1], dtype=np.int32))
+    env.reset(env_indices=torch.tensor([1], dtype=torch.int64))
 
     assert backend.keyframe_qpos_calls == 1
     assert backend.default_qpos_calls == 0
@@ -966,11 +1015,11 @@ def test_real_mujoco_backend_is_materialized_before_first_reset() -> None:
     try:
         state = env.init_state()
         assert state.obs["obs"].shape == (2, 1)
-        assert np.isfinite(state.obs["obs"]).all()
+        assert torch.isfinite(state.obs["obs"]).all()
 
-        state = env.step(np.empty((2, 0), dtype=np.float32))
-        assert np.isfinite(state.obs["obs"]).all()
-        assert np.isfinite(state.reward).all()
+        state = env.step(torch.empty((2, 0), dtype=torch.float32))
+        assert torch.isfinite(state.obs["obs"]).all()
+        assert torch.isfinite(state.reward).all()
     finally:
         env.close()
 
@@ -1062,38 +1111,45 @@ def test_real_mujoco_default_state_matches_qpos0_or_named_home(
         env.close()
 
 
-def test_np_env_owns_substeps_autoreset_and_final_observation() -> None:
+def test_torch_env_owns_substeps_autoreset_and_final_observation() -> None:
     env, backend = _make_env()
+    assert isinstance(env, TorchEnv)
     initial_obs, initial_info = env.reset()
     assert env.state is not None
+    assert isinstance(env.state, TorchEnvState)
     initial = env.state
+    assert all(isinstance(value, torch.Tensor) for value in initial.obs.values())
 
     assert initial_obs["obs"].shape == (2, 2)
     assert initial_obs["critic"].shape == (2, 1)
     assert "log" in initial_info
-    np.testing.assert_array_equal(initial.info["steps"], [0, 0])
+    torch.testing.assert_close(initial.info["steps"], torch.zeros(2, dtype=torch.int64))
     assert not hasattr(env, "_dr_manager")
 
-    state = env.step(np.array([[0.25], [0.5]], dtype=np.float32))
+    state = env.step(torch.tensor([[0.25], [0.5]], dtype=torch.float32))
+    assert env.action_input_types and env.action_input_types[0] is np.ndarray
+    assert backend.tensor_controls[0].dtype == torch.float32
+    assert backend.tensor_controls[0].device == env.device
     assert backend.pre_step_control is None
     assert backend.step_nsteps == [2]
     assert len(backend.applied_controls) == 2
     assert env.action_sim_steps == [2]
     np.testing.assert_allclose(backend.applied_controls[0][:, 0], [0.25, 0.5])
     np.testing.assert_allclose(backend.applied_controls[1][:, 0], [0.25, 0.5])
-    np.testing.assert_allclose(state.reward, [0.005, 0.01])
-    np.testing.assert_array_equal(state.terminated, [False, False])
-    np.testing.assert_array_equal(state.truncated, [False, False])
-    np.testing.assert_array_equal(state.info["steps"], [1, 1])
+    torch.testing.assert_close(state.reward, torch.tensor([0.005, 0.01]))
+    torch.testing.assert_close(state.terminated, torch.tensor([False, False]))
+    torch.testing.assert_close(state.truncated, torch.tensor([False, False]))
+    torch.testing.assert_close(state.info["steps"], torch.ones(2, dtype=torch.int64))
 
-    state = env.step(np.array([[0.25], [0.5]], dtype=np.float32))
-    np.testing.assert_array_equal(state.truncated, [True, True])
-    np.testing.assert_array_equal(state.terminated, [False, False])
-    np.testing.assert_array_equal(state.info["steps"], [0, 0])
-    np.testing.assert_array_equal(state.obs["obs"][:, 0], [0.0, 0.0])
+    state = env.step(torch.tensor([[0.25], [0.5]], dtype=torch.float32))
+    torch.testing.assert_close(state.truncated, torch.tensor([True, True]))
+    torch.testing.assert_close(state.terminated, torch.tensor([False, False]))
+    torch.testing.assert_close(state.info["steps"], torch.zeros(2, dtype=torch.int64))
+    torch.testing.assert_close(state.obs["obs"][:, 0], torch.zeros(2))
     assert state.final_observation is not None
-    np.testing.assert_array_equal(state.final_observation["obs"][:, 0], [2.0, 2.0])
-    assert state.info["_final_observation"].tolist() == [True, True]
+    torch.testing.assert_close(state.final_observation["obs"][:, 0], torch.full((2,), 2.0))
+    assert "final_observation" not in state.info
+    assert "_final_observation" not in state.info
     assert state.info["log"]["Episode_Termination/time_out"] == 2
     assert not any(key.startswith("mba_") for key in state.info["timing"])
 
@@ -1136,7 +1192,7 @@ def test_reset_events_compose_then_commit_default_state_once() -> None:
     np.testing.assert_array_equal(qvel, [[0.0, 0.0, -0.5], [0.0, 0.0, -0.5]])
     assert backend.joint_layout_calls == 2
 
-    env.reset(env_ids=np.array([1], dtype=np.int32))
+    env.reset(env_indices=torch.tensor([1], dtype=torch.int64))
     assert ("commit_count_during_event", 1) in env.trace
     assert len(backend.set_state_calls) == 2
     np.testing.assert_array_equal(backend.set_state_calls[1][0], [1])
@@ -1175,7 +1231,7 @@ def test_pure_reset_event_does_not_request_backend_state_capability() -> None:
     env, backend = _make_env()
 
     env.reset()
-    env.reset(env_ids=np.array([0], dtype=np.int32))
+    env.reset(env_indices=torch.tensor([0], dtype=torch.int64))
 
     assert isinstance(backend, _FakeBackend)
     assert not hasattr(backend, "get_default_qpos")
@@ -1186,17 +1242,17 @@ def test_update_state_reuses_backend_state_once_and_refreshes_after_physics() ->
     env.init_state()
 
     before = backend.dof_pos_calls
-    state = env.step(np.zeros((2, 1), dtype=np.float32))
+    state = env.step(torch.zeros((2, 1), dtype=torch.float32))
     assert backend.dof_pos_calls == before + 1
-    np.testing.assert_array_equal(state.reward, [1.0, 1.0])
-    np.testing.assert_array_equal(state.obs["obs"], [[1.0], [1.0]])
-    np.testing.assert_array_equal(state.obs["critic"], [[1.0], [1.0]])
+    torch.testing.assert_close(state.reward, torch.ones(2))
+    torch.testing.assert_close(state.obs["obs"], torch.ones((2, 1)))
+    torch.testing.assert_close(state.obs["critic"], torch.ones((2, 1)))
 
     before = backend.dof_pos_calls
-    state = env.step(np.zeros((2, 1), dtype=np.float32))
+    state = env.step(torch.zeros((2, 1), dtype=torch.float32))
     assert backend.dof_pos_calls == before + 1
-    np.testing.assert_array_equal(state.reward, [2.0, 2.0])
-    np.testing.assert_array_equal(state.obs["obs"], [[2.0], [2.0]])
+    torch.testing.assert_close(state.reward, torch.full((2,), 2.0))
+    torch.testing.assert_close(state.obs["obs"], torch.full((2, 1), 2.0))
 
 
 def test_update_state_invalidates_cache_after_command_set_state() -> None:
@@ -1208,15 +1264,15 @@ def test_update_state_invalidates_cache_after_command_set_state() -> None:
     env.init_state()
 
     before = backend.dof_pos_calls
-    state = env.step(np.zeros((2, 1), dtype=np.float32))
+    state = env.step(torch.zeros((2, 1), dtype=torch.float32))
 
     # Physics advances the pre-command state to 1.75. The command then commits
     # 0.75 through set_state, so post-command observations must not reuse the
     # termination/reward snapshot.
     assert backend.dof_pos_calls == before + 2
-    np.testing.assert_array_equal(state.reward, [1.75, 1.75])
-    np.testing.assert_array_equal(state.obs["obs"], [[0.75], [0.75]])
-    np.testing.assert_array_equal(state.obs["critic"], [[0.75], [0.75]])
+    torch.testing.assert_close(state.reward, torch.full((2,), 1.75))
+    torch.testing.assert_close(state.obs["obs"], torch.full((2, 1), 0.75))
+    torch.testing.assert_close(state.obs["critic"], torch.full((2, 1), 0.75))
 
 
 def test_update_state_invalidates_cache_after_runtime_event() -> None:
@@ -1228,12 +1284,12 @@ def test_update_state_invalidates_cache_after_runtime_event() -> None:
     env.init_state()
 
     before = backend.dof_pos_calls
-    state = env.step(np.zeros((2, 1), dtype=np.float32))
+    state = env.step(torch.zeros((2, 1), dtype=torch.float32))
 
     assert backend.dof_pos_calls == before + 2
-    np.testing.assert_array_equal(state.reward, [1.0, 1.0])
-    np.testing.assert_array_equal(state.obs["obs"], [[11.0], [11.0]])
-    np.testing.assert_array_equal(state.obs["critic"], [[11.0], [11.0]])
+    torch.testing.assert_close(state.reward, torch.ones(2))
+    torch.testing.assert_close(state.obs["obs"], torch.full((2, 1), 11.0))
+    torch.testing.assert_close(state.obs["critic"], torch.full((2, 1), 11.0))
 
 
 def test_partial_reset_observation_reads_post_set_state_rows() -> None:
@@ -1245,14 +1301,14 @@ def test_partial_reset_observation_reads_post_set_state_rows() -> None:
     )
     env.init_state()
 
-    state = env.step(np.array([[1.0], [0.0]], dtype=np.float32))
+    state = env.step(torch.tensor([[1.0], [0.0]], dtype=torch.float32))
 
-    np.testing.assert_array_equal(state.reward, [1.25, 1.25])
-    np.testing.assert_array_equal(state.terminated, [True, False])
-    np.testing.assert_array_equal(state.obs["obs"], [[0.25], [1.25]])
-    np.testing.assert_array_equal(state.obs["critic"], [[0.25], [1.25]])
+    torch.testing.assert_close(state.reward, torch.full((2,), 1.25))
+    torch.testing.assert_close(state.terminated, torch.tensor([True, False]))
+    torch.testing.assert_close(state.obs["obs"], torch.tensor([[0.25], [1.25]]))
+    torch.testing.assert_close(state.obs["critic"], torch.tensor([[0.25], [1.25]]))
     assert state.final_observation is not None
-    np.testing.assert_array_equal(state.final_observation["obs"][0], [1.25])
+    torch.testing.assert_close(state.final_observation["obs"][0], torch.tensor([1.25]))
     np.testing.assert_array_equal(backend.dof_pos[:, 0], [0.25, 1.25])
 
 
@@ -1260,40 +1316,40 @@ def test_partial_reset_preserves_other_env_counter_and_terminal_obs() -> None:
     env, _ = _make_env()
     env.init_state()
 
-    state = env.step(np.array([[1.0], [0.0]], dtype=np.float32))
+    state = env.step(torch.tensor([[1.0], [0.0]], dtype=torch.float32))
 
-    np.testing.assert_array_equal(state.terminated, [True, False])
-    np.testing.assert_array_equal(state.truncated, [False, False])
-    np.testing.assert_array_equal(state.info["steps"], [0, 1])
-    np.testing.assert_array_equal(state.obs["obs"][:, 0], [0.0, 1.0])
+    torch.testing.assert_close(state.terminated, torch.tensor([True, False]))
+    torch.testing.assert_close(state.truncated, torch.tensor([False, False]))
+    torch.testing.assert_close(state.info["steps"], torch.tensor([0, 1], dtype=torch.int64))
+    torch.testing.assert_close(state.obs["obs"][:, 0], torch.tensor([0.0, 1.0]))
     assert state.final_observation is not None
-    np.testing.assert_array_equal(state.final_observation["obs"][0], [1.0, 1.0])
-    assert state.info["_final_observation"].tolist() == [True, False]
+    torch.testing.assert_close(state.final_observation["obs"][0], torch.tensor([1.0, 1.0]))
+    assert "_final_observation" not in state.info
     assert ("event", [0]) in env.trace
 
 
 def test_finite_horizon_maps_time_out_to_terminated() -> None:
     env, _ = _make_env(_make_cfg(finite_horizon=True))
     env.init_state()
-    env.step(np.zeros((2, 1), dtype=np.float32))
-    state = env.step(np.zeros((2, 1), dtype=np.float32))
-    np.testing.assert_array_equal(state.terminated, [True, True])
-    np.testing.assert_array_equal(state.truncated, [False, False])
+    env.step(torch.zeros((2, 1), dtype=torch.float32))
+    state = env.step(torch.zeros((2, 1), dtype=torch.float32))
+    torch.testing.assert_close(state.terminated, torch.tensor([True, True]))
+    torch.testing.assert_close(state.truncated, torch.tensor([False, False]))
 
 
 def test_manual_reset_is_required_when_autoreset_is_disabled() -> None:
     env, _ = _make_env(_make_cfg(auto_reset=False))
     env.init_state()
-    state = env.step(np.array([[1.0], [0.0]], dtype=np.float32))
-    np.testing.assert_array_equal(state.info["steps"], [1, 1])
+    state = env.step(torch.tensor([[1.0], [0.0]], dtype=torch.float32))
+    torch.testing.assert_close(state.info["steps"], torch.ones(2, dtype=torch.int64))
     with pytest.raises(RuntimeError, match="must be reset"):
-        env.step(np.zeros((2, 1), dtype=np.float32))
+        env.step(torch.zeros((2, 1), dtype=torch.float32))
 
-    reset_obs, info = env.reset(env_ids=np.array([0], dtype=np.int32))
+    reset_obs, info = env.reset(env_indices=torch.tensor([0], dtype=torch.int64))
     assert reset_obs["obs"].shape == (1, 2)
     assert "log" in info
     assert not state.terminated[0]
-    env.step(np.zeros((2, 1), dtype=np.float32))
+    env.step(torch.zeros((2, 1), dtype=torch.float32))
 
 
 def test_reset_seed_updates_the_shared_generator_in_place() -> None:
@@ -1303,7 +1359,7 @@ def test_reset_seed_updates_the_shared_generator_in_place() -> None:
     env.init_state()
     generator = env.rng
 
-    env.reset(seed=123, env_ids=np.array([0], dtype=np.int32))
+    env.reset(seed=123, env_indices=torch.tensor([0], dtype=torch.int64))
 
     assert env.rng is generator
     expected = np.random.default_rng(123).random()
@@ -1332,18 +1388,11 @@ def test_multisubstep_state_feedback_action_uses_callback() -> None:
     cfg = _make_cfg(
         actions={"drive": _FeedbackDriveCfg(entity_name="robot")},
     )
-    env, backend = _make_env(cfg)
-    try:
-        env.init_state()
-        env.step(np.array([[0.25], [0.5]], dtype=np.float32))
-
-        assert env.action_manager.requires_substep_state_feedback
-        assert backend.pre_step_control is not None
-        assert backend.step_nsteps == [2]
-        assert env.action_sim_steps == [1, 2]
-        assert len(backend.applied_controls) == 2
-    finally:
-        env.close()
+    with pytest.raises(
+        NotImplementedError,
+        match="Torch lifecycle P1 does not support state-feedback actions",
+    ):
+        _make_env(cfg)
 
 
 def test_multisubstep_state_feedback_action_fails_when_backend_rejects_callback() -> None:
@@ -1352,7 +1401,7 @@ def test_multisubstep_state_feedback_action_fails_when_backend_rejects_callback(
     )
     with pytest.raises(
         NotImplementedError,
-        match="ActionManager.*state-feedback actions.*every physics substep.*fake",
+        match="Torch lifecycle P1 does not support state-feedback actions",
     ):
         _make_env(cfg, reject_pre_step=True)
 
@@ -1365,10 +1414,11 @@ def test_single_substep_feedback_action_does_not_require_callback() -> None:
     env, backend = _make_env(cfg, reject_pre_step=True)
     try:
         env.init_state()
-        env.step(np.array([[0.25], [0.5]], dtype=np.float32))
+        env.step(torch.tensor([[0.25], [0.5]], dtype=torch.float32))
 
         assert backend.pre_step_control is None
         assert backend.step_nsteps == [1]
+        assert isinstance(backend.tensor_controls[0], torch.Tensor)
         assert env.action_sim_steps == [1]
     finally:
         env.close()
@@ -1399,6 +1449,7 @@ def test_state_feedback_action_error_propagates_from_callback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = _make_cfg(
+        sim_substeps=1,
         actions={"drive": _FeedbackDriveCfg(entity_name="robot")},
     )
     env, _ = _make_env(cfg)
@@ -1411,7 +1462,7 @@ def test_state_feedback_action_error_propagates_from_callback(
     monkeypatch.setattr(term, "apply_actions", fail)
     try:
         with pytest.raises(ValueError, match="ActionManager term 'drive'.*feedback failed"):
-            env.step(np.zeros((2, 1), dtype=np.float32))
+            env.step(torch.zeros((2, 1), dtype=torch.float32))
     finally:
         env.close()
 
@@ -1447,12 +1498,10 @@ def test_observation_mapping_fails_closed(mutate, error, match: str) -> None:
         _make_env(cfg)
 
 
-def test_close_unhooks_callback_and_closes_owned_resources() -> None:
-    cfg = _make_cfg(
-        actions={"drive": _FeedbackDriveCfg(entity_name="robot")},
-    )
+def test_close_closes_owned_resources_without_host_callback() -> None:
+    cfg = _make_cfg()
     env, backend = _make_env(cfg)
-    assert backend.pre_step_control is not None
+    assert backend.pre_step_control is None
     env.close()
     assert backend.pre_step_control is None
     assert backend.cleanup_calls == 1

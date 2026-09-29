@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
@@ -52,11 +53,11 @@ def test_go2_superdex_native_rollout_and_free_root_reset() -> None:
         assert env.action_space.shape == (12,)
         assert env.obs_groups_spec == {"obs": 49, "critic": 52}
         for _ in range(32):
-            state = env.step(np.zeros((2, 12), dtype=np.float32))
-            assert np.isfinite(state.reward).all()
-            assert all(np.isfinite(value).all() for value in state.obs.values())
+            state = env.step(torch.zeros((2, 12), dtype=torch.float32))
+            assert torch.isfinite(state.reward).all()
+            assert all(torch.isfinite(value).all() for value in state.obs.values())
         before = env.scene["robot"].data.root_link_pos_w.copy()
-        obs, _ = env.reset(env_ids=np.array([0], dtype=np.int32))
+        obs, _ = env.reset(env_indices=torch.tensor([0], dtype=torch.int64))
         assert obs["obs"].shape == (1, 49)
         np.testing.assert_array_equal(env.scene["robot"].data.root_link_pos_w[1], before[1])
         np.testing.assert_allclose(
@@ -87,7 +88,7 @@ def test_go2_superdex_parallel_matches_serial_env_and_unsorted_reset() -> None:
             env.init_state()
         rng = np.random.default_rng(11)
         for _ in range(8):
-            action = rng.uniform(-0.1, 0.1, (4, 12)).astype(np.float32)
+            action = torch.tensor(rng.uniform(-0.1, 0.1, (4, 12)), dtype=torch.float32)
             reference, result = (env.step(action) for env in envs)
             for key in reference.obs:
                 np.testing.assert_allclose(
@@ -96,9 +97,9 @@ def test_go2_superdex_parallel_matches_serial_env_and_unsorted_reset() -> None:
             np.testing.assert_allclose(result.reward, reference.reward, atol=2e-5, rtol=2e-5)
         before = parallel.scene["robot"].data.root_link_pos_w.copy()
         # Non-monotonic IDs span both shards and must retain caller row order.
-        selected = np.array([3, 0], dtype=np.int32)
-        ref_obs, _ = serial.reset(env_ids=selected)
-        out_obs, _ = parallel.reset(env_ids=selected)
+        selected = torch.tensor([3, 0], dtype=torch.int64)
+        ref_obs, _ = serial.reset(env_indices=selected)
+        out_obs, _ = parallel.reset(env_indices=selected)
         for key in ref_obs:
             np.testing.assert_allclose(out_obs[key], ref_obs[key], atol=2e-5, rtol=2e-5)
         np.testing.assert_array_equal(

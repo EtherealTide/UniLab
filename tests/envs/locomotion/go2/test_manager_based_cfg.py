@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
@@ -311,14 +312,14 @@ def test_go2_flat_registry_executes_real_manager_runtime(backend: str, owner: st
             np.broadcast_to(_HOME_JOINT_POS, (2, 12)),
         )
 
-        state = env.step(np.zeros((2, 12), dtype=np.float32))
+        state = env.step(torch.zeros((2, 12), dtype=torch.float32))
         assert {name: value.shape for name, value in state.obs.items()} == {
             "obs": (2, 49),
             "critic": (2, 52),
         }
         for value in (*state.obs.values(), state.reward):
-            assert isinstance(value, np.ndarray)
-            assert np.isfinite(value).all()
+            assert isinstance(value, torch.Tensor)
+            assert torch.isfinite(value).all()
     finally:
         env.close()
 

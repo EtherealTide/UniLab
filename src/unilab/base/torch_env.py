@@ -2,8 +2,8 @@
 
 `TorchEnv` is the future sole Manager-Based runtime carrier. This first P1
 slice owns the core state, step, selected-row autoreset, timeout, finite, and
-training-state contracts without introducing a NumPy compatibility path.
-Backend playback and Manager term migration follow in later P1 slices.
+training-state contracts. It also delegates the backend playback/render cold
+paths while Manager term migration continues in later P1 slices.
 """
 
 from __future__ import annotations
@@ -11,14 +11,18 @@ from __future__ import annotations
 import abc
 import dataclasses
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Optional
+from os import PathLike
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 import gymnasium as gym
 import numpy as np
 import torch
 from unisim.backend.base import (
+    BackendPlayRenderPlan,
+    CameraCfg,
+    DebugOverlayGetter,
     DebugPrimitive,
     SimBackend,
     TensorExecution,
@@ -26,9 +30,12 @@ from unisim.backend.base import (
 )
 
 from unilab.base.backend_timing import RESET_DONE_DETAIL_TIMING_KEYS
-from unilab.base.base import ABEnv, EnvCfg
+from unilab.base.base import ABEnv, EnvCfg, EnvPlayCapabilities
 from unilab.base.cpu_runtime import apply_env_cpu_runtime
 from unilab.dtype_config import get_global_dtype
+
+if TYPE_CHECKING:
+    from unilab.utils.nan_guard import NanGuard
 
 
 @dataclass
@@ -91,6 +98,9 @@ class TorchEnv(ABEnv):
         self._tensor_runtime_bound = False
         self.step_counter = 0
         self._autoreset = True
+        self._autoreset_reset_active = False
+        self._rgb_array_renderer_ready = False
+        self._nan_guard: "NanGuard | None" = None
 
     @property
     def device(self) -> torch.device:
@@ -374,7 +384,11 @@ class TorchEnv(ABEnv):
         ) * 1000.0
 
         reset_started = time.perf_counter()
-        new_obs, reset_info = self.reset(rows)
+        self._autoreset_reset_active = True
+        try:
+            new_obs, reset_info = self.reset(rows)
+        finally:
+            self._autoreset_reset_active = False
         detail_timing["reset_done_reset_call_ms"] = (time.perf_counter() - reset_started) * 1000.0
         collected = self._collect_reset_backend_timing_ms()
         detail_timing.update(
@@ -469,8 +483,194 @@ class TorchEnv(ABEnv):
         assert self._state is not None
         self._state.final_observation = None
 
+    def init_play_renderer(
+        self,
+        render_spacing: float | None = None,
+        render_offset_mode: str | None = None,
+        *,
+        headless: bool = False,
+        capture: bool = False,
+        width: int = 1280,
+        height: int = 720,
+        camera_kwargs: CameraCfg | Mapping[str, Any] | None = None,
+    ) -> None:
+        """Initialize backend-native playback rendering when available."""
+        if capture:
+            if not self.play_capabilities.supports_native_video_capture:
+                raise NotImplementedError(
+                    f"{self._backend.__class__.__name__} does not support native video capture"
+                )
+        elif not self.play_capabilities.supports_native_interactive_renderer:
+            raise NotImplementedError(
+                f"{self._backend.__class__.__name__} does not support native interactive playback"
+            )
+        spacing = (
+            float(render_spacing) if render_spacing is not None else float(self._cfg.render_spacing)
+        )
+        offset_mode = (
+            str(render_offset_mode)
+            if render_offset_mode is not None
+            else str(getattr(self._cfg, "render_offset_mode", "grid"))
+        )
+        self._backend.init_renderer(
+            spacing=spacing,
+            offset_mode=offset_mode,
+            headless=bool(headless),
+            capture=bool(capture),
+            width=int(width),
+            height=int(height),
+            camera_kwargs=camera_kwargs,
+        )
+
+    def resolve_play_render_plan(
+        self,
+        *,
+        play_render_mode: str | None,
+        play_steps: int | None,
+        output_video: str | PathLike[str] | None,
+    ) -> BackendPlayRenderPlan:
+        """Resolve high-level playback mode through the concrete backend."""
+        if self._backend.backend_type == "drake" and (
+            play_render_mode is None or str(play_render_mode).strip().lower() == "auto"
+        ):
+            play_render_mode = "record"
+        return self._backend.resolve_play_render_plan(
+            play_render_mode=play_render_mode,
+            play_steps=play_steps,
+            output_video=output_video,
+        )
+
+    def run_playback(
+        self,
+        *,
+        initialize: Callable[[], Any],
+        step: Callable[[Any], Any],
+        num_steps: int | None,
+        output_video: str | PathLike[str] | None = None,
+        render_spacing: float | None = None,
+        render_offset_mode: str | None = None,
+        headless: bool | None = None,
+        record_video: bool | None = None,
+        frame_state_getter: Callable[[], np.ndarray] | None = None,
+        camera_kwargs: CameraCfg | Mapping[str, Any] | None = None,
+        debug_overlay_getter: DebugOverlayGetter | None = None,
+        on_frame: Callable[[int, np.ndarray], np.ndarray | None] | None = None,
+    ) -> str | None:
+        """Execute playback through the concrete backend."""
+        if on_frame is not None:
+            raise NotImplementedError(
+                f"{self.__class__.__name__} cannot forward on_frame to "
+                f"{self._backend.__class__.__name__}.run_playback yet"
+            )
+        return cast(
+            str | None,
+            self._backend.run_playback(
+                env=self,
+                initialize=initialize,
+                step=step,
+                num_steps=num_steps,
+                output_video=output_video,
+                render_spacing=render_spacing,
+                render_offset_mode=render_offset_mode,
+                headless=headless,
+                record_video=record_video,
+                frame_state_getter=frame_state_getter,
+                camera_kwargs=camera_kwargs,
+                debug_overlay_getter=debug_overlay_getter,
+            ),
+        )
+
+    @property
+    def play_capabilities(self) -> EnvPlayCapabilities:
+        capabilities = self._backend.get_play_capabilities()
+        return EnvPlayCapabilities(
+            supports_native_interactive_renderer=capabilities.supports_native_interactive_renderer,
+            supports_physics_state_playback=capabilities.supports_physics_state_playback,
+            supports_native_video_capture=capabilities.supports_native_video_capture,
+            supports_debug_overlay=capabilities.supports_debug_overlay,
+            supports_interactive_debug_overlay=capabilities.supports_interactive_debug_overlay,
+            supports_mocap_playback=capabilities.supports_mocap_playback,
+        )
+
+    def render_play_frame(self) -> None:
+        """Render one interactive playback frame through the env contract."""
+        if not self.play_capabilities.supports_native_interactive_renderer:
+            raise NotImplementedError(
+                f"{self._backend.__class__.__name__} does not support native interactive playback"
+            )
+        self._backend.render()
+
+    def render(self, mode: str = "rgb_array") -> np.ndarray:
+        """Render the current state to an RGB array through the play renderer."""
+        if mode != "rgb_array":
+            raise NotImplementedError(
+                f"{self.__class__.__name__} does not support render mode {mode!r}"
+            )
+        if not self.play_capabilities.supports_native_video_capture:
+            raise NotImplementedError(
+                f"{self._backend.__class__.__name__} does not support native video capture"
+            )
+        if not self._rgb_array_renderer_ready:
+            self.init_play_renderer(headless=True, capture=True)
+            self._rgb_array_renderer_ready = True
+        return self.capture_play_video_frame()
+
+    def capture_play_video_frame(self) -> np.ndarray:
+        """Capture one detached RGB video frame through the env contract."""
+        if not self.play_capabilities.supports_native_video_capture:
+            raise NotImplementedError(
+                f"{self._backend.__class__.__name__} does not support native video capture"
+            )
+        return cast(
+            np.ndarray, np.asarray(self._backend.capture_video_frame(), dtype=np.uint8).copy()
+        )
+
+    def get_physics_state_snapshot(self) -> np.ndarray:
+        """Return a detached physics snapshot for playback/video export."""
+        if not self.play_capabilities.supports_physics_state_playback:
+            raise NotImplementedError(
+                f"{self._backend.__class__.__name__} does not support physics-state playback"
+            )
+        physics_state = cast(
+            np.ndarray, np.asarray(self._backend.get_physics_state(), dtype=np.float32)
+        )
+        return physics_state.copy()
+
+    def get_playback_model(self, env_index: int | None = None) -> Any:
+        """Return the backend playback model for one vectorized environment."""
+        return self._backend.get_playback_model(env_index)
+
+    def get_physics_state_layout(self) -> Any:
+        """Return the backend physics-state playback layout."""
+        return self._backend.get_physics_state_layout()
+
+    def get_playback_mocap_state(self, env_index: int = 0) -> tuple[np.ndarray, np.ndarray]:
+        """Return detached ``(mocap_pos, mocap_quat)`` playback state."""
+        if not self.play_capabilities.supports_mocap_playback:
+            raise NotImplementedError(
+                f"{self._backend.__class__.__name__} does not support mocap playback"
+            )
+        mocap_pos, mocap_quat = self._backend.get_playback_mocap_state(env_index)
+        return (
+            np.asarray(mocap_pos, dtype=np.float64).copy(),
+            np.asarray(mocap_quat, dtype=np.float64).copy(),
+        )
+
+    def get_scene_visual_model_file(self) -> str | None:
+        """Return the backend visual model file on the playback cold path."""
+        return cast(str | None, self._backend.get_scene_visual_model_file())
+
     def set_autoreset(self, enabled: bool) -> None:
         self._autoreset = bool(enabled)
+
+    def set_nan_guard(self, guard: "NanGuard") -> None:
+        """Attach the owner-provided diagnostic guard.
+
+        Finite state remains fail-closed in `TorchEnv.step`. The guard's
+        host-side dump integration migrates with the training diagnostics in
+        P2; attaching it never enables a NumPy execution fallback.
+        """
+        self._nan_guard = guard
 
     def export_training_state(self) -> dict[str, Any]:
         return {"version": 1, "step_counter": self.step_counter}

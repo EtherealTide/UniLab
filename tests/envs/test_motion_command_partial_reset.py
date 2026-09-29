@@ -18,6 +18,7 @@ from typing import Callable
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
@@ -130,13 +131,15 @@ def test_motion_command_partial_reset_row_parity(
         action_dim = term.motion.num_joints
         rng = np.random.default_rng(7)
         for _ in range(5):
-            env.step((0.1 * rng.standard_normal((num_envs, action_dim))).astype(np.float32))
+            env.step(
+                torch.tensor(0.1 * rng.standard_normal((num_envs, action_dim)), dtype=torch.float32)
+            )
 
         reset_ids = np.array([0, 2], dtype=np.int32)
         keep_ids = np.array([1, 3], dtype=np.int32)
         before = {name: value.copy() for name, value in _buffers(term).items()}
         metrics_before = {name: value.copy() for name, value in term.metrics.items()}
-        reset_obs, _ = env.reset(env_ids=reset_ids)
+        reset_obs, _ = env.reset(env_indices=torch.tensor(reset_ids, dtype=torch.int64))
         after = _buffers(term)
 
         # Untouched rows keep their per-step values bit-identically, except the

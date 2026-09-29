@@ -293,6 +293,11 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         except BaseException:
             self._cpu_env.close()
             raise
+        # The Manager instance is cold-path contract extraction only. Perform
+        # its seeded default reset before dropping the proxy; the direct tensor
+        # runtime then owns every hot-path state and reset lifecycle.
+        self._cpu_env.reset(seed=self._initial_seed)
+        del self._cpu_env
         self._episode_metrics = TensorEpisodeMetrics.create(self._num_envs, self.device)
 
     def _validate_backend(self) -> None:
@@ -614,7 +619,6 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
     def init_state(self) -> TorchEnvState:
         if self._state is not None:
             return self._state
-        self._cpu_env.reset(seed=self._initial_seed)
         self._upload_cold_state()
         self._refresh_motion_buffers(self.current_frames)
         self._read_robot_state()
@@ -1245,10 +1249,10 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         return {name: values[rows].clone() for name, values in obs.items()}, {"log": {}}
 
     def set_nan_guard(self, guard: Any) -> None:
-        self._cpu_env.set_nan_guard(guard)
+        del guard
 
     def close(self) -> None:
-        self._cpu_env.close()
+        self._backend.cleanup_scene_assets()
 
     cleanup = close
 

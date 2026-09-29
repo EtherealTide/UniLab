@@ -10,8 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
@@ -83,7 +83,7 @@ def test_stage_curriculum_demo_runtime_ramps_with_step_counter() -> None:
         assert weight_cfg.weight == pytest.approx(1.0)
         assert tilt_cfg.params["limit_angle"] == pytest.approx(0.4)
 
-        actions = np.zeros((4, 1), dtype=np.float32)
+        actions = torch.zeros((4, 1), dtype=torch.float32)
         for _ in range(2):
             env.step(actions)
         env.reset()

@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
@@ -90,7 +91,7 @@ def test_mjlab_fixture_real_mujoco_reset_step_and_reward() -> None:
 
         before = env.scene["cartpole"].data.joint_pos.copy()
         ids = np.asarray([1, 6], dtype=np.int32)
-        reset_obs, _ = env.reset(env_ids=ids)
+        reset_obs, _ = env.reset(env_indices=torch.tensor(ids, dtype=torch.int64))
         after = env.scene["cartpole"].data.joint_pos.copy()
         np.testing.assert_array_equal(after[[0, 2, 3, 4, 5, 7]], before[[0, 2, 3, 4, 5, 7]])
         assert reset_obs["obs"].shape == reset_obs["critic"].shape == (2, 5)
@@ -98,7 +99,7 @@ def test_mjlab_fixture_real_mujoco_reset_step_and_reward() -> None:
         assert np.all(np.abs(after[ids, 1]) <= 0.034)
         assert np.all(np.abs(env.scene["cartpole"].data.joint_vel[ids]) <= 0.01)
 
-        actions = np.full((8, 1), 0.25, dtype=np.float32)
+        actions = torch.full((8, 1), 0.25, dtype=torch.float32)
         state = env.step(actions)
         entity = env.scene["cartpole"]
         hinge = entity.data.joint_pos[:, 1]
