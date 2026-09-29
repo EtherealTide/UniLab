@@ -33,10 +33,11 @@ from unisim.backend.base import (
 from unilab.base.backend_timing import RESET_DONE_DETAIL_TIMING_KEYS
 from unilab.base.base import ABEnv, EnvCfg, EnvPlayCapabilities
 from unilab.base.cpu_runtime import apply_env_cpu_runtime
+from unilab.base.scene import SceneCfg
 from unilab.dtype_config import get_global_dtype
 
 if TYPE_CHECKING:
-    from unilab.utils.nan_guard import NanGuard
+    from unilab.training.tensor_diagnostics import TensorNanGuard
 
 
 @dataclass
@@ -106,7 +107,7 @@ class TorchEnv(ABEnv):
         self._autoreset = True
         self._autoreset_reset_active = False
         self._rgb_array_renderer_ready = False
-        self._nan_guard: "NanGuard | None" = None
+        self._nan_guard: "TensorNanGuard | None" = None
 
     @property
     def device(self) -> torch.device:
@@ -218,6 +219,12 @@ class TorchEnv(ABEnv):
         phase = time.perf_counter()
         phase_cpu = _cpu_time()
         ctrl = self.apply_action(actions, self._state)
+        if self._nan_guard is not None:
+            bad_ctrl_ids = self._nan_guard.check_ctrl(ctrl, step=self.step_counter)
+            if bad_ctrl_ids is not None:
+                self._nan_guard.dump(
+                    bad_ctrl_ids, self._resolve_nan_guard_model_file(), self.step_counter
+                )
         self._validate_control(ctrl)
         apply_action_ms = (time.perf_counter() - phase) * 1000.0
         apply_action_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
@@ -234,6 +241,15 @@ class TorchEnv(ABEnv):
         phase = time.perf_counter()
         phase_cpu = _cpu_time()
         self._state = self.update_state(self._state)
+        if self._nan_guard is not None:
+            self._nan_guard.capture(self._tensor_diagnostics_state())
+            nan_ids = self._nan_guard.check(
+                self._state.obs, self._state.reward, step=self.step_counter
+            )
+            if nan_ids is not None:
+                self._nan_guard.dump(
+                    nan_ids, self._resolve_nan_guard_model_file(), self.step_counter
+                )
         self._validate_state(self._state)
         update_state_ms = (time.perf_counter() - phase) * 1000.0
         update_state_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
@@ -690,14 +706,44 @@ class TorchEnv(ABEnv):
     def set_autoreset(self, enabled: bool) -> None:
         self._autoreset = bool(enabled)
 
-    def set_nan_guard(self, guard: "NanGuard") -> None:
+    def set_nan_guard(self, guard: TensorNanGuard) -> None:
         """Attach the owner-provided diagnostic guard.
 
-        Finite state remains fail-closed in `TorchEnv.step`. The guard's
-        host-side dump integration migrates with the training diagnostics in
-        P2; attaching it never enables a NumPy execution fallback.
+        Detection stays device-resident. Artifact export occurs only at the
+        guard's explicit abnormal-diagnostic host boundary.
         """
+        from unilab.training.tensor_diagnostics import TensorNanGuard as _TensorNanGuard
+
+        if not isinstance(guard, _TensorNanGuard):
+            raise TypeError(
+                f"TorchEnv nan guard must be TensorNanGuard, got {type(guard).__name__}"
+            )
         self._nan_guard = guard
+
+    def _resolve_nan_guard_model_file(self) -> str:
+        """Resolve the abnormal-dump model path only on a detected failure."""
+        scene = getattr(self._cfg, "scene", None)
+        if isinstance(scene, SceneCfg) and scene.model_file:
+            return str(scene.model_file)
+        model_file = self._backend.get_scene_model_file()
+        return str(model_file) if model_file else ""
+
+    def _tensor_diagnostics_state(self) -> torch.Tensor | None:
+        """Return a public backend state snapshot for abnormal diagnostics."""
+        if not self._tensor_runtime_bound:
+            return None
+        capabilities = self._backend.get_tensor_capabilities()
+        requested_fields = {"qpos", "qvel"}
+        fields = tuple(sorted(requested_fields.intersection(capabilities.state_fields)))
+        if not capabilities.state_views or not fields:
+            return None
+        views = self._backend.get_state_views(fields, device=self._device)
+        values = [views[field] for field in fields]
+        if not all(isinstance(value, torch.Tensor) for value in values):
+            raise TypeError("backend state views must be torch.Tensor values")
+        return torch.cat(
+            tuple(value.reshape(self._num_envs, -1) for value in values), dim=1
+        ).detach()
 
     def export_training_state(self) -> dict[str, Any]:
         return {"version": 1, "step_counter": self.step_counter}

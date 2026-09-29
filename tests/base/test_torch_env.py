@@ -18,8 +18,10 @@ from unisim.backend.base import (
     TensorLifecycleCapabilities,
 )
 
-from unilab.base.base import EnvCfg
+from unilab.base.base import EnvCfg, EnvPlayCapabilities
+from unilab.base.scene import SceneCfg
 from unilab.base.torch_env import TorchEnv, TorchEnvState
+from unilab.training.tensor_diagnostics import NanGuardCfg, TensorNanGuard
 
 
 @dataclass
@@ -45,6 +47,9 @@ def _backend() -> MagicMock:
         torch_devices=("cpu",),
     )
     backend.step_tensor.return_value = None
+    backend.get_play_capabilities.return_value = EnvPlayCapabilities(
+        supports_physics_state_playback=False
+    )
     return backend
 
 
@@ -294,6 +299,112 @@ def test_nonfinite_backend_control_fails_closed() -> None:
     env.init_state()
     with pytest.raises(ValueError, match="control contains NaN or Inf"):
         env.step(_actions(env))
+
+
+def test_tensor_nan_guard_detects_and_dumps_at_explicit_host_boundary(tmp_path) -> None:
+    class _NonfiniteObsEnv(_StubTorchEnv):
+        def update_state(self, state: TorchEnvState) -> TorchEnvState:
+            result = super().update_state(state)
+            obs = {key: value.clone() for key, value in result.obs.items()}
+            obs["critic"][1, 0] = torch.nan
+            return result.replace(obs=obs)
+
+    env = _NonfiniteObsEnv()
+    env.init_state()
+    guard = TensorNanGuard(
+        NanGuardCfg(enabled=True, buffer_size=2, max_envs_to_dump=2, output_dir=str(tmp_path)),
+        num_envs=env.num_envs,
+        supports_state_playback=False,
+    )
+    env.set_nan_guard(guard)
+
+    with pytest.raises(ValueError, match="obs\\['critic'\\] contains NaN or Inf"):
+        env.step(_actions(env))
+    assert list(tmp_path.glob("nan_dump_*.npz")) == []
+
+    class _FiniteObsEnv(_StubTorchEnv):
+        pass
+
+    finite_env = _FiniteObsEnv(terminate=False)
+    finite_env.init_state()
+    finite_guard = TensorNanGuard(
+        NanGuardCfg(enabled=True, buffer_size=2, output_dir=str(tmp_path / "unused")),
+        num_envs=finite_env.num_envs,
+        supports_state_playback=False,
+    )
+    finite_env.set_nan_guard(finite_guard)
+    finite_state = finite_env.step(_actions(finite_env))
+    assert finite_state.info["timing"]["env_step_total_ms"] >= 0.0
+    assert list(tmp_path.glob("nan_dump_*.npz")) == []
+
+    def finite_update(state: TorchEnvState) -> TorchEnvState:
+        return state.replace(
+            obs={
+                "obs": torch.zeros((3, 3), dtype=torch.float32),
+                "critic": torch.zeros((3, 2), dtype=torch.float32),
+            },
+            reward=torch.tensor([0.0, torch.nan, 0.0]),
+            terminated=torch.zeros(3, dtype=torch.bool),
+            truncated=torch.zeros(3, dtype=torch.bool),
+        )
+
+    finite_env.update_state = finite_update  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="reward contains NaN or Inf"):
+        finite_env.step(_actions(finite_env))
+    unused_files = [
+        path for path in (tmp_path / "unused").glob("nan_dump_*.npz") if not path.is_symlink()
+    ]
+    assert len(unused_files) == 1
+    dump = np.load(unused_files[0])
+    assert dump["states"].shape == (0, 1, 0)
+    assert dump["meta_nan_env_ids"].tolist() == [1]
+    assert (tmp_path / "unused" / "nan_dump_latest.npz").is_symlink()
+    assert dump["meta_num_envs_total"].item() == finite_env.num_envs
+    assert dump["meta_supports_state_playback"].item() is False
+
+
+def test_tensor_nan_guard_keeps_detection_input_strict() -> None:
+    guard = TensorNanGuard(NanGuardCfg(enabled=True), num_envs=3, supports_state_playback=False)
+
+    with pytest.raises(TypeError, match="observations must be a mapping"):
+        guard.check(cast(Any, [torch.zeros((3, 2))]), torch.zeros(3))
+    with pytest.raises(TypeError, match="obs\\['obs'\\] must be a torch.Tensor"):
+        guard.check({"obs": cast(Any, np.zeros((3, 2), dtype=np.float32))}, torch.zeros(3))
+    with pytest.raises(TypeError, match="reward must be a torch.Tensor"):
+        guard.check({"obs": torch.zeros((3, 2))}, cast(Any, np.zeros(3, dtype=np.float32)))
+    with pytest.raises(TypeError, match="ctrl must be a torch.Tensor"):
+        guard.check_ctrl(cast(Any, np.zeros((3, 2), dtype=np.float32)))
+    with pytest.raises(TypeError, match="nan_env_ids must be a torch.Tensor"):
+        guard.dump(cast(Any, np.array([0])), "", 0)
+
+    ids = guard.check(
+        {"obs": torch.tensor([[0.0, torch.nan], [1.0, 2.0], [3.0, 4.0]])},
+        torch.tensor([0.0, torch.nan, 2.0]),
+    )
+    assert isinstance(ids, torch.Tensor)
+    assert ids.dtype == torch.int64
+    assert ids.tolist() == [1]
+
+
+def test_tensor_nan_guard_rejects_legacy_guard_and_resolves_model_lazily() -> None:
+    backend = _backend()
+    backend.get_scene_model_file.return_value = "/backend.xml"
+    env = _StubTorchEnv(cfg=_StubCfg(scene=SceneCfg(model_file="/scene.xml")), backend=backend)
+    assert backend.get_scene_model_file.call_count == 0
+
+    with pytest.raises(TypeError, match="TorchEnv nan guard must be TensorNanGuard"):
+        env.set_nan_guard(cast(Any, MagicMock()))
+
+    cfg = _StubCfg(scene=SceneCfg(model_file=""))
+    backend_without_scene = _backend()
+    backend_without_scene.get_scene_model_file.return_value = "/backend.xml"
+    lazy_env = _StubTorchEnv(cfg=cfg, backend=backend_without_scene)
+    assert backend_without_scene.get_scene_model_file.call_count == 0
+    backend_without_scene.get_scene_model_file.return_value = "/changed.xml"
+    lazy_guard = TensorNanGuard(NanGuardCfg(enabled=True), 3, False)
+    lazy_env.set_nan_guard(lazy_guard)
+    lazy_env.init_state()
+    assert backend_without_scene.get_scene_model_file.call_count == 0
 
 
 def test_backend_capability_mismatch_fails_closed() -> None:

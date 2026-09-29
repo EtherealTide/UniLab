@@ -1248,9 +1248,6 @@ class TorchG1MotionTrackingFlashSACEnv(ABEnv):
         self._state.truncated[rows] = False
         return {name: values[rows].clone() for name, values in obs.items()}, {"log": {}}
 
-    def set_nan_guard(self, guard: Any) -> None:
-        del guard
-
     def close(self) -> None:
         self._backend.cleanup_scene_assets()
 
