@@ -328,7 +328,7 @@ class ManagerBasedRlEnv(TorchEnv):
         self.reset_terminated = np.zeros(num_envs, dtype=np.bool_)
         self.reset_time_outs = np.zeros(num_envs, dtype=np.bool_)
         self.reward_buf = np.zeros(num_envs, dtype=get_global_dtype())
-        self.obs_buf: dict[str, np.ndarray] = {}
+        self.obs_buf: dict[str, torch.Tensor] = {}
         self.extras: dict[str, Any] = {"log": {}}
         self._command_dt = np.zeros(num_envs, dtype=get_global_dtype())
         self._manual_reset_pending = np.zeros(num_envs, dtype=np.bool_)
@@ -626,9 +626,7 @@ class ManagerBasedRlEnv(TorchEnv):
         manager_obs = self.observation_manager.compute(update_history=True)
 
         mapped_obs = self._map_observations(manager_obs)
-        self.obs_buf = {
-            name: self._observations_to_host_boundary(values) for name, values in mapped_obs.items()
-        }
+        self.obs_buf = mapped_obs
         self._has_transition = True
 
         return state.replace(
@@ -743,13 +741,10 @@ class ManagerBasedRlEnv(TorchEnv):
                 self.reset_terminated[ids] = False
                 self.reset_time_outs[ids] = False
         if not self.obs_buf or set(self.obs_buf) != set(mapped_obs):
-            self.obs_buf = {
-                name: self._observations_to_host_boundary(values)
-                for name, values in mapped_obs.items()
-            }
+            self.obs_buf = mapped_obs
         else:
             for name, values in mapped_obs.items():
-                self.obs_buf[name][ids] = self._observations_to_host_boundary(values)
+                self.obs_buf[name][rows] = values
         self.extras = self._state.info if self._state is not None else {"log": log}
         self.recorder_manager.record_post_reset(ids)
         return reset_obs, {"log": log}
@@ -786,11 +781,6 @@ class ManagerBasedRlEnv(TorchEnv):
                 )
             mapped[output_name] = value
         return mapped
-
-    @staticmethod
-    def _observations_to_host_boundary(values: torch.Tensor) -> np.ndarray:
-        """Publish Torch observations to the temporary NumPy recorder scratch."""
-        return np.array(values.detach().cpu().numpy(), order="C", copy=True)
 
     def get_observations(self) -> dict[str, torch.Tensor]:
         if self._state is None:
