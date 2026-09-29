@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from numbers import Real
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, cast
 
 import numpy as np
+import torch
 from etils import epath
 
 from unilab.assets import ASSETS_ROOT_PATH
@@ -109,9 +110,10 @@ class AllegroIncrementalPositionAction(ActionTerm):
 
     cfg: AllegroIncrementalPositionActionCfg
     _entity: Entity
-    _raw_action: np.ndarray
-    _clipped_action: np.ndarray
-    _target: np.ndarray
+    _raw_action: torch.Tensor
+    _clipped_action: torch.Tensor
+    _target: torch.Tensor
+    uses_tensor_actions: ClassVar[bool] = True
 
     def __init__(self, cfg: AllegroIncrementalPositionActionCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
@@ -143,64 +145,102 @@ class AllegroIncrementalPositionAction(ActionTerm):
         self._joint_ids_array.setflags(write=False)
         local_actuator_ids = np.asarray(actuator_ids, dtype=np.intp)
         ranges = np.asarray(self._entity.data.actuator_ctrl_range, dtype=get_global_dtype())
-        self._ctrl_lower = np.array(ranges[local_actuator_ids, 0], copy=True)
-        self._ctrl_upper = np.array(ranges[local_actuator_ids, 1], copy=True)
-        if np.any(self._ctrl_lower >= self._ctrl_upper):
+        ctrl_lower = np.array(ranges[local_actuator_ids, 0], copy=True)
+        ctrl_upper = np.array(ranges[local_actuator_ids, 1], copy=True)
+        if np.any(ctrl_lower >= ctrl_upper):
             raise ValueError(f"{term} actuator control ranges must have lower < upper")
 
-        self._scale = _real(term, "action_scale", cfg.action_scale, minimum=0.0)
-        self._raw_clip = _pair(term, "raw_action_clip", cfg.raw_action_clip)
-        dtype = get_global_dtype()
-        self._raw_action = np.zeros((env.num_envs, len(self._joint_ids)), dtype=dtype)
-        self._clipped_action = np.zeros_like(self._raw_action)
-        self._target = np.asarray(
-            self._entity.data.default_joint_pos[:, self._joint_ids_array], dtype=dtype
-        ).copy()
+        action_scale = _real(term, "action_scale", cfg.action_scale, minimum=0.0)
+        raw_clip = _pair(term, "raw_action_clip", cfg.raw_action_clip)
+        self._device = getattr(env, "device", torch.device("cpu"))
+        self._scale = torch.tensor(action_scale, dtype=torch.float32, device=self._device)
+        self._raw_clip = torch.tensor(raw_clip, dtype=torch.float32, device=self._device)
+        self._raw_action = torch.zeros(
+            (env.num_envs, len(self._joint_ids)), dtype=torch.float32, device=self._device
+        )
+        self._clipped_action = torch.zeros_like(self._raw_action)
+        self._ctrl_lower = torch.from_numpy(ctrl_lower).to(dtype=torch.float32, device=self._device)
+        self._ctrl_upper = torch.from_numpy(ctrl_upper).to(dtype=torch.float32, device=self._device)
+        default_target = np.asarray(
+            self._entity.data.default_joint_pos[:, self._joint_ids_array], dtype=np.float32
+        )
+        self._target = torch.from_numpy(np.ascontiguousarray(default_target)).to(
+            device=self._device
+        )
 
     @property
     def action_dim(self) -> int:
         return int(self._raw_action.shape[1])
 
     @property
-    def raw_action(self) -> np.ndarray:
+    def raw_action(self) -> torch.Tensor:
         return self._raw_action
 
     @property
-    def target(self) -> np.ndarray:
+    def clipped_action(self) -> torch.Tensor:
+        return self._clipped_action
+
+    @property
+    def target(self) -> torch.Tensor:
         return self._target
 
     @property
-    def ctrl_lower(self) -> np.ndarray:
+    def ctrl_lower(self) -> torch.Tensor:
         return self._ctrl_lower
 
     @property
-    def ctrl_upper(self) -> np.ndarray:
+    def ctrl_upper(self) -> torch.Tensor:
         return self._ctrl_upper
 
     @property
     def joint_ids(self) -> np.ndarray:
         return self._joint_ids_array
 
-    def process_actions(self, actions: np.ndarray) -> None:
-        if not isinstance(actions, np.ndarray):
-            raise TypeError(f"expected np.ndarray actions, got {type(actions).__name__}")
+    def process_actions(self, actions: torch.Tensor) -> None:
+        if not isinstance(actions, torch.Tensor):
+            raise TypeError(f"expected torch.Tensor actions, got {type(actions).__name__}")
         if actions.shape != self._raw_action.shape:
             raise ValueError(f"expected action shape {self._raw_action.shape}, got {actions.shape}")
-        if not np.isfinite(actions).all():
+        if actions.dtype != torch.float32:
+            raise TypeError(f"expected float32 actions, got {actions.dtype}")
+        if actions.device != self._device:
+            raise ValueError(f"expected device {self._device}, got {actions.device}")
+        if not bool(torch.isfinite(actions).all()):
             raise ValueError("received NaN or Inf actions")
-        self._raw_action[:] = actions
-        np.clip(actions, self._raw_clip[0], self._raw_clip[1], out=self._clipped_action)
-        self._target += self._scale * self._clipped_action
-        np.clip(self._target, self._ctrl_lower, self._ctrl_upper, out=self._target)
+        self._raw_action.copy_(actions)
+        torch.clamp(actions, min=self._raw_clip[0], max=self._raw_clip[1], out=self._clipped_action)
+        self._target.add_(self._clipped_action * self._scale)
+        self._target.clamp_(min=self._ctrl_lower, max=self._ctrl_upper)
 
     def apply_actions(self) -> None:
-        self._entity.set_joint_position_target(self._target, joint_ids=self._joint_ids_array)
+        self._entity.set_joint_position_target(
+            self._entity_values(self._target), joint_ids=self._joint_ids_array
+        )
 
     def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
-        ids = _env_ids(self._env, env_ids)
-        self._raw_action[ids] = 0.0
-        self._clipped_action[ids] = 0.0
-        self._target[ids] = self._entity.data.joint_pos[ids][:, self._joint_ids_array]
+        selector = self._reset_selector(slice(None) if env_ids is None else env_ids)
+        self._raw_action[selector] = 0.0
+        self._clipped_action[selector] = 0.0
+        current = self._entity.data.joint_pos[:, self._joint_ids_array]
+        current_target = torch.from_numpy(np.ascontiguousarray(current, dtype=np.float32)).to(
+            device=self._device
+        )
+        if isinstance(selector, slice):
+            self._target.copy_(current_target)
+        else:
+            self._target[selector] = current_target[selector]
+
+    def _reset_selector(self, env_ids: np.ndarray | slice) -> torch.Tensor | slice:
+        if isinstance(env_ids, slice):
+            return env_ids
+        rows = torch.as_tensor(np.asarray(env_ids), device=self._device)
+        if rows.ndim != 1 or rows.dtype not in {torch.int32, torch.int64}:
+            raise TypeError("reset rows must be one-dimensional integers")
+        return rows.to(torch.int64)
+
+    def _entity_values(self, values: torch.Tensor) -> np.ndarray:
+        """Publish targets to the temporary NumPy Entity write boundary."""
+        return values.detach().cpu().numpy()
 
 
 class AllegroRotationObservation(ManagerTermBase):
@@ -309,7 +349,8 @@ class AllegroRotationObservation(ManagerTermBase):
         self.dof_pos[:] = dof_pos
         self.ball_pos[:] = ball_pos
         self.ball_quat[:] = ball_quat
-        self.torques[:] = self._torque_kp * (self._action.target - self.dof_pos)
+        target = self._action.target.detach().cpu().numpy()
+        self.torques[:] = self._torque_kp * (target - self.dof_pos)
         self.torques -= self._torque_kd * self.dof_vel
         np.clip(self.torques, -0.5, 0.5, out=self.torques)
         self._previous_dof_pos[:] = dof_pos
@@ -321,6 +362,7 @@ class AllegroRotationObservation(ManagerTermBase):
     def __call__(self, env: _AllegroEnv, **params: Any) -> np.ndarray:
         del params
         self.snapshot(env)
+        target = self._action.target.detach().cpu().numpy()
         dof_pos_norm = 2.0 * (self.dof_pos - self._dof_mid) / (self._dof_range + 1.0e-8)
         if self._joint_noise > 0.0:
             active = ~self._just_reset
@@ -333,7 +375,7 @@ class AllegroRotationObservation(ManagerTermBase):
                 )
         self._just_reset[:] = False
         return np.concatenate(
-            (dof_pos_norm, self._action.target, self.ball_pos),
+            (dof_pos_norm, target, self.ball_pos),
             axis=1,
             dtype=get_global_dtype(),
         )
