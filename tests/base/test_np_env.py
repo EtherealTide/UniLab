@@ -16,7 +16,6 @@ from unisim.backend.base import SimBackend
 
 from unilab.base.base import EnvCfg
 from unilab.base.np_env import NpEnv, NpEnvState
-from unilab.base.scene import SceneCfg
 
 # ---------------------------------------------------------------------------
 # Fixtures: minimal concrete NpEnv
@@ -90,59 +89,6 @@ class _StubNpEnv(NpEnv):
             "critic": np.zeros((n, 7), dtype=np.float32),
         }
         return obs, {}
-
-
-def _nan_dump_model_files(env: _StubNpEnv) -> list[str]:
-    guard = MagicMock()
-    bad_ids = np.array([0], dtype=np.int32)
-    guard.check_ctrl.return_value = bad_ids
-    guard.check.return_value = bad_ids
-    env.set_nan_guard(guard)
-    env.step(np.zeros((env.num_envs, 3), dtype=np.float32))
-    return [call.args[1] for call in guard.dump.call_args_list]
-
-
-class TestNanGuardModelPath:
-    def test_scene_model_file_is_cached_and_prioritized(self):
-        backend = MagicMock()
-        backend.backend_type = "mujoco"
-        backend.step.return_value = None
-        backend.get_scene_model_file.return_value = "/backend.xml"
-        capabilities = MagicMock()
-        capabilities.supports_physics_state_playback = False
-        backend.get_play_capabilities.return_value = capabilities
-
-        cfg = _StubCfg(scene=SceneCfg(model_file="/scene.xml"))
-        env = _StubNpEnv(cfg=cfg, backend=backend)
-        backend.get_scene_model_file.assert_not_called()
-
-        cfg.scene = SceneCfg(model_file="/changed.xml")
-        assert _nan_dump_model_files(env) == ["/scene.xml", "/scene.xml"]
-        backend.get_scene_model_file.assert_not_called()
-
-    @pytest.mark.parametrize(
-        ("backend_model_file", "expected"),
-        [("/backend.xml", "/backend.xml"), ("", ""), (None, "")],
-    )
-    def test_backend_model_file_is_cached_once(self, backend_model_file, expected):
-        backend = MagicMock()
-        backend.backend_type = "mujoco"
-        backend.step.return_value = None
-        backend.get_scene_model_file.return_value = backend_model_file
-        capabilities = MagicMock()
-        capabilities.supports_physics_state_playback = False
-        backend.get_play_capabilities.return_value = capabilities
-
-        cfg = _StubCfg(scene=SceneCfg(model_file=""))
-        env = _StubNpEnv(cfg=cfg, backend=backend)
-        assert backend.get_scene_model_file.call_count == 1
-
-        backend.get_scene_model_file.side_effect = AssertionError(
-            "diagnostic model getter must not run from step"
-        )
-        cfg.scene = SceneCfg(model_file="/changed.xml")
-        assert _nan_dump_model_files(env) == [expected, expected]
-        assert backend.get_scene_model_file.call_count == 1
 
 
 class TestSceneVisualModelFileContract:
@@ -641,36 +587,3 @@ class TestRewardSanitization:
         state = env.step(np.zeros((4, 3)))
         assert np.all(np.isfinite(state.reward))
         np.testing.assert_array_equal(state.reward, [0.0, 0.0, 0.0, 1.0])
-
-    def test_guard_detects_nan_reward_before_sanitization(self, tmp_path):
-        from unilab.utils.nan_guard import NanGuard, NanGuardCfg
-
-        rewards = np.array([0.0, np.nan, 0.0, 0.0], dtype=np.float32)
-        env = _NanRewardStubEnv(num_envs=4, bad_rewards=rewards)
-        env.init_state()
-
-        cfg = NanGuardCfg(enabled=True, output_dir=str(tmp_path / "sanitize"))
-        guard = NanGuard(cfg, num_envs=4, supports_state_playback=False)
-        env.set_nan_guard(guard)
-
-        state = env.step(np.zeros((4, 3)))
-        assert guard._dumped, "guard should have detected NaN before sanitization"
-        assert np.all(np.isfinite(state.reward)), "reward should be clean after step"
-
-    def test_guard_warns_each_step_for_nan_reward(self, caplog, tmp_path):
-        from unilab.utils.nan_guard import NanGuard, NanGuardCfg
-
-        env = _NanRewardStubEnv(num_envs=4, bad_rewards=np.array([0.0, np.nan, 0.0, 0.0]))
-        guard = NanGuard(
-            NanGuardCfg(enabled=True, output_dir=str(tmp_path / "warn")),
-            num_envs=4,
-            supports_state_playback=False,
-        )
-        env.set_nan_guard(guard)
-        with caplog.at_level("WARNING", logger="unilab.utils.nan_guard"):
-            env.step(np.zeros((4, 3), dtype=np.float64))
-            env.step(np.zeros((4, 3), dtype=np.float64))
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert len(warnings) >= 2
-        # reward 仍被清零
-        assert np.all(np.isfinite(env._state.reward))

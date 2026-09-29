@@ -22,7 +22,7 @@ from unilab.utils.checkpoint import (
 )
 
 if TYPE_CHECKING:
-    from unilab.utils.nan_guard import NanGuardCfg
+    from unilab.training.tensor_diagnostics import NanGuardCfg
 
 
 def build_run_dir_name(timestamp: str, sim_backend: str, *, world_size: int = 1) -> str:
@@ -77,11 +77,11 @@ def format_play_checkpoint_error(
 
 
 def resolve_nan_guard_cfg(training_cfg: Any) -> NanGuardCfg | None:
-    """Build the shared ``NanGuardCfg`` from ``training.nan_guard``, or ``None``."""
+    """Build the shared tensor diagnostics config, or ``None``."""
     nan_guard_cfg = getattr(training_cfg, "nan_guard", None)
     if nan_guard_cfg is None or not getattr(nan_guard_cfg, "enabled", False):
         return None
-    from unilab.utils.nan_guard import NanGuardCfg
+    from unilab.training.tensor_diagnostics import NanGuardCfg
 
     return NanGuardCfg(
         enabled=True,
@@ -92,14 +92,14 @@ def resolve_nan_guard_cfg(training_cfg: Any) -> NanGuardCfg | None:
 
 
 def apply_env_nan_guard(env: Any, training_cfg: Any) -> None:
-    """Attach a ``NanGuard`` to ``env`` when ``training.nan_guard`` is enabled."""
+    """Attach a ``TensorNanGuard`` to ``env`` when diagnostics are enabled."""
     nan_guard_cfg = resolve_nan_guard_cfg(training_cfg)
     if nan_guard_cfg is None:
         return
-    from unilab.utils.nan_guard import NanGuard
+    from unilab.training.tensor_diagnostics import TensorNanGuard
 
     env.set_nan_guard(
-        NanGuard(
+        TensorNanGuard(
             nan_guard_cfg,
             num_envs=env.num_envs,
             supports_state_playback=env.play_capabilities.supports_physics_state_playback,

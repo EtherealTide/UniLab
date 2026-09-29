@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from os import PathLike
-from typing import TYPE_CHECKING, Any, Optional, Tuple, cast
+from typing import Any, Optional, Tuple, cast
 
 import gymnasium as gym
 import numpy as np
@@ -22,11 +22,7 @@ from unilab.base.backend_timing import (
 )
 from unilab.base.base import ABEnv, EnvCfg, EnvPlayCapabilities
 from unilab.base.cpu_runtime import apply_env_cpu_runtime
-from unilab.base.scene import SceneCfg
 from unilab.dtype_config import get_global_dtype
-
-if TYPE_CHECKING:
-    from unilab.utils.nan_guard import NanGuard
 
 
 @dataclass
@@ -59,10 +55,8 @@ class NpEnv(ABEnv):
         self._truncated_scratch: np.ndarray = np.zeros((self._num_envs,), dtype=bool)
         self._final_observation_scratch: dict[str, np.ndarray] | None = None
         self.step_counter = 0
-        self._nan_guard: NanGuard | None = None
         self._autoreset = True
         self._autoreset_reset_active = False
-        self._nan_guard_model_file = self._resolve_nan_guard_model_file()
         self._rgb_array_renderer_ready = False
 
     @property
@@ -142,15 +136,6 @@ class NpEnv(ABEnv):
         self._state.truncated.fill(False)
         self._clear_step_final_observation()
 
-        if self._nan_guard is not None:
-            bad_ctrl_ids = self._nan_guard.check_ctrl(ctrl, step=self.step_counter)
-            if bad_ctrl_ids is not None:
-                self._nan_guard.dump(
-                    bad_ctrl_ids,
-                    self._nan_guard_model_file,
-                    self.step_counter,
-                )
-
         t0 = time.perf_counter()
         backend_result = self._backend.step(ctrl, self._cfg.sim_substeps)
         step_core_time = time.perf_counter() - t0
@@ -184,18 +169,6 @@ class NpEnv(ABEnv):
             if backend_timing:
                 for k, v in backend_timing.items():
                     timing[f"backend_{k}"] = v
-
-        if self._nan_guard is not None:
-            self._nan_guard.capture(
-                self.get_physics_state_snapshot()
-                if self.play_capabilities.supports_physics_state_playback
-                else None
-            )
-            nan_ids = self._nan_guard.check(
-                self._state.obs, self._state.reward, step=self.step_counter
-            )
-            if nan_ids is not None:
-                self._nan_guard.dump(nan_ids, self._nan_guard_model_file, self.step_counter)
 
         np.nan_to_num(self._state.reward, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -284,15 +257,6 @@ class NpEnv(ABEnv):
         never leak into ``info["timing"]``.
         """
         return {}
-
-    def _resolve_nan_guard_model_file(self) -> str:
-        scene = getattr(self._cfg, "scene", None)
-        if isinstance(scene, SceneCfg) and scene.model_file:
-            return str(scene.model_file)
-        model_file = self._backend.get_scene_model_file()
-        if model_file:
-            return str(model_file)
-        return ""
 
     def _ensure_final_observation_scratch(self) -> dict[str, np.ndarray]:
         assert self._state is not None
@@ -584,9 +548,6 @@ class NpEnv(ABEnv):
     def get_scene_visual_model_file(self) -> str | None:
         """Return the backend scene visual model file on the cold path, when available."""
         return cast(str | None, self._backend.get_scene_visual_model_file())
-
-    def set_nan_guard(self, guard: "NanGuard") -> None:
-        self._nan_guard = guard
 
     def set_autoreset(self, enabled: bool) -> None:
         """Toggle automatic reset of done envs at the end of ``step``.
