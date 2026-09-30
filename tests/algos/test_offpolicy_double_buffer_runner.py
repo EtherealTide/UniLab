@@ -22,6 +22,11 @@ _ROOT = Path(__file__).parent.parent.parent
 _CONF_DIR = _ROOT / "src" / "unilab" / "conf"
 
 
+@pytest.fixture(autouse=True)
+def _rank_local_cuda_visibility(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
+
+
 def _offpolicy():
     path = _ROOT / "src" / "unilab" / "scripts" / "train_offpolicy.py"
     spec = importlib.util.spec_from_file_location("train_offpolicy", path)
