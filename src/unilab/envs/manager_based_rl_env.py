@@ -719,8 +719,23 @@ class ManagerBasedRlEnv(TorchEnv):
 
         return _get_overlay
 
+    def _enter_suppressed_hot_state_refresh(self) -> None:
+        """Allow a cold proxy to temporarily replace NumPy body-state reads."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support suppressed hot state refresh"
+        )
+
+    def _exit_suppressed_hot_state_refresh(self) -> None:
+        """Undo :meth:`_enter_suppressed_hot_state_refresh`."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support suppressed hot state refresh"
+        )
+
     def _load_managers(self) -> None:
         """Construct managers in the pinned community dependency order."""
+        suppress_hot_state_refresh = bool(getattr(self, "_suppress_hot_state_refresh", False))
+        if suppress_hot_state_refresh:
+            self._enter_suppressed_hot_state_refresh()
         self.event_manager = EventManager(self._cfg.events, self)
         self.command_manager = (
             CommandManager(self._cfg.commands, self) if self._cfg.commands else NullCommandManager()
@@ -733,6 +748,8 @@ class ManagerBasedRlEnv(TorchEnv):
             self,
             scale_by_dt=self._cfg.scale_rewards_by_dt,
         )
+        if suppress_hot_state_refresh:
+            self._exit_suppressed_hot_state_refresh()
         self.curriculum_manager = (
             CurriculumManager(self._cfg.curriculum, self)
             if self._cfg.curriculum
