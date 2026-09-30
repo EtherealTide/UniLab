@@ -265,6 +265,7 @@ class SceneTensorReadPlan:
         self._body_names = MappingProxyType(dict(body_names))
         self._host_plan = host_plan
         self._packet_names = self._aggregate_packet_names()
+        self._joint_column_indices: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
         self._packet_sensor_owners: dict[str, str] = {}
         self._packet_sensor_owners.update(
             (name, entity_name)
@@ -347,6 +348,37 @@ class SceneTensorReadPlan:
             raise owner._capability_error(
                 "scene joint tensor state", "joint_names were not declared in EntityCfg"
             )
+        columns = self._joint_columns(owner)
+
+        result: dict[str, torch.Tensor] = {}
+        expected_width = len(names)
+        for field, state_field, columns in (
+            ("joint_pos", "qpos", columns[0]),
+            ("joint_vel", "qvel", columns[1]),
+        ):
+            raw = self._packet[state_field]
+            expected_shape = (self._scene._backend.num_envs, expected_width)
+            if raw.ndim != 2 or raw.shape[0] != expected_shape[0]:
+                raise ValueError(
+                    f"Entity '{owner.name}' tensor {field} view on backend "
+                    f"'{owner._backend_type}' has shape {tuple(raw.shape)}; expected "
+                    f"{expected_shape} after entity column selection"
+                )
+            selected = raw.index_select(1, columns)
+            if tuple(selected.shape) != expected_shape:
+                raise ValueError(
+                    f"Entity '{owner.name}' tensor {field} selected shape "
+                    f"{tuple(selected.shape)} does not match {expected_shape}"
+                )
+            result[field] = selected
+        return EntityTensorStateView(**result)
+
+    def _joint_columns(self, owner: "Entity") -> tuple[torch.Tensor, torch.Tensor]:
+        cached = self._joint_column_indices.get(owner.name)
+        if cached is not None:
+            return cached
+        names = owner._joint_names
+        assert names is not None
         try:
             qpos_ids = self._scene._backend.get_joint_state_qpos_indices(names)
             qvel_ids = self._scene._backend.get_joint_state_qvel_indices(names)
@@ -363,36 +395,23 @@ class SceneTensorReadPlan:
             raise ValueError(
                 f"Entity '{owner.name}' scene tensor joint-state layout contains negative columns"
             )
-
-        result: dict[str, torch.Tensor] = {}
-        expected_width = len(names)
-        for field, state_field, columns in (
-            ("joint_pos", "qpos", qpos_ids),
-            ("joint_vel", "qvel", qvel_ids),
+        indices = (
+            torch.as_tensor(np.asarray(qpos_ids, dtype=np.int64), device=self._device),
+            torch.as_tensor(np.asarray(qvel_ids, dtype=np.int64), device=self._device),
+        )
+        packet_qpos_width = self._packet.get("qpos").shape[1] if "qpos" in self._packet else None
+        packet_qvel_width = self._packet.get("qvel").shape[1] if "qvel" in self._packet else None
+        for field, field_ids, packet_width in (
+            ("qpos", qpos_ids, packet_qpos_width),
+            ("qvel", qvel_ids, packet_qvel_width),
         ):
-            raw = self._packet[state_field]
-            expected_shape = (self._scene._backend.num_envs, expected_width)
-            if raw.ndim != 2 or raw.shape[0] != expected_shape[0]:
+            if packet_width is not None and int(np.max(field_ids)) >= packet_width:
                 raise ValueError(
-                    f"Entity '{owner.name}' tensor {field} view on backend "
-                    f"'{owner._backend_type}' has shape {tuple(raw.shape)}; expected "
-                    f"{expected_shape} after entity column selection"
+                    f"Entity '{owner.name}' scene tensor joint-state {field} columns "
+                    f"exceed backend width {packet_width}"
                 )
-            if int(np.max(columns)) >= raw.shape[1]:
-                raise ValueError(
-                    f"Entity '{owner.name}' tensor {field} columns exceed backend "
-                    f"width {raw.shape[1]}"
-                )
-            selected = raw[:, np.asarray(columns, dtype=np.intp)]
-            if tuple(selected.shape) != expected_shape:
-                raise ValueError(
-                    f"Entity '{owner.name}' tensor {field} selected shape "
-                    f"{tuple(selected.shape)} does not match {expected_shape}"
-                )
-            if not bool(torch.isfinite(selected).all()):
-                raise ValueError(f"Entity '{owner.name}' tensor {field} has NaN or Inf")
-            result[field] = selected
-        return EntityTensorStateView(**result)
+        self._joint_column_indices[owner.name] = indices
+        return indices
 
     def sensor_tensor_views(
         self, entity: "str | Entity", names: Sequence[str]
@@ -429,6 +448,7 @@ class SceneTensorReadPlan:
                 expected_width=None,
                 num_envs=self._scene._backend.num_envs,
                 device=self._device,
+                finite=False,
             )
             for name in sensor_names
         }
@@ -464,6 +484,7 @@ class SceneTensorReadPlan:
                     expected_width=_TENSOR_SENSOR_WIDTHS[field],
                     num_envs=self._scene._backend.num_envs,
                     device=self._device,
+                    finite=False,
                 )
                 for body_name in requested
             ]
@@ -567,8 +588,6 @@ class SceneTensorReadPlan:
                     f"Scene tensor {field} view must be float32 on {self._device}; "
                     f"got {value.dtype} on {value.device}"
                 )
-            if not bool(torch.isfinite(value).all()):
-                raise ValueError(f"Scene tensor {field} view has NaN or Inf")
         for name in self._packet_names:
             owner = self._packet_sensor_owners[name]
             packet[name] = Entity._validate_tensor_sensor(
@@ -579,6 +598,7 @@ class SceneTensorReadPlan:
                 expected_width=None,
                 num_envs=num_envs,
                 device=self._device,
+                finite=False,
             )
         self._packet = MappingProxyType(packet)
         self._refreshed = True
@@ -1543,6 +1563,7 @@ class Entity:
         expected_width: int | None,
         num_envs: int,
         device: torch.device,
+        finite: bool = True,
     ) -> torch.Tensor:
         if not isinstance(value, torch.Tensor):
             raise TypeError(
@@ -1573,7 +1594,7 @@ class Entity:
                 f"Entity '{entity_name}' tensor sensor '{sensor_name}' must live on "
                 f"{device}; got {value.device}"
             )
-        if not bool(torch.isfinite(value).all()):
+        if finite and not bool(torch.isfinite(value).all()):
             raise ValueError(f"Entity '{entity_name}' tensor sensor '{sensor_name}' has NaN or Inf")
         return value
 
