@@ -46,3 +46,4 @@ from unilab.managers.reward_manager import RewardTermCfg as RewardTermCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg as SceneEntityCfg
 from unilab.managers.termination_manager import TerminationManager as TerminationManager
 from unilab.managers.termination_manager import TerminationTermCfg as TerminationTermCfg
+from unilab.managers.torch_rng import TorchManagerRng as TorchManagerRng

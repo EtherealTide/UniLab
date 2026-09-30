@@ -36,6 +36,7 @@ from unilab.envs.manager_based_rl_env import (
 from unilab.managers._noise.noise_cfg import UniformNoiseCfg
 from unilab.managers.observation_manager import ObservationGroupCfg
 from unilab.managers.reward_manager import RewardTermCfg
+from unilab.managers.torch_rng import TorchManagerRng
 from unilab.tasks.motion_tracking.common.manager_terms import (
     MotionCommand,
     MotionCommandCfg,
@@ -364,6 +365,7 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
     _observation_noise: TensorObservationNoise
     _episode_metrics: TensorEpisodeMetrics
     _state_store: TensorDeviceStateStore
+    _rng_owner: TorchManagerRng
 
     @property
     def _manager_cfg(self) -> ManagerBasedRlEnvCfg:
@@ -852,8 +854,8 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
         command = self._command
         motion = command.motion
         robot_data = self._robot.data
-        self._rng = torch.Generator(device=self.device)
-        self._rng.manual_seed(int(self._initial_seed or 0))
+        self._rng_owner = TorchManagerRng.seeded(int(self._initial_seed or 0), device=self.device)
+        self._rng = self._rng_owner.generator
 
         motion_fields = tuple(
             _to_device(value, self.device).reshape(value.shape[0], -1)
@@ -1450,9 +1452,8 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
             raise ValueError("pass either env_indices or env_ids, not both")
         source = env_indices if env_indices is not None else env_ids
         if seed is not None:
+            self._rng_owner.manual_seed(seed)
             self._initial_seed = seed
-            if self._state is not None:
-                self._rng.manual_seed(seed)
         if self._state is None:
             state = self.init_state()
             return {name: value.clone() for name, value in state.obs.items()}, {"log": {}}

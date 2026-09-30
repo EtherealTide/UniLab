@@ -415,3 +415,70 @@ def test_active_collector_loop_keeps_transition_tensors_native() -> None:
         and node.func.id == "resolve_terminal_observation_contract"
         for node in ast.walk(loop)
     )
+
+
+def test_variant_labels_require_unique_nonempty_values() -> None:
+    assert bench._variant_labels(None) == ("default",)
+    assert bench._variant_labels("numpy, torch") == ("numpy", "torch")
+
+    with pytest.raises(ValueError, match="at least one non-empty label"):
+        bench._variant_labels(" , ")
+    with pytest.raises(ValueError, match="labels must be unique"):
+        bench._variant_labels("torch,torch")
+
+
+def test_variant_overrides_parse_hydra_equals_values() -> None:
+    parsed = bench._parse_variant_overrides(["torch=env.seed=7", "torch=training.foo=1"])
+
+    assert parsed == {"torch": ["env.seed=7", "training.foo=1"]}
+
+    with pytest.raises(ValueError, match="VARIANT=HYDRA_OVERRIDE"):
+        bench._parse_variant_overrides(["torch"])
+    with pytest.raises(ValueError, match="non-empty VARIANT"):
+        bench._parse_variant_overrides(["=env.seed=7"])
+
+
+def test_parse_args_accepts_variant_labels_and_overrides() -> None:
+    args = bench.parse_args(
+        [
+            "--variants",
+            "numpy,torch",
+            "--variant-override",
+            "torch=env.seed=7",
+            "--variant-override",
+            "numpy=env.seed=8",
+        ]
+    )
+
+    assert args.variants == "numpy,torch"
+    assert args.variant_override == ["torch=env.seed=7", "numpy=env.seed=8"]
+
+
+def test_variant_ablation_table_compares_each_variant_to_default() -> None:
+    baseline = _make_result(num_envs=2, throughput=1000.0)
+    torch_result = _make_result(num_envs=2, throughput=1500.0)
+    torch_result.case = bench.CollectorCase(**{**vars(torch_result.case), "variant": "torch"})
+
+    table = bench._format_variant_ablation_table([baseline, torch_result])
+
+    assert "default" in table
+    assert "torch" in table
+    assert "1.500x" in table
+
+
+def test_numpy_random_profiler_times_generator_bound_calls() -> None:
+    import numpy as np
+
+    profiler = bench._NumpyRandomProfiler()
+    generator = np.random.default_rng(17)
+    proxy = profiler.bind_generator(generator)
+
+    profiler.begin_step()
+    proxy.uniform(-1.0, 1.0, (2,))
+    proxy.integers(0, 3, (2,))
+    profiler.end_step()
+
+    assert profiler.step_calls == 2
+    assert profiler.step_ms >= 0.0
+    assert isinstance(proxy.bit_generator, np.random.BitGenerator)
+    assert profiler.restore_generator() is generator

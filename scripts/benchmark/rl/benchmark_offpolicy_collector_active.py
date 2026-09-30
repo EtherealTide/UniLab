@@ -323,13 +323,30 @@ def _cleanup() -> None:
 
 
 class _NumpyRandomProfiler:
-    """Measure selected ``np.random`` module calls inside a benchmark window."""
+    """Measure selected NumPy RNG calls inside a benchmark window.
+
+    Legacy ``np.random`` module functions are patched directly. NumPy's
+    built-in Generator type is immutable, so an optional ``bind_generator``
+    proxy provides equivalent timing for an environment-owned Generator during
+    measured steps; every delegated call and state accessor still uses the
+    original generator.
+    """
+
+    GENERATOR_PROFILE_METHODS = (
+        "random",
+        "uniform",
+        "integers",
+        "normal",
+        "standard_normal",
+        "choice",
+    )
 
     def __init__(self) -> None:
         self.enabled = False
         self.step_ms = 0.0
         self.step_calls = 0
-        self._originals: dict[str, Any] = {}
+        self._originals: dict[tuple[type, str], Any] = {}
+        self._generator: np.random.Generator | None = None
 
     def install(self) -> None:
         if self._originals:
@@ -338,14 +355,68 @@ class _NumpyRandomProfiler:
             original = getattr(np.random, name, None)
             if original is None:
                 continue
-            self._originals[name] = original
+            self._originals[(np.random, name)] = original
             setattr(np.random, name, self._wrap(original))
 
     def uninstall(self) -> None:
-        for name, original in self._originals.items():
-            setattr(np.random, name, original)
+        for (owner, name), original in self._originals.items():
+            setattr(owner, name, original)
         self._originals.clear()
         self.enabled = False
+        self._generator = None
+
+    def bind_generator(self, generator: Any) -> Any:
+        """Return a timing proxy for one env-owned NumPy Generator."""
+        if not isinstance(generator, np.random.Generator):
+            raise TypeError(f"expected np.random.Generator, got {type(generator).__name__}")
+        if self._generator is not None and self._generator is not generator:
+            raise RuntimeError("NumpyRandomProfiler already owns a different Generator")
+        self._generator = generator
+        profiler = self
+
+        class _GeneratorProxy:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(profiler._require_generator(), name)
+
+            def random(self, *args: Any, **kwargs: Any) -> Any:
+                return profiler._timed_generator("random", *args, **kwargs)
+
+            def uniform(self, *args: Any, **kwargs: Any) -> Any:
+                return profiler._timed_generator("uniform", *args, **kwargs)
+
+            def integers(self, *args: Any, **kwargs: Any) -> Any:
+                return profiler._timed_generator("integers", *args, **kwargs)
+
+            def normal(self, *args: Any, **kwargs: Any) -> Any:
+                return profiler._timed_generator("normal", *args, **kwargs)
+
+            def standard_normal(self, *args: Any, **kwargs: Any) -> Any:
+                return profiler._timed_generator("standard_normal", *args, **kwargs)
+
+            def choice(self, *args: Any, **kwargs: Any) -> Any:
+                return profiler._timed_generator("choice", *args, **kwargs)
+
+        return _GeneratorProxy()
+
+    def restore_generator(self) -> Any:
+        generator = self._generator
+        self._generator = None
+        return generator
+
+    def _require_generator(self) -> np.random.Generator:
+        if self._generator is None:
+            raise RuntimeError("Generator proxy was used before bind_generator()")
+        return self._generator
+
+    def _timed_generator(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        if not self.enabled:
+            return getattr(self._require_generator(), name)(*args, **kwargs)
+        started = time.perf_counter_ns()
+        try:
+            return getattr(self._require_generator(), name)(*args, **kwargs)
+        finally:
+            self.step_ms += (time.perf_counter_ns() - started) / 1e6
+            self.step_calls += 1
 
     def begin_step(self) -> None:
         self.step_ms = 0.0
@@ -608,6 +679,14 @@ def _run_active_window_case(
 
     if random_profiler is not None:
         random_profiler.install()
+        owner_rng = getattr(env, "rng", None)
+        if owner_rng is not None:
+            if not isinstance(owner_rng, np.random.Generator):
+                raise TypeError(
+                    "profile-numpy-random expected env.rng to be np.random.Generator, "
+                    f"got {type(owner_rng).__name__}"
+                )
+            env.rng = random_profiler.bind_generator(owner_rng)
     try:
         for step_idx in range(total_steps):
             record = step_idx >= warmup_steps
@@ -723,6 +802,9 @@ def _run_active_window_case(
                         env_step_timing_samples.setdefault(key, []).append(value)
     finally:
         if random_profiler is not None:
+            original_rng = random_profiler.restore_generator()
+            if original_rng is not None:
+                env.rng = original_rng
             random_profiler.uninstall()
 
     # Measured-window system CPU utilization (see cpu_probe_start comment).
@@ -1185,6 +1267,43 @@ def _format_set_state_sub_ms(result: CollectorResult, key: str) -> str:
     return f"{stat.mean_ms:.3f} ({pct:.1f}%)"
 
 
+def _format_variant_ablation_table(results: list[CollectorResult]) -> str:
+    """Compare variants within each algo/task/backend and num_envs tuple."""
+    groups: dict[tuple[str, str, str, int], list[CollectorResult]] = {}
+    for result in results:
+        key = (
+            result.case.algo,
+            result.case.task,
+            result.case.runtime_sim_backend,
+            result.case.num_envs,
+        )
+        groups.setdefault(key, []).append(result)
+    headers = ("Algo", "Task", "Backend", "num_env", "Baseline", "Variant", "Throughput ratio")
+    rows: list[tuple[str, ...]] = []
+    for key in sorted(groups):
+        grouped = groups[key]
+        baseline = next((item for item in grouped if item.case.variant == "default"), grouped[0])
+        baseline_throughput = baseline.collector_active_steps_per_sec
+        for result in grouped:
+            if result is baseline:
+                continue
+            ratio = (
+                result.collector_active_steps_per_sec / baseline_throughput
+                if baseline_throughput > 0.0
+                else float("nan")
+            )
+            rows.append(
+                (
+                    *key[:3],
+                    f"{key[3]:,}",
+                    baseline.case.variant,
+                    result.case.variant,
+                    f"{ratio:.3f}x",
+                )
+            )
+    return _format_table(headers, rows)
+
+
 def _format_throughput_table(results: list[CollectorResult]) -> str:
     headers = (
         "Algo",
@@ -1612,6 +1731,36 @@ def _print_result(result: CollectorResult) -> None:
             )
 
 
+def _parse_variant_overrides(
+    values: Sequence[str],
+) -> dict[str, list[str]]:
+    """Parse ``variant=override`` labels into benchmark variant overrides."""
+    result: dict[str, list[str]] = {}
+    for raw in values:
+        if not isinstance(raw, str) or "=" not in raw:
+            raise ValueError(f"--variant-override must use VARIANT=HYDRA_OVERRIDE, got {raw!r}")
+        variant, override = raw.split("=", 1)
+        variant = variant.strip()
+        override = override.strip()
+        if not variant or not override:
+            raise ValueError(
+                f"--variant-override must use non-empty VARIANT and OVERRIDE, got {raw!r}"
+            )
+        result.setdefault(variant, []).append(override)
+    return result
+
+
+def _variant_labels(requested: str | None) -> tuple[str, ...]:
+    if requested is None:
+        return ("default",)
+    labels = tuple(part.strip() for part in requested.split(",") if part.strip())
+    if not labels:
+        raise ValueError("--variants must contain at least one non-empty label")
+    if len(set(labels)) != len(labels):
+        raise ValueError(f"--variants labels must be unique, got {labels}")
+    return labels
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1686,6 +1835,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "windows and report their collector active share."
         ),
     )
+    parser.add_argument(
+        "--variants",
+        default=None,
+        help=(
+            "Optional comma-separated labels. Each case is materialized once per label; "
+            "labels only identify rows unless --variant-override is also supplied."
+        ),
+    )
+    parser.add_argument(
+        "--variant-override",
+        action="append",
+        default=[],
+        metavar="VARIANT=HYDRA_OVERRIDE",
+        help=(
+            "Attach a Hydra override to a --variants label. "
+            "Example: --variant-override torch=env.seed=7. May be passed more than once."
+        ),
+    )
     parser.add_argument("--out-json", type=Path, default=DEFAULT_OUTPUT_JSON)
     parser.add_argument("--out-csv", type=Path, default=None)
     parser.add_argument("--continue-on-error", action="store_true")
@@ -1717,22 +1884,32 @@ def main() -> int:
 
     results: list[CollectorResult] = []
     errors: list[dict[str, str]] = []
+    variants = _variant_labels(args.variants)
+    variant_overrides = _parse_variant_overrides(args.variant_override)
+    unknown_variants = sorted(set(variant_overrides) - set(variants))
+    if unknown_variants:
+        raise SystemExit(
+            f"--variant-override names absent from --variants: {', '.join(unknown_variants)}"
+        )
     for spec in specs:
         try:
-            case_results = [
-                _build_and_run_case(
-                    spec,
-                    warmup_steps=int(args.warmup_steps),
-                    measure_steps=int(args.measure_steps),
-                    replay_capacity_steps=int(args.replay_capacity_steps),
-                    num_envs=args.num_envs,
-                    extra_overrides=list(args.override),
-                    profile_numpy_random=bool(args.profile_numpy_random),
-                )
-            ]
-            results.extend(case_results)
-            for result in case_results:
-                _print_result(result)
+            for variant in variants:
+                variant_extra_overrides = variant_overrides.get(variant, [])
+                case_results = [
+                    _build_and_run_case(
+                        spec,
+                        warmup_steps=int(args.warmup_steps),
+                        measure_steps=int(args.measure_steps),
+                        replay_capacity_steps=int(args.replay_capacity_steps),
+                        num_envs=args.num_envs,
+                        extra_overrides=[*args.override, *variant_extra_overrides],
+                        variant=variant,
+                        profile_numpy_random=bool(args.profile_numpy_random),
+                    )
+                ]
+                results.extend(case_results)
+                for result in case_results:
+                    _print_result(result)
         except Exception as exc:
             error = {"case": spec, "type": type(exc).__name__, "message": str(exc)}
             errors.append(error)
@@ -1759,6 +1936,8 @@ def main() -> int:
             "measure_steps": args.measure_steps,
             "replay_capacity_steps": args.replay_capacity_steps,
             "override": args.override,
+            "variants": list(variants),
+            "variant_override": args.variant_override,
             "profile_numpy_random": args.profile_numpy_random,
         },
         "results": [_result_to_dict(result) for result in results],
@@ -1774,6 +1953,10 @@ def main() -> int:
     print("\nTask throughput (active phases; phase percentages add to 100%):")
     if results:
         print(_format_throughput_table(results))
+        variant_table = _format_variant_ablation_table(results)
+        if variant_table.count("\n") > 2:
+            print("\nVariant ablation (throughput ratio vs baseline; baseline=default or first):")
+            print(variant_table)
         print(
             "\nEnv step breakdown (subparts of Env step; do not add Env step together with its subparts):"
         )

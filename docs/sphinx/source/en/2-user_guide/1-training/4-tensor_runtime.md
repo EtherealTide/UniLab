@@ -43,6 +43,22 @@ vectors. A shutdown may retain a valid row prefix of a partially published
 vector; it never publishes an invalid transition row. See {doc}`3-logging` for
 the replay-ingress counters and shutdown schema.
 
+## Random number generation
+
+The generic Manager seam remains NumPy-owned: `ManagerBasedRlEnv.rng` is an
+`np.random.Generator`, and existing seeded streams stay unchanged. Narrow
+device-resident owners may instead own a `unilab.managers.TorchManagerRng`.
+This adapter wraps one explicit CPU or CUDA `torch.Generator`, validates seeds
+and unsupported sampling semantics, and returns tensors on that generator's
+device. It is not a NumPy bitstream-compatibility layer.
+
+The scoped G1 Motion Tracking / FlashSAC owner uses a CUDA `TorchManagerRng` for
+observation corruption, adaptive/mixed motion sampling, and selected-row reset.
+A/B evaluation therefore compares reproducibility and distributions under the
+same integer seed, not bitwise NumPy trajectories. Use an explicit `env.seed`
+for deterministic runs; `algo.seed` seeds the training run's global Python,
+NumPy, and Torch RNGs but does not replace that owner-local generator seed.
+
 ## Runtime evidence
 
 The runtime manifest records the effective evidence needed to audit a run:
