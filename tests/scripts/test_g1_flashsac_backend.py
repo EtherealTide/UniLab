@@ -32,7 +32,7 @@ from unilab.base import backend_factory
     ),
 )
 def test_isaac_flashsac_candidate_owners_compose_for_tensor_benchmark(backend: str) -> None:
-    cfg = _build_cfg(backend, num_envs=2, isaacsim_test_fixture=backend == "isaacsim")
+    cfg = _build_cfg(backend, num_envs=2)
     assert cfg.tensor_runtime is True
     if backend == "isaacsim":
         assert cfg.isaacsim_tensor_cuda_ipc is True
@@ -42,31 +42,20 @@ def test_isaac_flashsac_candidate_owners_compose_for_tensor_benchmark(backend: s
     assert cfg.scene.entities["robot"].body_names
 
 
-def test_isaacsim_fixture_loader_is_explicit_opt_in() -> None:
-    with pytest.raises(ValueError, match="single isaacsim backend"):
+def test_isaacsim_fixture_loader_is_rejected_after_productionization() -> None:
+    with pytest.raises(ValueError, match="productionized in #1771"):
         _build_cfg("mujoco", num_envs=2, isaacsim_test_fixture=True)
 
 
-def test_isaacsim_fixture_loader_defaults_to_production_discovery() -> None:
-    with pytest.raises(Exception, match="g1_motion_tracking/isaacsim"):
-        _build_cfg("isaacsim", num_envs=2)
-
-
-def test_isaacsim_fixture_cli_flag_requires_single_isaacsim_backend(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+def test_isaacsim_fixture_cli_flag_is_obsolete(capsys: pytest.CaptureFixture[str]) -> None:
     args, backends = _parse_args(["--backends", "isaacsim,mujoco"])
     assert backends == ["isaacsim", "mujoco"]
     assert args.isaacsim_test_fixture is False
 
-    args, backends = _parse_args(["--backends", "isaacsim", "--isaacsim-test-fixture"])
-    assert backends == ["isaacsim"]
-    assert args.isaacsim_test_fixture is True
-
     with pytest.raises(SystemExit):
-        _parse_args(["--backends", "isaacsim,mujoco", "--isaacsim-test-fixture"])
+        _parse_args(["--backends", "isaacsim", "--isaacsim-test-fixture"])
 
-    assert "--isaacsim-test-fixture requires exactly --backends isaacsim" in capsys.readouterr().err
+    assert "--isaacsim-test-fixture is obsolete" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -79,7 +68,7 @@ def test_isaacsim_fixture_cli_flag_requires_single_isaacsim_backend(
 def test_backend_base_name_keeps_mapped_isaacsim_and_raw_isaacgym_roots(
     backend: str, expected: str
 ) -> None:
-    cfg = _build_cfg(backend, num_envs=2, isaacsim_test_fixture=backend == "isaacsim")
+    cfg = _build_cfg(backend, num_envs=2)
 
     assert _backend_base_name(backend, cfg.scene.entities["robot"], cfg.scene) == expected
 
@@ -112,7 +101,7 @@ def test_build_backend_routes_owner_specific_base_names(
 
     monkeypatch.setattr(backend_factory, "create_backend", fake_create_backend)
 
-    _build_backend(backend, num_envs=2, isaacsim_test_fixture=backend == "isaacsim")
+    _build_backend(backend, num_envs=2)
 
     assert captured["backend_type"] == backend
     assert captured["base_name"] == expected
@@ -170,7 +159,7 @@ def test_tensor_runtime_diagnostics_are_serialized_for_backend_provenance() -> N
 
 
 def test_mapped_sensor_names_use_cuda_canonical_scalars_and_entity_bodies() -> None:
-    cfg = _build_cfg("isaacsim", num_envs=2, isaacsim_test_fixture=True)
+    cfg = _build_cfg("isaacsim", num_envs=2)
     body_names = tuple(cfg.scene.entities["robot"].body_names)
 
     names = _host_bridge_sensor_names(body_names)

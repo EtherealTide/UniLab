@@ -61,8 +61,6 @@ _RUNTIME_ENV_KEYS = (
     "UNISIM_ISAACSIM_PYTHON",
     *_PROFILER_ENV_KEYS,
 )
-_ISAACSIM_FIXTURE_DIR = ROOT_DIR / "tests" / "fixtures" / "isaacsim_g1_tensor_cuda_ipc"
-_ISAACSIM_FIXTURE_OWNER = _ISAACSIM_FIXTURE_DIR / "isaacsim_candidate_overlay.yaml"
 _AFTER_RUN_GPU_QUIESCE_TIMEOUT_S = 10.0
 _AFTER_RUN_GPU_QUIESCE_POLL_S = 0.25
 _EXTERNAL_WORKER_PACKAGES = {
@@ -151,19 +149,17 @@ _TRANSFER_BOUNDARY_INVENTORY: tuple[dict[str, object], ...] = (
 
 def _build_cfg(backend: str, num_envs: int, *, isaacsim_test_fixture: bool = False) -> Any:
     from hydra import compose, initialize_config_dir
-    from omegaconf import OmegaConf, open_dict
 
     from unilab.base.config_adapter import BackendAdapter
     from unilab.base.registry import apply_cfg_overrides
     from unilab.envs import ManagerBasedRlEnvCfg
 
-    task_backend = backend
-    fixture_owner = None
     if isaacsim_test_fixture:
-        if backend != "isaacsim":
-            raise ValueError("--isaacsim-test-fixture only applies to a single isaacsim backend")
-        task_backend = "mujoco"
-        fixture_owner = OmegaConf.load(_ISAACSIM_FIXTURE_OWNER)
+        raise ValueError(
+            "the IsaacSim test-fixture owner was productionized in #1771; "
+            "use the flashsac g1_motion_tracking/isaacsim owner directly"
+        )
+    task_backend = backend
 
     with initialize_config_dir(
         config_dir=str(ROOT_DIR / "src" / "unilab" / "conf" / "flashsac"),
@@ -181,12 +177,6 @@ def _build_cfg(backend: str, num_envs: int, *, isaacsim_test_fixture: bool = Fal
                 "hydra/hydra_logging=disabled",
             ],
         )
-    if fixture_owner is not None:
-        # Hydra resolves the production owner as a struct.  The fixture is an
-        # explicit benchmark overlay and intentionally adds backend keys that
-        # the CPU/MuJoCo base owner does not declare.
-        with open_dict(owner_cfg):
-            owner_cfg.merge_with(fixture_owner)
     override = BackendAdapter(
         owner_cfg, root_dir=ROOT_DIR, algo_name="flashsac"
     ).build_task_env_cfg_override()
@@ -1006,13 +996,11 @@ def _run_with_backend(
     )
     return {
         "backend": backend,
-        "isaacsim_test_fixture_owner": {
-            "enabled": isaacsim_test_fixture,
-            **(
-                {"path": str(_ISAACSIM_FIXTURE_OWNER.relative_to(ROOT_DIR))}
-                if isaacsim_test_fixture
-                else {}
-            ),
+        "isaacsim_owner": {
+            "test_fixture_requested": isaacsim_test_fixture,
+            "production_owner": "src/unilab/conf/flashsac/task/g1_motion_tracking/isaacsim.yaml"
+            if backend == "isaacsim"
+            else None,
         },
         "tensor_execution": mode,
         "tensor_process_topology": capabilities.process_topology.value,
@@ -1086,8 +1074,10 @@ def _parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list
     backends = [backend.strip() for backend in args.backends.split(",") if backend.strip()]
     if not backends:
         parser.error("at least one backend is required")
-    if args.isaacsim_test_fixture and backends != ["isaacsim"]:
-        parser.error("--isaacsim-test-fixture requires exactly --backends isaacsim")
+    if args.isaacsim_test_fixture:
+        parser.error(
+            "--isaacsim-test-fixture is obsolete; the #1771 production owner is used by default"
+        )
     return args, backends
 
 
@@ -1164,13 +1154,9 @@ def main() -> None:
         ],
         "timing_semantics": "total_iteration_synchronized; phase_boundaries_may_be_stream_ordered",
         "process_isolation": "one_process_per_backend",
-        "isaacsim_test_fixture_owner": {
-            "enabled": args.isaacsim_test_fixture,
-            **(
-                {"path": str(_ISAACSIM_FIXTURE_OWNER.relative_to(ROOT_DIR))}
-                if args.isaacsim_test_fixture
-                else {}
-            ),
+        "isaacsim_owner": {
+            "test_fixture_requested": args.isaacsim_test_fixture,
+            "production_owner": "src/unilab/conf/flashsac/task/g1_motion_tracking/isaacsim.yaml",
         },
         "acceptance_mode": args.acceptance,
         "torch_version": torch.__version__,
