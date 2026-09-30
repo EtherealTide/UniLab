@@ -11,7 +11,7 @@
 
 `src/unilab/scripts/train_rsl_rl.py` 会 compose Hydra config、
 调用 registry bootstrap、通过 `registry.make(...)` 构造严格 `TorchEnv`，并在同一
-进程内运行 learner。默认配置保持单进程；`training.devices` 指定多张卡时，父进程
+进程内运行 learner。默认配置保持单进程；`CUDA_VISIBLE_DEVICES` 指定多张卡时，父进程
 通过 PyTorch elastic launcher 启动本机 worker，worker 再进入同一脚本完成上述构造。
 RSL-RL 路径通过 `src/unilab/rl/` 适配这个 tensor boundary。
 

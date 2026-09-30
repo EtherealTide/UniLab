@@ -55,7 +55,6 @@ algo:
 
 training:
   task_name: G1WalkFlat
-  devices: null
   dp_collector_cpu_ids: null
   logger: tensorboard
   # Backend (TensorBoard/wandb) scalar reporting interval in iterations; the

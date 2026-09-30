@@ -26,7 +26,7 @@ runtime/import 边界，尚无训练或回放验证结论）。
 [#1512](https://github.com/unilabsim/UniLab/issues/1512)）：2026-09-06
 在 2× NVIDIA RTX 6000D（Blackwell）/ torch 2.8.0+cu128 / newton 1.5.1 /
 mujoco-warp 3.11 上完成实测——PPO torchrun DP=2 与 SAC
-DpRankSupervisor DP=2（`training.devices=[0,1]`）训练冒烟均正常完成，
+DpRankSupervisor DP=2（`CUDA_VISIBLE_DEVICES=<gpu-a>,<gpu-b>`）训练冒烟均正常完成，
 `nvidia-smi` 采样确认每个 rank 的 learner 与 collector sim 进程物理落位
 在各自 GPU、无对端泄漏；单卡 PPO/SAC 回归同步通过。Newton/Warp 遵循标准
 CUDA 设备语义，无需 Genesis 那样的 `CUDA_VISIBLE_DEVICES` 钉卡；rank

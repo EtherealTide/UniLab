@@ -22,6 +22,11 @@ _ROOT = Path(__file__).parent.parent.parent
 _CONF_DIR = _ROOT / "src" / "unilab" / "conf"
 
 
+@pytest.fixture(autouse=True)
+def _rank_local_cuda_visibility(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
+
+
 def _offpolicy():
     path = _ROOT / "src" / "unilab" / "scripts" / "train_offpolicy.py"
     spec = importlib.util.spec_from_file_location("train_offpolicy", path)
@@ -35,17 +40,12 @@ def _offpolicy_cfg(overrides: list[str] | None = None, *, algo: str = "sac"):
     GlobalHydra.instance().clear()
     normalized: list[str] = []
     task_selected = False
-    devices_selected = False
     for override in overrides or []:
         if override.startswith("task="):
             task_selected = True
-        elif override.startswith("training.devices="):
-            devices_selected = True
         normalized.append(override)
     if not task_selected:
         normalized.append("task=g1_walk_flat/mujoco")
-    if not devices_selected:
-        normalized.append("training.devices=[0]")
     with initialize_config_dir(config_dir=str(_CONF_DIR / algo), version_base="1.3"):
         return compose("config", overrides=normalized, return_hydra_config=True)
 
@@ -119,30 +119,6 @@ def test_non_one_tick_prefetch_is_rejected_before_dispatch(mode: str):
     cfg = _offpolicy_cfg([f"training.replay_prefetch_mode={mode}"])
     with pytest.raises(ValueError, match="Unsupported training.replay_prefetch_mode"):
         _offpolicy().build_runner("sac", cfg)
-
-
-@pytest.mark.parametrize("algo", ["sac", "flashsac", "warpsac"])
-@pytest.mark.parametrize("device", ["cpu", "xpu"])
-def test_non_cuda_training_devices_fail_before_env_materialization(
-    monkeypatch: pytest.MonkeyPatch,
-    algo: str,
-    device: str,
-):
-    module = _offpolicy()
-    cfg = _offpolicy_cfg([f"training.devices=[{device}]"], algo=algo)
-    env_calls = 0
-
-    def reject_factory(num_envs, env_cfg_override):
-        del num_envs, env_cfg_override
-        nonlocal env_calls
-        env_calls += 1
-        raise AssertionError("unsupported replay device must fail before env creation")
-
-    # The injected env_factory is the only env-construction seam uni_rl has.
-    monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: reject_factory)
-    with pytest.raises(ValueError, match="training.devices entries"):
-        module.build_runner(algo, cfg)
-    assert env_calls == 0
 
 
 @pytest.mark.parametrize(
@@ -459,17 +435,19 @@ def test_build_runner_binds_mjwarp_rank_process_to_learner_device(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(UNILAB_DP_RANK, "1")
+    monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     monkeypatch.setenv(UNILAB_DP_LOG_DIR, "/tmp/offpolicy_test_run")
     bindings: list[tuple[str, str]] = []
 
     runner, _ = _build_sac_runner_with_fakes(
         monkeypatch,
-        ["task=g1_walk_flat/mjwarp", "training.devices=[0,1]"],
+        ["task=g1_walk_flat/mjwarp"],
         backend_binding_calls=bindings,
     )
 
-    assert bindings == [("mjwarp", "cuda:1")]
-    assert runner.kwargs["device"] == "cuda:1"
+    assert bindings == [("mjwarp", "cuda:0")]
+    assert runner.kwargs["device"] == "cuda:0"
 
 
 def test_build_runner_partitions_collector_cpus_per_rank(monkeypatch: pytest.MonkeyPatch):
@@ -477,18 +455,20 @@ def test_build_runner_partitions_collector_cpus_per_rank(monkeypatch: pytest.Mon
         "uni_rl.ipc.dp_launcher._discover_physical_cpu_groups",
         lambda _: [[core, core + 64] for core in range(64)],
     )
-    # Spawned rank: rank comes from the env, world_size from training.devices.
+    # Spawned rank/world size come from the launcher environment.
     monkeypatch.setenv(UNILAB_DP_RANK, "1")
+    monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     monkeypatch.setenv(UNILAB_DP_LOG_DIR, "/tmp/offpolicy_test_run")
     runner, probe_env_calls = _build_sac_runner_with_fakes(
         monkeypatch,
-        ["training.devices=[0,1]"],
+        [],
         cpu_count=128,
     )
     assert runner.kwargs["collector_cpu_ids"] == [
         cpu for core in range(32, 64) for cpu in (core, core + 64)
     ]
-    assert runner.kwargs["device"] == "cuda:1"
+    assert runner.kwargs["device"] == "cuda:0"
     # The thread budget is resolved against the rank's CPU share, not the host.
     assert runner.kwargs["torch_thread_runtime"]["cpu_count"] == 64
     # The num_envs=1 probe env must never see cpu_ids (it would size its
@@ -500,16 +480,16 @@ def test_build_runner_partitions_collector_cpus_per_rank(monkeypatch: pytest.Mon
 
 
 def test_build_runner_rank_zero_partitions_without_dp_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv(UNILAB_DP_RANK, raising=False)
+    monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     monkeypatch.setattr(
         "uni_rl.ipc.dp_launcher._discover_physical_cpu_groups",
         lambda _: [[core, core + 64] for core in range(64)],
     )
-    # Rank 0 carries no UNILAB_DP_* env; world_size must come from the config.
-    monkeypatch.delenv(UNILAB_DP_RANK, raising=False)
-    monkeypatch.delenv(UNILAB_DP_WORLD_SIZE, raising=False)
     runner, _ = _build_sac_runner_with_fakes(
         monkeypatch,
-        ["training.devices=[0,1]"],
+        [],
         cpu_count=128,
     )
     assert runner.kwargs["collector_cpu_ids"] == [
@@ -533,10 +513,11 @@ def test_build_runner_single_rank_keeps_collector_cpus_unset(monkeypatch: pytest
 
 def test_build_runner_explicit_dp_collector_cpu_ids(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv(UNILAB_DP_RANK, "0")
+    monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     runner, probe_env_calls = _build_sac_runner_with_fakes(
         monkeypatch,
         [
-            "training.devices=[0,1]",
             "training.dp_collector_cpu_ids=[[0,1],[2,3]]",
         ],
         cpu_count=128,

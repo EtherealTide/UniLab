@@ -329,29 +329,6 @@ def test_offpolicy_g1_walk_flat_env_cfg_override_has_rewards_and_events():
         ("isaacgym", "isaacgym_device_id"),
         ("isaacsim", "isaacsim_device_id"),
         ("genesis", "genesis_device_id"),
-    ],
-)
-def test_offpolicy_gpu_backend_env_follows_dp_rank(
-    monkeypatch: pytest.MonkeyPatch, backend: str, field: str
-) -> None:
-    """Off-policy collectors receive the host-visible rank device."""
-
-    mod = _offpolicy()
-    cfg = _offpolicy_cfg([f"task=g1_walk_flat/{backend}", "training.devices=[0,1]"])
-    monkeypatch.setenv("UNILAB_DP_RANK", "1")
-
-    override = mod.build_offpolicy_env_cfg_override("sac", cfg)
-
-    assert override is not None
-    assert override[field] == 1
-
-
-@pytest.mark.parametrize(
-    ("backend", "field"),
-    [
-        ("isaacgym", "isaacgym_device_id"),
-        ("isaacsim", "isaacsim_device_id"),
-        ("genesis", "genesis_device_id"),
         ("newton", "newton_device"),
     ],
 )
@@ -375,6 +352,14 @@ def test_offpolicy_backend_env_follows_rank_local_cuda_visibility(
         assert override[field] == 0
 
 
+def test_removed_training_devices_fails_closed() -> None:
+    mod = _offpolicy()
+    cfg = _offpolicy_cfg(["+training.devices=[0]"])
+
+    with pytest.raises(ValueError, match="training.devices was removed"):
+        mod.main(cfg)
+
+
 @pytest.mark.parametrize(
     ("backend", "field"),
     [
@@ -386,23 +371,24 @@ def test_offpolicy_backend_env_follows_rank_local_cuda_visibility(
 def test_ppo_gpu_backend_env_uses_torchrun_local_rank(
     monkeypatch: pytest.MonkeyPatch, backend: str, field: str
 ) -> None:
-    """PPO workers pass a local index after torchrun remaps CUDA visibility."""
+    """PPO workers use the rank-local ordinal after torchrun remaps visibility."""
 
     mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg([f"task=g1_walk_flat/{backend}", "training.devices=[4,5]"])
+    cfg = _ppo_cfg([f"task=g1_walk_flat/{backend}"])
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     monkeypatch.setenv("LOCAL_RANK", "1")
     monkeypatch.setenv("WORLD_SIZE", "2")
 
     override = mod.build_ppo_env_cfg_override(cfg)
 
-    assert override[field] == 1
+    assert override[field] == 0
 
 
 def test_ppo_multi_rank_routes_one_cpu_partition_to_the_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=go2_joystick_flat/superdex", "training.devices=[0,1]"])
+    cfg = _ppo_cfg(["task=go2_joystick_flat/superdex"])
     monkeypatch.setenv("RANK", "1")
     monkeypatch.setenv("LOCAL_RANK", "1")
     monkeypatch.setenv("WORLD_SIZE", "2")
@@ -850,7 +836,6 @@ def _build_rsl_lifecycle_case(
         def log_video(self, path: str | None) -> None:
             captured["video"] = path
 
-    monkeypatch.setattr(mod, "resolve_dp_topology", lambda _devices: None)
     monkeypatch.setattr(mod, "current_torch_distributed_rank", lambda: 0)
     monkeypatch.setattr(mod, "current_torch_distributed_local_rank", lambda: 0)
     monkeypatch.setattr(mod, "current_torch_distributed_world_size", lambda: 1)
@@ -934,7 +919,7 @@ def test_train_rsl_rl_runtime_error_propagates_after_single_cleanup(
     mod, cfg, captured, raised = _build_rsl_lifecycle_case(monkeypatch, tmp_path, sentinel)
 
     with pytest.raises(RuntimeError) as caught:
-        mod.main.__wrapped__(cfg)
+        mod.main(cfg)
 
     assert caught.value is raised is sentinel
     assert captured["env_close"] == 1
@@ -957,7 +942,7 @@ def test_train_rsl_rl_run_complete_close_error_is_not_misclassified(
     )
 
     with pytest.raises(RuntimeError) as caught:
-        mod.main.__wrapped__(cfg)
+        mod.main(cfg)
 
     assert caught.value is sentinel
     assert captured["env_close"] == 1
@@ -987,24 +972,14 @@ def test_train_rsl_rl_play_only_keeps_single_cleanup_and_runs_playback(
     assert captured["summaries"] == []
 
 
-@pytest.mark.parametrize(
-    ("devices", "world_size"),
-    [
-        ((0, 1), 1),
-        (None, 2),
-    ],
-)
 def test_train_rsl_rl_grasp_collection_rejects_multi_rank_before_launch(
     monkeypatch: pytest.MonkeyPatch,
-    devices: tuple[int, ...] | None,
-    world_size: int,
 ) -> None:
     mod = _train_rsl_rl(monkeypatch)
     cfg = _ppo_cfg(["task=allegro_inhand_grasp/mujoco", "+env.grasp_collection_target=1"])
-    monkeypatch.setattr(mod, "resolve_dp_topology", lambda _devices: devices)
     monkeypatch.setattr(mod, "current_torch_distributed_rank", lambda: 0)
     monkeypatch.setattr(mod, "current_torch_distributed_local_rank", lambda: 0)
-    monkeypatch.setattr(mod, "current_torch_distributed_world_size", lambda: world_size)
+    monkeypatch.setattr(mod, "current_torch_distributed_world_size", lambda: 2)
     monkeypatch.setattr(
         mod,
         "launch_torchrun_workers",
@@ -1013,11 +988,10 @@ def test_train_rsl_rl_grasp_collection_rejects_multi_rank_before_launch(
     monkeypatch.setattr(
         mod,
         "ensure_registries",
-        lambda: (_ for _ in ()).throw(AssertionError("must fail before registry bootstrap")),
+        lambda: (_ for _ in ()).throw(AssertionError("must fail before env construction")),
     )
-
-    with pytest.raises(ValueError, match="requires one process"):
-        mod.main.__wrapped__(cfg)
+    with pytest.raises(ValueError, match="multi-rank completion"):
+        mod.main(cfg)
 
 
 def test_ppo_cli_algo_override_wins_over_base(

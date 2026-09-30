@@ -27,7 +27,7 @@ Multi-GPU data parallelism (issue
 [#1512](https://github.com/unilabsim/UniLab/issues/1512)): verified on
 2026-09-06 on 2x NVIDIA RTX 6000D (Blackwell) / torch 2.8.0+cu128 /
 newton 1.5.1 / mujoco-warp 3.11 — PPO torchrun DP=2 and SAC
-DpRankSupervisor DP=2 (`training.devices=[0,1]`) training smokes both
+DpRankSupervisor DP=2 (`CUDA_VISIBLE_DEVICES=<gpu-a>,<gpu-b>`) training smokes both
 complete, and `nvidia-smi` sampling confirms each rank's learner and
 collector sim processes land on their own physical GPU with no cross-GPU
 leakage; single-GPU PPO/SAC regressions pass alongside. Newton/Warp follows

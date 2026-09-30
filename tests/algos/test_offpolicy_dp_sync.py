@@ -8,7 +8,7 @@ from collections import defaultdict
 import pytest
 import torch
 import uni_rl.ipc.dp_launcher as dp_launcher
-from uni_rl.ipc.dp_launcher import UNILAB_DP_LOG_DIR, UNILAB_DP_RANK
+from uni_rl.ipc.dp_launcher import UNILAB_DP_LOG_DIR, UNILAB_DP_RANK, UNILAB_DP_WORLD_SIZE
 from uni_rl.ipc.dp_sync import DpParameterSync
 
 from tests.algos.test_offpolicy_double_buffer_runner import (
@@ -428,14 +428,11 @@ def test_build_runner_single_rank_keeps_dp_sync_none(monkeypatch: pytest.MonkeyP
 
 
 def test_build_runner_multi_gpu_constructs_dp_sync_for_rank0(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     monkeypatch.delenv(UNILAB_DP_RANK, raising=False)
     monkeypatch.delenv(UNILAB_DP_LOG_DIR, raising=False)
-    kwargs = _build_sac_runner_with_dp_fakes(
-        monkeypatch,
-        [
-            "training.devices=[0,1]",
-        ],
-    )
+    kwargs = _build_sac_runner_with_dp_fakes(monkeypatch, [])
     dp_sync = kwargs["dp_sync"]
     assert isinstance(dp_sync, DpParameterSync)
     assert dp_sync.world_size == 2
@@ -446,11 +443,10 @@ def test_build_runner_multi_gpu_constructs_dp_sync_for_rank0(monkeypatch: pytest
 
 def test_build_runner_spawned_rank_uses_shared_run_root(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv(UNILAB_DP_RANK, "1")
+    monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     monkeypatch.setenv(UNILAB_DP_LOG_DIR, "/tmp/dp_sync_shared_root")
-    kwargs = _build_sac_runner_with_dp_fakes(
-        monkeypatch,
-        ["training.devices=[0,1]"],
-    )
+    kwargs = _build_sac_runner_with_dp_fakes(monkeypatch, [])
     dp_sync = kwargs["dp_sync"]
     assert isinstance(dp_sync, DpParameterSync)
     assert dp_sync.rank == 1
@@ -460,7 +456,9 @@ def test_build_runner_spawned_rank_uses_shared_run_root(monkeypatch: pytest.Monk
 
 def test_build_runner_multi_gpu_rank0_requires_log_dir(monkeypatch: pytest.MonkeyPatch):
     module = _offpolicy()
-    cfg = _offpolicy_cfg(["training.devices=[0,1]"])
+    cfg = _offpolicy_cfg()
+    monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     monkeypatch.delenv(UNILAB_DP_RANK, raising=False)
     monkeypatch.delenv(UNILAB_DP_LOG_DIR, raising=False)
     monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
@@ -603,14 +601,11 @@ def test_build_runner_multi_gpu_constructs_dp_sync_for_flashsac_rank0(
         "uni_rl.ipc.dp_launcher._discover_physical_cpu_groups",
         lambda _: [[core, core + 64] for core in range(64)],
     )
+    monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     monkeypatch.delenv(UNILAB_DP_RANK, raising=False)
     monkeypatch.delenv(UNILAB_DP_LOG_DIR, raising=False)
-    kwargs = _build_flashsac_runner_with_dp_fakes(
-        monkeypatch,
-        [
-            "training.devices=[0,1]",
-        ],
-    )
+    kwargs = _build_flashsac_runner_with_dp_fakes(monkeypatch, [])
     dp_sync = kwargs["dp_sync"]
     assert isinstance(dp_sync, DpParameterSync)
     assert dp_sync.world_size == 2
@@ -626,11 +621,10 @@ def test_build_runner_multi_gpu_flashsac_spawned_rank(monkeypatch: pytest.Monkey
         lambda _: [[core, core + 64] for core in range(64)],
     )
     monkeypatch.setenv(UNILAB_DP_RANK, "1")
+    monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     monkeypatch.setenv(UNILAB_DP_LOG_DIR, "/tmp/dp_sync_shared_root")
-    kwargs = _build_flashsac_runner_with_dp_fakes(
-        monkeypatch,
-        ["training.devices=[0,1]"],
-    )
+    kwargs = _build_flashsac_runner_with_dp_fakes(monkeypatch, [])
     dp_sync = kwargs["dp_sync"]
     assert isinstance(dp_sync, DpParameterSync)
     assert dp_sync.rank == 1
