@@ -72,6 +72,7 @@ class _FakeBackend:
         self.cleanup_calls = 0
         self.materialize_calls = 0
         self.lifecycle: list[str] = []
+        self.sensors: dict[str, torch.Tensor] = {}
 
     def materialize(self) -> None:
         if self.reject_materialize:
@@ -110,6 +111,15 @@ class _FakeBackend:
             stream_event_ownership="test",
             torch_devices=("cpu",),
         )
+
+    def get_sensor_data(self, name: str) -> np.ndarray:
+        try:
+            return self.sensors[name].numpy()
+        except KeyError as exc:
+            raise KeyError(
+                f"Unknown test sensor(s) ({name!r}); "
+                f"available sensors: {', '.join(sorted(self.sensors))}"
+            ) from exc
 
     def step_tensor(self, ctrl: torch.Tensor, nsteps: int = 1) -> None:
         self.tensor_controls.append(ctrl.detach().clone())
@@ -611,6 +621,46 @@ class _StateWritingCommand(_Command):
             np.full((len(env_ids), 1), -0.75, dtype=np.float32),
             env_ids=env_ids,
         )
+
+
+class _AliasedSensorCommandCfg(CommandTermCfg):
+    def build(self, env) -> CommandTerm:
+        return _AliasedSensorCommand(self, env)
+
+
+class _AliasedSensorCommand(CommandTerm):
+    tensor_sensor_names = ("pelvis_local_linvel", "torso_gyro")
+    packed_sensor_aliases = {
+        "pelvis_local_linvel": ("pelvis_local_linvel", "local_linvel"),
+        "torso_gyro": ("torso_gyro", "gyro"),
+    }
+
+    def __init__(self, cfg: CommandTermCfg, env) -> None:
+        super().__init__(cfg, env)
+        self._command = np.zeros((self.num_envs, 2), dtype=np.float32)
+
+    @property
+    def command(self) -> np.ndarray:
+        return self._command
+
+    def _update_metrics(self, env_ids: np.ndarray | None = None) -> None:
+        return None
+
+    def _resample_command(self, env_ids: np.ndarray) -> None:
+        self._command[env_ids, 0] = 0.5
+        self._command[env_ids, 1] = -0.25
+
+    def _update_command(self, env_ids: np.ndarray | None) -> None:
+        return None
+
+    def _metric_velocities(self) -> tuple[torch.Tensor, torch.Tensor]:
+        read_plan = self._env.scene._tensor_read_plan
+        packed = read_plan.sensor_names.get("robot", ()) if read_plan else ()
+        if len(packed) == 2:
+            entity = self._env.scene["robot"]
+            views = read_plan.sensor_tensor_views(entity, packed).values
+            return views[packed[0]], views[packed[1]]
+        return torch.zeros(self.num_envs, 3), torch.zeros(self.num_envs, 3)
 
 
 class _Recorder(RecorderTerm):
@@ -1886,6 +1936,41 @@ def test_scene_read_plan_compiles_named_sensor_observation_requests() -> None:
             torch.tensor([[5.1, 5.2, 6.2], [5.3, 5.4, 6.2]], dtype=torch.float32),
         )
         assert backend.selected_reads == 1
+    finally:
+        if env.scene._tensor_read_plan is not None:
+            env.scene._tensor_read_plan.close()
+            env.scene._tensor_read_plan = None
+        env.close()
+
+
+def test_command_packed_sensor_read_negotiates_backend_local_alias() -> None:
+    cfg = _make_cfg(include_optional_managers=False)
+    cfg.scene.entities["robot"] = EntityCfg(
+        root_body_name="base",
+        joint_names=("joint",),
+        body_names=("platform", "ball"),
+        actuator_names=("motor",),
+    )
+    cfg.commands = {"twist": _AliasedSensorCommandCfg(resampling_time_range=(1.0, 1.0))}
+    backend = _ScenePlanBackend(2)
+    backend.sensors.update(
+        {
+            "local_linvel": torch.tensor([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=torch.float32),
+            "gyro": torch.tensor([[-0.1, -0.2, -0.3], [-0.4, -0.5, -0.6]], dtype=torch.float32),
+        }
+    )
+    env = _TestEnv(cfg, cast(SimBackend, backend), 2)
+    try:
+        plan = env.scene._tensor_read_plan
+        assert plan is not None
+        assert plan.host_plan is not None
+        assert plan.sensor_names["robot"] == ("local_linvel", "gyro")
+        plan.refresh()
+
+        term = env.command_manager.get_term("twist")
+        linvel, gyro = term._metric_velocities()
+        torch.testing.assert_close(linvel, backend.sensors["local_linvel"])
+        torch.testing.assert_close(gyro, backend.sensors["gyro"])
     finally:
         if env.scene._tensor_read_plan is not None:
             env.scene._tensor_read_plan.close()

@@ -125,7 +125,15 @@ class RewardManager(ManagerBase):
             finite = torch.isfinite(self._step_reward)
             for term_idx, name in enumerate(self._term_names):
                 if not bool(finite[:, term_idx].all()):
-                    raise ValueError(f"RewardManager term '{name}' returned a non-finite reward.")
+                    value = self._step_reward[:, term_idx]
+                    has_nan = bool(torch.isnan(value).any())
+                    has_inf = bool(torch.isinf(value).any())
+                    invalid_kind = "NaN/Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
+                    invalid_rows = torch.nonzero(~finite[:, term_idx]).flatten()[:10]
+                    raise ValueError(
+                        f"RewardManager term '{name}' returned {invalid_kind} for "
+                        f"environments {invalid_rows.tolist()}."
+                    )
             raise ValueError("RewardManager returned a non-finite reward.")
         return self._reward_buf
 
