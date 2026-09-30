@@ -17,7 +17,7 @@ def _xpu_available() -> bool:
 def get_default_device() -> str:
     """Detect the best available device."""
     if torch.cuda.is_available():
-        return "cuda"
+        return f"cuda:{torch.cuda.current_device()}"
     if _xpu_available():
         return "xpu"
     if torch.backends.mps.is_available():
