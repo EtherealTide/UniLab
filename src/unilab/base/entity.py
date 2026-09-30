@@ -399,8 +399,10 @@ class SceneTensorReadPlan:
             torch.as_tensor(np.asarray(qpos_ids, dtype=np.int64), device=self._device),
             torch.as_tensor(np.asarray(qvel_ids, dtype=np.int64), device=self._device),
         )
-        packet_qpos_width = self._packet.get("qpos").shape[1] if "qpos" in self._packet else None
-        packet_qvel_width = self._packet.get("qvel").shape[1] if "qvel" in self._packet else None
+        packet_qpos = self._packet.get("qpos")
+        packet_qvel = self._packet.get("qvel")
+        packet_qpos_width = None if packet_qpos is None else int(packet_qpos.shape[1])
+        packet_qvel_width = None if packet_qvel is None else int(packet_qvel.shape[1])
         for field, field_ids, packet_width in (
             ("qpos", qpos_ids, packet_qpos_width),
             ("qvel", qvel_ids, packet_qvel_width),
