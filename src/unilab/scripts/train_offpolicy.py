@@ -260,6 +260,12 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
     apply_torch_thread_runtime(torch_thread_runtime, role="learner")
 
     _nan_guard_cfg = resolve_nan_guard_cfg(cfg.training)
+    if _nan_guard_cfg is None:
+        nan_guard_factory = None
+    else:
+        from unilab.training.tensor_runtime_hooks import build_tensor_nan_guard_factory
+
+        nan_guard_factory = build_tensor_nan_guard_factory()
 
     replay_prefetch_mode = getattr(cfg.training, "replay_prefetch_mode", "one_tick")
     if replay_prefetch_mode != "one_tick":
@@ -276,6 +282,7 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
         "replay_prefetch_mode": replay_prefetch_mode,
         "device": replay_device,
         "nan_guard_cfg": _nan_guard_cfg,
+        "nan_guard_factory": nan_guard_factory,
         "torch_thread_runtime": torch_thread_runtime,
         "collector_cpu_ids": collector_cpu_ids,
         "dp_sync": dp_sync,
