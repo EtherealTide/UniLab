@@ -246,6 +246,12 @@ class CollectorResult:
     # optional benchmark-side monkeypatch used for RNG/noise-buffer profiling.
     numpy_random_ms_per_vector_step: TimingStats | None = None
     numpy_random_calls_per_vector_step: TimingStats | None = None
+    # Public backend runtime diagnostics, captured after construction and before
+    # the measured window. They make CUDA graph fallbacks visible in cross-host
+    # A/B reports instead of requiring private backend inspection.
+    backend_runtime_diagnostics: dict[str, dict[str, bool | str | None]] = field(
+        default_factory=dict
+    )
 
 
 def _stats(samples_ms: list[float]) -> TimingStats:
@@ -454,6 +460,21 @@ def _configure_collector_cpu_threads(cap: int | None = None) -> int:
     return n_threads
 
 
+def _backend_runtime_diagnostics(env: Any) -> dict[str, dict[str, bool | str | None]]:
+    backend = getattr(env, "_backend", None)
+    diagnostics = getattr(backend, "get_tensor_runtime_diagnostics", None)
+    if diagnostics is None:
+        return {}
+    return {
+        name: {
+            "requested": bool(diagnostic.requested),
+            "enabled": bool(diagnostic.enabled),
+            "disable_reason": diagnostic.disable_reason,
+        }
+        for name, diagnostic in diagnostics().items()
+    }
+
+
 def _runtime_sim_backend(sim: str) -> str:
     return BACKEND_ALIASES.get(sim, sim)
 
@@ -646,6 +667,7 @@ def _run_active_window_case(
     )
 
     env_device = env.device
+    backend_runtime_diagnostics = _backend_runtime_diagnostics(env)
     actions = torch.zeros((case.num_envs, case.action_dim), dtype=torch.float32, device=env_device)
     state = env.step(actions)
     obs, critic = split_obs_dict(state.obs)
@@ -847,6 +869,7 @@ def _run_active_window_case(
         numpy_random_calls_per_vector_step=(
             _stats(numpy_random_call_samples) if numpy_random_call_samples else None
         ),
+        backend_runtime_diagnostics=backend_runtime_diagnostics,
     )
 
 

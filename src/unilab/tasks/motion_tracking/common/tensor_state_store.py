@@ -180,8 +180,8 @@ class TensorDeviceStateStore:
             self._device_sensor_views = sensor_views
             self._device_linvel_view = linvel_view
             self._device_gyro_view = gyro_view
-            self.linvel = linvel_view.clone()
-            self.gyro = gyro_view.clone()
+            self.linvel = linvel_view
+            self.gyro = gyro_view
         else:
             # Named sensor views are not guaranteed to be stable snapshots on
             # every DEVICE_RESIDENT adapter. Crossing the public sensor-read
@@ -191,17 +191,14 @@ class TensorDeviceStateStore:
             gyro_view = self.backend.get_sensor_view("torso_gyro", device=self.device)
             self._device_linvel_view = linvel_view
             self._device_gyro_view = gyro_view
-            self.linvel.copy_(linvel_view)
-            self.gyro.copy_(gyro_view)
+            self.linvel = linvel_view
+            self.gyro = gyro_view
             # One tracked-sensor read refreshes all injected frame sensors.
             self.backend.get_sensor_view(f"track_pos_w_{self.body_names[0]}", device=self.device)
-            if rows is not None:
-                linvel_view = self._device_linvel_view
-                gyro_view = self._device_gyro_view
-                if linvel_view is None or gyro_view is None:
-                    raise RuntimeError("scalar sensor views were not negotiated before row read")
-                self.linvel[rows] = linvel_view.index_select(0, rows)
-                self.gyro[rows] = gyro_view.index_select(0, rows)
+            if rows is not None and (
+                self._device_linvel_view is None or self._device_gyro_view is None
+            ):
+                raise RuntimeError("scalar sensor views were not negotiated before row read")
 
         self.qpos = state_views["qpos"]
         self.qvel = state_views["qvel"]
@@ -333,6 +330,22 @@ class TensorDeviceStateStore:
             return cast(dict | None, self._host_bridge_plan.step(nsteps))
         return cast(dict | None, self.backend.step_tensor(ctrl, nsteps=nsteps))
 
+    def refresh_named_sensors(self) -> None:
+        """Cross the backend's named-sensor projection boundary.
+
+        DEVICE_RESIDENT adapters may recompute derived projections when a named
+        sensor view is requested. Unlike :meth:`read`, this method performs no
+        row validation, state-view negotiation, or task-buffer copy.
+        """
+        if self._execution is not TensorExecution.DEVICE_RESIDENT:
+            raise RuntimeError(
+                "named-sensor refresh requires DEVICE_RESIDENT tensor execution; "
+                f"received {self._execution}"
+            )
+        self.backend.get_sensor_view("pelvis_local_linvel", device=self.device)
+        self.backend.get_sensor_view("torso_gyro", device=self.device)
+        self.backend.get_sensor_view(f"track_pos_w_{self.body_names[0]}", device=self.device)
+
     def apply_reset(
         self, rows: torch.Tensor, qpos: torch.Tensor, qvel: torch.Tensor
     ) -> dict | None:
@@ -367,10 +380,23 @@ class TensorDeviceStateStore:
             )
         if not self._views_require_readiness_barrier:
             return None
+        if self._uses_named_sensor_reset_refresh():
+            self.refresh_named_sensors()
+            self._views_require_readiness_barrier = False
+            return None
         result = self.step_tensor(ctrl, nsteps=nsteps)
         self._views_require_readiness_barrier = False
         self.last_backend_result = result
         return result
+
+    def _uses_named_sensor_reset_refresh(self) -> bool:
+        """Read the public optional optimization declaration, if present."""
+        try:
+            diagnostics = self.backend.get_tensor_runtime_diagnostics()
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return False
+        diagnostic = diagnostics.get("selected_reset_sensor_refresh")
+        return bool(getattr(diagnostic, "enabled", False))
 
     def validate_finite(self) -> None:
         qpos, qvel = self._require_qviews()
