@@ -239,9 +239,7 @@ def test_flashsac_g1_motion_tracking_isaacsim_uses_production_mapped_cuda_ipc_ow
     mapped_qpos, mapped_ctrl = _stand_key_values(mapped_robot)
     assert mapped_qpos == canonical_qpos
     assert mapped_ctrl == canonical_ctrl
-    assert _structural_robot_signature(mapped_robot) == _structural_robot_signature(
-        canonical_robot
-    )
+    assert _structural_robot_signature(mapped_robot) == _structural_robot_signature(canonical_robot)
     assert list(scene.entity_assets[0].initial_state.position) == [0.0, 0.0, mapped_qpos[2]]
 
 

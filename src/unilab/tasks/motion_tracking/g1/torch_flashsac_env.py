@@ -258,10 +258,12 @@ class _DeviceResidentColdContractProxy(ManagerBasedRlEnv):
     def _exit_suppressed_hot_state_refresh(self) -> None:
         robot = self.scene.get("robot")
         if robot is not None and self._original_bind_body_state_copy is not None:
-            robot.bind_body_state_copy = self._original_bind_body_state_copy
+            bind_body_state_copy = self._original_bind_body_state_copy
+            object.__setattr__(robot, "bind_body_state_copy", bind_body_state_copy)
         self._original_bind_body_state_copy = None
         if self._original_bind_sensor_data is not None:
-            self.scene.bind_sensor_data = self._original_bind_sensor_data
+            bind_sensor_data = self._original_bind_sensor_data
+            object.__setattr__(self.scene, "bind_sensor_data", bind_sensor_data)
             self._original_bind_sensor_data = None
         if robot is not None:
             robot.data._state_read_cache.invalidate()
@@ -302,7 +304,7 @@ class _DeviceResidentColdContractProxy(ManagerBasedRlEnv):
             return outputs
 
         self._original_bind_body_state_copy = original
-        robot.bind_body_state_copy = lambda _ids: _copy_default_body_state
+        object.__setattr__(robot, "bind_body_state_copy", lambda _ids: _copy_default_body_state)
         default_joint_pos = robot.data.default_joint_pos
         default_joint_vel = robot.data.default_joint_vel
         joint_cache = robot.data._state_read_cache
@@ -344,7 +346,7 @@ class _DeviceResidentColdContractProxy(ManagerBasedRlEnv):
             _reader=_read_default_sensors,
         )
         self._original_bind_sensor_data = self.scene.bind_sensor_data
-        self.scene.bind_sensor_data = lambda _names: view  # type: ignore[method-assign]
+        object.__setattr__(self.scene, "bind_sensor_data", lambda _names: view)
 
 
 class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
