@@ -702,6 +702,12 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
         self._joint_qvel_ids = np.asarray(
             self._backend.get_joint_state_qvel_indices(robot.joint_names), dtype=np.int64
         )
+        self._joint_qpos_ids_tensor = self._torch.as_tensor(
+            self._joint_qpos_ids, device=self.device
+        )
+        self._joint_qvel_ids_tensor = self._torch.as_tensor(
+            self._joint_qvel_ids, device=self.device
+        )
         target_ids = np.asarray(cpu_action._target_ids, dtype=np.int64)
         local_actuators = np.asarray(robot._joint_to_actuator_local, dtype=np.int64)[target_ids]
         self._action_to_actuator = np.asarray(robot._actuator_ids, dtype=np.int64)[local_actuators]
@@ -1272,6 +1278,13 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
         root_quat = _quat_mul(_euler_xyz_quat(pose[:, 3], pose[:, 4], pose[:, 5]), motion[3][:, 0])
         root_lin_vel = motion[4][:, 0] + velocity[:, :3]
         root_ang_vel = motion[5][:, 0] + velocity[:, 3:]
+        # Motion datasets may be float64 while every negotiated backend state
+        # view is float32. Normalize at the selected-reset source so no hidden
+        # destination/device conversion occurs after construction.
+        root_pos = root_pos.to(self._dtype)
+        root_quat = root_quat.to(self._dtype)
+        root_lin_vel = root_lin_vel.to(self._dtype)
+        root_ang_vel = root_ang_vel.to(self._dtype)
         joint_range = self._command_cfg.params.joint_position_range
         joint_noise_scale = float(joint_range[1] - joint_range[0])
         joint_noise = torch.rand(
@@ -1279,20 +1292,22 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
             device=self.device,
             generator=self._rng,
         ) * joint_noise_scale + float(joint_range[0])
-        joint_pos = motion[0] + joint_noise
-        joint_pos = joint_pos.clamp(self._soft_limits[:, 0], self._soft_limits[:, 1])
+        joint_pos = (motion[0] + joint_noise).to(self._dtype)
+        joint_pos = joint_pos.clamp(self._soft_limits[:, 0], self._soft_limits[:, 1]).to(
+            self._dtype
+        )
         qpos_view = self._qpos
         qvel_view = self._qvel
         if qpos_view is None or qvel_view is None:
             raise RuntimeError("Torch G1 FlashSAC selected reset requires initialized state views")
-        qpos = qpos_view.index_select(0, rows).clone()
-        qvel = qvel_view.index_select(0, rows).clone()
+        qpos = qpos_view.index_select(0, rows).clone().to(self._dtype)
+        qvel = qvel_view.index_select(0, rows).clone().to(self._dtype)
         qpos[:, :3] = root_pos
         qpos[:, 3:7] = root_quat
-        qpos[:, self._joint_qpos_ids] = joint_pos
+        qpos.index_copy_(1, self._joint_qpos_ids_tensor, joint_pos)
         qvel[:, :3] = root_lin_vel
         qvel[:, 3:6] = root_ang_vel
-        qvel[:, self._joint_qvel_ids] = motion[1]
+        qvel.index_copy_(1, self._joint_qvel_ids_tensor, motion[1].to(self._dtype))
         if not _all_finite(qpos, qvel):
             raise ValueError("Torch G1 FlashSAC reset qpos/qvel contain NaN or Inf")
         qpos_view[rows] = qpos
