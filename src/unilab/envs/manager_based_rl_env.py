@@ -397,7 +397,7 @@ class ManagerBasedRlEnv(TorchEnv):
     def _compile_tensor_read_plan(self) -> None:
         """Compile the scene's only packed tensor read phase."""
         if (
-            self.cfg.tensor_runtime is False
+            self._cfg.tensor_runtime is False
             and self._backend.get_tensor_capabilities().execution is TensorExecution.UNSUPPORTED
         ):
             self.scene._tensor_read_plan = None
