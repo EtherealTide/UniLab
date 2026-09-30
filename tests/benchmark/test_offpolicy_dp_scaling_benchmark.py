@@ -109,10 +109,10 @@ def test_build_train_command_matches_production_overrides(tmp_path: Path) -> Non
     command_dp = bench.build_train_command(
         tmp_path / "runs" / "n2",
         iterations=300,
-        devices=[0, 1],
+        devices=("GPU-a", "GPU-b"),
         extra_overrides=("algo.num_envs=2048",),
     )
-    assert "training.devices=[0,1]" in command_dp
+    # Visibility is passed through the subprocess environment, not argv.
     assert "algo.num_envs=2048" in command_dp
 
 
@@ -314,8 +314,8 @@ def test_attach_scaling_below_threshold_verdict() -> None:
 
 
 def test_parse_args_skips_dp_config_with_single_device() -> None:
-    args = bench.parse_args(["--devices", "0"])
-    assert args.devices == "0"
+    args = bench.parse_args(["--visible-devices", "GPU-a"])
+    assert args.visible_devices == "GPU-a"
     assert args.keep_runs is True
     args = bench.parse_args(["--no-keep-runs"])
     assert args.keep_runs is False

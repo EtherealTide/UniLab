@@ -9,11 +9,10 @@ from unilab.rl.distributed import (
     finish_rsl_rl_distributed,
     launch_torchrun_workers,
     ppo_samples_per_iteration,
+    reject_removed_device_config,
     resolve_collector_cpu_ids,
-    resolve_dp_topology,
     resolve_rsl_rl_device,
     rsl_rl_single_process_topology,
-    validate_dp_launchable,
 )
 from unilab.rl.vec_env import RslRlVecEnvAdapter, get_policy_obs_dims
 
@@ -29,8 +28,7 @@ __all__ = [
     "launch_torchrun_workers",
     "ppo_samples_per_iteration",
     "resolve_collector_cpu_ids",
-    "resolve_dp_topology",
+    "reject_removed_device_config",
     "resolve_rsl_rl_device",
     "rsl_rl_single_process_topology",
-    "validate_dp_launchable",
 ]

@@ -2,8 +2,8 @@
 
 Runs real ``src/unilab/scripts/train_sac.py`` training via subprocess (same Hydra
 overrides as the production CLI entry, never importing training internals) and
-compares single-device N=1 (no ``training.devices``) against N-way data
-parallel (``training.devices=[d0..dN-1]``, default ``[0,1]``). Every config
+compares single-device N=1 against N-way data parallel selected solely by
+``CUDA_VISIBLE_DEVICES``. Every config
 keeps the owner YAML production defaults (sac / g1_walk_flat / mujoco) except
 ``algo.max_iterations``, ``training.no_play=true`` and ``training.log_dir``
 pointing into this benchmark's own work directory. Runs execute sequentially
@@ -35,7 +35,7 @@ Run:
 
     # tuning / passthrough overrides:
     uv run scripts/benchmark/rl/benchmark_offpolicy_dp_scaling.py \
-        --iterations 300 --devices 0,1 \
+        --iterations 300 --visible-devices 0,1 \
         --extra-overrides algo.num_envs=2048 \
         --out-json scripts/benchmark/outputs/offpolicy_dp_scaling/results.json
 """
@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -291,13 +292,14 @@ def build_train_command(
     run_dir: Path,
     *,
     iterations: int,
-    devices: Sequence[int] | None = None,
+    devices: Sequence[str] | None = None,
     extra_overrides: Sequence[str] = (),
 ) -> list[str]:
     """Subprocess argv matching the production off-policy CLI overrides.
 
-    ``devices=None`` is the N=1 baseline and intentionally carries no
-    ``training.devices`` override at all.
+    ``devices=None`` is the N=1 baseline. Multi-rank runs inherit the benchmark
+    process's parent ``CUDA_VISIBLE_DEVICES`` list; the launcher assigns one
+    opaque entry per rank.
     """
     command = [
         sys.executable,
@@ -307,8 +309,6 @@ def build_train_command(
         f"algo.max_iterations={iterations}",
         f"training.log_dir={Path(run_dir)}",
     ]
-    if devices is not None:
-        command.append(f"training.devices=[{','.join(str(d) for d in devices)}]")
     command.extend(extra_overrides)
     return command
 
@@ -362,25 +362,21 @@ def git_commit() -> str:
         return "unknown"
 
 
-def _parse_int_list(text: str, name: str) -> list[int]:
-    values = [int(v) for v in text.split(",") if v.strip()]
-    if not values:
-        raise ValueError(f"{name} must not be empty")
-    return values
-
-
 # =====================================================================
 # Subprocess execution
 # =====================================================================
 
 
-def execute_run(command: list[str], run_dir: Path) -> None:
+def execute_run(command: list[str], run_dir: Path, *, devices: Sequence[str] | None = None) -> None:
     """Run one training config to completion; raise on subprocess failure."""
     run_dir = Path(run_dir)
     if run_dir.exists():
         shutil.rmtree(run_dir)
     run_dir.mkdir(parents=True)
-    completed = subprocess.run(command, cwd=ROOT_DIR)  # noqa: S603 - fixed argv, no shell
+    env = os.environ.copy()
+    if devices is not None:
+        env["CUDA_VISIBLE_DEVICES"] = ",".join(devices)
+    completed = subprocess.run(command, cwd=ROOT_DIR, env=env)  # noqa: S603 - fixed argv, no shell
     if completed.returncode != 0:
         raise RunParseError(
             f"training subprocess exited with code {completed.returncode}: {' '.join(command)}"
@@ -389,7 +385,7 @@ def execute_run(command: list[str], run_dir: Path) -> None:
 
 def run_config(
     name: str,
-    devices: Sequence[int] | None,
+    devices: Sequence[str] | None,
     *,
     iterations: int,
     extra_overrides: Sequence[str],
@@ -401,7 +397,7 @@ def run_config(
     record: dict[str, Any] = {
         "config": name,
         "world_size": world_size,
-        "devices": list(devices) if devices is not None else None,
+        "visible_devices": list(devices) if devices is not None else None,
         "status": "ok",
         "error": None,
         "metrics": None,
@@ -417,7 +413,7 @@ def run_config(
             extra_overrides=extra_overrides,
         )
         print(f"[{name}] launching: {' '.join(command)}", flush=True)
-        execute_run(command, run_dir)
+        execute_run(command, run_dir, devices=devices)
         record["metrics"] = parse_run(run_dir, world_size)
     except (RunParseError, ValueError) as exc:
         record["status"] = "failed"
@@ -446,9 +442,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--iterations", type=int, default=DEFAULT_ITERATIONS)
     parser.add_argument(
-        "--devices",
+        "--visible-devices",
         default=DEFAULT_DEVICES,
-        help="comma-separated CUDA indices for the data-parallel config "
+        help="comma-separated opaque parent CUDA_VISIBLE_DEVICES entries "
         "(length 1 skips the DP config)",
     )
     parser.add_argument(
@@ -470,17 +466,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    devices = _parse_int_list(args.devices, "--devices")
+    devices = tuple(entry.strip() for entry in args.visible_devices.split(",") if entry.strip())
 
     print(f"Device: {get_device_info_line()}")
     print(f"commit: {git_commit()}")
 
-    configs: list[tuple[str, list[int] | None]] = [("n1", None)]
+    configs: list[tuple[str, tuple[str, ...] | None]] = [("n1", None)]
     if len(devices) > 1:
         configs.append((f"n{len(devices)}", devices))
     else:
         print(
-            f"--devices={args.devices!r} has length {len(devices)}; "
+            f"--visible-devices={args.visible_devices!r} has length {len(devices)}; "
             "skipping the data-parallel config (need >= 2 devices)."
         )
 
@@ -504,7 +500,7 @@ def main(argv: list[str] | None = None) -> int:
         [
             {
                 "config": r["config"],
-                "devices": ",".join(str(d) for d in r["devices"]) if r["devices"] else "-",
+                "visible devices": ",".join(r["visible_devices"]) if r["visible_devices"] else "-",
                 "collector Steps/s": (
                     f"{r['metrics']['steady_state_collector_steps_per_s']:,.0f}"
                     if r["metrics"]
@@ -542,7 +538,7 @@ def main(argv: list[str] | None = None) -> int:
         ],
         [
             "config",
-            "devices",
+            "visible devices",
             "collector Steps/s",
             "learner Samples/s",
             "final reward",
@@ -565,7 +561,7 @@ def main(argv: list[str] | None = None) -> int:
             "params": {
                 "route_overrides": list(ROUTE_OVERRIDES),
                 "iterations": args.iterations,
-                "devices": devices,
+                "visible_devices": list(devices),
                 "extra_overrides": list(args.extra_overrides),
                 "scaling_pass_threshold": SCALING_PASS_THRESHOLD,
                 "steady_state_tail_fraction": STEADY_STATE_TAIL_FRACTION,
