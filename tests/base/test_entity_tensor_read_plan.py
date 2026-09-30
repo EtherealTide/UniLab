@@ -273,6 +273,37 @@ def test_device_resident_scene_plan_refreshes_stable_public_views() -> None:
     plan.close()
 
 
+def test_scene_plan_packed_joint_layout_is_cached_and_finite_checks_are_deferred() -> None:
+    backend = _SceneTensorBackend()
+    backend.layout_reads = 0
+    original_qpos_indices = backend.get_joint_state_qpos_indices
+
+    def counting_qpos_indices(names):
+        backend.layout_reads += 1
+        return original_qpos_indices(names)
+
+    backend.get_joint_state_qpos_indices = counting_qpos_indices
+    scene = _scene(backend)
+    plan = scene.compile_tensor_reads("cpu", _specs())
+    plan.refresh()
+
+    first = plan.joint_tensor_view("robot")
+    second = plan.joint_tensor_view("robot")
+
+    assert first.joint_pos.shape == (2, 1)
+    torch.testing.assert_close(first.joint_pos, second.joint_pos)
+    assert backend.layout_reads == 1
+    # Packed packets still enforce carrier shape/dtype/device. Finiteness is
+    # deferred to the Manager term/result boundary instead of every packet read.
+    packet = dict(plan._packet)
+    packet["qpos"] = torch.tensor([[torch.nan], [torch.nan]], dtype=torch.float32)
+    plan._packet = type(plan._packet)(packet)
+    nonfinite = plan.joint_tensor_view("robot")
+    assert bool(torch.isnan(nonfinite.joint_pos).all())
+
+    plan.close()
+
+
 def test_scene_plan_rejects_reads_before_refresh_and_after_close() -> None:
     backend = _SceneTensorBackend()
     plan = _scene(backend).compile_tensor_reads("cpu", _specs())
