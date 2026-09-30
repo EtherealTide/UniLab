@@ -21,6 +21,7 @@ from unilab.base.config_materialization import apply_cfg_overrides
 from unilab.base.torch_env import TorchEnvState
 from unilab.base.variants import FixedModelVariantCatalogCfg, FixedModelVariantCfg
 from unilab.envs import ManagerBasedRlEnvCfg
+from unilab.managers import TorchManagerRng
 from unilab.tasks.motion_tracking.g1 import torch_flashsac_env as module
 
 ROOT_DIR = Path(__file__).parents[2]
@@ -524,3 +525,33 @@ def test_device_resident_cold_contract_proxy_skips_generic_tensor_reads() -> Non
     proxy._compile_tensor_read_plan()
 
     assert proxy.scene._tensor_read_plan is None
+
+
+def test_torch_g1_runtime_rng_is_torch_native_and_reseedable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = module.TorchG1MotionTrackingFlashSACEnv.__new__(module.TorchG1MotionTrackingFlashSACEnv)
+    env._torch = torch
+    env._device = torch.device("cpu")
+    env._num_envs = 2
+    env._state = TorchEnvState(
+        obs={"obs": torch.zeros((2, 2))},
+        reward=torch.zeros(2),
+        terminated=torch.zeros(2, dtype=torch.bool),
+        truncated=torch.zeros(2, dtype=torch.bool),
+        info={},
+    )
+    generator = torch.Generator(device=env.device).manual_seed(9)
+    env._rng = generator
+    env._rng_owner = TorchManagerRng(device=env.device, generator=generator)
+    env._initial_seed = 9
+
+    def fail_numpy_generator(*_args, **_kwargs):
+        raise AssertionError("G1 tensor runtime must not construct a NumPy Generator")
+
+    monkeypatch.setattr(env, "_reset_rows", lambda rows, obs: obs)
+
+    monkeypatch.setattr(np.random, "default_rng", fail_numpy_generator)
+    env.reset(seed=9)
+    assert env._rng is generator
+    assert env._rng.initial_seed() == 9

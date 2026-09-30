@@ -41,6 +41,20 @@ vector。shutdown 时可能保留一个尚未完整发布 vector 的有效行前
 非法 transition 行。replay ingress 计数器与 shutdown schema 见
 {doc}`3-logging`。
 
+## 随机数生成
+
+通用 Manager seam 仍由 NumPy 拥有：`ManagerBasedRlEnv.rng` 是
+`np.random.Generator`，既有种子流不变。已验证的 device-resident owner 可以
+改为持有 `unilab.managers.TorchManagerRng`。该适配器包装一个显式 CPU/CUDA
+`torch.Generator`，校验种子和未支持的采样语义，并始终在该 generator 的设备
+上返回 tensor。它不是 NumPy bitstream 兼容层。
+
+当前 scoped G1 Motion Tracking / FlashSAC owner 使用 CUDA
+`TorchManagerRng` 驱动观测噪声、adaptive/mixed motion sampling 与
+selected-row reset。因此 A/B 评估比较同一整数种子下的可复现性和分布，而不是
+逐位比较 NumPy 轨迹。确定性运行必须显式设置 `env.seed`；`algo.seed` 只 seed
+训练进程的全局 Python/NumPy/Torch RNG，不会替换 owner 本地 generator 的种子。
+
 ## Runtime evidence
 
 Runtime manifest 记录审计 run 所需的有效证据：
