@@ -600,14 +600,15 @@ class ManagerBasedRlEnv(TorchEnv):
                     {"pelvis_local_linvel", "torso_gyro", "torso_upvector"},
                 )
                 names = tuple(sensor_name for sensor_name in names if sensor_name in allowed)
-            elif not capabilities.packed_host_bridge:
-                continue
-            names = self._resolve_host_bridge_sensor_names(
-                self.command_manager.get_term(name),
-                tuple(sensor_names),
-                "command",
-                name,
-            )
+            elif capabilities.packed_host_bridge:
+                # Only HOST_BRIDGE packs need backend-local aliases. Device-
+                # resident plans consume the term's canonical semantic names.
+                names = self._resolve_host_bridge_sensor_names(
+                    self.command_manager.get_term(name),
+                    tuple(sensor_names),
+                    "command",
+                    name,
+                )
             if not names:
                 continue
             entity_name = getattr(command_cfg, "entity_name", "robot") if command_cfg else "robot"
