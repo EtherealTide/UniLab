@@ -20,7 +20,7 @@ from omegaconf import DictConfig, OmegaConf
 from unilab.base import registry
 from unilab.base.config_adapter import BackendAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
-from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg, mdp
+from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from unilab.tasks.locomotion.g1 import manager_terms as g1_terms
 
 # CPU-bound on the single-core CI runner; kept in the slow lane (make test-slow).
@@ -432,7 +432,7 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
     assert list(env_cfg.terminations) == ["time_out", "tilt", "base_height"]
     assert env_cfg.terminations["time_out"].time_out is True
     assert env_cfg.terminations["tilt"].func is g1_terms.g1_tilt_exceeded
-    assert env_cfg.terminations["base_height"].func is mdp.root_height_below_minimum
+    assert env_cfg.terminations["base_height"].func is g1_terms.g1_base_height_below_minimum
 
     assert tuple(name for name, term in env_cfg.events.items() if term is not None) == (
         expected_events
