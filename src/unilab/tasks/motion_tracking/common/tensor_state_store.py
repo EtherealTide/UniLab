@@ -196,8 +196,12 @@ class TensorDeviceStateStore:
             # One tracked-sensor read refreshes all injected frame sensors.
             self.backend.get_sensor_view(f"track_pos_w_{self.body_names[0]}", device=self.device)
             if rows is not None:
-                self.linvel[rows] = self._device_linvel_view.index_select(0, rows)
-                self.gyro[rows] = self._device_gyro_view.index_select(0, rows)
+                linvel_view = self._device_linvel_view
+                gyro_view = self._device_gyro_view
+                if linvel_view is None or gyro_view is None:
+                    raise RuntimeError("scalar sensor views were not negotiated before row read")
+                self.linvel[rows] = linvel_view.index_select(0, rows)
+                self.gyro[rows] = gyro_view.index_select(0, rows)
 
         self.qpos = state_views["qpos"]
         self.qvel = state_views["qvel"]
