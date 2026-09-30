@@ -15,6 +15,7 @@ back silently.
 from __future__ import annotations
 
 import gc
+from collections.abc import Callable
 from time import perf_counter
 from typing import Any, Mapping
 
@@ -25,7 +26,7 @@ from unisim.backend.base import SimBackend, TensorExecution, tensor_device_match
 from unilab.base.backend_factory import create_backend, env_backend_kwargs
 from unilab.base.base import ABEnv, EnvPlayCapabilities
 from unilab.base.cpu_runtime import apply_env_cpu_runtime
-from unilab.base.entity import EntityCfg
+from unilab.base.entity import BodyStateCopyFn, EntityCfg
 from unilab.base.torch_env import TorchEnv, TorchEnvState
 from unilab.envs.manager_based_rl_env import (
     ManagerBasedRlEnv,
@@ -101,6 +102,12 @@ _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V2 = (
     "6838841dfebc4d64ddaec3a2fcf123b29f28f858b397495a5bf2680f00af1b60"
 )
 _TORCH_G1_SAC_OWNER_IDENTITY_V1 = "90236c9e02e460817208b6a8e14f614ae4d2a797f16d1a5bfd0d306f4059d385"
+# Mapped IsaacSim physical names are namespace-equivalent to the local G1 owner:
+# every local body/joint/sensor name is prefixed by the declared physical
+# entity. No equation, noise, reward, termination, or lifecycle value changes.
+_TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V1 = (
+    "200bc8c9c6fcc58f1f16066ad2beecd10de83ee52ce59e69b0b192c1dfe0bd86"
+)
 _TORCH_G1_FLIP_SAC_OWNER_IDENTITY_V1 = (
     "764e0d5061654c52b3658bb8b074684773f531167a958c8c7c57f467c5b5e784"
 )
@@ -113,6 +120,7 @@ def _validate_torch_g1_flashsac_owner_contract(cfg: ManagerBasedRlEnvCfg) -> Non
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V2,
         _TORCH_G1_SAC_OWNER_IDENTITY_V1,
         _TORCH_G1_FLIP_SAC_OWNER_IDENTITY_V1,
+        _TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V1,
     }:
         raise ValueError(
             "Torch G1 tensor runtime supports only canonical owner contracts; "
@@ -240,8 +248,105 @@ class _DeviceResidentColdContractProxy(ManagerBasedRlEnv):
     scene construction for contract extraction, but has no hot read lifecycle.
     """
 
+    _suppress_hot_state_refresh = True
+    _original_bind_body_state_copy: Callable[..., BodyStateCopyFn] | None = None
+    _original_bind_sensor_data: Callable[..., Any] | None = None
+
+    def _enter_suppressed_hot_state_refresh(self) -> None:
+        self._suppress_device_resident_hot_reads()
+
+    def _exit_suppressed_hot_state_refresh(self) -> None:
+        robot = self.scene.get("robot")
+        if robot is not None and self._original_bind_body_state_copy is not None:
+            bind_body_state_copy = self._original_bind_body_state_copy
+            object.__setattr__(robot, "bind_body_state_copy", bind_body_state_copy)
+        self._original_bind_body_state_copy = None
+        if self._original_bind_sensor_data is not None:
+            bind_sensor_data = self._original_bind_sensor_data
+            object.__setattr__(self.scene, "bind_sensor_data", bind_sensor_data)
+            self._original_bind_sensor_data = None
+        if robot is not None:
+            robot.data._state_read_cache.invalidate()
+            robot.data._state_read_cache._active = False
+
     def _compile_tensor_read_plan(self) -> None:
         self.scene._tensor_read_plan = None
+
+    def _suppress_device_resident_hot_reads(self) -> None:
+        """Construct the next Manager/Command with body reads replaced by defaults.
+
+        Some cold terms still need NumPy buffers sized like robot state (for
+        example the motion loader's relative-transform initialization).  This
+        cold proxy does not create a hidden CPU read plane: selected bodies are
+        seeded from the backend's immutable public entity defaults, after which
+        the direct CUDA runtime performs the first authoritative state read.
+        """
+        if self.scene is None:
+            raise RuntimeError("cold proxy scene was not constructed")
+        robot = self.scene.get("robot")
+        if robot is None or getattr(robot, "_physical_entity", None) is None:
+            return
+        original = robot.bind_body_state_copy
+        defaults = robot.data.default_root_state
+        body_count = len(robot.body_names) if robot.body_names is not None else 0
+        shape = (self.num_envs, body_count, 3)
+        pos = np.empty(shape, dtype=np.float32)
+        quat = np.ones((self.num_envs, body_count, 4), dtype=np.float32)
+        lin_vel = np.zeros(shape, dtype=np.float32)
+        ang_vel = np.zeros(shape, dtype=np.float32)
+        if defaults is not None:
+            pos[:] = np.broadcast_to(defaults[:, None, 0:3], shape)
+            quat[:] = np.broadcast_to(defaults[:, None, 3:7], (self.num_envs, body_count, 4))
+
+        def _copy_default_body_state(*outputs: np.ndarray) -> tuple[np.ndarray, ...]:
+            for source, destination in zip((pos, quat, lin_vel, ang_vel), outputs, strict=True):
+                destination[...] = source
+            return outputs
+
+        self._original_bind_body_state_copy = original
+        object.__setattr__(robot, "bind_body_state_copy", lambda _ids: _copy_default_body_state)
+        default_joint_pos = robot.data.default_joint_pos
+        default_joint_vel = robot.data.default_joint_vel
+        joint_cache = robot.data._state_read_cache
+        joint_cache._active = True  # noqa: SLF001 - cold proxy owns this scoped phase
+        joint_cache._values[("dof_pos", None)] = np.broadcast_to(
+            default_joint_pos, (self.num_envs, default_joint_pos.shape[1])
+        )
+        joint_cache._values[("dof_vel", None)] = np.zeros(
+            (self.num_envs, default_joint_vel.shape[1]), dtype=default_joint_vel.dtype
+        )
+        self._suppress_named_sensor_views(robot)
+
+    def _suppress_named_sensor_views(self, robot: Any) -> None:
+        """Serve named-sensor cold materialization from immutable defaults."""
+        from unisim.backend.base import BackendSensorView
+
+        sensor_map = getattr(self._backend, "_sensor_map", None)
+        if not isinstance(sensor_map, Mapping):
+            return
+        physical = robot._physical_entity  # noqa: SLF001 - task-owned entity prefix
+        available = set(sensor_map)
+        entries = [
+            (f"{physical}/{name}", width)
+            for name, width in (("pelvis_local_linvel", 3), ("torso_gyro", 3))
+            if f"{physical}/{name}" in available
+        ]
+        if not entries:
+            return
+        batch = np.zeros((self.num_envs, sum(width for _, width in entries)), dtype=np.float32)
+
+        def _read_default_sensors() -> np.ndarray:
+            return batch
+
+        view = BackendSensorView(
+            backend_type=self._backend.backend_type,
+            names=tuple(name for name, _ in entries),
+            dimensions=tuple(width for _, width in entries),
+            num_envs=self.num_envs,
+            _reader=_read_default_sensors,
+        )
+        self._original_bind_sensor_data = self.scene.bind_sensor_data
+        object.__setattr__(self.scene, "bind_sensor_data", lambda _names: view)
 
 
 class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
@@ -333,8 +438,13 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
         # term to be CUDA-tensor-native; the direct runtime owns all hot tensors
         # on ``self.device``.
         saved_tensor_runtime = (cfg.tensor_runtime, cfg.tensor_runtime_device)
+        # Temporarily clear every tensor opt-in that ManagerBasedRlEnvCfg
+        # validates as a coherent CUDA request. The proxy extracts only cold
+        # contracts; DEVICE_RESIDENT backends compile no tensor read plan.
+        saved_isaacsim_cuda_ipc = cfg.isaacsim_tensor_cuda_ipc
         cfg.tensor_runtime = False
         cfg.tensor_runtime_device = "cpu"
+        cfg.isaacsim_tensor_cuda_ipc = False
         self._cpu_env: ManagerBasedRlEnv | None = None
         proxy_type = (
             _DeviceResidentColdContractProxy
@@ -376,6 +486,7 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
             if self._cpu_env is not None:
                 self._cpu_env.close()
             cfg.tensor_runtime, cfg.tensor_runtime_device = saved_tensor_runtime
+            cfg.isaacsim_tensor_cuda_ipc = saved_isaacsim_cuda_ipc
             raise
         # The proxy compiled no packed reads, so this drop is enough to detach
         # any generic tensor-read terms from the cold-path proxy.
@@ -388,6 +499,7 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
                 self._cpu_env.reset(seed=self._initial_seed)
         finally:
             cfg.tensor_runtime, cfg.tensor_runtime_device = saved_tensor_runtime
+            cfg.isaacsim_tensor_cuda_ipc = saved_isaacsim_cuda_ipc
         del self._cpu_env
         self._episode_metrics = TensorEpisodeMetrics.create(self._num_envs, self.device)
 
@@ -592,6 +704,12 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
         self._joint_qvel_ids = np.asarray(
             self._backend.get_joint_state_qvel_indices(robot.joint_names), dtype=np.int64
         )
+        self._joint_qpos_ids_tensor = self._torch.as_tensor(
+            self._joint_qpos_ids, device=self.device
+        )
+        self._joint_qvel_ids_tensor = self._torch.as_tensor(
+            self._joint_qvel_ids, device=self.device
+        )
         target_ids = np.asarray(cpu_action._target_ids, dtype=np.int64)
         local_actuators = np.asarray(robot._joint_to_actuator_local, dtype=np.int64)[target_ids]
         self._action_to_actuator = np.asarray(robot._actuator_ids, dtype=np.int64)[local_actuators]
@@ -620,18 +738,7 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
             device=self.device,
             dtype=torch.int64,
         )
-        undesired_names = (
-            "pelvis",
-            "left_hip_roll_link",
-            "left_knee_link",
-            "right_hip_roll_link",
-            "right_knee_link",
-            "torso_link",
-            "left_shoulder_roll_link",
-            "left_elbow_link",
-            "right_shoulder_roll_link",
-            "right_elbow_link",
-        )
+        undesired_names = tuple(self._reward_terms["undesired_contacts"].params["body_names"])
         self._undesired_ids = torch.tensor(
             [self._body_names.index(name) for name in undesired_names],
             device=self.device,
@@ -1167,6 +1274,13 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
         root_quat = _quat_mul(_euler_xyz_quat(pose[:, 3], pose[:, 4], pose[:, 5]), motion[3][:, 0])
         root_lin_vel = motion[4][:, 0] + velocity[:, :3]
         root_ang_vel = motion[5][:, 0] + velocity[:, 3:]
+        # Motion datasets may be float64 while every negotiated backend state
+        # view is float32. Normalize at the selected-reset source so no hidden
+        # destination/device conversion occurs after construction.
+        root_pos = root_pos.to(self._dtype)
+        root_quat = root_quat.to(self._dtype)
+        root_lin_vel = root_lin_vel.to(self._dtype)
+        root_ang_vel = root_ang_vel.to(self._dtype)
         joint_range = self._command_cfg.params.joint_position_range
         joint_noise_scale = float(joint_range[1] - joint_range[0])
         joint_noise = torch.rand(
@@ -1174,20 +1288,22 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
             device=self.device,
             generator=self._rng,
         ) * joint_noise_scale + float(joint_range[0])
-        joint_pos = motion[0] + joint_noise
-        joint_pos = joint_pos.clamp(self._soft_limits[:, 0], self._soft_limits[:, 1])
+        joint_pos = (motion[0] + joint_noise).to(self._dtype)
+        joint_pos = joint_pos.clamp(self._soft_limits[:, 0], self._soft_limits[:, 1]).to(
+            self._dtype
+        )
         qpos_view = self._qpos
         qvel_view = self._qvel
         if qpos_view is None or qvel_view is None:
             raise RuntimeError("Torch G1 FlashSAC selected reset requires initialized state views")
-        qpos = qpos_view.index_select(0, rows).clone()
-        qvel = qvel_view.index_select(0, rows).clone()
+        qpos = qpos_view.index_select(0, rows).clone().to(self._dtype)
+        qvel = qvel_view.index_select(0, rows).clone().to(self._dtype)
         qpos[:, :3] = root_pos
         qpos[:, 3:7] = root_quat
-        qpos[:, self._joint_qpos_ids] = joint_pos
+        qpos.index_copy_(1, self._joint_qpos_ids_tensor, joint_pos)
         qvel[:, :3] = root_lin_vel
         qvel[:, 3:6] = root_ang_vel
-        qvel[:, self._joint_qvel_ids] = motion[1]
+        qvel.index_copy_(1, self._joint_qvel_ids_tensor, motion[1].to(self._dtype))
         if not _all_finite(qpos, qvel):
             raise ValueError("Torch G1 FlashSAC reset qpos/qvel contain NaN or Inf")
         qpos_view[rows] = qpos

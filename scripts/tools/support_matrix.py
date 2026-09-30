@@ -26,6 +26,7 @@ BACKENDS: tuple[str, ...] = tuple(get_tensor_platform_profiles())
 _ISSUE_GATED_CANDIDATE_CONFIGS = frozenset(
     {
         "src/unilab/conf/flashsac/task/g1_motion_tracking/isaacgym.yaml",
+        "src/unilab/conf/flashsac/task/g1_motion_tracking/isaacsim.yaml",
     }
 )
 

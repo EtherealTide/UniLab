@@ -4,6 +4,9 @@
 # play transfers 1:1. Requires unisim-core>=1.7.4: the worker consumes the
 # MJCF kinematics contract and publishes exact post-reset FK body state
 # (unilabsim/unisim#141, PR #145), which motion tracking reads every step.
+# This owner deliberately remains on the legacy raw-MJCF NumPy wire: its
+# TensorExecution stays UNSUPPORTED. Only the FlashSAC mapped entity owner
+# opts into CUDA IPC (#1771).
 # The legacy raw-MJCF path declares an empty DR capability set (fail-closed),
 # so the MuJoCo owner's reset model-field terms and the interval velocity push
 # all stay disabled here. Eval injects the render intent before the IsaacSim

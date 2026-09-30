@@ -56,6 +56,18 @@ def test_flashsac_motrix_owner_uses_task_host_bridge_runtime() -> None:
     assert factory is module.make_torch_g1_motion_tracking_flashsac_env
 
 
+def test_torch_owner_fingerprint_accepts_mapped_isaacsim_namespaced_owner() -> None:
+    """Mapped physical names are namespace-equivalent, not a semantic change."""
+    cfg = _materialize_task("g1_motion_tracking/isaacsim")
+    assert cfg.tensor_runtime is True
+    assert cfg.isaacsim_tensor_cuda_ipc is True
+    assert cfg.scene is not None
+    assert cfg.scene.entity_assets
+    assert module._torch_g1_flashsac_owner_identity(cfg) == (
+        module._TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V1
+    )
+
+
 def test_reusable_tensor_runtime_accepts_second_g1_manager_owner() -> None:
     cfg = _materialize_task("g1_motion_tracking/mjwarp_tensor", algo="sac")
     assert cfg.tensor_runtime is True

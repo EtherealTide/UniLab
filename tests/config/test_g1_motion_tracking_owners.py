@@ -14,7 +14,6 @@ from unilab.envs import ManagerBasedRlEnvCfg
 
 CONF_DIR = Path(__file__).parents[2] / "src" / "unilab" / "conf"
 ROOT_DIR = Path(__file__).parents[2]
-ISAACSIM_TENSOR_FIXTURE_DIR = ROOT_DIR / "tests" / "fixtures" / "isaacsim_g1_tensor_cuda_ipc"
 
 
 def _compose_sac(task: str):
@@ -44,14 +43,8 @@ def _stand_key_values(path: Path) -> tuple[list[float], list[float]]:
     )
 
 
-def _compose_isaacsim_tensor_fixture():
-    base = _compose_flashsac("g1_motion_tracking/mujoco")
-    overlay = OmegaConf.load(ISAACSIM_TENSOR_FIXTURE_DIR / "isaacsim_candidate_overlay.yaml")
-    # The production MuJoCo owner is struct mode; a fixture overlay may add
-    # backend-only fields exactly as a Hydra child owner would.
-    OmegaConf.set_struct(base, False)
-    base.merge_with(overlay)
-    return base
+def _compose_isaacsim_tensor_owner():
+    return _compose_flashsac("g1_motion_tracking/isaacsim")
 
 
 def _structural_robot_signature(path: Path) -> bytes:
@@ -212,8 +205,8 @@ def test_sac_g1_motion_tracking_isaacsim_disables_unsupported_dr() -> None:
     assert all(term is None for term in cfg.env.events.values())
 
 
-def test_flashsac_g1_motion_tracking_isaacsim_opts_into_cuda_ipc_candidate() -> None:
-    cfg = _compose_isaacsim_tensor_fixture()
+def test_flashsac_g1_motion_tracking_isaacsim_uses_production_mapped_cuda_ipc_owner() -> None:
+    cfg = _compose_isaacsim_tensor_owner()
     assert cfg.training.sim_backend == "isaacsim"
     assert cfg.env.tensor_runtime is True
     assert cfg.env.isaacsim_tensor_cuda_ipc is True
@@ -245,30 +238,31 @@ def test_flashsac_g1_motion_tracking_isaacsim_opts_into_cuda_ipc_candidate() -> 
         == "robot/pelvis_local_linvel"
     )
 
-    fixture_robot = ROOT_DIR / str(scene.entity_assets[0].source.model_file)
+    mapped_robot = ROOT_DIR / str(scene.entity_assets[0].source.model_file)
     canonical_robot = ROOT_DIR / "src/unilab/assets/robots/g1/g1.xml"
     canonical_qpos, canonical_ctrl = _stand_key_values(
         ROOT_DIR / "src/unilab/assets/robots/g1/scene_flat.xml"
     )
-    mapped_qpos, mapped_ctrl = _stand_key_values(fixture_robot)
+    mapped_qpos, mapped_ctrl = _stand_key_values(mapped_robot)
     assert mapped_qpos == canonical_qpos
     assert mapped_ctrl == canonical_ctrl
-    assert _structural_robot_signature(fixture_robot) == _structural_robot_signature(
-        canonical_robot
-    )
+    assert _structural_robot_signature(mapped_robot) == _structural_robot_signature(canonical_robot)
     assert list(scene.entity_assets[0].initial_state.position) == [0.0, 0.0, mapped_qpos[2]]
 
 
-def test_isaacsim_tensor_candidate_stays_outside_production_owner_discovery() -> None:
+def test_isaacsim_production_owner_uses_registered_assets_not_test_fixtures() -> None:
     production_owner = ROOT_DIR / "src/unilab/conf/flashsac/task/g1_motion_tracking/isaacsim.yaml"
+    assert production_owner.is_file()
 
-    assert not production_owner.exists()
-    assert (ISAACSIM_TENSOR_FIXTURE_DIR / "isaacsim_candidate_overlay.yaml").is_file()
-    assert (ISAACSIM_TENSOR_FIXTURE_DIR / "g1_stand_entity.xml").is_file()
+    text = production_owner.read_text(encoding="utf-8")
+    assert "tests/fixtures/" not in text
+    assert "src/unilab/assets/robots/g1/isaacsim/g1_stand_entity.xml" in text
+    assert (ROOT_DIR / "src/unilab/assets/robots/g1/isaacsim/g1_stand_entity.xml").is_file()
+    assert (ROOT_DIR / "src/unilab/assets/robots/g1/isaacsim/flat_floor_entity.xml").is_file()
 
 
-def test_isaacsim_tensor_fixture_materializes_into_manager_config() -> None:
-    owner_cfg = _compose_isaacsim_tensor_fixture()
+def test_isaacsim_mapped_owner_materializes_into_manager_config() -> None:
+    owner_cfg = _compose_isaacsim_tensor_owner()
     override = BackendAdapter(
         owner_cfg, root_dir=ROOT_DIR, algo_name="flashsac"
     ).build_task_env_cfg_override()
