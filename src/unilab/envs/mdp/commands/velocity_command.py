@@ -123,13 +123,22 @@ class UniformVelocityCommand(CommandTerm):
         """IMU sensors used by per-step command tracking metrics."""
         return ("pelvis_local_linvel", "torso_gyro")
 
+    # Backend-local aliases for the optional packed metric read. Go2 scenes
+    # expose ``local_linvel``/``gyro`` while G1 exposes the canonical names.
+    packed_sensor_aliases = {
+        "pelvis_local_linvel": ("pelvis_local_linvel", "local_linvel"),
+        "torso_gyro": ("torso_gyro", "gyro"),
+    }
+
     def _metric_velocities(self) -> tuple[torch.Tensor, torch.Tensor]:
         read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
         names = self.tensor_sensor_names
-        if read_plan is not None and set(names).issubset(
-            read_plan.sensor_names.get(self.cfg.entity_name, ())
-        ):
+        packed = read_plan.sensor_names.get(self.cfg.entity_name, ()) if read_plan else ()
+        # The scene pack negotiates backend-local aliases (Go2 ``local_linvel``/
+        # ``gyro``) but the semantic metric remains the canonical IMU contract.
+        if len(names) == 2 and names[0] in packed and names[1] in packed:
             entity = self._env.scene[self.cfg.entity_name]
+            assert read_plan is not None
             views = read_plan.sensor_tensor_views(entity, names).values
             return views[names[0]], views[names[1]]
         # HOST_BRIDGE owners use their public entity facade. This is an

@@ -574,14 +574,15 @@ class ManagerBasedRlEnv(TorchEnv):
     def _command_tensor_read_specs(self) -> list[SceneTensorReadSpec]:
         """Collect optional command-term reads for the packed phase."""
         specs: list[SceneTensorReadSpec] = []
-        narrow = (
-            self._backend.get_tensor_capabilities().execution is TensorExecution.DEVICE_RESIDENT
-        )
-        allowed = _DEVICE_RESIDENT_TENSOR_SENSORS.get(
-            self._backend.backend_type,
-            {"pelvis_local_linvel", "torso_gyro", "torso_upvector"},
-        )
+        capabilities = self._backend.get_tensor_capabilities()
+        narrow = capabilities.execution is TensorExecution.DEVICE_RESIDENT
+        command_cfgs = self._cfg.commands or {}
         for name in self.command_manager.active_terms:
+            command_cfg = command_cfgs.get(name)
+            if command_cfg is None:
+                raise KeyError(
+                    f"Manager command term '{name}' has no ManagerBasedRlEnvCfg declaration"
+                )
             sensor_names = getattr(self.command_manager.get_term(name), "tensor_sensor_names", None)
             if sensor_names is None:
                 continue
@@ -594,10 +595,21 @@ class ManagerBasedRlEnv(TorchEnv):
                 )
             names = tuple(sensor_names)
             if narrow:
+                allowed = _DEVICE_RESIDENT_TENSOR_SENSORS.get(
+                    self._backend.backend_type,
+                    {"pelvis_local_linvel", "torso_gyro", "torso_upvector"},
+                )
                 names = tuple(sensor_name for sensor_name in names if sensor_name in allowed)
+            elif not capabilities.packed_host_bridge:
+                continue
+            names = self._resolve_host_bridge_sensor_names(
+                self.command_manager.get_term(name),
+                tuple(sensor_names),
+                "command",
+                name,
+            )
             if not names:
                 continue
-            command_cfg = self._cfg.commands.get(name) if self._cfg.commands else None
             entity_name = getattr(command_cfg, "entity_name", "robot") if command_cfg else "robot"
             specs.append(
                 SceneTensorReadSpec(
@@ -606,6 +618,66 @@ class ManagerBasedRlEnv(TorchEnv):
                 )
             )
         return specs
+
+    def _resolve_host_bridge_sensor_names(
+        self,
+        term: Any,
+        requested: tuple[str, ...],
+        manager_name: str,
+        term_name: str,
+    ) -> tuple[str, ...]:
+        """Negotiate optional packed reads against available named sensors.
+
+        Optional ``tensor_sensor_names`` describe a device-plane optimization,
+        not the semantic term contract. A HOST_BRIDGE packet must contain only
+        backend-native sensor names (Go2 exposes ``local_linvel`` while G1
+        exposes ``pelvis_local_linvel``), so unavailable names retain their
+        validated public host-carrier implementation.
+        """
+        aliases = getattr(term, "packed_sensor_aliases", None)
+        if aliases is None:
+            return requested
+        if not isinstance(aliases, Mapping) or any(
+            not isinstance(canonical, str)
+            or not canonical
+            or not isinstance(local_names, (tuple, list))
+            or any(not isinstance(local_name, str) or not local_name for local_name in local_names)
+            for canonical, local_names in aliases.items()
+        ):
+            raise TypeError(
+                f"ManagerBasedRlEnv packed sensor declaration for {manager_name} term "
+                f"'{term_name}' must map canonical names to sequences of names; "
+                f"got {aliases!r}"
+            )
+        candidates = tuple(dict.fromkeys(name for alias in aliases.values() for name in alias))
+        available = self._available_entity_sensors(candidates)
+        resolved: list[str] = []
+        for name in requested:
+            if name in resolved:
+                continue
+            for local_name in aliases.get(name, (name,)):
+                if local_name in resolved:
+                    continue
+                if local_name in available:
+                    resolved.append(local_name)
+                    break
+        return tuple(resolved)
+
+    def _available_entity_sensors(self, names: tuple[str, ...]) -> set[str]:
+        """Resolve requested names through the public cold-path sensor binding."""
+        available: set[str] = set()
+        for name in names:
+            try:
+                self._backend.get_sensor_data(name)
+            except KeyError:
+                continue
+            except (TypeError, ValueError, NotImplementedError, AttributeError) as exc:
+                raise type(exc)(
+                    "Manager packed sensor negotiation on backend "
+                    f"'{self._backend.backend_type}': {exc}"
+                ) from exc
+            available.add(name)
+        return available
 
     @staticmethod
     def _term_tensor_read_specs(

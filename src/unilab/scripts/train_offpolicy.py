@@ -21,7 +21,6 @@ from uni_rl.ipc.dp_launcher import (
     DpRankSupervisor,
     apply_dp_rank_config,
     current_dp_rank,
-    rank_local_cuda_device,
     resolve_collector_cpu_ids,
     resolve_dp_rank_device,
     resolve_dp_rendezvous_path,
@@ -62,6 +61,17 @@ from unilab.visualization.interactive_playback import (
     default_device,
     resolve_play_obs_dims,
 )
+
+
+def _rank_local_cuda_device() -> str | None:
+    """Resolve local ``cuda:0`` without requiring a new sibling API export."""
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return None
+    entries = tuple(entry.strip() for entry in raw.split(",") if entry.strip())
+    return "cuda:0" if len(entries) == 1 else None
+
+
 from unilab.visualization.interactive_playback import (
     build_offpolicy_env_cfg_override as _build_offpolicy_env_cfg_override,
 )
@@ -120,8 +130,9 @@ def build_offpolicy_env_cfg_override(algo_name: str, cfg: DictConfig) -> dict[st
     from unilab.utils.device import get_default_device
 
     rank_device = resolve_dp_rank_device(devices, rank) or get_default_device()
-    if rank_local_cuda_device() is not None:
-        rank_device = rank_local_cuda_device()
+    local_cuda_device = _rank_local_cuda_device()
+    if local_cuda_device is not None:
+        rank_device = local_cuda_device
     return apply_backend_env_device_override(
         base,
         str(cfg.training.sim_backend),
@@ -139,8 +150,9 @@ def build_offpolicy_play_env_cfg_override(algo_name: str, cfg: DictConfig) -> di
     from unilab.utils.device import get_default_device
 
     rank_device = resolve_dp_rank_device(devices, rank) or get_default_device()
-    if rank_local_cuda_device() is not None:
-        rank_device = rank_local_cuda_device()
+    local_cuda_device = _rank_local_cuda_device()
+    if local_cuda_device is not None:
+        rank_device = local_cuda_device
     return apply_backend_env_device_override(
         base,
         str(cfg.training.sim_backend),
@@ -171,8 +183,9 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
     from unilab.utils.device import get_default_device
 
     rank_device = resolve_dp_rank_device(dp_devices, dp_rank) or get_default_device()
-    if rank_local_cuda_device() is not None:
-        rank_device = rank_local_cuda_device()
+    local_cuda_device = _rank_local_cuda_device()
+    if local_cuda_device is not None:
+        rank_device = local_cuda_device
     routed_device_id = resolve_backend_env_device_id(
         str(cfg.training.sim_backend),
         devices=dp_devices,
@@ -473,10 +486,10 @@ def main(cfg: DictConfig) -> None:
     if pinned_device is not None:
         # The process was pinned to its rank GPU; use the in-process index.
         rank_device = pinned_device
-    elif rank_local_cuda_device() is not None:
+    elif _rank_local_cuda_device() is not None:
         # Rank-local visibility is authoritative even before backend-specific
         # binding; every ordinary and spawned rank consumes cuda:0.
-        rank_device = rank_local_cuda_device()
+        rank_device = _rank_local_cuda_device()
 
     # Bind before seed initialization and before any rank-local env/probe is
     # materialized.  ``build_runner`` repeats the binding defensively because
