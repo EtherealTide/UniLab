@@ -484,6 +484,25 @@ class SceneTensorReadPlan:
         capabilities = self._scene._backend.get_tensor_capabilities()
         if getattr(capabilities, "tracked_body_views", False):
             try:
+                # A single requested body needs no four-block column projection;
+                # the per-body canonical sensors are already the exact packed
+                # layout for that body. Use them directly to avoid four extra
+                # gathers on hot termination/reward checks.
+                if len(requested) == 1 and all(
+                    prefix + requested[0] in self._packet
+                    for prefix, _ in _TENSOR_BODY_SENSOR_FIELDS
+                ):
+                    single_fields = {
+                        field: self._packet[prefix + requested[0]]
+                        for field, prefix in _TENSOR_BODY_SENSOR_FIELDS
+                    }
+                    return EntityTensorBodyStateView(
+                        body_names=requested,
+                        pos_w=single_fields["pos_w"].unsqueeze(1),
+                        quat_w=single_fields["quat_w"].unsqueeze(1),
+                        lin_vel_w=single_fields["lin_vel_w"].unsqueeze(1),
+                        ang_vel_w=single_fields["ang_vel_w"].unsqueeze(1),
+                    )
                 backend_views = self._scene._backend.get_tracked_body_views(
                     requested, device=self._device
                 )
