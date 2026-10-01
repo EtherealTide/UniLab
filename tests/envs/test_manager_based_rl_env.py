@@ -624,7 +624,7 @@ class _StateWritingCommand(_Command):
         self._env.scene["robot"].write_joint_state_to_sim(
             np.full((len(env_ids), 1), 0.75, dtype=np.float32),
             np.full((len(env_ids), 1), -0.75, dtype=np.float32),
-            env_ids=env_ids.cpu().numpy(),
+            env_ids=env_ids,
         )
 
 

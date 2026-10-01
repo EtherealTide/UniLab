@@ -416,8 +416,7 @@ class ManagerBasedRlEnv(TorchEnv):
             (num_envs,), self.step_dt, dtype=self._dtype, device=self.device
         )
         self._manual_reset_pending = torch.zeros_like(self.reset_buf)
-        self._all_env_ids_host = np.arange(num_envs, dtype=np.int32)
-        self._all_env_ids_host.setflags(write=False)
+        self._all_env_rows = torch.arange(num_envs, dtype=torch.int64, device=self.device)
         self._has_transition = False
 
         self._load_managers()
@@ -982,10 +981,6 @@ class ManagerBasedRlEnv(TorchEnv):
         """Return the contiguous authoritative Torch control tensor."""
         return self._control
 
-    def _reset_rows_to_manager_boundary(self, rows: torch.Tensor) -> np.ndarray:
-        """Publish validated Torch reset rows to the NumPy Manager host."""
-        return np.array(rows.detach().cpu().numpy(), dtype=np.int32, order="C", copy=True)
-
     def _manager_tensor(self, values: np.ndarray, *, dtype: torch.dtype) -> torch.Tensor:
         """Copy one completed NumPy Manager result across the public Torch boundary."""
         if isinstance(values, torch.Tensor):
@@ -1116,9 +1111,9 @@ class ManagerBasedRlEnv(TorchEnv):
         if self._uses_device_resident_reset(step_read_plan, step_reset_capabilities):
             assert step_read_plan is not None
             self._reset_state.declare_packed_reset_device(step_read_plan.device)
-            step_reset_context = self._reset_state.scoped_device_tensor(self._all_env_ids_host)
+            step_reset_context = self._reset_state.scoped_device_tensor(self._all_env_rows)
         else:
-            step_reset_context = self._reset_state.scoped(self._all_env_ids_host)
+            step_reset_context = self._reset_state.scoped(self._all_env_rows)
         with step_reset_context:
             self.command_manager.compute(dt=self._command_dt)
         if self._reset_state.last_commit_had_writes:
@@ -1174,7 +1169,6 @@ class ManagerBasedRlEnv(TorchEnv):
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
         del options
         rows = self._normalize_reset_indices(env_indices)
-        ids = self._reset_rows_to_manager_boundary(rows)
         if seed is not None:
             self.seed(seed)
         if self._state is None:
@@ -1208,7 +1202,7 @@ class ManagerBasedRlEnv(TorchEnv):
             assert read_plan is not None
             assert read_plan.host_plan is not None
             self._reset_state.declare_packed_reset_device(read_plan.device)
-            reset_context = self._reset_state.scoped_tensor(ids, read_plan.host_plan)
+            reset_context = self._reset_state.scoped_tensor(rows, read_plan.host_plan)
         elif device_resident_reset:
             assert read_plan is not None
             self._reset_state.declare_packed_reset_device(read_plan.device)
@@ -1216,14 +1210,14 @@ class ManagerBasedRlEnv(TorchEnv):
             if tensor_reset_events:
                 reset_context = self._reset_state.scoped_device_event_tensor(rows)
             else:
-                reset_context = self._reset_state.scoped_device_tensor(ids)
+                reset_context = self._reset_state.scoped_device_tensor(rows)
         else:
-            reset_context = self._reset_state.scoped(ids)
+            reset_context = self._reset_state.scoped(rows)
         with reset_context:
             if "reset" in self.event_manager.available_modes:
                 self.event_manager.apply(
                     mode="reset",
-                    env_ids=rows if tensor_reset_events else ids,
+                    env_ids=rows,
                     global_env_step_count=self.step_counter,
                 )
             log.update(self.command_manager.reset(rows))
@@ -1241,12 +1235,12 @@ class ManagerBasedRlEnv(TorchEnv):
 
         self.episode_length_buf[rows] = 0
         if self._reset_state.scene_layout is not None:
-            self._control[ids] = self._initial_backend_control()[ids]
+            self._control[rows] = self._initial_backend_control()[rows]
         else:
-            self._control[ids] = 0.0
+            self._control[rows] = 0.0
         self._manual_reset_pending[rows] = False
         if self._state is not None:
-            self._state.info["steps"][ids] = 0
+            self._state.info["steps"][rows] = 0
 
         # The read phase starts only after the reset-state transaction above
         # committed, so cached getter values are post-set_state reads shared

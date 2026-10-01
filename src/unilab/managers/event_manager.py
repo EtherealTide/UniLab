@@ -133,15 +133,15 @@ class EventManager(ManagerBase):
                 return self._mode_term_cfgs[mode][index]
         raise ValueError(f"Event term '{term_name}' not found in active terms.")
 
-    def reset(self, env_ids: np.ndarray | None = None):
+    def reset(self, env_ids: torch.Tensor | None = None):
         for mode_cfg in self._mode_class_term_cfgs.values():
             for term_cfg in mode_cfg:
                 term_cfg.func.reset(env_ids=env_ids)
         if env_ids is None:
             num_envs = self._env.num_envs
-            ids: np.ndarray | slice = slice(None)
+            ids: torch.Tensor | slice = torch.arange(num_envs, device=self._device)
         else:
-            num_envs = len(env_ids)
+            num_envs = env_ids.numel()
             ids = env_ids
         # Iterate the full interval term list: _interval_term_time_left is parallel
         # to _mode_term_cfgs["interval"], not the class-only subset.
@@ -159,7 +159,7 @@ class EventManager(ManagerBase):
     def apply(
         self,
         mode: EventMode,
-        env_ids: np.ndarray | slice | None = None,
+        env_ids: torch.Tensor | slice | None = None,
         dt: float | None = None,
         global_env_step_count: int | None = None,
     ):
@@ -207,8 +207,8 @@ class EventManager(ManagerBase):
                         )
                         term_cfg.func(self._env, None, **term_cfg.params)
                 else:
-                    valid_env_ids = np.flatnonzero(time_left < 1e-6)
-                    if len(valid_env_ids) > 0:
+                    valid_env_ids = torch.nonzero(time_left < 1e-6, as_tuple=False).flatten()
+                    if valid_env_ids.numel() > 0:
                         assert term_cfg.interval_range_s is not None
                         lower, upper = term_cfg.interval_range_s
                         sampled_time = self._env.rng.uniform(lower, upper, len(valid_env_ids))
@@ -237,11 +237,9 @@ class EventManager(ManagerBase):
                     steps_since_triggered = global_env_step_count - last_triggered_step
                     valid_trigger = steps_since_triggered >= min_step_count
                     valid_trigger |= (last_triggered_step == 0) & ~triggered_at_least_once
-                    if isinstance(env_ids, np.ndarray):
-                        valid_env_ids = env_ids[valid_trigger]
-                    else:
-                        valid_env_ids = np.flatnonzero(valid_trigger)
-                    if len(valid_env_ids) > 0:
+                    assert isinstance(env_ids, torch.Tensor)
+                    valid_env_ids = env_ids[valid_trigger]
+                    if valid_env_ids.numel() > 0:
                         self._reset_term_last_triggered_once[index][valid_env_ids] = True
                         self._reset_term_last_triggered_step_id[index][valid_env_ids] = (
                             global_env_step_count

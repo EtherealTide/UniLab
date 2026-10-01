@@ -170,7 +170,7 @@ class ResetStateTransaction:
         return self._last_set_state_timing_ms
 
     @contextmanager
-    def scoped(self, env_ids: np.ndarray) -> Iterator[ResetStateTransaction]:
+    def scoped(self, env_ids: torch.Tensor) -> Iterator[ResetStateTransaction]:
         """Begin a reset transaction and commit it only after all terms succeed."""
         self.begin(env_ids)
         try:
@@ -183,7 +183,7 @@ class ResetStateTransaction:
 
     @contextmanager
     def scoped_tensor(
-        self, env_ids: np.ndarray, host_plan: HostBridgeTransferPlan
+        self, env_ids: torch.Tensor, host_plan: HostBridgeTransferPlan
     ) -> Iterator[ResetStateTransaction]:
         """Begin a packed tensor reset and commit it only after terms succeed."""
         self.begin(env_ids)
@@ -203,7 +203,7 @@ class ResetStateTransaction:
         self._packed_reset_device = resolved
 
     @contextmanager
-    def scoped_device_tensor(self, env_ids: np.ndarray) -> Iterator[ResetStateTransaction]:
+    def scoped_device_tensor(self, env_ids: torch.Tensor) -> Iterator[ResetStateTransaction]:
         """Begin a device-resident reset and commit it only after terms succeed."""
         self.begin(env_ids)
         try:
@@ -241,7 +241,7 @@ class ResetStateTransaction:
             return True
         return self._packed_reset_widths_match()
 
-    def begin(self, env_ids: np.ndarray) -> None:
+    def begin(self, env_ids: torch.Tensor) -> None:
         """Open a transaction for the concrete reset environment IDs."""
         if self._active:
             raise RuntimeError("ManagerBased reset-state transaction is already active")
@@ -2147,27 +2147,37 @@ class ResetStateTransaction:
             )
         return result
 
-    def _validate_ids(self, env_ids: np.ndarray, *, capability: str) -> np.ndarray:
-        if not isinstance(env_ids, np.ndarray):
-            raise TypeError(
-                f"ManagerBased reset-state {capability} env_ids must be np.ndarray, "
-                f"got {type(env_ids).__name__}"
-            )
-        if (
-            env_ids.ndim != 1
-            or not np.issubdtype(env_ids.dtype, np.integer)
-            or np.issubdtype(env_ids.dtype, np.bool_)
+    def _validate_ids(self, env_ids: torch.Tensor, *, capability: str) -> np.ndarray:
+        if not isinstance(env_ids, torch.Tensor):
+            if not isinstance(env_ids, np.ndarray):
+                raise TypeError(
+                    f"ManagerBased reset-state {capability} env_ids must be torch.Tensor, "
+                    f"got {type(env_ids).__name__}"
+                )
+            if env_ids.ndim != 1:
+                raise TypeError(
+                    f"ManagerBased reset-state {capability} env_ids must be a 1-D integer "
+                    f"tensor, got shape={env_ids.shape}"
+                )
+            env_ids = torch.from_numpy(np.ascontiguousarray(env_ids, dtype=np.int64))
+        if env_ids.ndim != 1 or env_ids.dtype not in (
+            torch.int8,
+            torch.int16,
+            torch.int32,
+            torch.int64,
+            torch.uint8,
         ):
             raise TypeError(
                 f"ManagerBased reset-state {capability} env_ids must be a 1-D integer "
-                f"np.ndarray, got shape={env_ids.shape}, dtype={env_ids.dtype}"
+                f"tensor, got shape={tuple(env_ids.shape)}, dtype={env_ids.dtype}"
             )
-        ids = np.asarray(env_ids, dtype=np.int32)
-        if np.any(ids < 0) or np.any(ids >= self._num_envs):
+        rows = env_ids.to(dtype=torch.int64)
+        if rows.numel() and not bool(((rows >= 0) & (rows < self._num_envs)).all()):
             raise IndexError(
                 f"ManagerBased reset-state {capability} env_ids out of range for "
-                f"{self._num_envs} environments: {ids.tolist()}"
+                f"{self._num_envs} environments: {rows.tolist()}"
             )
+        ids = rows.detach().cpu().numpy().astype(np.int32, copy=False)
         # Duplicate check via bincount instead of np.unique: identical semantics
         # (ids are already range-checked above) but avoids the sort — ~30x faster
         # at num_envs=4096 and ~4x at typical partial-reset widths. This runs on
