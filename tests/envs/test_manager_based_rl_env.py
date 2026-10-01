@@ -715,29 +715,29 @@ class _NamedSensorTensorObservation:
 
 def _policy_obs(env: _TestEnv) -> np.ndarray:
     return np.column_stack(
-        (env.episode_length_buf.astype(np.float32), env.action_manager.action[:, 0])
+        (env.episode_length_buf.to(torch.float32), env.action_manager.action[:, 0])
     )
 
 
 def _critic_obs(env: _TestEnv) -> np.ndarray:
-    return env.episode_length_buf[:, None].astype(np.float32)
+    return env.episode_length_buf[:, None].to(torch.float32)
 
 
 def _tensor_runtime_policy_obs(env: _TestEnv) -> torch.Tensor:
     return torch.column_stack(
         (
-            torch.asarray(env.episode_length_buf, dtype=torch.float32, device=env.device),
+            env.episode_length_buf.to(dtype=torch.float32, device=env.device),
             env.action_manager.action[:, 0],
         )
     )
 
 
 def _tensor_runtime_critic_obs(env: _TestEnv) -> torch.Tensor:
-    return torch.asarray(env.episode_length_buf[:, None], dtype=torch.float32, device=env.device)
+    return env.episode_length_buf[:, None].to(dtype=torch.float32, device=env.device)
 
 
 def _episode_step_observation(env: ManagerBasedRlEnv) -> np.ndarray:
-    return env.episode_length_buf[:, None].astype(np.float32)
+    return env.episode_length_buf[:, None].to(torch.float32)
 
 
 def _reward(env: _TestEnv) -> np.ndarray:
@@ -776,7 +776,7 @@ def _time_out(env: _TestEnv) -> np.ndarray:
 
 
 def _metric(env: _TestEnv) -> np.ndarray:
-    return env.episode_length_buf.astype(np.float32)
+    return env.episode_length_buf.to(torch.float32)
 
 
 def _curriculum(env: _TestEnv, env_ids: np.ndarray | slice) -> float:
@@ -931,7 +931,7 @@ def test_manager_public_inputs_and_episode_counters_are_tensor_first() -> None:
     values = torch.tensor([2, 3], dtype=torch.int64)
     env.set_episode_length_buf(values)
     torch.testing.assert_close(env.state.info["steps"], values)
-    np.testing.assert_array_equal(env.episode_length_buf, values)
+    torch.testing.assert_close(env.episode_length_buf, values)
     env.close()
 
 
@@ -1608,7 +1608,7 @@ def test_torch_env_owns_substeps_autoreset_and_final_observation() -> None:
     assert int(initial_steps.min()) >= 0
     assert int(initial_steps.max()) < 50
     assert torch.any(initial_steps != 0)
-    np.testing.assert_array_equal(env.episode_length_buf, initial_steps.cpu().numpy())
+    torch.testing.assert_close(env.episode_length_buf, initial_steps)
     assert not hasattr(env, "_dr_manager")
 
     # A production initial state is staggered; align this deterministic
@@ -1665,7 +1665,7 @@ def test_initial_episode_steps_are_seeded_and_staggered() -> None:
             steps = initial.info["steps"]
             assert steps.dtype == torch.int64
             assert int(steps.min()) >= 0 and int(steps.max()) < 50
-            np.testing.assert_array_equal(env.episode_length_buf, steps.cpu().numpy())
+            torch.testing.assert_close(env.episode_length_buf, steps)
             assert torch.any(steps != 0)
         torch.testing.assert_close(first._initial_episode_steps(), second._initial_episode_steps())
         assert bool(torch.any(first._initial_episode_steps() != 0))

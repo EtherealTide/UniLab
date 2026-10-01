@@ -405,7 +405,7 @@ class ManagerBasedRlEnv(TorchEnv):
 
         self.common_step_counter = 0
         self._sim_step_counter = 0
-        self.episode_length_buf = np.zeros(num_envs, dtype=np.int64)
+        self.episode_length_buf = torch.zeros(num_envs, dtype=torch.int64, device=self.device)
         self.reset_buf = torch.zeros(num_envs, dtype=torch.bool, device=self.device)
         self.reset_terminated = torch.zeros_like(self.reset_buf)
         self.reset_time_outs = torch.zeros_like(self.reset_buf)
@@ -416,8 +416,8 @@ class ManagerBasedRlEnv(TorchEnv):
             (num_envs,), self.step_dt, dtype=self._dtype, device=self.device
         )
         self._manual_reset_pending = torch.zeros_like(self.reset_buf)
-        self._all_env_ids = np.arange(num_envs, dtype=np.int32)
-        self._all_env_ids.setflags(write=False)
+        self._all_env_ids_host = np.arange(num_envs, dtype=np.int32)
+        self._all_env_ids_host.setflags(write=False)
         self._has_transition = False
 
         self._load_managers()
@@ -1022,7 +1022,7 @@ class ManagerBasedRlEnv(TorchEnv):
         initial_steps = self._last_initial_episode_steps
         self._last_initial_episode_steps = None
         state.info["steps"].copy_(initial_steps)
-        self.episode_length_buf = self._tensor_steps_to_manager_boundary(state)
+        self.episode_length_buf.copy_(state.info["steps"])
         self.reward_buf = np.zeros(self.num_envs, dtype=get_global_dtype())
         self.extras = state.info
         return state
@@ -1073,7 +1073,7 @@ class ManagerBasedRlEnv(TorchEnv):
         state.info["log"] = log
         self.extras = state.info
 
-        self.episode_length_buf = self._tensor_steps_to_manager_boundary(state) + 1
+        self.episode_length_buf.copy_(state.info["steps"]).add_(1)
         self.common_step_counter = self.step_counter + 1
         self._sim_step_counter = self.common_step_counter * self._cfg.sim_substeps
 
@@ -1116,9 +1116,9 @@ class ManagerBasedRlEnv(TorchEnv):
         if self._uses_device_resident_reset(step_read_plan, step_reset_capabilities):
             assert step_read_plan is not None
             self._reset_state.declare_packed_reset_device(step_read_plan.device)
-            step_reset_context = self._reset_state.scoped_device_tensor(self._all_env_ids)
+            step_reset_context = self._reset_state.scoped_device_tensor(self._all_env_ids_host)
         else:
-            step_reset_context = self._reset_state.scoped(self._all_env_ids)
+            step_reset_context = self._reset_state.scoped(self._all_env_ids_host)
         with step_reset_context:
             self.command_manager.compute(dt=self._command_dt)
         if self._reset_state.last_commit_had_writes:
@@ -1166,14 +1166,6 @@ class ManagerBasedRlEnv(TorchEnv):
         del state
         return torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
 
-    def _tensor_steps_to_manager_boundary(self, state: TorchEnvState) -> np.ndarray:
-        return np.array(
-            state.info["steps"].detach().cpu().numpy(),
-            dtype=np.int64,
-            order="C",
-            copy=True,
-        )
-
     def reset(
         self,
         env_indices: torch.Tensor | None = None,
@@ -1196,15 +1188,7 @@ class ManagerBasedRlEnv(TorchEnv):
             self._reset_manager_state(rows)
             return state.obs, {"log": state.info.get("log", {})}
 
-        if isinstance(self.reset_buf, np.ndarray):
-            done_ids = ids[self.reset_buf[ids]]
-        else:
-            done_ids = np.asarray(ids)[
-                self.reset_buf[torch.as_tensor(ids, device=self.reset_buf.device)]
-                .detach()
-                .cpu()
-                .numpy()
-            ]
+        done_ids = rows[self.reset_buf[rows]].detach().cpu().numpy()
         if self._has_transition and len(done_ids) > 0:
             self.recorder_manager.record_pre_reset(done_ids)
 
@@ -1256,22 +1240,12 @@ class ManagerBasedRlEnv(TorchEnv):
         ):
             log.update(manager.reset(ids))
 
-        episode_rows = (
-            ids
-            if isinstance(self.episode_length_buf, np.ndarray)
-            else torch.as_tensor(ids, device=self.episode_length_buf.device)
-        )
-        self.episode_length_buf[episode_rows] = 0
+        self.episode_length_buf[rows] = 0
         if self._reset_state.scene_layout is not None:
             self._control[ids] = self._initial_backend_control()[ids]
         else:
             self._control[ids] = 0.0
-        pending_rows = (
-            ids
-            if isinstance(self._manual_reset_pending, np.ndarray)
-            else torch.as_tensor(ids, device=self._manual_reset_pending.device)
-        )
-        self._manual_reset_pending[pending_rows] = False
+        self._manual_reset_pending[rows] = False
         if self._state is not None:
             self._state.info["steps"][ids] = 0
 
@@ -1317,14 +1291,9 @@ class ManagerBasedRlEnv(TorchEnv):
             if not self._autoreset_reset_active:
                 self._state.terminated[rows] = False
                 self._state.truncated[rows] = False
-                flag_rows = (
-                    ids
-                    if isinstance(self.reset_buf, np.ndarray)
-                    else torch.as_tensor(ids, device=self.reset_buf.device)
-                )
-                self.reset_buf[flag_rows] = False
-                self.reset_terminated[flag_rows] = False
-                self.reset_time_outs[flag_rows] = False
+                self.reset_buf[rows] = False
+                self.reset_terminated[rows] = False
+                self.reset_time_outs[rows] = False
         if not self.obs_buf or set(self.obs_buf) != set(mapped_obs):
             self.obs_buf = mapped_obs
         else:
@@ -1397,8 +1366,7 @@ class ManagerBasedRlEnv(TorchEnv):
             )
         if bool((values < 0).any()):
             raise ValueError("episode length counters must be non-negative")
-        host_values = np.array(values.detach().cpu().numpy(), dtype=np.int64, copy=True)
-        np.copyto(self.episode_length_buf, host_values)
+        self.episode_length_buf.copy_(values)
         if self._state is not None:
             self._state.info["steps"].copy_(values)
 
