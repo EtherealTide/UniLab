@@ -440,6 +440,7 @@ class _GaitRewardTerm(_SensorTerm):
                 f"{self._feet_pos.dimensions} on backend '{self._feet_pos.backend_type}'"
             )
         self._linvel = self._bind(("pelvis_local_linvel",))
+        self._phase_inputs_view = self._bind((*_FOOT_POS_SENSORS, "pelvis_local_linvel"))
 
     @property
     def tensor_sensor_names(self) -> tuple[str, ...]:
@@ -470,24 +471,52 @@ class _GaitRewardTerm(_SensorTerm):
         forward_speed = np.maximum(linvel[:, 0], 0.0)
         return np.asarray(forward_speed >= self._min_forward_speed, dtype=get_global_dtype())
 
+    def _gate_from_forward_speed(
+        self, forward_speed: np.ndarray | torch.Tensor
+    ) -> np.ndarray | torch.Tensor:
+        if isinstance(forward_speed, torch.Tensor):
+            positive_speed = torch.clamp(forward_speed, min=0.0)
+            return (positive_speed >= self._min_forward_speed).to(dtype=torch.float32)
+        positive_speed = np.maximum(forward_speed, 0.0)
+        return np.asarray(positive_speed >= self._min_forward_speed, dtype=get_global_dtype())
+
+    def _phase_reward_inputs(
+        self, env: _G1Env
+    ) -> tuple[
+        np.ndarray | torch.Tensor,
+        np.ndarray | torch.Tensor,
+        np.ndarray | torch.Tensor,
+        np.ndarray | torch.Tensor,
+        np.ndarray | torch.Tensor,
+    ]:
+        """Read foot height, forward speed, and both height targets in one call."""
+        values = self._read_state_tensor(
+            env,
+            "foot position and pelvis linear velocity",
+            (self._phase_inputs_view, (*_FOOT_POS_SENSORS, "pelvis_local_linvel")),
+            (self.num_envs, 9),
+        )
+        phase = _advance_gait(env, self._context)
+        left_target, right_target = compute_feet_phase_height_targets(phase, self._swing_height)
+        if isinstance(values, torch.Tensor):
+            if not isinstance(left_target, torch.Tensor):
+                left_target = torch.as_tensor(left_target, device=values.device)
+                right_target = torch.as_tensor(right_target, device=values.device)
+            return values[:, 2], values[:, 5], values[:, 6], left_target, right_target
+        return values[:, 2], values[:, 5], values[:, 6], left_target, right_target
+
 
 class feet_phase(_GaitRewardTerm):
     """Reward gait phase tracking by encouraging the expected swing-foot height."""
 
     def __call__(self, env: _G1Env, **params: Any) -> np.ndarray | torch.Tensor:
         del params
-        left_target, right_target = self._targets(env)
-        left_height, right_height = self._foot_heights(env)
-        if isinstance(left_height, torch.Tensor) or isinstance(left_target, torch.Tensor):
-            source = left_height if isinstance(left_height, torch.Tensor) else left_target
-            device = source.device
-            left_height = torch.as_tensor(left_height, device=device, dtype=torch.float32)
-            right_height = torch.as_tensor(right_height, device=device, dtype=torch.float32)
-            left_target = torch.as_tensor(left_target, device=device, dtype=torch.float32)
-            right_target = torch.as_tensor(right_target, device=device, dtype=torch.float32)
+        left_height, right_height, forward_speed, left_target, right_target = (
+            self._phase_reward_inputs(env)
+        )
         error = _square(left_height - left_target) + _square(right_height - right_target)
         reward = _exp(-error / self._tracking_sigma)
-        return _values(reward * self._gate(env))
+        return _values(reward * self._gate_from_forward_speed(forward_speed))
 
 
 class feet_phase_contrast(_GaitRewardTerm):
