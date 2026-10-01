@@ -1146,10 +1146,11 @@ class PushBySettingVelocity(ManagerTermBase):
         )
         linear_ranges = ranges[:3]
         angular_ranges = ranges[3:]
-        linear_delta = env.rng.uniform(
+        linear_delta = self._host_uniform(
             linear_ranges[:, 0],
             linear_ranges[:, 1],
             size=(ids.size, 3),
+            env=env,
         )
         angular_delta = None
         if np.any(angular_ranges != 0.0):
@@ -1160,10 +1161,11 @@ class PushBySettingVelocity(ManagerTermBase):
                     "capability was never bound; declare non-zero angular ranges in the "
                     "initial params"
                 )
-            angular_delta = env.rng.uniform(
+            angular_delta = self._host_uniform(
                 angular_ranges[:, 0],
                 angular_ranges[:, 1],
                 size=(ids.size, 3),
+                env=env,
             )
         self._entity.apply_root_velocity_delta_to_sim(
             linear_delta,
@@ -1171,6 +1173,22 @@ class PushBySettingVelocity(ManagerTermBase):
             env_ids=ids,
             term_name="push_by_setting_velocity",
         )
+
+    def _host_uniform(
+        self,
+        lower: np.ndarray,
+        upper: np.ndarray,
+        *,
+        size: tuple[int, ...],
+        env: ManagerBasedRlEnv,
+    ) -> np.ndarray:
+        generator = getattr(env, "torch_rng", None)
+        if generator is not None:
+            unit = torch.rand(size, generator=generator, device=generator.device)
+            scale = torch.as_tensor(upper - lower, dtype=unit.dtype, device=unit.device)
+            offset = torch.as_tensor(lower, dtype=unit.dtype, device=unit.device)
+            return (unit * scale + offset).cpu().numpy()
+        return env.rng.uniform(lower, upper, size=size)
 
 
 push_by_setting_velocity = PushBySettingVelocity
