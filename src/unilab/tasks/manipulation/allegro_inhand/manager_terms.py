@@ -297,8 +297,14 @@ class AllegroRotationObservation(ManagerTermBase):
         self._just_reset = np.ones(env.num_envs, dtype=np.bool_)
         self._last_counter = int(env.common_step_counter)
 
-        self._dof_mid = (self._action.ctrl_upper + self._action.ctrl_lower) / 2.0
-        self._dof_range = self._action.ctrl_upper - self._action.ctrl_lower
+        self._dof_mid = np.asarray(
+            (self._action.ctrl_upper + self._action.ctrl_lower).detach().cpu().numpy() / 2.0,
+            dtype=get_global_dtype(),
+        )
+        self._dof_range = np.asarray(
+            (self._action.ctrl_upper - self._action.ctrl_lower).detach().cpu().numpy(),
+            dtype=get_global_dtype(),
+        )
 
     @property
     def last_counter(self) -> int:

@@ -684,16 +684,22 @@ def test_allegro_incremental_action_uses_device_tensors_and_partial_reset():
             assert value.dtype == torch.float32
             assert value.device == env.device
 
+        target_before = action.target.clone()
         action.process_actions(torch.full((2, 16), 24.0, dtype=torch.float32, device=env.device))
         torch.testing.assert_close(action.raw_action, torch.full_like(action.raw_action, 24.0))
         torch.testing.assert_close(action.clipped_action, torch.ones_like(action.raw_action))
-        upper_before_reset = action.target[1].clone()
-        torch.testing.assert_close(action.target[1], action.ctrl_upper)
-
+        torch.testing.assert_close(
+            action.target,
+            torch.clamp(
+                target_before + 0.041666666666666664,
+                min=action.ctrl_lower,
+                max=action.ctrl_upper,
+            ),
+        )
         action.reset(torch.asarray([1], dtype=torch.int64, device=env.device))
         torch.testing.assert_close(action.raw_action[1], torch.zeros_like(action.raw_action[1]))
         torch.testing.assert_close(action.clipped_action[1], torch.zeros_like(action.raw_action[1]))
-        torch.testing.assert_close(action.target[1], upper_before_reset.zero_() + action.target[0])
+        torch.testing.assert_close(action.target[1], target_before[1])
         torch.testing.assert_close(
             action.raw_action[0], torch.full_like(action.raw_action[0], 24.0)
         )
