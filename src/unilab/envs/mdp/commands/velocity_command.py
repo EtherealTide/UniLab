@@ -213,31 +213,62 @@ class UniformVelocityCommand(CommandTerm):
         assert tensor is not None
         rows = env_ids
         host_ids = env_ids.detach().cpu().numpy()
-        rng = self._env.rng
         ranges = self.cfg.ranges
         samples = torch.empty((count, 3), dtype=torch.float32, device=self._device)
         for column, bounds in enumerate((ranges.lin_vel_x, ranges.lin_vel_y, ranges.ang_vel_z)):
-            host = rng.uniform(bounds[0], bounds[1], size=count)
-            samples[:, column] = torch.as_tensor(host, dtype=torch.float32, device=self._device)
+            samples[:, column] = self._sample_uniform(bounds[0], bounds[1], count)
         if self.cfg.heading_command:
             assert ranges.heading is not None
-            self.heading_target[host_ids] = rng.uniform(*ranges.heading, size=count)
+            self.heading_target[host_ids] = self._host_uniform(
+                *ranges.heading, count=count, dtype=get_global_dtype()
+            )
             self.is_heading_env[host_ids] = (
-                rng.uniform(0.0, 1.0, size=count) <= self.cfg.rel_heading_envs
+                self._host_uniform(0.0, 1.0, count=count, dtype=np.float32)
+                <= self.cfg.rel_heading_envs
             )
         self.is_standing_env[host_ids] = (
-            rng.uniform(0.0, 1.0, size=count) <= self.cfg.rel_standing_envs
+            self._host_uniform(0.0, 1.0, count=count, dtype=np.float32)
+            <= self.cfg.rel_standing_envs
         )
-        self.is_world_env[host_ids] = rng.uniform(0.0, 1.0, size=count) <= self.cfg.rel_world_envs
+        self.is_world_env[host_ids] = (
+            self._host_uniform(0.0, 1.0, count=count, dtype=np.float32) <= self.cfg.rel_world_envs
+        )
         self.vel_command_w[host_ids] = self.vel_command_b[host_ids]
         self.is_forward_env[host_ids] = (
-            rng.uniform(0.0, 1.0, size=count) <= self.cfg.rel_forward_envs
+            self._host_uniform(0.0, 1.0, count=count, dtype=np.float32) <= self.cfg.rel_forward_envs
         )
         if bool(self.is_forward_env[host_ids].any()):
             forward = rows[self.is_forward_env[host_ids]]
             tensor[forward, 0] = torch.clamp(tensor[forward, 0].abs(), min=0.3)
             tensor[forward, 1:] = 0.0
         tensor.index_copy_(0, rows, samples)
+
+    def _sample_uniform(self, lower: float, upper: float, count: int) -> torch.Tensor:
+        generator = getattr(self._env, "torch_rng", None)
+        if generator is not None:
+            return torch.rand((count,), generator=generator, device=generator.device) * float(
+                upper - lower
+            ) + float(lower)
+        return torch.as_tensor(
+            self._env.rng.uniform(lower, upper, count),
+            dtype=torch.float32,
+            device=self._device,
+        )
+
+    def _host_uniform(self, lower: float, upper: float, *, count: int, dtype: Any) -> np.ndarray:
+        generator = getattr(self._env, "torch_rng", None)
+        if generator is not None:
+            return (
+                (
+                    torch.rand((count,), generator=generator, device=generator.device)
+                    * float(upper - lower)
+                    + float(lower)
+                )
+                .cpu()
+                .numpy()
+                .astype(dtype, copy=False)
+            )
+        return self._env.rng.uniform(lower, upper, count).astype(dtype, copy=False)
 
     def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
         del env_ids
