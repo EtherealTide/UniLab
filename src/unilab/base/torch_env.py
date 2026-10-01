@@ -407,10 +407,8 @@ class TorchEnv(ABEnv):
         self._validate_vector(steps, "info['steps']", torch.int64)
         self._validate_final_observation(state.final_observation)
         if finite_checks:
-            finite = torch.stack([torch.isfinite(value).all() for value, _ in finite_checks])
-            if not bool(finite.all()):
-                for value, label in finite_checks:
-                    self._validate_finite_float(value, label)
+            for value, label in finite_checks:
+                self._validate_finite_float(value, label)
 
     def _validate_vector(self, value: Any, label: str, dtype: torch.dtype) -> None:
         if not isinstance(value, torch.Tensor):
