@@ -462,7 +462,7 @@ def test_allegro_grasp_recorder_saves_target_and_raises_run_complete(
 
     monkeypatch.setattr(grasp_gen.np, "save", save_once)
     with pytest.raises(RunComplete) as caught:
-        recorder.record_pre_reset(np.arange(3, dtype=np.int32))
+        recorder.record_pre_reset(torch.arange(3, dtype=torch.int64))
 
     expected = np.concatenate(
         (states[:, :16], term.observation.ball_pos, states[:, 19:23]), axis=1, dtype=np.float32
@@ -504,7 +504,7 @@ def test_allegro_grasp_recorder_close_autosaves_and_io_failure_is_fail_closed(
     )
     recorder = grasp_gen.AllegroGraspRecorder(cfg, cast(Any, env))
     env.reset_terminated[1] = True
-    recorder.record_pre_reset(np.array([0, 1], dtype=np.int32))
+    recorder.record_pre_reset(torch.tensor([0, 1], dtype=torch.int64))
     assert recorder.total_saved_grasps == 1
     assert not cache_path.exists()
     recorder.close()
@@ -526,7 +526,7 @@ def test_allegro_grasp_recorder_close_autosaves_and_io_failure_is_fail_closed(
         grasp_gen.np, "save", lambda *_args, **_kwargs: (_ for _ in ()).throw(sentinel)
     )
     with pytest.raises(OSError) as caught:
-        failed.record_pre_reset(np.array([0], dtype=np.int32))
+        failed.record_pre_reset(torch.tensor([0], dtype=torch.int64))
     assert caught.value is sentinel
     assert failed.cache_saved is False
 

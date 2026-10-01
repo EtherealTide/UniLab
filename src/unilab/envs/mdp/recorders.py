@@ -1,10 +1,10 @@
-"""Reusable recorder terms for the NumPy Manager-Based runtime."""
+"""Reusable recorder terms for the Manager-Based tensor runtime."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import numpy as np
+import torch
 
 from unilab.managers.recorder_manager import RecorderTerm, RecorderTermCfg
 
@@ -21,10 +21,10 @@ class LifecycleCounterRecorder(RecorderTerm):
         self.post_reset_count = 0
         self.post_step_count = 0
 
-    def record_pre_reset(self, env_ids: np.ndarray) -> None:
+    def record_pre_reset(self, env_ids: torch.Tensor) -> None:
         self.pre_reset_count += int(len(env_ids))
 
-    def record_post_reset(self, env_ids: np.ndarray) -> None:
+    def record_post_reset(self, env_ids: torch.Tensor) -> None:
         self.post_reset_count += int(len(env_ids))
 
     def record_post_step(self) -> None:

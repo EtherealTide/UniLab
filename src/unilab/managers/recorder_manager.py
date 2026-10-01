@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import numpy as np
+import torch
 from prettytable import PrettyTable
 
 from unilab.managers.manager_base import ManagerBase, ManagerTermBase, ManagerTermBaseCfg
@@ -44,7 +44,7 @@ class RecorderTerm(ManagerTermBase):
           self._file = open(cfg.params["path"], "w", newline="")
           self._writer = csv.writer(self._file)
 
-        def record_pre_reset(self, env_ids):
+        def record_pre_reset(self, env_ids: torch.Tensor):
           # Terminal transition: action is still intact here.
           # It will be zeroed by _reset_idx immediately after this returns.
           obs = self._env.obs_buf["actor"][env_ids]
@@ -69,7 +69,7 @@ class RecorderTerm(ManagerTermBase):
         super().__init__(env)  # ManagerTermBase only accepts env
         self.cfg = cfg
 
-    def record_pre_reset(self, env_ids: np.ndarray) -> None:
+    def record_pre_reset(self, env_ids: torch.Tensor) -> None:
         """Called in ``env.step()`` before terminated environments are reset.
 
         **What is available:**
@@ -94,7 +94,7 @@ class RecorderTerm(ManagerTermBase):
         """
         del env_ids  # Unused in base implementation.
 
-    def record_post_reset(self, env_ids: np.ndarray) -> None:
+    def record_post_reset(self, env_ids: torch.Tensor) -> None:
         """Called after a reset completes with fresh observations computed.
 
         Fires at the end of ``env.reset()`` (covering all environments on the initial call)
@@ -191,12 +191,12 @@ class RecorderManager(ManagerBase):
             msg = f"No recorder term named '{name}'. Active terms: {self.active_terms}"
             raise KeyError(msg) from None
 
-    def record_pre_reset(self, env_ids: np.ndarray) -> None:
+    def record_pre_reset(self, env_ids: torch.Tensor) -> None:
         """Forward to each term's :meth:`RecorderTerm.record_pre_reset`."""
         for term in self._terms.values():
             term.record_pre_reset(env_ids)
 
-    def record_post_reset(self, env_ids: np.ndarray) -> None:
+    def record_post_reset(self, env_ids: torch.Tensor) -> None:
         """Forward to each term's :meth:`RecorderTerm.record_post_reset`."""
         for term in self._terms.values():
             term.record_post_reset(env_ids)
@@ -254,10 +254,10 @@ class NullRecorderManager:
         msg = "NullRecorderManager has no terms."
         raise KeyError(msg)
 
-    def record_pre_reset(self, env_ids: np.ndarray) -> None:
+    def record_pre_reset(self, env_ids: torch.Tensor) -> None:
         del env_ids
 
-    def record_post_reset(self, env_ids: np.ndarray) -> None:
+    def record_post_reset(self, env_ids: torch.Tensor) -> None:
         del env_ids
 
     def record_post_step(self) -> None:

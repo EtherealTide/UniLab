@@ -215,11 +215,11 @@ class TraceRecorder(RecorderTerm):
         super().__init__(cfg, env)
         self.events: list[tuple[str, list[int] | None]] = []
 
-    def record_pre_reset(self, env_ids: np.ndarray) -> None:
-        self.events.append(("pre", env_ids.tolist()))
+    def record_pre_reset(self, env_ids: torch.Tensor) -> None:
+        self.events.append(("pre", env_ids.detach().cpu().tolist()))
 
-    def record_post_reset(self, env_ids: np.ndarray) -> None:
-        self.events.append(("post_reset", env_ids.tolist()))
+    def record_post_reset(self, env_ids: torch.Tensor) -> None:
+        self.events.append(("post_reset", env_ids.detach().cpu().tolist()))
 
     def record_post_step(self) -> None:
         self.events.append(("step", None))
@@ -231,7 +231,7 @@ class TraceRecorder(RecorderTerm):
 def test_recorder_lifecycle_and_null(fake_env: FakeEnv) -> None:
     cfg = {"trace": RecorderTermCfg(func=TraceRecorder)}
     manager = RecorderManager(cfg, fake_env)
-    ids = np.array([0, 3])
+    ids = torch.tensor([0, 3], dtype=torch.int64)
     manager.record_pre_reset(ids)
     manager.record_post_reset(ids)
     manager.record_post_step()
@@ -254,7 +254,7 @@ def test_lifecycle_counter_recorder_is_task_independent(fake_env: FakeEnv) -> No
         fake_env,
     )
     recorder = manager.get_term("counter")
-    ids = np.asarray([0, 3], dtype=np.int32)
+    ids = torch.tensor([0, 3], dtype=torch.int64)
 
     manager.record_pre_reset(ids)
     manager.record_post_reset(ids)
