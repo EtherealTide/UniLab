@@ -75,16 +75,18 @@ the `mjwarp` extra. The command above matches the gated CUDA CI profile. CI
 materializes the same siblings with Python 3.11 and uv 0.12.5; those are the
 reference versions even though the package supports a wider Python range.
 
-Pin the process to one physical GPU before any `uv run` command:
+On a host with one visible GPU, no `CUDA_VISIBLE_DEVICES` mask is required.
+The automatic single-device topology binds the learner, collector, MJWarp
+physics, inference ring, and replay ingress to the same current CUDA device.
+Set the variable only to select one physical GPU on a multi-GPU host or to
+preserve a launcher/debug/MPS mask:
 
 ```bash
 export CUDA_VISIBLE_DEVICES=<single-host-cuda-ordinal>
 ```
 
-All CUDA ordinals inside trainer processes are relative to this mask. With one
-visible GPU, the off-policy launcher's automatic single-device topology binds
-the learner, collector, MJWarp physics, inference ring, and replay ingress to
-the same `cuda:0` namespace. Do not add more devices: M11 is single-GPU only.
+All CUDA ordinals inside trainer processes are relative to that mask. Do not
+add more devices: M11 is single-GPU only.
 
 Check the runtime that will execute the benchmark:
 

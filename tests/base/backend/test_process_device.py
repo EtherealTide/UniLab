@@ -105,6 +105,23 @@ def test_explicit_single_device_fallback_routes_backend_payload(
     assert resolve_backend_env_device_id(backend_type, learner_device="cuda:1") == 1
 
 
+def test_single_gpu_mjwarp_process_binding_needs_no_visibility_mask(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    warp = _FakeWarp()
+    monkeypatch.setattr(
+        mjwarp_runtime,
+        "load_mjwarp_dependencies",
+        lambda: SimpleNamespace(warp=warp),
+    )
+
+    resolved = configure_backend_process_device("mjwarp", "cuda:0")
+
+    assert resolved == "cuda:0"
+    assert warp.set_calls == ["cuda:0"]
+
+
 @pytest.mark.parametrize("backend_type", ["isaacgym", "isaacsim", "genesis", "newton"])
 def test_multi_visible_rank_fails_closed(
     backend_type: str,

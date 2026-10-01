@@ -71,16 +71,17 @@ make check-workspace
 CUDA CI profile 一致。CI 使用 Python 3.11 与 uv 0.12.5 物化同一组 sibling；
 虽然包支持更宽的 Python 范围，这两个版本是参考版本。
 
-在任何 `uv run` 前绑定一块物理 GPU：
+只可见一块 GPU 的主机无需设置 `CUDA_VISIBLE_DEVICES`。自动单设备拓扑会把
+learner、collector、MJWarp 物理后端、inference ring 与 replay ingress 绑定到
+同一个当前 CUDA 设备。只有在多 GPU 主机上选择一块物理 GPU，或需要保留
+launcher/debug/MPS 掩码时才设置该变量：
 
 ```bash
 export CUDA_VISIBLE_DEVICES=<single-host-cuda-ordinal>
 ```
 
-trainer 进程内所有 CUDA ordinal 都相对于该 mask。只暴露一块 GPU 时，
-off-policy launcher 的自动单设备拓扑会把 learner、collector、MJWarp 物理、
-inference ring 与 replay ingress 绑定到同一个 `cuda:0` namespace。不要添加
-更多设备：M11 仅覆盖单 GPU。
+trainer 进程内所有 CUDA ordinal 都相对于该 mask。不要添加更多设备：M11 仅
+覆盖单 GPU。
 
 检查实际执行 benchmark 的 runtime：
 
