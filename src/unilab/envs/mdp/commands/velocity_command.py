@@ -65,6 +65,11 @@ class UniformVelocityCommand(CommandTerm):
 
         self.robot = cast("Entity", env.scene[cfg.entity_name])
         dtype = get_global_dtype()
+        self._tensor_command = (
+            torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self._device)
+            if self._device.type == "cuda"
+            else None
+        )
         self.vel_command_b = np.zeros((self.num_envs, 3), dtype=dtype)
         self.vel_command_w = np.zeros_like(self.vel_command_b)
         self.heading_target = np.zeros(self.num_envs, dtype=dtype)
@@ -116,6 +121,9 @@ class UniformVelocityCommand(CommandTerm):
 
     @property
     def command(self) -> np.ndarray:
+        tensor = getattr(self, "_tensor_command", None)
+        if tensor is not None:
+            return tensor
         return self.vel_command_b
 
     @property
@@ -153,7 +161,7 @@ class UniformVelocityCommand(CommandTerm):
         del env_ids  # Metrics accumulate over all rows on every compute.
         max_command_steps = self.cfg.resampling_time_range[1] / self._env.step_dt
         lin_vel, ang_vel = self._metric_velocities()
-        command = torch.as_tensor(self.vel_command_b, device=lin_vel.device)
+        command = torch.as_tensor(self.command, device=lin_vel.device)
         errors = torch.stack(
             (
                 torch.linalg.vector_norm(command[:, :2] - lin_vel[:, :2], dim=-1),
@@ -166,6 +174,10 @@ class UniformVelocityCommand(CommandTerm):
         self.metrics["error_vel_yaw"] += errors[:, 1]
 
     def _resample_command(self, env_ids: np.ndarray) -> None:
+        tensor = getattr(self, "_tensor_command", None)
+        if tensor is not None:
+            self._resample_tensor_command(env_ids)
+            return
         count = len(env_ids)
         rng = self._env.rng
         ranges = self.cfg.ranges
@@ -193,6 +205,37 @@ class UniformVelocityCommand(CommandTerm):
                 np.abs(self.vel_command_b[forward_ids, 0]), 0.3
             )
             self.vel_command_b[forward_ids, 1:] = 0.0
+
+    def _resample_tensor_command(self, env_ids: np.ndarray) -> None:
+        count = len(env_ids)
+        tensor = self._tensor_command
+        assert tensor is not None
+        rows = torch.as_tensor(np.asarray(env_ids), dtype=torch.int64, device=self._device)
+        rng = self._env.rng
+        ranges = self.cfg.ranges
+        samples = torch.empty((count, 3), dtype=torch.float32, device=self._device)
+        for column, bounds in enumerate((ranges.lin_vel_x, ranges.lin_vel_y, ranges.ang_vel_z)):
+            host = rng.uniform(bounds[0], bounds[1], size=count)
+            samples[:, column] = torch.as_tensor(host, dtype=torch.float32, device=self._device)
+        if self.cfg.heading_command:
+            assert ranges.heading is not None
+            self.heading_target[env_ids] = rng.uniform(*ranges.heading, size=count)
+            self.is_heading_env[env_ids] = (
+                rng.uniform(0.0, 1.0, size=count) <= self.cfg.rel_heading_envs
+            )
+        self.is_standing_env[env_ids] = (
+            rng.uniform(0.0, 1.0, size=count) <= self.cfg.rel_standing_envs
+        )
+        self.is_world_env[env_ids] = rng.uniform(0.0, 1.0, size=count) <= self.cfg.rel_world_envs
+        self.vel_command_w[env_ids] = self.vel_command_b[env_ids]
+        self.is_forward_env[env_ids] = (
+            rng.uniform(0.0, 1.0, size=count) <= self.cfg.rel_forward_envs
+        )
+        if bool(self.is_forward_env[env_ids].any()):
+            forward = rows[self.is_forward_env[env_ids]]
+            tensor[forward, 0] = torch.clamp(tensor[forward, 0].abs(), min=0.3)
+            tensor[forward, 1:] = 0.0
+        tensor.index_copy_(0, rows, samples)
 
     def _update_command(self, env_ids: np.ndarray | None = None) -> None:
         del env_ids
