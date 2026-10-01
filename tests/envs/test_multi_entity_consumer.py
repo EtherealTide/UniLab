@@ -72,9 +72,11 @@ class PositionActionCfg(ActionTermCfg):
 
 
 class PositionAction(ActionTerm):
+    uses_tensor_actions = True
+
     def __init__(self, cfg, env):
         super().__init__(cfg, env)
-        self.values = np.zeros((self.num_envs, 1), dtype=np.float32)
+        self.values = torch.zeros((self.num_envs, 1), dtype=torch.float32)
 
     @property
     def action_dim(self):
@@ -85,10 +87,10 @@ class PositionAction(ActionTerm):
         return self.values
 
     def process_actions(self, actions):
-        self.values[:] = actions
+        self.values.copy_(actions)
 
     def apply_actions(self):
-        self._entity.data.write_ctrl(torch.from_numpy(self.values))
+        self._entity.data.write_ctrl(self.values)
 
 
 def observations(env):
