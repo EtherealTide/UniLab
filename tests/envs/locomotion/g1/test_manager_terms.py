@@ -121,6 +121,43 @@ def test_bezier_targets_match_legacy_reference_values():
     np.testing.assert_array_equal(right_contact, [True, True])
 
 
+def test_gait_rewards_share_phase_without_double_advance():
+    sensors = {
+        "left_foot_pos": np.zeros((2, 3), dtype=np.float32),
+        "right_foot_pos": np.zeros((2, 3), dtype=np.float32),
+        "pelvis_local_linvel": np.ones((2, 1), dtype=np.float32) * 0.1,
+        **{f"left_foot_contact_{i}": np.ones((2, 1)) for i in range(4)},
+        **{f"right_foot_contact_{i}": np.ones((2, 1)) for i in range(4)},
+    }
+    env = _fake_env(sensors)
+    cfg_params = {"frequency": 1.5, "swing_height": 0.09}
+    phase_cfg = RewardTermCfg(
+        func=g1_terms.feet_phase,
+        weight=1.0,
+        params={**cfg_params, "tracking_sigma": 0.008, "command_name": "twist"},
+    )
+    contrast_cfg = RewardTermCfg(
+        func=g1_terms.feet_phase_contrast,
+        weight=1.0,
+        params={**cfg_params, "tracking_sigma": 0.008, "command_name": "twist"},
+    )
+    phase_term = g1_terms.feet_phase(phase_cfg, cast(Any, env))
+    contrast_term = g1_terms.feet_phase_contrast(contrast_cfg, cast(Any, env))
+
+    first = phase_term._targets(cast(Any, env))
+    second = contrast_term._targets(cast(Any, env))
+    env.common_step_counter = 1
+    advanced = phase_term._targets(cast(Any, env))
+    shared = contrast_term._targets(cast(Any, env))
+
+    np.testing.assert_array_equal(first[0], second[0])
+    np.testing.assert_array_equal(first[1], second[1])
+    with np.testing.assert_raises(AssertionError):
+        np.testing.assert_array_equal(first[0], advanced[0])
+    np.testing.assert_array_equal(advanced[0], shared[0])
+    np.testing.assert_array_equal(advanced[1], shared[1])
+
+
 def test_feet_phase_reward_is_gated_by_forward_speed():
     sensors = {
         "left_foot_pos": np.zeros((2, 3), dtype=np.float32),
