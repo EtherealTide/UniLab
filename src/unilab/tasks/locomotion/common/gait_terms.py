@@ -172,11 +172,20 @@ class _FootContactTerm(SensorTermBase):
         return ordered > self._contact_threshold
 
     def _contact(self, env: ManagerBasedRlEnv) -> np.ndarray:
+        return self._contact_feet(env).detach().cpu().numpy()
+
+    def _contact_feet(self, env: ManagerBasedRlEnv) -> torch.Tensor:
         contact = self._contact_values(env)
         if isinstance(contact, torch.Tensor):
-            contact = contact.detach().cpu().numpy()
-        per_foot = [contact[:, columns].any(axis=1) for columns in self._columns]
-        return np.stack(per_foot, axis=1)
+            device = contact.device
+        else:
+            device = getattr(env, "device", torch.device("cpu"))
+            contact = torch.as_tensor(contact, device=device)
+        feet = [
+            contact[:, torch.as_tensor(columns, device=device)].any(dim=1)
+            for columns in self._columns
+        ]
+        return torch.stack(feet, dim=1)
 
 
 class feet_air_time(_FootContactTerm):
@@ -218,32 +227,33 @@ class feet_air_time(_FootContactTerm):
         self._command_threshold = _real(
             self.name, "command_threshold", cfg.params.get("command_threshold", 0.5), minimum=0.0
         )
-        self._air_time = np.zeros((env.num_envs, self.num_feet), dtype=get_global_dtype())
+        self._air_time = torch.zeros(
+            (env.num_envs, self.num_feet), dtype=torch.float32, device=env.device
+        )
 
     def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
         rows = env_ids if env_ids is not None else slice(None)
-        if isinstance(rows, torch.Tensor):
-            air_time = torch.as_tensor(self._air_time)
-            air_time[rows] = 0.0
-            self._air_time = air_time.detach().cpu().numpy()
-        else:
-            self._air_time[rows] = 0.0
+        if isinstance(rows, np.ndarray):
+            rows = torch.from_numpy(rows).to(device=self._air_time.device)
+        self._air_time[rows] = 0.0
 
-    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray:
+    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray | torch.Tensor:
         del params
-        contact = self._contact(env)
+        contact = self._contact_feet(env)
         step_dt = _real(self.name, "step_dt", env.step_dt, minimum=0.0, strict_minimum=True)
-        self._air_time = np.where(contact, 0.0, self._air_time + step_dt).astype(
-            get_global_dtype(), copy=False
+        self._air_time = torch.where(
+            contact, torch.zeros_like(self._air_time), self._air_time + step_dt
         )
-        in_range = (self._air_time > self._threshold_min) & (self._air_time < self._threshold_max)
-        reward = np.sum(in_range.astype(get_global_dtype()), axis=1)
+        reward = torch.sum(
+            (self._air_time > self._threshold_min) & (self._air_time < self._threshold_max),
+            dim=1,
+        ).to(dtype=torch.float32)
         gate = _command_gate(env, self.name, self._command_name, self._command_threshold)
         if gate is not None:
             if isinstance(gate, torch.Tensor):
-                return (torch.as_tensor(reward, device=gate.device) * gate).to(dtype=torch.float32)
-            reward = reward * gate
-        return np.asarray(reward, dtype=get_global_dtype())
+                return reward.to(device=gate.device) * gate
+            return np.asarray(reward.detach().cpu().numpy() * gate, dtype=get_global_dtype())
+        return reward
 
 
 class feet_swing_height(_FootContactTerm):
@@ -471,25 +481,24 @@ class foot_air_time(_FootContactTerm):
 
     def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
-        self._air_time = np.zeros((env.num_envs, self.num_feet), dtype=get_global_dtype())
+        self._air_time = torch.zeros(
+            (env.num_envs, self.num_feet), dtype=torch.float32, device=env.device
+        )
 
     def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
         rows = env_ids if env_ids is not None else slice(None)
-        if isinstance(rows, torch.Tensor):
-            air_time = torch.as_tensor(self._air_time)
-            air_time[rows] = 0.0
-            self._air_time = air_time.detach().cpu().numpy()
-        else:
-            self._air_time[rows] = 0.0
+        if isinstance(rows, np.ndarray):
+            rows = torch.from_numpy(rows).to(device=self._air_time.device)
+        self._air_time[rows] = 0.0
 
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray:
         del params
-        contact = self._contact(env)
+        contact = self._contact_feet(env)
         step_dt = _real(self.name, "step_dt", env.step_dt, minimum=0.0, strict_minimum=True)
-        self._air_time = np.where(contact, 0.0, self._air_time + step_dt).astype(
-            get_global_dtype(), copy=False
+        self._air_time = torch.where(
+            contact, torch.zeros_like(self._air_time), self._air_time + step_dt
         )
-        return self._air_time.copy()
+        return self._air_time.clone()
 
 
 class foot_contact(_FootContactTerm):
