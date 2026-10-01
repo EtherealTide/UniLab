@@ -277,6 +277,7 @@ class SceneTensorReadPlan:
                 for _, prefix in _TENSOR_BODY_SENSOR_FIELDS:
                     self._packet_sensor_owners.setdefault(prefix + body_name, entity_name)
         self._packet: Mapping[str, torch.Tensor] = MappingProxyType({})
+        self._stable_sensor_views: dict[str, torch.Tensor] = {}
         self._refreshed = False
         self._closed = False
 
@@ -547,10 +548,19 @@ class SceneTensorReadPlan:
                 ) from exc
         else:
             try:
-                raw = backend.get_state_views(("qpos", "qvel"), device=self._device)
-                raw = dict(raw)
+                # DEVICE_RESIDENT views alias stable backend storage. Crossing
+                # one named-sensor boundary per phase refreshes adapter-owned
+                # projections; the remaining live views are reusable without a
+                # second Python/DLPack boundary per sensor term.
+                if self._packet_names:
+                    backend.get_sensor_view(self._packet_names[0], device=self._device)
+                raw = dict(backend.get_state_views(("qpos", "qvel"), device=self._device))
                 for name in self._packet_names:
-                    raw[name] = backend.get_sensor_view(name, device=self._device)
+                    view = self._stable_sensor_views.get(name)
+                    if view is None:
+                        view = backend.get_sensor_view(name, device=self._device)
+                        self._stable_sensor_views[name] = view
+                    raw[name] = view
             except (AttributeError, KeyError, TypeError, ValueError, NotImplementedError) as exc:
                 raise type(exc)(
                     "Manager scene device-resident tensor read on backend "
@@ -2437,6 +2447,33 @@ class Entity:
             root_state,
             term_name=f"{self.name}.write_root_state_to_sim",
         )
+
+    def write_root_state_tensor_to_sim(
+        self,
+        root_state: torch.Tensor,
+        env_ids: torch.Tensor | np.ndarray | slice | None = None,
+    ) -> None:
+        """Stage a device-resident 13-D world-frame root state."""
+        if self._physical_entity is not None:
+            raise NotImplementedError(
+                "mapped entity tensor root-state reset requires a public entity transaction"
+            )
+        reset_state, layout = self._require_root_state_write()
+        if isinstance(env_ids, torch.Tensor):
+            reset_state.write_root_state_tensor(
+                env_ids,
+                layout,
+                root_state,
+                term_name=f"{self.name}.write_root_state_tensor_to_sim",
+            )
+        else:
+            resolved_env_ids = self._normalize_reset_env_ids(env_ids)
+            reset_state.write_root_state(
+                resolved_env_ids,
+                layout,
+                root_state.detach().cpu().numpy(),
+                term_name=f"{self.name}.write_root_state_to_sim",
+            )
 
     def bind_actuator_gain_write(
         self,

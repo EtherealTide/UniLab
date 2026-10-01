@@ -115,6 +115,14 @@ class EventManager(ManagerBase):
     def available_modes(self) -> list[EventMode]:
         return list(self._mode_term_names.keys())
 
+    @property
+    def uses_tensor_reset_rows(self) -> bool:
+        """Whether every reset term can consume a device row selector."""
+        return bool(self._mode_term_cfgs.get("reset")) and all(
+            bool(getattr(term_cfg.func, "uses_tensor_rows", False))
+            for term_cfg in self._mode_term_cfgs["reset"]
+        )
+
     # Methods.
 
     def get_term_cfg(self, term_name: str) -> EventTermCfg:
@@ -172,6 +180,17 @@ class EventManager(ManagerBase):
             )
         if mode == "step" and dt is None:
             raise ValueError(f"Event mode '{mode}' requires the time-step of the environment.")
+
+        if mode == "reset" and self.uses_tensor_reset_rows:
+            if any(
+                term_cfg.min_step_count_between_reset for term_cfg in self._mode_term_cfgs["reset"]
+            ):
+                raise NotImplementedError(
+                    "tensor reset-row events do not support min_step_count_between_reset"
+                )
+            for term_cfg in self._mode_term_cfgs["reset"]:
+                term_cfg.func(self._env, env_ids, **term_cfg.params)
+            return
 
         for index, term_cfg in enumerate(self._mode_term_cfgs[mode]):
             if mode == "interval":

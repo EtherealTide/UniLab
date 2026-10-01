@@ -111,12 +111,18 @@ class ResetStateTransaction:
         self._entity_row_index: dict[int, int] = {}
         self._restore_entity_controls = False
         self._active = False
+        self._tensor_active = False
+        self._tensor_has_writes = False
         self._active_mask = np.zeros(self._num_envs, dtype=np.bool_)
         self._dirty_mask = np.zeros(self._num_envs, dtype=np.bool_)
         self._default_qpos: np.ndarray | None = None
         self._default_qvel: np.ndarray | None = None
         self._qpos: np.ndarray | None = None
         self._qvel: np.ndarray | None = None
+        self._tensor_qpos: torch.Tensor | None = None
+        self._tensor_qvel: torch.Tensor | None = None
+        self._tensor_qpos_default: torch.Tensor | None = None
+        self._tensor_qvel_default: torch.Tensor | None = None
         self._default_kp: np.ndarray | None = None
         self._default_kd: np.ndarray | None = None
         self._kp: np.ndarray | None = None
@@ -137,11 +143,15 @@ class ResetStateTransaction:
         self._mocap_values: dict[str, np.ndarray] = {}
         self._mocap_masks: dict[str, np.ndarray] = {}
         self._packed_reset_device: torch.device | None = None
+        self._tensor_rows: torch.Tensor | None = None
+        self._tensor_root_columns: (
+            tuple[tuple[int, ...], tuple[int, ...], torch.Tensor, torch.Tensor] | None
+        ) = None
 
     @property
     def active(self) -> bool:
         """Whether a reset lifecycle currently owns the transaction."""
-        return self._active
+        return self._active or self._tensor_active
 
     @property
     def last_commit_had_writes(self) -> bool:
@@ -204,6 +214,18 @@ class ResetStateTransaction:
         else:
             self.commit_device_tensor()
 
+    @contextmanager
+    def scoped_device_event_tensor(self, env_ids: torch.Tensor) -> Iterator[ResetStateTransaction]:
+        """Begin an owner tensor reset without staging state on the host."""
+        self.begin_tensor(env_ids)
+        try:
+            yield self
+        except BaseException:
+            self.abort()
+            raise
+        else:
+            self.commit_device_tensor()
+
     def can_commit_packed(self, *, term_name: str = "reset") -> bool:
         """Report whether staged widths can use the public packed reset API.
 
@@ -240,7 +262,33 @@ class ResetStateTransaction:
         self._entity_rows = None
         self._entity_row_index.clear()
         self._restore_entity_controls = False
+        self._tensor_qpos = None
+        self._tensor_qvel = None
         self._active = True
+
+    def begin_tensor(self, env_ids: torch.Tensor) -> None:
+        """Open a tensor-native transaction for concrete device row selectors."""
+        if self._active or self._tensor_active:
+            raise RuntimeError("ManagerBased reset-state transaction is already active")
+        device = self._packed_reset_device
+        if device is None:
+            raise RuntimeError(
+                "tensor reset transaction requires its selected device to be declared"
+            )
+        if not isinstance(env_ids, torch.Tensor):
+            raise TypeError("tensor reset transaction requires Torch device row indices")
+        if env_ids.device != device:
+            raise ValueError(
+                "ManagerBased tensor reset env_ids must live on the declared reset device "
+                f"{device}; got {env_ids.device}"
+            )
+        rows = env_ids.to(dtype=torch.int64)
+        self._materialize_tensor_default_state("begin_tensor")
+        self._reset_tensor_staging_rows(rows)
+        self._tensor_rows = rows
+        self._tensor_has_writes = False
+        self._requesting_terms.clear()
+        self._tensor_active = True
 
     def write_entity_state(
         self,
@@ -1046,6 +1094,50 @@ class ResetStateTransaction:
         self.write_root_pose(ids, layout, values[:, :7], term_name=term_name)
         self.write_root_velocity(ids, layout, values[:, 7:], term_name=term_name)
 
+    def write_root_state_tensor(
+        self,
+        env_ids: torch.Tensor,
+        layout: BackendRootStateLayout,
+        root_state: torch.Tensor,
+        *,
+        term_name: str,
+    ) -> None:
+        """Stage a device-resident community 13-D root state for tensor commit."""
+        rows = self._prepare_tensor_state_write(
+            env_ids, capability="write_root_state_tensor", term_name=term_name
+        )
+        if root_state.ndim != 2 or tuple(root_state.shape) != (rows.numel(), 13):
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor root state must have shape "
+                f"{(rows.numel(), 13)}; got {tuple(root_state.shape)}"
+            )
+        if root_state.dtype != torch.float32 or not root_state.is_contiguous():
+            raise TypeError(
+                f"EventManager term '{term_name}' tensor root state must be contiguous float32"
+            )
+        device = self._packed_reset_device
+        if device is None:
+            raise RuntimeError("device tensor reset requires its selected device")
+        if root_state.device != device:
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor root state must live on "
+                f"{device}; got {root_state.device}"
+            )
+        if not bool(torch.isfinite(root_state).all()):
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor root state contains NaN or Inf"
+            )
+        self._validate_tensor_root_quaternions(root_state[:, 3:7], term_name=term_name)
+        qpos = self._tensor_qpos
+        qvel = self._tensor_qvel
+        assert qpos is not None and qvel is not None
+        qpos_columns_t, qvel_columns_t = self._tensor_root_columns_for_layout(
+            layout, term_name=term_name
+        )
+        qpos[rows[:, None], qpos_columns_t[None, :]] = root_state[:, :7]
+        qvel[rows[:, None], qvel_columns_t[None, :]] = root_state[:, 7:13]
+        self._tensor_has_writes = True
+
     def write_root_pose(
         self,
         env_ids: np.ndarray,
@@ -1314,6 +1406,8 @@ class ResetStateTransaction:
         unsupported migration boundaries and fail closed.
         """
         self._require_active()
+        if self._tensor_active:
+            return self._commit_tensor_event()
         capabilities = self._backend.get_tensor_capabilities()
         if capabilities.execution is not TensorExecution.DEVICE_RESIDENT:
             raise NotImplementedError(
@@ -1346,14 +1440,14 @@ class ResetStateTransaction:
                 randomization = self._build_randomization_payload(dirty_ids)
             assert self._qpos is not None
             assert self._qvel is not None
-            rows = torch.from_numpy(dirty_ids.astype(np.int64, copy=True))
-            qpos = torch.from_numpy(np.ascontiguousarray(self._qpos[dirty_ids], dtype=np.float32))
-            qvel = torch.from_numpy(np.ascontiguousarray(self._qvel[dirty_ids], dtype=np.float32))
             device = self._packed_reset_device
             if device is None:
                 raise RuntimeError(
                     "device-resident reset commit requires its selected device to be declared"
                 )
+            rows = torch.from_numpy(dirty_ids.astype(np.int64, copy=True))
+            qpos = torch.from_numpy(np.ascontiguousarray(self._qpos[dirty_ids], dtype=np.float32))
+            qvel = torch.from_numpy(np.ascontiguousarray(self._qvel[dirty_ids], dtype=np.float32))
             rows = rows.to(device=device, non_blocking=False)
             qpos = qpos.to(device=device, non_blocking=False)
             qvel = qvel.to(device=device, non_blocking=False)
@@ -1362,6 +1456,62 @@ class ResetStateTransaction:
                 result = self._backend.set_state_tensor(
                     rows, qpos, qvel, randomization=randomization
                 )
+                timing: dict[str, float] = {
+                    "dr_reset_set_state_ms": (time.perf_counter() - set_state_t0) * 1000.0
+                }
+                if isinstance(result, dict):
+                    backend_timing = result.get("timing")
+                    if isinstance(backend_timing, dict):
+                        timing.update(backend_timing)
+                self._last_set_state_timing_ms = timing
+                return cast(dict | None, result)
+            except (
+                AttributeError,
+                NotImplementedError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                terms = ", ".join(sorted(self._requesting_terms))
+                raise NotImplementedError(
+                    "EventManager reset-state capability 'SimBackend.set_state_tensor' is "
+                    f"unavailable for term(s) [{terms}] on backend "
+                    f"'{self._backend.backend_type}': {exc}"
+                ) from exc
+        finally:
+            self._finish()
+
+    def _commit_tensor_event(self) -> dict | None:
+        """Commit device-staged rows without discovering dirty masks on host."""
+        self._last_commit_had_writes = self._tensor_has_writes
+        try:
+            if not self._tensor_has_writes:
+                return None
+            if self.scene_layout is not None or self._randomization_dirty_masks:
+                raise NotImplementedError(
+                    "tensor reset event commit supports scalar qpos/qvel rows only; mapped "
+                    "entity and randomization writes remain explicit migration boundaries"
+                )
+            capabilities = self._backend.get_tensor_capabilities()
+            if capabilities.execution is not TensorExecution.DEVICE_RESIDENT:
+                raise NotImplementedError(
+                    "device-resident reset commit requires DEVICE_RESIDENT tensor execution; "
+                    f"backend '{self._backend.backend_type}' declares {capabilities.execution}"
+                )
+            if not capabilities.selected_reset:
+                raise NotImplementedError(
+                    "device-resident reset commit requires the backend's declared "
+                    "selected_reset tensor capability"
+                )
+            assert self._tensor_rows is not None
+            assert self._tensor_qpos is not None
+            assert self._tensor_qvel is not None
+            rows = self._tensor_rows
+            qpos = self._tensor_qpos.index_select(0, rows)
+            qvel = self._tensor_qvel.index_select(0, rows)
+            try:
+                set_state_t0 = time.perf_counter()
+                result = self._backend.set_state_tensor(rows, qpos, qvel, randomization=None)
                 timing: dict[str, float] = {
                     "dr_reset_set_state_ms": (time.perf_counter() - set_state_t0) * 1000.0
                 }
@@ -1417,7 +1567,7 @@ class ResetStateTransaction:
 
     def abort(self) -> None:
         """Discard staged rows without touching the backend."""
-        if self._active:
+        if self._active or self._tensor_active:
             self._finish()
 
     def _materialize_default_state(self, term_name: str) -> None:
@@ -1440,6 +1590,45 @@ class ResetStateTransaction:
         self._default_qvel = default_qvel
         self._qpos = np.empty((self._num_envs, default_qpos.size), dtype=default_qpos.dtype)
         self._qvel = np.empty((self._num_envs, default_qvel.size), dtype=default_qvel.dtype)
+
+    def _materialize_tensor_default_state(self, term_name: str) -> None:
+        """Materialize immutable default state and full-width device staging."""
+        if self._tensor_qpos is not None:
+            return
+        self._materialize_default_state(term_name)
+        device = self._packed_reset_device
+        if device is None:
+            raise RuntimeError("device tensor reset requires its selected device to be declared")
+        assert self._default_qpos is not None
+        assert self._default_qvel is not None
+        qpos_default = torch.from_numpy(
+            np.array(self._default_qpos, dtype=np.float32, copy=True)
+        ).to(device=device)
+        qvel_default = torch.from_numpy(
+            np.array(self._default_qvel, dtype=np.float32, copy=True)
+        ).to(device=device)
+        self._tensor_qpos = qpos_default.repeat(self._num_envs, 1).clone()
+        self._tensor_qvel = qvel_default.repeat(self._num_envs, 1).clone()
+        self._tensor_qpos_default = qpos_default
+        self._tensor_qvel_default = qvel_default
+
+    def _reset_tensor_staging_rows(self, rows: torch.Tensor) -> None:
+        """Restore full-width default staging for rows selected by this reset."""
+        qpos = self._tensor_qpos
+        qvel = self._tensor_qvel
+        qpos_default = self._tensor_qpos_default
+        qvel_default = self._tensor_qvel_default
+        assert qpos is not None and qvel is not None
+        assert qpos_default is not None and qvel_default is not None
+        qpos.index_copy_(0, rows, qpos_default.expand(rows.numel(), -1))
+        qvel.index_copy_(0, rows, qvel_default.expand(rows.numel(), -1))
+
+    def _validate_tensor_root_quaternions(self, values: torch.Tensor, *, term_name: str) -> None:
+        norms = torch.linalg.vector_norm(values, dim=-1)
+        if not bool(torch.isclose(norms, torch.ones_like(norms), rtol=1e-5, atol=1e-6).all()):
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor root quaternion must be unit length"
+            )
 
     def _materialize_default_actuator_gains(self, term_name: str) -> None:
         if self._default_kp is not None:
@@ -1847,6 +2036,25 @@ class ResetStateTransaction:
             self._qvel[uninitialized] = self._default_qvel
         return ids
 
+    def _prepare_tensor_state_write(
+        self,
+        env_ids: torch.Tensor,
+        *,
+        capability: str,
+        term_name: str,
+    ) -> torch.Tensor:
+        if not self._tensor_active:
+            raise RuntimeError("ManagerBased tensor reset-state mutation requires an active reset")
+        rows = self._tensor_rows
+        assert rows is not None
+        if env_ids.data_ptr() != rows.data_ptr() and not torch.equal(env_ids, rows):
+            raise ValueError(
+                f"EventManager term '{term_name}' attempted {capability} mutation outside "
+                "the active tensor reset"
+            )
+        self._requesting_terms.add(term_name)
+        return rows
+
     def _validate_root_layout(
         self,
         layout: BackendRootStateLayout,
@@ -1873,6 +2081,21 @@ class ResetStateTransaction:
             term_name=term_name,
         )
         return qpos_columns, qvel_columns
+
+    def _tensor_root_columns_for_layout(
+        self, layout: BackendRootStateLayout, *, term_name: str
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        qpos_columns, qvel_columns = self._validate_root_layout(layout, term_name=term_name)
+        key = (tuple(int(i) for i in qpos_columns), tuple(int(i) for i in qvel_columns))
+        cached = self._tensor_root_columns
+        device = self._packed_reset_device
+        assert device is not None
+        if cached is not None and (cached[0], cached[1]) == key:
+            return cached[2], cached[3]
+        qpos_tensor = torch.as_tensor(qpos_columns, dtype=torch.int64, device=device)
+        qvel_tensor = torch.as_tensor(qvel_columns, dtype=torch.int64, device=device)
+        self._tensor_root_columns = (*key, qpos_tensor, qvel_tensor)
+        return qpos_tensor, qvel_tensor
 
     def _validate_quaternions(self, values: np.ndarray, *, term_name: str) -> None:
         norms = np.linalg.norm(values, axis=1)
@@ -1961,6 +2184,35 @@ class ResetStateTransaction:
             )
         return ids
 
+    def _validate_tensor_ids(self, env_ids: torch.Tensor, *, capability: str) -> torch.Tensor:
+        if not isinstance(env_ids, torch.Tensor):
+            raise TypeError(
+                f"ManagerBased tensor reset-state {capability} env_ids must be torch.Tensor, "
+                f"got {type(env_ids).__name__}"
+            )
+        if env_ids.ndim != 1 or env_ids.dtype not in (
+            torch.int8,
+            torch.int16,
+            torch.int32,
+            torch.int64,
+            torch.uint8,
+        ):
+            raise TypeError(
+                f"ManagerBased tensor reset-state {capability} env_ids must be a 1-D integer "
+                f"tensor; got shape={tuple(env_ids.shape)}, dtype={env_ids.dtype}"
+            )
+        rows = env_ids.to(dtype=torch.int64)
+        if rows.numel() > 1 and not bool(torch.unique(rows).numel() == rows.numel()):
+            raise ValueError(
+                "ManagerBased tensor reset-state {capability} env_ids contain duplicate rows"
+            )
+        if rows.numel() and not bool(((rows >= 0) & (rows < self._num_envs)).all()):
+            raise IndexError(
+                f"ManagerBased tensor reset-state {capability} env_ids out of range for "
+                f"{self._num_envs} environments"
+            )
+        return rows
+
     def _validate_columns(
         self,
         values: np.ndarray,
@@ -2033,7 +2285,7 @@ class ResetStateTransaction:
         )
 
     def _require_active(self) -> None:
-        if not self._active:
+        if not (self._active or self._tensor_active):
             raise RuntimeError("ManagerBased reset-state mutation requires an active reset event")
 
     def _finish(self) -> None:
@@ -2046,6 +2298,9 @@ class ResetStateTransaction:
         for mask in self._mocap_masks.values():
             mask.fill(False)
         self._requesting_terms.clear()
+        self._tensor_active = False
+        self._tensor_has_writes = False
+        self._tensor_rows = None
 
 
 __all__ = ["ResetStateTransaction"]

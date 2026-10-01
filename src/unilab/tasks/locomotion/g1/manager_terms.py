@@ -205,16 +205,12 @@ class _SensorTerm(SensorTermBase):
                 raise ValueError(
                     f"{self.name} {capability} must have shape {shape}, got {tuple(values.shape)}"
                 )
-            if not bool(torch.isfinite(values).all()):
-                raise ValueError(f"{self.name} {capability} contains NaN or Inf")
             return values
         values = torch.cat([views[name] for name in sensor_names], dim=1)
         if tuple(values.shape) != shape:
             raise ValueError(
                 f"{self.name} {capability} must have shape {shape}, got {tuple(values.shape)}"
             )
-        if not bool(torch.isfinite(values).all()):
-            raise ValueError(f"{self.name} {capability} contains NaN or Inf")
         return values
 
 

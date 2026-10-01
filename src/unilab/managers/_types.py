@@ -51,6 +51,9 @@ class ManagerEntity(Protocol):
     def pair_names(self) -> Sequence[str]: ...
 
     @property
+    def data(self) -> Any: ...
+
+    @property
     def num_joints(self) -> int: ...
 
     @property
@@ -133,6 +136,12 @@ class ManagerEntity(Protocol):
         velocity: np.ndarray,
         joint_ids: np.ndarray | Sequence[int] | slice | None = None,
         env_ids: np.ndarray | slice | None = None,
+    ) -> None: ...
+
+    def write_root_state_tensor_to_sim(
+        self,
+        root_state: torch.Tensor,
+        env_ids: torch.Tensor | np.ndarray | slice | None = None,
     ) -> None: ...
 
 
@@ -243,6 +252,14 @@ class ManagerBasedRlEnv(Protocol):
 
     @property
     def rng(self) -> np.random.Generator: ...
+
+    @property
+    def torch_rng(self) -> torch.Generator | None: ...
+
+    _tensor_reset_default_root_state: torch.Tensor | None
+    _tensor_reset_env_origins: torch.Tensor | None
+    _tensor_reset_pose_bounds: torch.Tensor | None
+    _tensor_reset_velocity_bounds: torch.Tensor | None
 
     @property
     def physics_dt(self) -> float: ...

@@ -21,6 +21,10 @@ algo:
   replay_buffer_n: 256
   tau: 0.05
 env:
+  # MJWarp is DEVICE_RESIDENT/DIRECT. Mirror the SAC owner's CUDA tensor
+  # lifecycle so this owner-selected path does not depend on caller defaults.
+  tensor_runtime: true
+  tensor_runtime_device: null
   mjwarp_nconmax: 128
   mjwarp_njmax: 256
   render_spacing: 2.0
