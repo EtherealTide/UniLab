@@ -78,6 +78,7 @@ class EventManager(ManagerBase):
     def __init__(self, cfg: dict[str, EventTermCfg | None], env: ManagerBasedRlEnv):
         self.cfg = deepcopy(cfg)
         self._device = torch.device(getattr(env, "device", torch.device("cpu")))
+        self._torch_rng = getattr(env, "torch_rng", None)
         self._mode_term_names: dict[EventMode, list[str]] = dict()
         self._mode_term_cfgs: dict[EventMode, list[EventTermCfg]] = dict()
         self._mode_class_term_cfgs: dict[EventMode, list[EventTermCfg]] = dict()
@@ -150,9 +151,8 @@ class EventManager(ManagerBase):
                 if not term_cfg.is_global_time:
                     assert term_cfg.interval_range_s is not None
                     lower, upper = term_cfg.interval_range_s
-                    sampled_interval = self._env.rng.uniform(lower, upper, num_envs)
-                    self._interval_term_time_left[index][ids] = torch.as_tensor(
-                        sampled_interval, dtype=torch.float64, device=self._device
+                    self._interval_term_time_left[index][ids] = self._sample_interval(
+                        lower, upper, num_envs
                     )
         return {}
 
@@ -201,9 +201,8 @@ class EventManager(ManagerBase):
                     if time_left < 1e-6:
                         assert term_cfg.interval_range_s is not None
                         lower, upper = term_cfg.interval_range_s
-                        sampled_interval = self._env.rng.uniform(lower, upper, 1)
-                        self._interval_term_time_left[index][:] = torch.as_tensor(
-                            sampled_interval, dtype=torch.float64, device=self._device
+                        self._interval_term_time_left[index][:] = self._sample_interval(
+                            lower, upper, 1
                         )
                         term_cfg.func(self._env, None, **term_cfg.params)
                 else:
@@ -211,9 +210,8 @@ class EventManager(ManagerBase):
                     if valid_env_ids.numel() > 0:
                         assert term_cfg.interval_range_s is not None
                         lower, upper = term_cfg.interval_range_s
-                        sampled_time = self._env.rng.uniform(lower, upper, len(valid_env_ids))
-                        self._interval_term_time_left[index][valid_env_ids] = torch.as_tensor(
-                            sampled_time, dtype=torch.float64, device=self._device
+                        self._interval_term_time_left[index][valid_env_ids] = self._sample_interval(
+                            lower, upper, valid_env_ids.numel()
                         )
                         term_cfg.func(self._env, valid_env_ids, **term_cfg.params)
             elif mode == "step":
@@ -281,20 +279,8 @@ class EventManager(ManagerBase):
                         f"EventManager term '{term_name}' has invalid interval_range_s "
                         f"{term_cfg.interval_range_s}."
                     )
-                if term_cfg.is_global_time:
-                    time_left = torch.as_tensor(
-                        self._env.rng.uniform(lower, upper, 1),
-                        dtype=torch.float64,
-                        device=self._device,
-                    )
-                    self._interval_term_time_left.append(time_left)
-                else:
-                    time_left = torch.as_tensor(
-                        self._env.rng.uniform(lower, upper, self.num_envs),
-                        dtype=torch.float64,
-                        device=self._device,
-                    )
-                    self._interval_term_time_left.append(time_left)
+                shape = 1 if term_cfg.is_global_time else self.num_envs
+                self._interval_term_time_left.append(self._sample_interval(lower, upper, shape))
             elif term_cfg.mode == "reset":
                 step_count = torch.zeros(self.num_envs, dtype=torch.int64, device=self._device)
                 self._reset_term_last_triggered_step_id.append(step_count)
@@ -307,3 +293,14 @@ class EventManager(ManagerBase):
                     f"EventManager term '{term_name}' requests direct model-field mutation; "
                     "this capability is unsupported by the standalone UniLab manager core."
                 )
+
+    def _sample_interval(self, lower: float, upper: float, count: int) -> torch.Tensor:
+        if self._torch_rng is not None:
+            return self._torch_rng.uniform(lower, upper, (count,), dtype=torch.float64).reshape(
+                count
+            )
+        return torch.as_tensor(
+            self._env.rng.uniform(lower, upper, count),
+            dtype=torch.float64,
+            device=self._device,
+        )
