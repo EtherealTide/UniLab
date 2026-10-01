@@ -228,15 +228,17 @@ def compute_feet_phase_height_targets(
         phi: np.ndarray | torch.Tensor, swing_height: float
     ) -> np.ndarray | torch.Tensor:
         if isinstance(phi, torch.Tensor):
-            # Keep the legacy branch structure while bounding only the half
-            # of the domain it selects; ``where`` preserves the original values.
-            phi_normalized = torch.remainder(phi + math.pi, 2 * math.pi) - math.pi
+            phase = phi if phi.ndim == 2 else phi[:, None]
+            phi_normalized = torch.remainder(phase + math.pi, 2 * math.pi) - math.pi
             x = (phi_normalized + math.pi) / (2 * math.pi)
             stance_t = (2 * x).clamp(max=1.0)
-            stance = swing_height * (stance_t**3 + 3 * stance_t**2 * (1 - stance_t))
             swing_t = (2 * x - 1).clamp(min=0.0)
-            swing = swing_height - swing_height * (swing_t**3 + 3 * swing_t**2 * (1 - swing_t))
-            return torch.where(x <= 0.5, stance, swing)
+            bezier = torch.where(
+                x <= 0.5,
+                stance_t**3 + 3 * stance_t**2 * (1 - stance_t),
+                1.0 - (swing_t**3 + 3 * swing_t**2 * (1 - swing_t)),
+            )
+            return swing_height * bezier
         # The legacy NumPy helper branches on the same x<=0.5 boundary while
         # evaluating both sides. Evaluate only the selected branch on the hot
         # path; result values are identical where each branch is defined.
@@ -252,6 +254,9 @@ def compute_feet_phase_height_targets(
         )
         return np.asarray(swing_height * bezier, dtype=get_global_dtype())
 
+    if isinstance(gait_phase, torch.Tensor):
+        targets = cubic_bezier_height(gait_phase, swing_height)
+        return targets[:, 0], targets[:, 1]
     left_target = cubic_bezier_height(gait_phase[:, 0], swing_height)
     right_target = cubic_bezier_height(gait_phase[:, 1], swing_height)
     return left_target, right_target
