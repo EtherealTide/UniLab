@@ -72,6 +72,7 @@ class CommandTerm(ManagerTermBase):
         self._resampling_time_range = (lower, upper)
         self._check_update_command_signature()
         self._device = torch.device(getattr(self._env, "device", torch.device("cpu")))
+        self._torch_rng = getattr(self._env, "torch_rng", None)
         self.metrics: dict[str, np.ndarray | torch.Tensor] = {}
         self.time_left = torch.zeros(self.num_envs, dtype=torch.float32, device=self._device)
         self.command_counter = torch.zeros(self.num_envs, dtype=torch.int64, device=self._device)
@@ -225,10 +226,17 @@ class CommandTerm(ManagerTermBase):
     def _resample(self, env_ids: torch.Tensor) -> None:
         if env_ids.numel() != 0:
             lower, upper = self._resampling_time_range
-            sampled = self._env.rng.uniform(lower, upper, len(env_ids))
-            self.time_left[env_ids] = torch.as_tensor(
-                sampled, dtype=torch.float32, device=self._device
-            )
+            if self._torch_rng is not None:
+                sampled = self._torch_rng.uniform(
+                    lower, upper, (env_ids.numel(),), dtype=torch.float32
+                )
+            else:
+                sampled = torch.as_tensor(
+                    self._env.rng.uniform(lower, upper, env_ids.numel()),
+                    dtype=torch.float32,
+                    device=self._device,
+                )
+            self.time_left[env_ids] = sampled
             self._resample_command(env_ids)
             self.command_counter[env_ids] += 1
 
