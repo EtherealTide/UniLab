@@ -1069,6 +1069,7 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def _update_state_in_read_phase(self, state: TorchEnvState) -> TorchEnvState:
         timing = state.info.setdefault("timing", {})
+        update_started = time.perf_counter()
         queue_started = time.perf_counter()
         phase_started = time.perf_counter()
         log: dict[str, Any] = {}
@@ -1171,7 +1172,7 @@ class ManagerBasedRlEnv(TorchEnv):
             # and would double-count work already timed by step_core_ms.
             timing["update_state_nonattributed_ms"] = (
                 time.perf_counter()
-                - queue_started
+                - update_started
                 - sum(cast(float, value) for value in update_children)
             ) * 1000.0
         return replacement
