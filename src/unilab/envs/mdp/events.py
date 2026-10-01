@@ -1477,11 +1477,24 @@ class RandomizeEncoderBias(ManagerTermBase):
     ) -> None:
         del bias_range, asset_cfg
         ids = resolve_env_ids(env, env_ids)
-        self._entity.data.encoder_bias[np.ix_(ids, self._joint_ids)] = env.rng.uniform(
-            self._range[0],
-            self._range[1],
-            size=(ids.size, self._joint_ids.size),
+        self._entity.data.encoder_bias[np.ix_(ids, self._joint_ids)] = self._host_uniform(
+            (ids.size, self._joint_ids.size), env
         )
+
+    def _host_uniform(self, size: tuple[int, ...], env: ManagerBasedRlEnv) -> np.ndarray:
+        generator = getattr(env, "torch_rng", None)
+        lower, upper = self._range
+        if generator is not None:
+            return (
+                (
+                    torch.rand(size, generator=generator, device=generator.device)
+                    * float(upper - lower)
+                    + float(lower)
+                )
+                .cpu()
+                .numpy()
+            )
+        return env.rng.uniform(lower, upper, size=size)
 
 
 randomize_encoder_bias = RandomizeEncoderBias
