@@ -988,10 +988,6 @@ class ManagerBasedRlEnv(TorchEnv):
         host = np.array(values, order="C", copy=True)
         return torch.from_numpy(host).to(device=self.device, dtype=dtype, copy=True)
 
-    def _tensor_flags_to_manager_boundary(self, values: torch.Tensor) -> np.ndarray:
-        """Publish public Torch flags to temporary NumPy Manager/recorder scratch."""
-        return np.array(values.detach().cpu().numpy(), order="C", copy=True)
-
     def _initial_episode_steps(self) -> torch.Tensor:
         max_steps = self._cfg.max_episode_steps
         if max_steps is None:
@@ -1018,7 +1014,6 @@ class ManagerBasedRlEnv(TorchEnv):
         self._last_initial_episode_steps = None
         state.info["steps"].copy_(initial_steps)
         self.episode_length_buf.copy_(state.info["steps"])
-        self.reward_buf = np.zeros(self.num_envs, dtype=get_global_dtype())
         self.extras = state.info
         return state
 
