@@ -365,7 +365,9 @@ def test_gait_term_module_has_no_forbidden_runtime_dependencies() -> None:
         / "gait_terms.py"
     )
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    forbidden = ("torch", "uni_rl", "unilab.training", "unilab.base.backend")
+    # Torch is the Manager carrier since #1807. Runtime owner dependencies
+    # remain forbidden.
+    forbidden = ("uni_rl", "unilab.training", "unilab.base.backend")
     imports = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)] + [
         alias.name
         for node in ast.walk(tree)

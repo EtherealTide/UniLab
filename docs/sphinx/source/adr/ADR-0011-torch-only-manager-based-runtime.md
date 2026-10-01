@@ -6,11 +6,12 @@ orphan: true
 
 语言: 简体中文
 
-- Status: Accepted
+- Status: Superseded
 - Date: 2026-09-29
 - Owners: Env / Manager / Training / Backend maintainers
 - Supersedes: [ADR-0006](ADR-0006-community-manager-api-on-numpy-runtime.md)
-- Superseded by: None
+- Superseded by: [ADR-0012](ADR-0012-sole-tensor-manager-and-scoped-backends.md)
+- Roadmap: [Issue #1811](https://github.com/Motphys/UniLab/issues/1811)
 
 ## Context
 

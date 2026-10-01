@@ -1551,13 +1551,8 @@ class ResetStateTransaction:
         return bool(qpos_width == self._default_qpos.size and qvel_width == self._default_qvel.size)
 
     def _packed_reset_public_widths(self) -> tuple[int, int]:
-        qpos_width = getattr(self._backend, "nq", None)
-        qvel_width = getattr(self._backend, "nv", None)
-        if not isinstance(qpos_width, (int, np.integer)) or not isinstance(
-            qvel_width, (int, np.integer)
-        ):
-            raise NotImplementedError("packed reset requires public backend qpos/qvel widths")
-        return int(qpos_width), int(qvel_width)
+        widths = self._backend.get_public_state_widths()
+        return int(widths.nq), int(widths.nv)
 
     def _commit_mocap_poses(self) -> None:
         for name, mask in self._mocap_masks.items():

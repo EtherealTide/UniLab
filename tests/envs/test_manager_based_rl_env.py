@@ -112,6 +112,11 @@ class _FakeBackend:
             torch_devices=("cpu",),
         )
 
+    def get_public_state_widths(self):
+        from unisim.backend.base import PublicStateWidths
+
+        return PublicStateWidths(nq=4, nv=3)
+
     def get_sensor_data(self, name: str) -> np.ndarray:
         try:
             return self.sensors[name].numpy()
