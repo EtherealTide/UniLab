@@ -18,6 +18,7 @@ import torch
 from unilab.managers.event_manager import EventTermCfg
 from unilab.managers.manager_base import ManagerTermBase
 from unilab.managers.scene_entity_config import SceneEntityCfg
+from unilab.managers.torch_rng import TorchManagerRng
 from unilab.utils.rotation import np_quat_apply_batched, np_quat_from_euler_xyz, np_quat_mul
 
 if TYPE_CHECKING:
@@ -1182,7 +1183,8 @@ class PushBySettingVelocity(ManagerTermBase):
         size: tuple[int, ...],
         env: ManagerBasedRlEnv,
     ) -> np.ndarray:
-        generator = getattr(env, "torch_rng", None)
+        rng_owner = getattr(env, "torch_rng", None)
+        generator = rng_owner.generator if isinstance(rng_owner, TorchManagerRng) else None
         if generator is not None:
             unit = torch.rand(size, generator=generator, device=generator.device)
             scale = torch.as_tensor(upper - lower, dtype=unit.dtype, device=unit.device)
@@ -1326,7 +1328,8 @@ class ApplyBodyImpulse(ManagerTermBase):
         return self._host_uniform(self._cooldown_s[0], self._cooldown_s[1], count)
 
     def _host_uniform(self, lower: float, upper: float, count: int) -> np.ndarray:
-        generator = getattr(self._env, "torch_rng", None)
+        rng_owner = getattr(self._env, "torch_rng", None)
+        generator = rng_owner.generator if isinstance(rng_owner, TorchManagerRng) else None
         if generator is not None:
             return (
                 (
@@ -1482,7 +1485,8 @@ class RandomizeEncoderBias(ManagerTermBase):
         )
 
     def _host_uniform(self, size: tuple[int, ...], env: ManagerBasedRlEnv) -> np.ndarray:
-        generator = getattr(env, "torch_rng", None)
+        rng_owner = getattr(env, "torch_rng", None)
+        generator = rng_owner.generator if isinstance(rng_owner, TorchManagerRng) else None
         lower, upper = self._range
         if generator is not None:
             return (
@@ -1657,7 +1661,10 @@ def reset_root_state_uniform_tensor(
         velocity_bounds_tensor = new_velocity_bounds
 
     reset_unit = torch.rand(
-        (count, 2 * len(_SE3_KEYS)), dtype=torch.float32, device=device, generator=env.torch_rng
+        (count, 2 * len(_SE3_KEYS)),
+        dtype=torch.float32,
+        device=device,
+        generator=env.torch_rng.generator,
     )
     bounds = torch.cat((pose_bounds_tensor, velocity_bounds_tensor), dim=0)
     deltas = torch.addcmul(

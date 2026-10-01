@@ -13,6 +13,8 @@ from typing import Any, Protocol
 import numpy as np
 import torch
 
+from unilab.managers.torch_rng import TorchManagerRng
+
 
 class ManagerEntity(Protocol):
     """Cold-path entity metadata required by :class:`SceneEntityCfg`."""
@@ -254,7 +256,7 @@ class ManagerBasedRlEnv(Protocol):
     def rng(self) -> np.random.Generator: ...
 
     @property
-    def torch_rng(self) -> torch.Generator | None: ...
+    def torch_rng(self) -> TorchManagerRng | None: ...
 
     _tensor_reset_default_root_state: torch.Tensor | None
     _tensor_reset_env_origins: torch.Tensor | None

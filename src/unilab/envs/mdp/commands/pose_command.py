@@ -105,17 +105,9 @@ class UniformPoseCommand(CommandTerm):
             self._command[host_ids[zero]] = 0.0
 
     def _host_uniform(self, lower: float, upper: float, count: int) -> np.ndarray:
-        generator = getattr(self._env, "torch_rng", None)
-        if generator is not None:
-            return (
-                (
-                    torch.rand((count,), generator=generator, device=generator.device)
-                    * float(upper - lower)
-                    + float(lower)
-                )
-                .cpu()
-                .numpy()
-            )
+        rng_owner = getattr(self._env, "torch_rng", None)
+        if rng_owner is not None:
+            return rng_owner.uniform(lower, upper, (count,), dtype=torch.float32).cpu().numpy()
         return self._env.rng.uniform(lower, upper, count)
 
     def _update_command(self, env_ids: torch.Tensor | None) -> None:

@@ -143,6 +143,7 @@ class ObservationManager(ManagerBase):
                 f"ObservationManager Torch RNG device {self._torch_rng.device} "
                 f"does not match observations on {self._device}."
             )
+        self._torch_generator = self._torch_rng.generator if self._torch_rng is not None else None
         super().__init__(env=env)
 
         self._group_obs_dim: dict[str, tuple[int, ...] | list[tuple[int, ...]]] = dict()
@@ -479,7 +480,7 @@ class ObservationManager(ManagerBase):
                 fresh = True
             if isinstance(term_cfg.noise, noise_cfg.NoiseCfg):
                 # Noise accepts either carrier and returns a fresh allocation.
-                obs = term_cfg.noise.apply(obs, rng=self._env.rng, torch_rng=self._torch_rng)
+                obs = term_cfg.noise.apply(obs, rng=self._env.rng, torch_rng=self._torch_generator)
                 fresh = True
             elif isinstance(term_cfg.noise, noise_cfg.NoiseModelCfg):
                 # Noise models likewise return a fresh carrier allocation.
