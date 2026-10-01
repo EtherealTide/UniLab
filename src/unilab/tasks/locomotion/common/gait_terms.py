@@ -136,6 +136,10 @@ class _FootContactTerm(SensorTermBase):
         for group in self._groups:
             self._columns.append(columns[offset : offset + len(group)])
             offset += len(group)
+        if len({len(group) for group in self._groups}) == 1:
+            self._group_columns = torch.from_numpy(np.stack(self._columns, axis=0))
+        else:
+            self._group_columns = None
 
     @property
     def num_feet(self) -> int:
@@ -181,6 +185,8 @@ class _FootContactTerm(SensorTermBase):
         else:
             device = getattr(env, "device", torch.device("cpu"))
             contact = torch.as_tensor(contact, device=device)
+        if self._group_columns is not None:
+            return contact[:, self._group_columns.to(device)].any(dim=2)
         feet = [
             contact[:, torch.as_tensor(columns, device=device)].any(dim=1)
             for columns in self._columns
