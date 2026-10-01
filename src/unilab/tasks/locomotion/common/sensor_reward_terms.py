@@ -73,8 +73,6 @@ class _Vec3SensorTerm(SensorTermBase):
                 f"{self.name} sensor '{self._sensor_name}' must have shape "
                 f"(num_envs, 3); got {tuple(values.shape)}"
             )
-        if not bool(torch.isfinite(values).all()):
-            raise ValueError(f"{self.name} sensor '{self._sensor_name}' contains NaN or Inf")
         return values
 
 

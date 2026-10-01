@@ -42,6 +42,21 @@ class NoiseCfg(abc.ABC):
     ) -> torch.Tensor:
         return torch.as_tensor(value, dtype=dtype, device=device)
 
+    def _cached_torch(
+        self,
+        value: NoiseParam,
+        *,
+        dtype: torch.dtype,
+        device: torch.device,
+        cache_name: str,
+    ) -> torch.Tensor:
+        cached = getattr(self, cache_name, None)
+        if cached is not None and cached.device == device and cached.dtype == dtype:
+            return cached
+        cached = self._as_torch(value, dtype=dtype, device=device)
+        setattr(self, cache_name, cached)
+        return cached
+
 
 @dataclass
 class ConstantNoiseCfg(NoiseCfg):
@@ -123,8 +138,12 @@ class UniformNoiseCfg(NoiseCfg):
                 return noise
             raise ValueError(f"Unsupported noise operation: {self.operation}")
 
-        n_min = self._as_torch(self.n_min, dtype=data.dtype, device=data.device)
-        n_max = self._as_torch(self.n_max, dtype=data.dtype, device=data.device)
+        n_min = self._cached_torch(
+            self.n_min, dtype=data.dtype, device=data.device, cache_name="_n_min_torch"
+        )
+        n_max = self._cached_torch(
+            self.n_max, dtype=data.dtype, device=data.device, cache_name="_n_max_torch"
+        )
         if torch_rng is not None and torch_rng.device != data.device:
             raise ValueError("Torch noise generator and observation device do not match.")
         if torch_rng is not None:

@@ -32,6 +32,7 @@ class _SceneTensorBackend:
         self.device_resident = device_resident
         self.full_reads = 0
         self.selected_reads = 0
+        self.sensor_view_calls = 0
         self.closes = 0
         self.qpos = torch.tensor([[0.1], [0.3]], dtype=torch.float32)
         self.qvel = torch.tensor([[10.0], [20.0]], dtype=torch.float32)
@@ -86,6 +87,7 @@ class _SceneTensorBackend:
         }
 
     def get_sensor_view(self, name: str, device: str | torch.device = "cpu") -> torch.Tensor:
+        self.sensor_view_calls += 1
         return self.sensors[name].to(torch.device(device))
 
     def get_actuator_names(self) -> tuple[str, ...]:
@@ -268,6 +270,23 @@ def test_device_resident_scene_plan_refreshes_stable_public_views() -> None:
     plan.refresh()
     body = plan.body_tensor_view("robot")
     torch.testing.assert_close(body.ang_vel_w[:, 0], backend.sensors["track_angvel_w_hip"])
+
+
+def test_device_resident_scene_plan_reuses_stable_sensor_views() -> None:
+    backend = _SceneTensorBackend(device_resident=True)
+    scene = _scene(backend)
+    plan = scene.compile_tensor_reads("cpu", _specs())
+
+    plan.refresh()
+    calls_after_first_refresh = backend.sensor_view_calls
+    first = plan.sensor_tensor_views("robot", ("imu_gyro",)).values["imu_gyro"]
+    plan.refresh()
+    second = plan.sensor_tensor_views("robot", ("imu_gyro",)).values["imu_gyro"]
+
+    assert first is second
+    # One boundary refreshes adapter-owned projections. The remaining stable
+    # views must not cross a second Python/DLPack boundary per manager term.
+    assert backend.sensor_view_calls == calls_after_first_refresh + 1
     assert plan.transfer_stats == {}
     assert plan.last_timing == {}
     plan.close()

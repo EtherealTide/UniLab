@@ -277,6 +277,7 @@ class SceneTensorReadPlan:
                 for _, prefix in _TENSOR_BODY_SENSOR_FIELDS:
                     self._packet_sensor_owners.setdefault(prefix + body_name, entity_name)
         self._packet: Mapping[str, torch.Tensor] = MappingProxyType({})
+        self._stable_sensor_views: dict[str, torch.Tensor] = {}
         self._refreshed = False
         self._closed = False
 
@@ -547,10 +548,19 @@ class SceneTensorReadPlan:
                 ) from exc
         else:
             try:
-                raw = backend.get_state_views(("qpos", "qvel"), device=self._device)
-                raw = dict(raw)
+                # DEVICE_RESIDENT views alias stable backend storage. Crossing
+                # one named-sensor boundary per phase refreshes adapter-owned
+                # projections; the remaining live views are reusable without a
+                # second Python/DLPack boundary per sensor term.
+                if self._packet_names:
+                    backend.get_sensor_view(self._packet_names[0], device=self._device)
+                raw = dict(backend.get_state_views(("qpos", "qvel"), device=self._device))
                 for name in self._packet_names:
-                    raw[name] = backend.get_sensor_view(name, device=self._device)
+                    view = self._stable_sensor_views.get(name)
+                    if view is None:
+                        view = backend.get_sensor_view(name, device=self._device)
+                        self._stable_sensor_views[name] = view
+                    raw[name] = view
             except (AttributeError, KeyError, TypeError, ValueError, NotImplementedError) as exc:
                 raise type(exc)(
                     "Manager scene device-resident tensor read on backend "
