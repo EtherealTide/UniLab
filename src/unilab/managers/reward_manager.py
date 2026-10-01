@@ -144,9 +144,12 @@ class RewardManager(ManagerBase):
         (raw_value * weight, before dt scaling), mirroring the legacy envs'
         per-step reward log format.
         """
+        if not self._term_names:
+            return {}
+        means = self._step_reward.mean(dim=0).detach().cpu().tolist()
         return {
-            f"reward/{name}": self._log_mean(self._step_reward[:, term_idx])
-            for term_idx, name in enumerate(self._term_names)
+            f"reward/{name}": float(mean)
+            for name, mean in zip(self._term_names, means, strict=True)
         }
 
     def get_active_iterable_terms(self, env_idx: int) -> list[tuple[str, list[float]]]:
