@@ -265,6 +265,7 @@ class SceneTensorReadPlan:
         self._body_names = MappingProxyType(dict(body_names))
         self._host_plan = host_plan
         self._packet_names = self._aggregate_packet_names()
+        self._aggregate_body_views: dict[str, EntityTensorBodyStateView] = {}
         self._joint_column_indices: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
         self._packet_sensor_owners: dict[str, str] = {}
         self._packet_sensor_owners.update(
@@ -476,6 +477,25 @@ class SceneTensorReadPlan:
                 f"into the packed read; compiled={list(self._body_names[owner.name])}"
             )
 
+        aggregate = self._aggregate_body_views.get(owner.name)
+        if aggregate is not None and aggregate.body_names == requested:
+            return aggregate
+
+        capabilities = self._scene._backend.get_tensor_capabilities()
+        if getattr(capabilities, "tracked_body_views", False):
+            try:
+                backend_views = self._scene._backend.get_tracked_body_views(
+                    requested, device=self._device
+                )
+            except (AttributeError, KeyError, TypeError, ValueError, NotImplementedError) as exc:
+                raise type(exc)(
+                    f"Manager scene aggregate body tensor read on backend "
+                    f"'{self._scene._backend.backend_type}': {exc}"
+                ) from exc
+            view = self._validated_aggregate_body_view(owner, backend_views)
+            self._aggregate_body_views[owner.name] = view
+            return view
+
         fields: dict[str, torch.Tensor] = {}
         for field, prefix in _TENSOR_BODY_SENSOR_FIELDS:
             stacked = [
@@ -494,6 +514,38 @@ class SceneTensorReadPlan:
             fields[field] = torch.stack(stacked, dim=1)
         return EntityTensorBodyStateView(
             body_names=requested,
+            pos_w=fields["pos_w"],
+            quat_w=fields["quat_w"],
+            lin_vel_w=fields["lin_vel_w"],
+            ang_vel_w=fields["ang_vel_w"],
+        )
+
+    def _validated_aggregate_body_view(
+        self, owner: "Entity", views: Any
+    ) -> EntityTensorBodyStateView:
+        num_envs = self._scene._backend.num_envs
+        fields: dict[str, torch.Tensor] = {}
+        for field, width in _TENSOR_SENSOR_WIDTHS.items():
+            value = views.__getattribute__(field)
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(
+                    f"Entity '{owner.name}' aggregate body tensor {field} on backend "
+                    f"'{owner._backend_type}' is {type(value).__name__}, expected torch.Tensor"
+                )
+            expected = (num_envs, len(views.body_names), width)
+            if tuple(value.shape) != expected:
+                raise ValueError(
+                    f"Entity '{owner.name}' aggregate body tensor {field} on backend "
+                    f"'{owner._backend_type}' has shape {tuple(value.shape)}; expected {expected}"
+                )
+            if value.dtype != torch.float32 or value.device != self._device:
+                raise TypeError(
+                    f"Entity '{owner.name}' aggregate body tensor {field} must be float32 on "
+                    f"{self._device}; got {value.dtype} on {value.device}"
+                )
+            fields[field] = value
+        return EntityTensorBodyStateView(
+            body_names=tuple(views.body_names),
             pos_w=fields["pos_w"],
             quat_w=fields["quat_w"],
             lin_vel_w=fields["lin_vel_w"],
@@ -613,6 +665,7 @@ class SceneTensorReadPlan:
                 finite=False,
             )
         self._packet = MappingProxyType(packet)
+        self._aggregate_body_views.clear()
         self._refreshed = True
 
     def _require_open(self) -> None:
