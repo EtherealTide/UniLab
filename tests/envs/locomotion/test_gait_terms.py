@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.base import BackendSensorView
 
 from unilab.managers import RewardManager, RewardTermCfg
@@ -414,6 +415,23 @@ def test_foot_air_time_reset_clears_only_targeted_rows() -> None:
     term(env)  # Both feet at 0.02 s air time in both envs.
     term.reset(np.array([1]))
     np.testing.assert_allclose(term(env), [[0.04, 0.04], [0.02, 0.02]])
+
+
+def test_air_time_reset_accepts_torch_row_selector_without_host_conversion() -> None:
+    scene = _Scene()
+    env = _env(scene)
+    term = _term(gait_terms.feet_air_time, env, sensor_groups=GROUPS)
+    window = _term(gait_terms.foot_air_time, env, sensor_groups=GROUPS)
+    scene.set_foot_contact(0, False)
+    scene.set_foot_contact(1, False)
+    term(env)
+    window(env)
+
+    term.reset(torch.tensor([0], dtype=torch.int64))
+    window.reset(torch.tensor([0], dtype=torch.int64))
+
+    np.testing.assert_allclose(term(env), [0.0, 0.0])
+    np.testing.assert_allclose(window(env), [[0.02, 0.02], [0.04, 0.04]])
 
 
 def test_foot_contact_reports_float_flags() -> None:
