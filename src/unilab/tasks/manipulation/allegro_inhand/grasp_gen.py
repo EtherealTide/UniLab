@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import numpy as np
+import torch
 
 from unilab.assets import ASSETS_ROOT_PATH
 from unilab.base import registry
@@ -38,10 +39,10 @@ if TYPE_CHECKING:
         def termination_manager(self) -> TerminationManager: ...
 
         @property
-        def reset_terminated(self) -> np.ndarray: ...
+        def reset_terminated(self) -> torch.Tensor: ...
 
         @property
-        def reset_time_outs(self) -> np.ndarray: ...
+        def reset_time_outs(self) -> torch.Tensor: ...
 
         @property
         def extras(self) -> dict[str, Any]: ...
@@ -334,9 +335,9 @@ class AllegroGraspRecorder(RecorderTerm):
             },
         )
 
-    def record_pre_reset(self, env_ids: np.ndarray) -> None:
+    def record_pre_reset(self, env_ids: torch.Tensor) -> None:
         env = cast("_GraspEnv", self._env)
-        ids = np.asarray(env_ids, dtype=np.intp)
+        ids = env_ids.detach().cpu().numpy().astype(np.intp, copy=False)
         success = env.reset_time_outs[ids] & ~env.reset_terminated[ids]
         success_ids = ids[np.flatnonzero(success)]
         if success_ids.size == 0:

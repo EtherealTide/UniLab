@@ -669,11 +669,11 @@ class _AliasedSensorCommand(CommandTerm):
 
 
 class _Recorder(RecorderTerm):
-    def record_pre_reset(self, env_ids: np.ndarray) -> None:
-        self._env.trace.append(("pre_reset", env_ids.tolist()))
+    def record_pre_reset(self, env_ids: torch.Tensor) -> None:
+        self._env.trace.append(("pre_reset", env_ids.detach().cpu().tolist()))
 
-    def record_post_reset(self, env_ids: np.ndarray) -> None:
-        self._env.trace.append(("post_reset", env_ids.tolist()))
+    def record_post_reset(self, env_ids: torch.Tensor) -> None:
+        self._env.trace.append(("post_reset", env_ids.detach().cpu().tolist()))
 
     def record_post_step(self) -> None:
         self._env.trace.append("post_step")

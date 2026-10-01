@@ -1188,9 +1188,9 @@ class ManagerBasedRlEnv(TorchEnv):
             self._reset_manager_state(rows)
             return state.obs, {"log": state.info.get("log", {})}
 
-        done_ids = rows[self.reset_buf[rows]].detach().cpu().numpy()
-        if self._has_transition and len(done_ids) > 0:
-            self.recorder_manager.record_pre_reset(done_ids)
+        done_rows = rows[self.reset_buf[rows]]
+        if self._has_transition and done_rows.numel() > 0:
+            self.recorder_manager.record_pre_reset(done_rows)
 
         log: dict[str, Any] = {}
         self.curriculum_manager.compute(env_ids=ids)
@@ -1300,7 +1300,7 @@ class ManagerBasedRlEnv(TorchEnv):
             for name, values in mapped_obs.items():
                 self.obs_buf[name][rows] = values
         self.extras = self._state.info if self._state is not None else {"log": log}
-        self.recorder_manager.record_post_reset(ids)
+        self.recorder_manager.record_post_reset(rows)
         return reset_obs, {"log": log}
 
     def _collect_reset_backend_timing_ms(self) -> dict[str, float]:
