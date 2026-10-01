@@ -93,7 +93,7 @@ def _state(term: str, capability: str, value: Any, shape: tuple[int, ...]) -> np
     return value
 
 
-def _command(env: ManagerBasedRlEnv, term: str, command_name: str) -> np.ndarray:
+def _command(env: ManagerBasedRlEnv, term: str, command_name: str) -> np.ndarray | torch.Tensor:
     if not isinstance(command_name, str) or not command_name:
         raise ValueError(f"{term} command_name must be a non-empty string")
     try:
@@ -102,6 +102,8 @@ def _command(env: ManagerBasedRlEnv, term: str, command_name: str) -> np.ndarray
         raise KeyError(f"{term} command capability '{command_name}' is unavailable") from exc
     if command is None:
         raise KeyError(f"{term} command capability '{command_name}' is unavailable")
+    if isinstance(command, torch.Tensor):
+        return command
     if isinstance(command, torch.Tensor):
         command = command.detach().cpu().numpy()
     return _state(term, f"command '{command_name}'", command, (env.num_envs, 3))

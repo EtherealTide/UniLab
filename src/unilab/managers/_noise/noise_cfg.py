@@ -29,6 +29,7 @@ class NoiseCfg(abc.ABC):
         data: np.ndarray | torch.Tensor,
         *,
         rng: np.random.Generator | None = None,
+        torch_rng: torch.Generator | None = None,
     ) -> np.ndarray | torch.Tensor:
         """Apply noise to NumPy or Torch data on its existing carrier/device."""
 
@@ -52,8 +53,10 @@ class ConstantNoiseCfg(NoiseCfg):
         data: np.ndarray | torch.Tensor,
         *,
         rng: np.random.Generator | None = None,
+        torch_rng: torch.Generator | None = None,
     ) -> np.ndarray | torch.Tensor:
         del rng
+        del torch_rng
         if not isinstance(data, torch.Tensor):
             bias = np.asarray(self.bias, dtype=data.dtype)
             if self.operation == "add":
@@ -90,6 +93,7 @@ class UniformNoiseCfg(NoiseCfg):
         data: np.ndarray | torch.Tensor,
         *,
         rng: np.random.Generator | None = None,
+        torch_rng: torch.Generator | None = None,
     ) -> np.ndarray | torch.Tensor:
         if rng is None:
             raise ValueError("UniformNoiseCfg requires an env-owned NumPy generator.")
@@ -121,15 +125,21 @@ class UniformNoiseCfg(NoiseCfg):
 
         n_min = self._as_torch(self.n_min, dtype=data.dtype, device=data.device)
         n_max = self._as_torch(self.n_max, dtype=data.dtype, device=data.device)
-        if data.dtype == torch.float32:
-            unit = rng.random(tuple(data.shape), dtype=np.float32)
+        if torch_rng is not None and torch_rng.device != data.device:
+            raise ValueError("Torch noise generator and observation device do not match.")
+        if torch_rng is not None:
+            unit = torch.rand(
+                tuple(data.shape), dtype=data.dtype, device=data.device, generator=torch_rng
+            )
+            noise = unit * (n_max - n_min) + n_min
         else:
-            unit = rng.random(tuple(data.shape)).astype(np.float32, copy=False)
-        # The env-owned NumPy RNG remains authoritative. This unit draw is the
-        # only host transfer in the tensor path; arithmetic and output stay on
-        # the observation device.
-        unit_torch = torch.from_numpy(unit).to(device=data.device, dtype=data.dtype)
-        noise = unit_torch * (n_max - n_min) + n_min
+            if data.dtype == torch.float32:
+                unit = rng.random(tuple(data.shape), dtype=np.float32)
+            else:
+                unit = rng.random(tuple(data.shape)).astype(np.float32, copy=False)
+            # The env-owned NumPy RNG remains authoritative in the default path.
+            unit_torch = torch.from_numpy(unit).to(device=data.device, dtype=data.dtype)
+            noise = unit_torch * (n_max - n_min) + n_min
         if self.operation == "add":
             return data + noise
         if self.operation == "scale":
@@ -154,6 +164,7 @@ class GaussianNoiseCfg(NoiseCfg):
         data: np.ndarray | torch.Tensor,
         *,
         rng: np.random.Generator | None = None,
+        torch_rng: torch.Generator | None = None,
     ) -> np.ndarray | torch.Tensor:
         if rng is None:
             raise ValueError("GaussianNoiseCfg requires an env-owned NumPy generator.")

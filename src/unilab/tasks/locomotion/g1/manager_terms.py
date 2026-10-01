@@ -153,7 +153,7 @@ def _state(term: str, capability: str, value: Any, shape: tuple[int, ...]) -> np
     return value
 
 
-def _command(env: ManagerBasedRlEnv, term: str, command_name: str) -> np.ndarray:
+def _command(env: ManagerBasedRlEnv, term: str, command_name: str) -> np.ndarray | torch.Tensor:
     if not isinstance(command_name, str) or not command_name:
         raise ValueError(f"{term} command_name must be a non-empty string")
     try:
@@ -162,6 +162,13 @@ def _command(env: ManagerBasedRlEnv, term: str, command_name: str) -> np.ndarray
         raise KeyError(f"{term} command capability '{command_name}' is unavailable") from exc
     if command is None:
         raise KeyError(f"{term} command capability '{command_name}' is unavailable")
+    if isinstance(command, torch.Tensor):
+        if command.shape != (env.num_envs, 3):
+            raise ValueError(
+                f"{term} command '{command_name}' must have shape "
+                f"{(env.num_envs, 3)}; got {tuple(command.shape)}"
+            )
+        return command
     return _state(term, f"command '{command_name}'", command, (env.num_envs, 3))
 
 
@@ -548,6 +555,13 @@ class feet_double_stance(_FootContactTerm):
         del params
         command = _command(env, self.name, self._command_name)
         left_contact, right_contact = self._contact_pair(env)
+        if isinstance(command, torch.Tensor):
+            if not isinstance(left_contact, torch.Tensor):
+                left_contact = torch.as_tensor(left_contact, device=command.device)
+                right_contact = torch.as_tensor(right_contact, device=command.device)
+            double_stance = (left_contact & right_contact).to(dtype=torch.float32)
+            forward_mask = (torch.clamp(command[:, 0], min=0.0) > 1.0e-6).to(dtype=torch.float32)
+            return double_stance * forward_mask
         double_stance = np.asarray(
             np.logical_and(left_contact, right_contact), dtype=get_global_dtype()
         )
@@ -640,6 +654,12 @@ class forward_progress(_LinVelTerm):
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray | torch.Tensor:
         command = _command(env, self.name, _term_command_name(self.name, params))
         linvel = self._read_linvel(env)
+        if isinstance(command, torch.Tensor):
+            if not isinstance(linvel, torch.Tensor):
+                linvel = torch.as_tensor(linvel, device=command.device)
+            commanded_speed = torch.clamp(command[:, 0], min=1e-6)
+            forward_speed = torch.clamp(linvel[:, 0], min=0.0)
+            return torch.clamp(forward_speed / commanded_speed, max=1.0).to(dtype=torch.float32)
         commanded_speed = np.maximum(command[:, 0], 1e-6)
         forward_speed = np.maximum(linvel[:, 0], 0.0)
         return np.asarray(
@@ -662,6 +682,13 @@ class under_speed(_LinVelTerm):
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray | torch.Tensor:
         command = _command(env, self.name, _term_command_name(self.name, params))
         linvel = self._read_linvel(env)
+        if isinstance(command, torch.Tensor):
+            if not isinstance(linvel, torch.Tensor):
+                linvel = torch.as_tensor(linvel, device=command.device)
+            commanded_speed = torch.clamp(command[:, 0], min=1e-6)
+            forward_speed = torch.clamp(linvel[:, 0], min=0.0)
+            gap = torch.clamp(command[:, 0] - forward_speed, min=0.0)
+            return (gap / commanded_speed).to(dtype=torch.float32)
         commanded_speed = np.maximum(command[:, 0], 1e-6)
         forward_speed = np.maximum(linvel[:, 0], 0.0)
         gap = np.maximum(command[:, 0] - forward_speed, 0.0)
@@ -981,7 +1008,23 @@ class G1PenaltyCurriculum(ManagerTermBase):
             if isinstance(env_ids, slice)
             else np.asarray(env_ids, dtype=np.intp).reshape(-1)
         )
-        done_ids = ids[env.reset_buf[ids]]
+        reset_buf = env.reset_buf
+        if isinstance(reset_buf, torch.Tensor):
+            reset_buf = reset_buf.detach().cpu().numpy()
+        done_ids = ids[reset_buf[ids]]
+        if isinstance(env.episode_length_buf, torch.Tensor):
+            if len(done_ids) > 0:
+                episode_lengths = (
+                    env.episode_length_buf[torch.as_tensor(done_ids, device=env.device)]
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )
+                self._tracker.update(episode_lengths.astype(np.float64))
+            return {
+                "average_episode_length": float(self._tracker.average_length),
+                "penalty_scale": float(self._current_scale),
+            }
         if len(done_ids) > 0:
             self._tracker.update(env.episode_length_buf[done_ids].astype(np.float64))
             average = self._tracker.average_length

@@ -131,7 +131,10 @@ class lin_vel_z(_Vec3SensorTerm):
 
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray | torch.Tensor:
         del params
-        return _tensor_square_sum(self._read_sensor_tensor(env)[:, 2])
+        values = self._read_sensor_tensor(env)[:, 2]
+        if isinstance(values, torch.Tensor):
+            return torch.square(values).to(dtype=torch.float32)
+        return _tensor_square_sum(values)
 
 
 class ang_vel_xy(_Vec3SensorTerm):

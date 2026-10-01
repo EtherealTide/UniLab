@@ -367,6 +367,13 @@ class ManagerBasedRlEnv(TorchEnv):
         actual_seed = cfg.seed if cfg.seed is not None else secrets.randbits(63)
         cfg.seed = actual_seed
         self.rng = np.random.default_rng(actual_seed)
+        self.torch_rng = (
+            torch.Generator(device=self.device)
+            if self.device.type == "cuda" and cfg.tensor_runtime
+            else None
+        )
+        if self.torch_rng is not None:
+            self.torch_rng.manual_seed(actual_seed)
 
         assert cfg.scene is not None
         default_qpos = resolve_scene_default_qpos(cfg.scene, backend)
@@ -391,14 +398,16 @@ class ManagerBasedRlEnv(TorchEnv):
         self.common_step_counter = 0
         self._sim_step_counter = 0
         self.episode_length_buf = np.zeros(num_envs, dtype=np.int64)
-        self.reset_buf = np.zeros(num_envs, dtype=np.bool_)
-        self.reset_terminated = np.zeros(num_envs, dtype=np.bool_)
-        self.reset_time_outs = np.zeros(num_envs, dtype=np.bool_)
-        self.reward_buf = np.zeros(num_envs, dtype=get_global_dtype())
+        self.reset_buf = torch.zeros(num_envs, dtype=torch.bool, device=self.device)
+        self.reset_terminated = torch.zeros_like(self.reset_buf)
+        self.reset_time_outs = torch.zeros_like(self.reset_buf)
+        self.reward_buf = torch.zeros(num_envs, dtype=self._dtype, device=self.device)
         self.obs_buf: dict[str, torch.Tensor] = {}
         self.extras: dict[str, Any] = {"log": {}}
-        self._command_dt = np.zeros(num_envs, dtype=get_global_dtype())
-        self._manual_reset_pending = np.zeros(num_envs, dtype=np.bool_)
+        self._command_dt = torch.full(
+            (num_envs,), self.step_dt, dtype=self._dtype, device=self.device
+        )
+        self._manual_reset_pending = torch.zeros_like(self.reset_buf)
         self._all_env_ids = np.arange(num_envs, dtype=np.int32)
         self._all_env_ids.setflags(write=False)
         self._has_transition = False
@@ -1011,17 +1020,17 @@ class ManagerBasedRlEnv(TorchEnv):
         return state
 
     def step(self, actions: torch.Tensor) -> TorchEnvState:
-        if not self._autoreset and np.any(self._manual_reset_pending):
-            pending = np.flatnonzero(self._manual_reset_pending).tolist()
+        if not self._autoreset and bool(self._manual_reset_pending.any()):
+            pending = (
+                self._manual_reset_pending.nonzero(as_tuple=False).flatten().detach().cpu().tolist()
+            )
             raise RuntimeError(
                 f"ManagerBasedRlEnv environments {pending} must be reset before step() "
                 "when auto_reset=False"
             )
         state = super().step(actions)
         if not self._autoreset:
-            self._manual_reset_pending |= self._tensor_flags_to_manager_boundary(
-                state.terminated | state.truncated
-            )
+            self._manual_reset_pending.logical_or_(state.terminated | state.truncated)
         self.recorder_manager.record_post_step()
         return state
 
@@ -1061,15 +1070,15 @@ class ManagerBasedRlEnv(TorchEnv):
         self._sim_step_counter = self.common_step_counter * self._cfg.sim_substeps
 
         self.termination_manager.compute()
-        terminated = self._tensor_flags_to_manager_boundary(self.termination_manager.terminated)
-        time_outs = self._tensor_flags_to_manager_boundary(self.termination_manager.time_outs)
+        terminated = self.termination_manager.terminated
+        time_outs = self.termination_manager.time_outs
         if self._cfg.is_finite_horizon:
-            np.logical_or(terminated, time_outs, out=self.reset_terminated)
-            self.reset_time_outs.fill(False)
+            torch.logical_or(terminated, time_outs, out=self.reset_terminated)
+            self.reset_time_outs.fill_(False)
         else:
-            np.copyto(self.reset_terminated, terminated)
-            np.copyto(self.reset_time_outs, time_outs)
-        np.logical_or(self.reset_terminated, self.reset_time_outs, out=self.reset_buf)
+            self.reset_terminated.copy_(terminated)
+            self.reset_time_outs.copy_(time_outs)
+        torch.logical_or(self.reset_terminated, self.reset_time_outs, out=self.reset_buf)
 
         self.reward_buf = self.reward_manager.compute(dt=self.step_dt)
         log.update(self.reward_manager.step_reward_extras())
@@ -1092,8 +1101,8 @@ class ManagerBasedRlEnv(TorchEnv):
             self.scene._invalidate_state_reads()
             self._refresh_tensor_reads_after_mutation()
 
-        self._command_dt.fill(self.step_dt)
-        self._command_dt[self.reset_buf] = 0.0
+        self._command_dt.fill_(self.step_dt)
+        self._command_dt.masked_fill_(self.reset_buf, 0.0)
         step_read_plan = self.scene._tensor_read_plan
         step_reset_capabilities = self._backend.get_tensor_capabilities()
         if self._uses_device_resident_reset(step_read_plan, step_reset_capabilities):
@@ -1179,7 +1188,15 @@ class ManagerBasedRlEnv(TorchEnv):
             self._reset_manager_state(rows)
             return state.obs, {"log": state.info.get("log", {})}
 
-        done_ids = ids[self.reset_buf[ids]]
+        if isinstance(self.reset_buf, np.ndarray):
+            done_ids = ids[self.reset_buf[ids]]
+        else:
+            done_ids = np.asarray(ids)[
+                self.reset_buf[torch.as_tensor(ids, device=self.reset_buf.device)]
+                .detach()
+                .cpu()
+                .numpy()
+            ]
         if self._has_transition and len(done_ids) > 0:
             self.recorder_manager.record_pre_reset(done_ids)
 
@@ -1226,12 +1243,22 @@ class ManagerBasedRlEnv(TorchEnv):
         ):
             log.update(manager.reset(ids))
 
-        self.episode_length_buf[ids] = 0
+        episode_rows = (
+            ids
+            if isinstance(self.episode_length_buf, np.ndarray)
+            else torch.as_tensor(ids, device=self.episode_length_buf.device)
+        )
+        self.episode_length_buf[episode_rows] = 0
         if self._reset_state.scene_layout is not None:
             self._control[ids] = self._initial_backend_control()[ids]
         else:
             self._control[ids] = 0.0
-        self._manual_reset_pending[ids] = False
+        pending_rows = (
+            ids
+            if isinstance(self._manual_reset_pending, np.ndarray)
+            else torch.as_tensor(ids, device=self._manual_reset_pending.device)
+        )
+        self._manual_reset_pending[pending_rows] = False
         if self._state is not None:
             self._state.info["steps"][ids] = 0
 
@@ -1277,9 +1304,14 @@ class ManagerBasedRlEnv(TorchEnv):
             if not self._autoreset_reset_active:
                 self._state.terminated[rows] = False
                 self._state.truncated[rows] = False
-                self.reset_buf[ids] = False
-                self.reset_terminated[ids] = False
-                self.reset_time_outs[ids] = False
+                flag_rows = (
+                    ids
+                    if isinstance(self.reset_buf, np.ndarray)
+                    else torch.as_tensor(ids, device=self.reset_buf.device)
+                )
+                self.reset_buf[flag_rows] = False
+                self.reset_terminated[flag_rows] = False
+                self.reset_time_outs[flag_rows] = False
         if not self.obs_buf or set(self.obs_buf) != set(mapped_obs):
             self.obs_buf = mapped_obs
         else:
