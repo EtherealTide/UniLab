@@ -378,13 +378,13 @@ class G1GaitPhase(ManagerTermBase):
             return phase
         return phase.copy()
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         if env_ids is None:
             ids = np.arange(self.num_envs, dtype=np.intp)
         elif isinstance(env_ids, slice):
             ids = np.arange(self.num_envs, dtype=np.intp)[env_ids]
         else:
-            ids = np.asarray(env_ids, dtype=np.intp).reshape(-1)
+            ids = env_ids.detach().cpu().numpy().astype(np.intp, copy=False).reshape(-1)
         _resample_gait(cast("_G1Env", self._env), self._context, ids)
 
 
@@ -911,11 +911,12 @@ class G1VelocityCommand(UniformVelocityCommand):
             )
         super().__init__(cfg, env)
 
-    def _resample_command(self, env_ids: np.ndarray) -> None:
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
         super()._resample_command(env_ids)
-        planar = self.vel_command_b[env_ids, :2]
+        host_ids = env_ids.detach().cpu().numpy()
+        planar = self.vel_command_b[host_ids, :2]
         moving = np.linalg.norm(planar, axis=1) > self._planar_dead_zone
-        self.vel_command_b[env_ids, :2] = planar * moving[:, None]
+        self.vel_command_b[host_ids, :2] = planar * moving[:, None]
 
 
 # ---------------------------------------------------------------------------
@@ -1002,7 +1003,7 @@ class G1PenaltyCurriculum(ManagerTermBase):
             if env_ids is None
             else np.arange(env.num_envs, dtype=np.intp)[env_ids]
             if isinstance(env_ids, slice)
-            else np.asarray(env_ids, dtype=np.intp).reshape(-1)
+            else env_ids.detach().cpu().numpy().astype(np.intp, copy=False).reshape(-1)
         )
         reset_buf = env.reset_buf
         if isinstance(reset_buf, torch.Tensor):

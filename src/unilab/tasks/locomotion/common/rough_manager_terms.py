@@ -153,11 +153,13 @@ def _ranges(value: Any, axes: Sequence[str], *, label: str) -> dict[str, tuple[f
     return {axis: _pair(value[axis], label=f"{label}.{axis}") for axis in axes}
 
 
-def _env_ids(env: ManagerBasedRlEnv, env_ids: np.ndarray | slice | None) -> np.ndarray:
+def _env_ids(env: ManagerBasedRlEnv, env_ids: torch.Tensor | slice | None) -> np.ndarray:
     if env_ids is None:
         return np.arange(env.num_envs, dtype=np.int32)
     if isinstance(env_ids, slice):
         return np.arange(env.num_envs, dtype=np.int32)[env_ids]
+    if isinstance(env_ids, torch.Tensor):
+        return env_ids.detach().cpu().numpy().astype(np.int32, copy=False)
     raw = np.asarray(env_ids)
     if (
         raw.ndim != 1
