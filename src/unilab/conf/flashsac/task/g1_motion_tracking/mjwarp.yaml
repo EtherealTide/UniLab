@@ -1,9 +1,9 @@
 # @package _global_
 # FlashSAC mjwarp (GPU) owner for G1 WBT. Inherits the FlashSAC MuJoCo owner
-# verbatim so this phase-local tensor benchmark compares identical manager
-# semantics across mjwarp and mjbatch; offline record reuses MuJoCo rendering.
-# The shared base is intentionally DR-free because mjwarp's minimal tensor
-# reset does not negotiate reset randomization or interval wrenches.
+# with only the motion-anchor observations replaced by tensor-native Manager
+# terms. The live tracked-body phase is declared from the bound MotionCommand
+# and shares the aggregate MJWarp body view; MuJoCo/Motrix retain the NumPy
+# command buffers until parity evidence covers their host-bridge phase.
 defaults:
   - /task/g1_motion_tracking/mujoco
   - _self_
@@ -15,3 +15,21 @@ training:
   # Reduce metric D2H frequency for the scoped tensor benchmark; capacity
   # remains CLI-overridable so ring depth can be measured without task forks.
   collector_metrics_interval: 100
+env:
+  observations:
+    actor:
+      terms:
+        motion_anchor_pos_b:
+          func: unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorPositionObservation
+          params: {command_name: motion}
+        motion_anchor_ori_b:
+          func: unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorOrientationObservation
+          params: {command_name: motion}
+    critic:
+      terms:
+        motion_anchor_pos_b:
+          func: unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorPositionObservation
+          params: {command_name: motion}
+        motion_anchor_ori_b:
+          func: unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorOrientationObservation
+          params: {command_name: motion}

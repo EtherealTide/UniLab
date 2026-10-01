@@ -522,7 +522,10 @@ class ManagerBasedRlEnv(TorchEnv):
                             entity=self._observation_tensor_entity(term_cfg), body_names=()
                         )
                     )
+                term = term_cfg.func
                 body_names = term_cfg.params.get("tensor_body_names")
+                if body_names is None:
+                    body_names = getattr(term, "tensor_body_names", None)
                 if body_names is None:
                     continue
                 if (
@@ -535,6 +538,8 @@ class ManagerBasedRlEnv(TorchEnv):
                         f"'{name}' must be a unique sequence of body names; got {body_names!r}"
                     )
                 entity_name = term_cfg.params.get("entity_name")
+                if not isinstance(entity_name, str) or not entity_name:
+                    entity_name = getattr(term, "entity_name", None)
                 if not isinstance(entity_name, str) or not entity_name:
                     raise TypeError(
                         "ManagerBasedRlEnv observation tensor read declaration "

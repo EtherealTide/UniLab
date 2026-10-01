@@ -31,6 +31,7 @@ from .kernels import (
     update_motion_relative_state_kernel,
 )
 from .motion_loader import MotionData, MotionLoader, MotionSampler
+from .tensor_rotation import quat_apply_inverse, quat_conjugate, quat_mul, quat_to_rot6
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
@@ -1110,6 +1111,9 @@ __all__ = [
     "MotionCommandParamsCfg",
     "MotionJointPositionAction",
     "MotionJointPositionActionCfg",
+    "MotionAnchorObservation",
+    "MotionAnchorOrientationObservation",
+    "MotionAnchorPositionObservation",
     "bad_anchor_ori",
     "bad_anchor_pos_z_only",
     "bad_motion_body_pos_z_only",
@@ -1133,3 +1137,91 @@ __all__ = [
     "robot_body_pos_b",
     "undesired_body_contacts",
 ]
+
+
+class MotionAnchorObservation(ManagerTermBase):
+    """Tensor-native anchor-relative observation over the scene body phase.
+
+    The term is constructed after ``CommandManager`` and resolves the declared
+    motion command through its public Manager accessor.  The resolved body
+    namespace becomes a static ``tensor_body_names`` declaration so the Manager
+    compiles one aggregate body read before any term executes.
+    """
+
+    def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
+        super().__init__(env)
+        command_name = cfg.params.get("command_name", "motion")
+        if not isinstance(command_name, str) or not command_name:
+            raise ValueError("MotionAnchorObservation command_name must be a non-empty string")
+        try:
+            command = env.command_manager.get_term(command_name)
+        except KeyError as exc:
+            raise KeyError(
+                f"Motion anchor observation command term '{command_name}' not found"
+            ) from exc
+        if not isinstance(command, MotionCommand):
+            raise TypeError(
+                "Motion anchor observation command term "
+                f"'{command_name}' is {type(command).__name__}, expected MotionCommand"
+            )
+        self._command_name = command_name
+        self._entity_name = command.cfg.entity_name
+        self._body_names = tuple(command.cfg.body_names)
+        self._anchor_body_idx = command.anchor_body_idx
+
+    @property
+    def tensor_body_names(self) -> tuple[str, ...]:
+        return self._body_names
+
+    @property
+    def entity_name(self) -> str:
+        return self._entity_name
+
+    def _cold_observation(self, command: MotionCommand) -> torch.Tensor:
+        """Return the immutable-shape probe used before the read plan exists."""
+        del command
+        width = 3 if isinstance(self, MotionAnchorPositionObservation) else 6
+        return torch.zeros((self.num_envs, width), dtype=torch.float32)
+
+
+class MotionAnchorPositionObservation(MotionAnchorObservation):
+    def __call__(self, env: ManagerBasedRlEnv, command_name: str = "motion") -> torch.Tensor:
+        if command_name != self._command_name:
+            raise ValueError(
+                f"Motion anchor position observation was bound to {self._command_name!r}, "
+                f"received {command_name!r}"
+            )
+        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        if read_plan is None:
+            return self._cold_observation(_command(env, self._command_name))
+        view = read_plan.body_tensor_view(self._entity_name, self._body_names)
+        command = _command(env, self._command_name)
+        anchor_pos = torch.as_tensor(
+            command.body_pos_w[:, self._anchor_body_idx],
+            dtype=torch.float32,
+            device=view.pos_w.device,
+        )
+        robot_anchor_pos = view.pos_w[:, self._anchor_body_idx]
+        robot_anchor_quat = view.quat_w[:, self._anchor_body_idx]
+        return quat_apply_inverse(robot_anchor_quat, anchor_pos - robot_anchor_pos)
+
+
+class MotionAnchorOrientationObservation(MotionAnchorObservation):
+    def __call__(self, env: ManagerBasedRlEnv, command_name: str = "motion") -> torch.Tensor:
+        if command_name != self._command_name:
+            raise ValueError(
+                f"Motion anchor orientation observation was bound to {self._command_name!r}, "
+                f"received {command_name!r}"
+            )
+        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        if read_plan is None:
+            return self._cold_observation(_command(env, self._command_name))
+        view = read_plan.body_tensor_view(self._entity_name, self._body_names)
+        robot_quat = view.quat_w[:, self._anchor_body_idx]
+        command = _command(env, self._command_name)
+        motion_quat = torch.as_tensor(
+            command.body_quat_w[:, self._anchor_body_idx],
+            dtype=torch.float32,
+            device=view.quat_w.device,
+        )
+        return quat_to_rot6(quat_mul(quat_conjugate(robot_quat), motion_quat))

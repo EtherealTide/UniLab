@@ -928,6 +928,42 @@ def test_sac_g1_motion_mjwarp_dr_runtime_applies_reset_and_interval_dr() -> None
         env.close()
 
 
+def test_flashsac_g1_motion_mjwarp_tensor_anchor_observations_roll_out() -> None:
+    """The canonical FlashSAC MJWarp owner exercises tensor-native anchors."""
+    ensure_registries()
+    _require_mjwarp_runtime()
+    from unilab.base import registry
+    from unilab.tasks.motion_tracking.g1.torch_flashsac_env import (
+        TorchG1MotionTrackingFlashSACEnv,
+    )
+
+    _, override = _motion_manager_override(
+        "g1_motion_tracking",
+        "mjwarp",
+        config_root="flashsac",
+    )
+    env = registry.make(
+        "G1MotionTrackingSAC",
+        num_envs=2,
+        sim_backend="mjwarp",
+        env_cfg_override=override,
+    )
+    assert isinstance(env, TorchG1MotionTrackingFlashSACEnv)
+    try:
+        assert env.obs_groups_spec == {"obs": 160, "critic": 289}
+
+        state = env.init_state()
+        for _ in range(3):
+            state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
+
+        assert state.obs["obs"].shape == (2, 160)
+        assert state.obs["critic"].shape == (2, 289)
+        assert all(torch.isfinite(values).all() for values in state.obs.values())
+        assert torch.isfinite(state.reward).all()
+    finally:
+        env.close()
+
+
 @pytest.mark.parametrize(
     ("config_root", "task", "identity", "actor_dim", "critic_dim", "action_dim", "truncate"),
     _MOTION_CORE_RUNTIME_CASES,
