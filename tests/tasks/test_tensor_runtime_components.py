@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import torch
@@ -292,6 +294,25 @@ class _AdvancingNamedSensorBackend(_SelectedResetReadinessBackend):
         return torch.full((1, 3), value, device=device)
 
 
+class _NamedSensorResetRefreshBackend(_SelectedResetReadinessBackend):
+    """A DEVICE_RESIDENT adapter whose named views publish lazy reset state."""
+
+    backend_type = "fake-device-named-sensor-reset"
+
+    def get_tensor_runtime_diagnostics(self):
+        return {
+            "selected_reset_sensor_refresh": SimpleNamespace(
+                requested=True,
+                enabled=True,
+                disable_reason=None,
+            )
+        }
+
+    def set_state_tensor(self, env_indices, qpos, qvel, randomization=None):
+        self.stale = False
+        return {"timing": {"selected_reset_ms": 1.0}}
+
+
 def test_tensor_state_store_full_read_validates_layout_and_finite_state() -> None:
     store = TensorDeviceStateStore(
         backend=_HostBridgeBackend(),  # pyright: ignore[reportArgumentType]
@@ -433,6 +454,30 @@ def test_host_bridge_selected_reset_has_no_device_resident_readiness_step() -> N
     assert result is None
     assert backend.steps == 0
     assert backend.selected_read_calls == 1
+
+
+def test_tensor_state_store_uses_declared_named_sensor_reset_refresh() -> None:
+    backend = _NamedSensorResetRefreshBackend()
+    store = TensorDeviceStateStore(
+        backend=backend,  # pyright: ignore[reportArgumentType]
+        device=torch.device("cpu"),
+        num_envs=1,
+        joint_qpos_ids=np.array([7], dtype=np.int64),
+        joint_qvel_ids=np.array([6], dtype=np.int64),
+        body_names=("pelvis",),
+        body_ids=np.array([0], dtype=np.intp),
+    )
+    ctrl = torch.tensor([[0.25]], dtype=torch.float32)
+    qpos = torch.tensor([[0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.25]])
+    qvel = torch.zeros((1, 7))
+
+    store.apply_reset(torch.tensor([0], dtype=torch.int64), qpos, qvel)
+    result = store.refresh_after_selected_reset(ctrl, nsteps=3)
+    store.read()
+
+    assert result is None
+    assert backend.stale is False
+    assert backend.step_calls == []
 
 
 def test_tensor_state_store_empty_rows_validate_and_read_without_sync_or_backend_read(
