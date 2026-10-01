@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Sequence
 
 import numpy as np
+import torch
 from prettytable import PrettyTable
 
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
@@ -93,7 +94,7 @@ class CurriculumManager(ManagerBase):
                 terms.append((term_name, data))
         return terms
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> dict[str, float]:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
         extras = {}
         for term_name, term_state in self._curriculum_state.items():
             if term_state is not None:
@@ -110,7 +111,7 @@ class CurriculumManager(ManagerBase):
             term_cfg.func.reset(env_ids=env_ids)
         return extras
 
-    def compute(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def compute(self, env_ids: torch.Tensor | slice | None = None) -> None:
         if env_ids is None:
             env_ids = slice(None)
         for name, term_cfg in zip(self._term_names, self._term_cfgs, strict=False):
@@ -159,8 +160,8 @@ class NullCurriculumManager:
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:
         return []
 
-    def reset(self, env_ids: np.ndarray | None = None) -> dict[str, float]:
+    def reset(self, env_ids: torch.Tensor | None = None) -> dict[str, float]:
         return {}
 
-    def compute(self, env_ids: np.ndarray | None = None) -> None:
+    def compute(self, env_ids: torch.Tensor | None = None) -> None:
         pass

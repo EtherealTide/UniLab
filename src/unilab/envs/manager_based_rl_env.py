@@ -1150,7 +1150,6 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def _reset_manager_state(self, rows: torch.Tensor) -> None:
         """Re-run row-scoped manager reset after initial state allocation."""
-        ids = self._reset_rows_to_manager_boundary(rows)
         for manager in (
             self.observation_manager,
             self.action_manager,
@@ -1160,7 +1159,7 @@ class ManagerBasedRlEnv(TorchEnv):
             self.event_manager,
             self.termination_manager,
         ):
-            manager.reset(ids)
+            manager.reset(rows)
 
     def _compute_truncated(self, state: TorchEnvState) -> torch.Tensor:
         del state
@@ -1193,7 +1192,7 @@ class ManagerBasedRlEnv(TorchEnv):
             self.recorder_manager.record_pre_reset(done_rows)
 
         log: dict[str, Any] = {}
-        self.curriculum_manager.compute(env_ids=ids)
+        self.curriculum_manager.compute(env_ids=rows)
         read_plan = self.scene._tensor_read_plan
         reset_capabilities = self._backend.get_tensor_capabilities()
         device_resident_reset = self._uses_device_resident_reset(read_plan, reset_capabilities)
@@ -1238,7 +1237,7 @@ class ManagerBasedRlEnv(TorchEnv):
             self.event_manager,
             self.termination_manager,
         ):
-            log.update(manager.reset(ids))
+            log.update(manager.reset(rows))
 
         self.episode_length_buf[rows] = 0
         if self._reset_state.scene_layout is not None:
@@ -1269,8 +1268,8 @@ class ManagerBasedRlEnv(TorchEnv):
             self.command_manager.post_compute()
             # Row-scoped reset rebuild (issue #1259 R2): the observation manager
             # returns only the reset rows, so no full-batch slice is needed here.
-            manager_obs = self.observation_manager.compute(update_history=True, env_ids=ids)
-        mapped_obs = self._map_observations(manager_obs, num_rows=len(ids))
+            manager_obs = self.observation_manager.compute(update_history=True, env_ids=rows)
+        mapped_obs = self._map_observations(manager_obs, num_rows=rows.numel())
         reset_obs = {
             name: self._manager_tensor(values, dtype=self._dtype)
             for name, values in mapped_obs.items()

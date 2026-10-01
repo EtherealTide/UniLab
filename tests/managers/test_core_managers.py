@@ -108,7 +108,7 @@ def test_action_split_history_apply_and_partial_reset(fake_env: FakeEnv) -> None
     np.testing.assert_array_equal(manager.get_term("legs").raw_action, second[:, :2])
     manager.apply_action()
     assert manager.get_term("legs").applied == 1
-    manager.reset(np.array([1, 3]))
+    manager.reset(torch.tensor([1, 3], dtype=torch.int64))
     torch.testing.assert_close(manager.action[[1, 3]], torch.zeros(2, 3))
     torch.testing.assert_close(manager.action[[0, 2]], second[[0, 2]])
 
@@ -318,7 +318,7 @@ def test_termination_splits_timeouts_and_failures(fake_env: FakeEnv) -> None:
     torch.testing.assert_close(dones, torch.from_numpy(timeout | failure))
     torch.testing.assert_close(manager.time_outs, torch.from_numpy(timeout))
     torch.testing.assert_close(manager.terminated, torch.from_numpy(failure))
-    assert manager.reset(np.array([0, 1])) == {
+    assert manager.reset(torch.tensor([0, 1], dtype=torch.int64)) == {
         "Episode_Termination/timeout": 1,
         "Episode_Termination/failure": 1,
     }

@@ -171,7 +171,7 @@ class ActionManager(ManagerBase):
     def get_term(self, name: str) -> ActionTerm:
         return self._terms[name]
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> dict[str, float]:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
         if env_ids is None:
             env_ids = slice(None)
         # Reset action history.
@@ -241,14 +241,22 @@ class ActionManager(ManagerBase):
         """Publish one validated action tensor to temporary NumPy action terms."""
         return np.array(action.detach().cpu().numpy(), dtype=np.float32, order="C", copy=True)
 
-    def _reset_selector(self, env_ids: np.ndarray | slice) -> torch.Tensor | slice:
+    def _reset_selector(self, env_ids: torch.Tensor | slice) -> torch.Tensor | slice:
         if env_ids is None:
             return slice(None)
         if isinstance(env_ids, slice):
             return env_ids
-        rows = torch.as_tensor(np.asarray(env_ids), device=self._device)
-        if rows.ndim != 1 or rows.dtype not in {torch.int32, torch.int64}:
+        if (
+            not isinstance(env_ids, torch.Tensor)
+            or env_ids.ndim != 1
+            or env_ids.dtype
+            not in {
+                torch.int32,
+                torch.int64,
+            }
+        ):
             raise TypeError("ActionManager reset rows must be one-dimensional integers")
+        rows = env_ids.to(self._device)
         if rows.numel() and (rows.min() < 0 or rows.max() >= self.num_envs):
             raise IndexError(f"ActionManager reset rows out of range: {rows.tolist()}")
         return rows.to(torch.int64)

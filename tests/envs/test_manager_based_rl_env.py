@@ -715,12 +715,15 @@ class _NamedSensorTensorObservation:
 
 def _policy_obs(env: _TestEnv) -> np.ndarray:
     return np.column_stack(
-        (env.episode_length_buf.to(torch.float32), env.action_manager.action[:, 0])
+        (
+            env.episode_length_buf.to(torch.float32).detach().cpu().numpy(),
+            env.action_manager.action[:, 0].detach().cpu().numpy(),
+        )
     )
 
 
 def _critic_obs(env: _TestEnv) -> np.ndarray:
-    return env.episode_length_buf[:, None].to(torch.float32)
+    return env.episode_length_buf[:, None].to(torch.float32).detach().cpu().numpy()
 
 
 def _tensor_runtime_policy_obs(env: _TestEnv) -> torch.Tensor:
@@ -736,7 +739,7 @@ def _tensor_runtime_critic_obs(env: _TestEnv) -> torch.Tensor:
     return env.episode_length_buf[:, None].to(dtype=torch.float32, device=env.device)
 
 
-def _episode_step_observation(env: ManagerBasedRlEnv) -> np.ndarray:
+def _episode_step_observation(env: ManagerBasedRlEnv) -> torch.Tensor:
     return env.episode_length_buf[:, None].to(torch.float32)
 
 

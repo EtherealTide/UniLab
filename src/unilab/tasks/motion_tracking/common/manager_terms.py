@@ -639,7 +639,7 @@ class MotionJointPositionAction(JointPositionAction):
             return
         self._apply_affine(self._previous_raw_actions, self._processed_actions)
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         super().reset(env_ids)
         selector = slice(None) if env_ids is None else self._reset_selector(env_ids)
         self._previous_raw_actions[selector] = 0.0
