@@ -244,11 +244,9 @@ class UniformVelocityCommand(CommandTerm):
         tensor.index_copy_(0, rows, samples)
 
     def _sample_uniform(self, lower: float, upper: float, count: int) -> torch.Tensor:
-        generator = getattr(self._env, "torch_rng", None)
-        if generator is not None:
-            return torch.rand((count,), generator=generator, device=generator.device) * float(
-                upper - lower
-            ) + float(lower)
+        rng_owner = getattr(self._env, "torch_rng", None)
+        if rng_owner is not None:
+            return rng_owner.uniform(lower, upper, (count,), dtype=torch.float32)
         return torch.as_tensor(
             self._env.rng.uniform(lower, upper, count),
             dtype=torch.float32,
@@ -256,14 +254,10 @@ class UniformVelocityCommand(CommandTerm):
         )
 
     def _host_uniform(self, lower: float, upper: float, *, count: int, dtype: Any) -> np.ndarray:
-        generator = getattr(self._env, "torch_rng", None)
-        if generator is not None:
+        rng_owner = getattr(self._env, "torch_rng", None)
+        if rng_owner is not None:
             return (
-                (
-                    torch.rand((count,), generator=generator, device=generator.device)
-                    * float(upper - lower)
-                    + float(lower)
-                )
+                (rng_owner.uniform(lower, upper, (count,), dtype=torch.float32))
                 .cpu()
                 .numpy()
                 .astype(dtype, copy=False)

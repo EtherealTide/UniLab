@@ -67,6 +67,7 @@ from unilab.managers import (
     RewardTermCfg,
     TerminationManager,
     TerminationTermCfg,
+    TorchManagerRng,
 )
 from unilab.managers.scene_entity_config import SceneEntityCfg
 
@@ -371,13 +372,15 @@ class ManagerBasedRlEnv(TorchEnv):
         actual_seed = cfg.seed if cfg.seed is not None else secrets.randbits(63)
         cfg.seed = actual_seed
         self.rng = np.random.default_rng(actual_seed)
-        self.torch_rng = (
-            torch.Generator(device=self.device)
+        self._torch_rng_owner = (
+            TorchManagerRng(device=self.device)
             if self.device.type == "cuda" and cfg.tensor_runtime
             else None
         )
-        if self.torch_rng is not None:
-            self.torch_rng.manual_seed(actual_seed)
+        self.torch_rng = (
+            self._torch_rng_owner if self.device.type == "cuda" and cfg.tensor_runtime else None
+        )
+        self._torch_generator = self._torch_rng_owner.generator if self._torch_rng_owner else None
         self._tensor_reset_default_root_state = None
         self._tensor_reset_env_origins = None
         self._tensor_reset_pose_bounds = None
@@ -1365,8 +1368,8 @@ class ManagerBasedRlEnv(TorchEnv):
             raise ValueError(f"ManagerBasedRlEnv seed must be a non-negative integer, got {seed!r}")
         replacement = np.random.default_rng(seed)
         self.rng.bit_generator.state = replacement.bit_generator.state
-        if self.torch_rng is not None:
-            self.torch_rng.manual_seed(seed)
+        if self._torch_rng_owner is not None:
+            self._torch_rng_owner.manual_seed(seed)
         self._cfg.seed = seed
         return seed
 
