@@ -336,6 +336,10 @@ class ManagerBasedRlEnv(TorchEnv):
     metrics_manager: MetricsManager | NullMetricsManager
     recorder_manager: RecorderManager | NullRecorderManager
     _tensor_read_plan: SceneTensorReadPlan | None
+    _tensor_reset_default_root_state: torch.Tensor | None
+    _tensor_reset_env_origins: torch.Tensor | None
+    _tensor_reset_pose_bounds: torch.Tensor | None
+    _tensor_reset_velocity_bounds: torch.Tensor | None
 
     def __init__(self, cfg: ManagerBasedRlEnvCfg, backend: SimBackend, num_envs: int):
         if not isinstance(cfg, ManagerBasedRlEnvCfg):
@@ -374,6 +378,10 @@ class ManagerBasedRlEnv(TorchEnv):
         )
         if self.torch_rng is not None:
             self.torch_rng.manual_seed(actual_seed)
+        self._tensor_reset_default_root_state = None
+        self._tensor_reset_env_origins = None
+        self._tensor_reset_pose_bounds = None
+        self._tensor_reset_velocity_bounds = None
 
         assert cfg.scene is not None
         default_qpos = resolve_scene_default_qpos(cfg.scene, backend)
@@ -1205,6 +1213,7 @@ class ManagerBasedRlEnv(TorchEnv):
         read_plan = self.scene._tensor_read_plan
         reset_capabilities = self._backend.get_tensor_capabilities()
         device_resident_reset = self._uses_device_resident_reset(read_plan, reset_capabilities)
+        tensor_reset_events = False
         use_packed_reset = (
             read_plan is not None
             and read_plan.host_plan is not None
@@ -1220,14 +1229,18 @@ class ManagerBasedRlEnv(TorchEnv):
         elif device_resident_reset:
             assert read_plan is not None
             self._reset_state.declare_packed_reset_device(read_plan.device)
-            reset_context = self._reset_state.scoped_device_tensor(ids)
+            tensor_reset_events = self.event_manager.uses_tensor_reset_rows
+            if tensor_reset_events:
+                reset_context = self._reset_state.scoped_device_event_tensor(rows)
+            else:
+                reset_context = self._reset_state.scoped_device_tensor(ids)
         else:
             reset_context = self._reset_state.scoped(ids)
         with reset_context:
             if "reset" in self.event_manager.available_modes:
                 self.event_manager.apply(
                     mode="reset",
-                    env_ids=ids,
+                    env_ids=rows if tensor_reset_events else ids,
                     global_env_step_count=self.step_counter,
                 )
             log.update(self.command_manager.reset(ids))
@@ -1396,6 +1409,8 @@ class ManagerBasedRlEnv(TorchEnv):
             raise ValueError(f"ManagerBasedRlEnv seed must be a non-negative integer, got {seed!r}")
         replacement = np.random.default_rng(seed)
         self.rng.bit_generator.state = replacement.bit_generator.state
+        if self.torch_rng is not None:
+            self.torch_rng.manual_seed(seed)
         self._cfg.seed = seed
         return seed
 

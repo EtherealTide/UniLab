@@ -2120,6 +2120,109 @@ def test_device_resident_reset_dispatches_selected_tensor_commit(topology, data_
         env.close()
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA device reset test")
+def test_device_resident_tensor_root_event_commits_selected_rows_once() -> None:
+    cfg = _make_cfg(include_optional_managers=False)
+    cfg.tensor_runtime = True
+    cfg.tensor_runtime_device = "cuda"
+    cfg.observations = {
+        "actor": ObservationGroupCfg(
+            terms={"policy": ObservationTermCfg(func=_tensor_runtime_policy_obs)}
+        ),
+        "value": ObservationGroupCfg(
+            terms={"critic": ObservationTermCfg(func=_tensor_runtime_critic_obs)}
+        ),
+    }
+    cfg.scene.entities["robot"] = EntityCfg(
+        root_body_name="base",
+        joint_names=("joint",),
+        body_names=("platform", "ball"),
+        actuator_names=("motor",),
+    )
+    cfg.actions = {
+        "tilt": _TensorBodyActionCfg(
+            entity_name="robot",
+            top_body_name="platform",
+            ball_body_name="ball",
+        )
+    }
+    cfg.events = {
+        "reset_root_state_uniform": EventTermCfg(
+            func=mdp.reset_root_state_uniform_tensor,
+            mode="reset",
+            params={
+                "pose_range": {
+                    "x": (0.1, 0.1),
+                    "y": (0.0, 0.0),
+                    "z": (0.0, 0.0),
+                    "roll": (0.0, 0.0),
+                    "pitch": (0.0, 0.0),
+                    "yaw": (0.0, 0.0),
+                },
+                "velocity_range": {
+                    "x": (0.2, 0.2),
+                    "y": (0.0, 0.0),
+                    "z": (0.0, 0.0),
+                    "roll": (0.0, 0.0),
+                    "pitch": (0.0, 0.0),
+                    "yaw": (0.0, 0.0),
+                },
+            },
+        )
+    }
+
+    class _TensorRootBackend(_DeviceResidentScenePlanBackend):
+        nq = 10
+        nv = 9
+
+        def get_default_qpos(self) -> np.ndarray:
+            return np.array([0.0, 0.0, 0.5, 1.0, 0.0, 0.0, 0.0, 0.25, 0.0, 0.0], dtype=np.float32)
+
+        def get_init_qvel(self) -> np.ndarray:
+            return np.zeros(9, dtype=np.float32)
+
+        def get_root_state_layout(self, root_body_name: str) -> Any:
+            from unisim.backend.base import BackendRootStateLayout
+
+            assert root_body_name == "base"
+            return BackendRootStateLayout(
+                qpos_indices=(0, 1, 2, 3, 4, 5, 6), qvel_indices=(0, 1, 2, 3, 4, 5)
+            )
+
+        def get_state_views(self, fields, device=None) -> dict[str, torch.Tensor]:
+            target = torch.device(device) if device is not None else torch.device("cuda")
+            return {
+                "qpos": torch.zeros((self.num_envs, self.nq), dtype=torch.float32, device=target),
+                "qvel": torch.zeros((self.num_envs, self.nv), dtype=torch.float32, device=target),
+            }
+
+    backend = _TensorRootBackend(2)
+    env = _TestEnv(cfg, cast(SimBackend, backend), 2)
+    try:
+        assert env.scene._tensor_read_plan is not None
+        assert env.event_manager.uses_tensor_reset_rows
+        env.reset()
+        assert len(backend.tensor_reset_calls) == 1
+        rows, qpos, qvel = backend.tensor_reset_calls[0]
+        torch.testing.assert_close(rows, torch.tensor([0, 1], device=env.device))
+        torch.testing.assert_close(
+            qpos[:, 0], torch.full((2,), 0.1, device=env.device), rtol=0, atol=1e-6
+        )
+        torch.testing.assert_close(
+            qvel[:, 0], torch.full((2,), 0.2, device=env.device), rtol=0, atol=1e-6
+        )
+        # Unselected joint/default columns stay at their canonical reset values.
+        torch.testing.assert_close(
+            qpos[:, 2:8],
+            torch.tensor([[0.5, 1.0, 0.0, 0.0, 0.0, 0.25]] * 2, device=env.device),
+        )
+    finally:
+        if env.scene._tensor_read_plan is not None:
+            env.scene._tensor_read_plan.close()
+            env.scene._tensor_read_plan = None
+        env.close()
+
+
 def test_partial_reset_preserves_other_env_counter_and_terminal_obs() -> None:
     env, _ = _make_env()
     env.init_state()

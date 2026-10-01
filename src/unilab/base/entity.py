@@ -2438,6 +2438,33 @@ class Entity:
             term_name=f"{self.name}.write_root_state_to_sim",
         )
 
+    def write_root_state_tensor_to_sim(
+        self,
+        root_state: torch.Tensor,
+        env_ids: torch.Tensor | np.ndarray | slice | None = None,
+    ) -> None:
+        """Stage a device-resident 13-D world-frame root state."""
+        if self._physical_entity is not None:
+            raise NotImplementedError(
+                "mapped entity tensor root-state reset requires a public entity transaction"
+            )
+        reset_state, layout = self._require_root_state_write()
+        if isinstance(env_ids, torch.Tensor):
+            reset_state.write_root_state_tensor(
+                env_ids,
+                layout,
+                root_state,
+                term_name=f"{self.name}.write_root_state_tensor_to_sim",
+            )
+        else:
+            resolved_env_ids = self._normalize_reset_env_ids(env_ids)
+            reset_state.write_root_state(
+                resolved_env_ids,
+                layout,
+                root_state.detach().cpu().numpy(),
+                term_name=f"{self.name}.write_root_state_to_sim",
+            )
+
     def bind_actuator_gain_write(
         self,
         actuator_ids: np.ndarray | Sequence[int] | slice | None = None,

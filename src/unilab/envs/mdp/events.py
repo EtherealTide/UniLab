@@ -13,6 +13,7 @@ import re
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
+import torch
 
 from unilab.managers.event_manager import EventTermCfg
 from unilab.managers.manager_base import ManagerTermBase
@@ -1473,6 +1474,8 @@ def reset_root_state_uniform(
     no public mocap-pose write contract, so fixed-base/mocap requests fail through
     the entity's cached floating-root capability instead of falling back.
     """
+    if isinstance(env_ids, torch.Tensor):
+        raise TypeError("reset_root_state_uniform does not accept tensor reset rows")
     ids = resolve_env_ids(env, env_ids)
     asset = cast("Entity", env.scene[asset_cfg.name])
     try:
@@ -1496,6 +1499,159 @@ def reset_root_state_uniform(
     asset.write_root_state_to_sim(root_states, env_ids=ids)
 
 
+def _tensor_se3_bounds(range_dict: dict[str, tuple[float, float]] | None) -> torch.Tensor:
+    try:
+        bounds = np.asarray(
+            [(range_dict or {}).get(key, (0.0, 0.0)) for key in _SE3_KEYS],
+            dtype=np.float32,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "tensor reset SE(3) ranges must map each key to a numeric (min, max) pair"
+        ) from exc
+    if bounds.shape != (len(_SE3_KEYS), 2) or not np.isfinite(bounds).all():
+        raise ValueError("tensor reset SE(3) ranges must be finite (min, max) pairs")
+    if np.any(bounds[:, 0] > bounds[:, 1]):
+        raise ValueError("tensor reset SE(3) range minimum exceeds maximum")
+    return torch.as_tensor(bounds)
+
+
+def _tensor_quat_from_euler_xyz(
+    roll: torch.Tensor, pitch: torch.Tensor, yaw: torch.Tensor
+) -> torch.Tensor:
+    """Convert XYZ Euler angles to device-resident wxyz quaternions."""
+    cos_roll, sin_roll = torch.cos(0.5 * roll), torch.sin(0.5 * roll)
+    cos_pitch, sin_pitch = torch.cos(0.5 * pitch), torch.sin(0.5 * pitch)
+    cos_yaw, sin_yaw = torch.cos(0.5 * yaw), torch.sin(0.5 * yaw)
+    return torch.stack(
+        (
+            cos_roll * cos_pitch * cos_yaw + sin_roll * sin_pitch * sin_yaw,
+            sin_roll * cos_pitch * cos_yaw - cos_roll * sin_pitch * sin_yaw,
+            cos_roll * sin_pitch * cos_yaw + sin_roll * cos_pitch * sin_yaw,
+            cos_roll * cos_pitch * sin_yaw - sin_roll * sin_pitch * cos_yaw,
+        ),
+        dim=-1,
+    )
+
+
+def _tensor_quat_mul(left_wxyz: torch.Tensor, right_wxyz: torch.Tensor) -> torch.Tensor:
+    """Multiply broadcast-compatible device-resident wxyz quaternions."""
+    left_w, left_xyz = left_wxyz[..., 0:1], left_wxyz[..., 1:4]
+    right_w, right_xyz = right_wxyz[..., 0:1], right_wxyz[..., 1:4]
+    cross = torch.linalg.cross(left_xyz, right_xyz, dim=-1)
+    return torch.cat(
+        (
+            left_w * right_w - (left_xyz * right_xyz).sum(dim=-1, keepdim=True),
+            left_w * right_xyz + right_w * left_xyz + cross,
+        ),
+        dim=-1,
+    )
+
+
+def reset_root_state_uniform_tensor(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    pose_range: dict[str, tuple[float, float]],
+    velocity_range: dict[str, tuple[float, float]] | None = None,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+    """Sample and stage a floating-root reset wholly on the declared device.
+
+    This owner-level event is the device-resident peer of
+    :func:`reset_root_state_uniform`. It consumes the environment's public CUDA
+    Torch generator and entity default table, so selected rows do not traverse a
+    NumPy composer or three host-to-device transfers.
+    """
+    if env.torch_rng is None:
+        raise NotImplementedError(
+            "reset_root_state_uniform_tensor requires env.torch_rng on a CUDA "
+            "Manager tensor runtime"
+        )
+    if env_ids.device != torch.device(env.device):
+        raise ValueError("reset_root_state_uniform_tensor reset rows must live on env.device")
+    ids = env_ids
+    asset = env.scene[asset_cfg.name]
+    try:
+        default = asset.data.default_root_state
+    except NotImplementedError as exc:
+        raise NotImplementedError(
+            "EventManager term 'reset_root_state_uniform_tensor' requires a "
+            f"floating-root state for entity '{asset_cfg.name}'"
+        ) from exc
+    device = torch.device(env.device)
+    rows = ids.to(dtype=torch.int64)
+    count = rows.numel()
+    if count == 0:
+        return
+
+    # Cache immutable default and origin tables on the event owner. The first
+    # selected reset pays one cold H2D copy; subsequent resets reuse them.
+    default_tensor = getattr(env, "_tensor_reset_default_root_state", None)
+    origins_tensor = getattr(env, "_tensor_reset_env_origins", None)
+    pose_bounds_tensor = getattr(env, "_tensor_reset_pose_bounds", None)
+    velocity_bounds_tensor = getattr(env, "_tensor_reset_velocity_bounds", None)
+    new_origins_tensor = torch.as_tensor(
+        np.array(env.scene.env_origins, dtype=np.float32, copy=True), device=device
+    )
+    new_pose_bounds = _tensor_se3_bounds(pose_range).to(device=device)
+    new_velocity_bounds = _tensor_se3_bounds(velocity_range).to(device=device)
+    if default_tensor is None or default_tensor.device != device:
+        default_tensor = torch.as_tensor(
+            np.array(default, copy=True, dtype=np.float32), device=device
+        )
+        env._tensor_reset_default_root_state = default_tensor
+    if origins_tensor is None or origins_tensor.device != device:
+        env._tensor_reset_env_origins = new_origins_tensor
+        origins_tensor = new_origins_tensor
+    if pose_bounds_tensor is None or not torch.equal(pose_bounds_tensor, new_pose_bounds):
+        env._tensor_reset_pose_bounds = new_pose_bounds
+        pose_bounds_tensor = new_pose_bounds
+    if velocity_bounds_tensor is None or not torch.equal(
+        velocity_bounds_tensor, new_velocity_bounds
+    ):
+        env._tensor_reset_velocity_bounds = new_velocity_bounds
+        velocity_bounds_tensor = new_velocity_bounds
+
+    reset_unit = torch.rand(
+        (count, 2 * len(_SE3_KEYS)), dtype=torch.float32, device=device, generator=env.torch_rng
+    )
+    bounds = torch.cat((pose_bounds_tensor, velocity_bounds_tensor), dim=0)
+    deltas = torch.addcmul(
+        bounds[None, :, 0],
+        reset_unit,
+        bounds[None, :, 1] - bounds[None, :, 0],
+    )
+    pose_delta, velocity_delta = torch.split(deltas, len(_SE3_KEYS), dim=1)
+
+    root_state = default_tensor.index_select(0, rows).clone()
+    if bool(origins_tensor.abs().max().item()):
+        root_state[:, 0:3] += origins_tensor.index_select(0, rows)[:, 0:3]
+    root_state[:, 0:3] += pose_delta[:, 0:3]
+    orientation_delta = _tensor_quat_from_euler_xyz(
+        pose_delta[:, 3], pose_delta[:, 4], pose_delta[:, 5]
+    )
+    root_state[:, 3:7] = _tensor_quat_mul(root_state[:, 3:7], orientation_delta)
+    root_state[:, 7:13] += velocity_delta
+    asset.write_root_state_tensor_to_sim(root_state, env_ids=rows)
+
+
+setattr(reset_root_state_uniform_tensor, "uses_tensor_rows", True)
+
+
+def reset_scene_to_default_tensor(env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> None:
+    """Initialize canonical scalar reset defaults for selected device rows.
+
+    The tensor root reset term owns the same transaction and materializes the
+    full-width default state before writing sampled roots. This owner event
+    preserves the community reset hook while avoiding a duplicate selected-row
+    commit.
+    """
+    del env, env_ids
+
+
+setattr(reset_scene_to_default_tensor, "uses_tensor_rows", True)
+
+
 __all__ = [
     "apply_body_impulse",
     "dof_armature",
@@ -1509,6 +1665,8 @@ __all__ = [
     "randomize_rigid_body_com",
     "randomize_rigid_body_mass",
     "reset_root_state_uniform",
+    "reset_root_state_uniform_tensor",
     "reset_scene_to_default",
+    "reset_scene_to_default_tensor",
     "resolve_env_ids",
 ]
