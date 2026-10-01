@@ -209,9 +209,7 @@ class feet_air_time(_FootContactTerm):
         gate = _command_gate(env, self.name, self._command_name, self._command_threshold)
         if gate is not None:
             if isinstance(gate, torch.Tensor):
-                return (torch.as_tensor(reward, device=gate.device) * gate).to(
-                    dtype=torch.float32
-                )
+                return (torch.as_tensor(reward, device=gate.device) * gate).to(dtype=torch.float32)
             reward = reward * gate
         return np.asarray(reward, dtype=get_global_dtype())
 

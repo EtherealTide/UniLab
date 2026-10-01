@@ -1008,7 +1008,23 @@ class G1PenaltyCurriculum(ManagerTermBase):
             if isinstance(env_ids, slice)
             else np.asarray(env_ids, dtype=np.intp).reshape(-1)
         )
-        done_ids = ids[env.reset_buf[ids]]
+        reset_buf = env.reset_buf
+        if isinstance(reset_buf, torch.Tensor):
+            reset_buf = reset_buf.detach().cpu().numpy()
+        done_ids = ids[reset_buf[ids]]
+        if isinstance(env.episode_length_buf, torch.Tensor):
+            if len(done_ids) > 0:
+                episode_lengths = (
+                    env.episode_length_buf[torch.as_tensor(done_ids, device=env.device)]
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )
+                self._tracker.update(episode_lengths.astype(np.float64))
+            return {
+                "average_episode_length": float(self._tracker.average_length),
+                "penalty_scale": float(self._current_scale),
+            }
         if len(done_ids) > 0:
             self._tracker.update(env.episode_length_buf[done_ids].astype(np.float64))
             average = self._tracker.average_length
