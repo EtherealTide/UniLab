@@ -367,6 +367,13 @@ class ManagerBasedRlEnv(TorchEnv):
         actual_seed = cfg.seed if cfg.seed is not None else secrets.randbits(63)
         cfg.seed = actual_seed
         self.rng = np.random.default_rng(actual_seed)
+        self.torch_rng = (
+            torch.Generator(device=self.device)
+            if self.device.type == "cuda" and cfg.tensor_runtime
+            else None
+        )
+        if self.torch_rng is not None:
+            self.torch_rng.manual_seed(actual_seed)
 
         assert cfg.scene is not None
         default_qpos = resolve_scene_default_qpos(cfg.scene, backend)

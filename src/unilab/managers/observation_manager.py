@@ -137,6 +137,12 @@ class ObservationManager(ManagerBase):
     def __init__(self, cfg: dict[str, ObservationGroupCfg | None], env: ManagerBasedRlEnv):
         self.cfg = deepcopy(cfg)
         self._device = getattr(env, "device", torch.device("cpu"))
+        self._torch_rng = getattr(env, "torch_rng", None)
+        if self._torch_rng is not None and self._torch_rng.device != self._device:
+            raise ValueError(
+                f"ObservationManager Torch RNG device {self._torch_rng.device} "
+                f"does not match observations on {self._device}."
+            )
         super().__init__(env=env)
 
         self._group_obs_dim: dict[str, tuple[int, ...] | list[tuple[int, ...]]] = dict()
@@ -474,7 +480,7 @@ class ObservationManager(ManagerBase):
                 fresh = True
             if isinstance(term_cfg.noise, noise_cfg.NoiseCfg):
                 # Noise accepts either carrier and returns a fresh allocation.
-                obs = term_cfg.noise.apply(obs, rng=self._env.rng)
+                obs = term_cfg.noise.apply(obs, rng=self._env.rng, torch_rng=self._torch_rng)
                 fresh = True
             elif isinstance(term_cfg.noise, noise_cfg.NoiseModelCfg):
                 # Noise models likewise return a fresh carrier allocation.
