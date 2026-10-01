@@ -1139,12 +1139,15 @@ class ManagerBasedRlEnv(TorchEnv):
 
         manager_obs = self.observation_manager.compute(update_history=True)
         timing["update_state_observation_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        phase_started = time.perf_counter()
 
         mapped_obs = self._map_observations(manager_obs)
         self.obs_buf = mapped_obs
         self._has_transition = True
+        timing["update_state_map_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        phase_started = time.perf_counter()
 
-        return state.replace(
+        replacement = state.replace(
             obs={
                 name: self._manager_tensor(values, dtype=self._dtype)
                 for name, values in mapped_obs.items()
@@ -1153,6 +1156,8 @@ class ManagerBasedRlEnv(TorchEnv):
             terminated=self._manager_tensor(self.reset_terminated, dtype=torch.bool),
             truncated=self._manager_tensor(self.reset_time_outs, dtype=torch.bool),
         )
+        timing["update_state_publish_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        return replacement
 
     def _refresh_tensor_reads_after_mutation(self) -> None:
         """Repack scene tensor reads after an in-phase simulation mutation."""
