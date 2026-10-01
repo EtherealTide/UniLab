@@ -771,6 +771,10 @@ class g1_base_height_below_minimum(ManagerTermBase):
     def tensor_body_names(self) -> tuple[str, ...]:
         return (self._root_body_name,)
 
+    @property
+    def entity_name(self) -> str:
+        return self._entity_name
+
     def __call__(self, env: _G1Env, **params: Any) -> np.ndarray | torch.Tensor:
         del params
         read_plan = getattr(env.scene, "_tensor_read_plan", None)
