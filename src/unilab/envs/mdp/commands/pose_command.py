@@ -99,14 +99,24 @@ class UniformPoseCommand(CommandTerm):
                 "change per-axis bounds"
             )
         for column, (lower, upper) in enumerate(ranges):
-            self._command[host_ids, column] = self._env.rng.uniform(
-                lower,
-                upper,
-                size=len(env_ids),
-            )
+            self._command[host_ids, column] = self._host_uniform(lower, upper, env_ids.numel())
         if self._zero_command_prob > 0.0:
-            zero = self._env.rng.uniform(0.0, 1.0, size=len(env_ids)) < self._zero_command_prob
+            zero = self._host_uniform(0.0, 1.0, env_ids.numel()) < self._zero_command_prob
             self._command[host_ids[zero]] = 0.0
+
+    def _host_uniform(self, lower: float, upper: float, count: int) -> np.ndarray:
+        generator = getattr(self._env, "torch_rng", None)
+        if generator is not None:
+            return (
+                (
+                    torch.rand((count,), generator=generator, device=generator.device)
+                    * float(upper - lower)
+                    + float(lower)
+                )
+                .cpu()
+                .numpy()
+            )
+        return self._env.rng.uniform(lower, upper, count)
 
     def _update_command(self, env_ids: torch.Tensor | None) -> None:
         del env_ids
