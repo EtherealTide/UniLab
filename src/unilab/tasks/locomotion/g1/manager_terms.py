@@ -237,21 +237,20 @@ def compute_feet_phase_height_targets(
             swing_t = (2 * x - 1).clamp(min=0.0)
             swing = swing_height - swing_height * (swing_t**3 + 3 * swing_t**2 * (1 - swing_t))
             return torch.where(x <= 0.5, stance, swing)
+        # The legacy NumPy helper branches on the same x<=0.5 boundary while
+        # evaluating both sides. Evaluate only the selected branch on the hot
+        # path; result values are identical where each branch is defined.
         phi_normalized = np.fmod(phi + np.pi, 2 * np.pi) - np.pi
-        x = (phi_normalized + np.pi) / (2 * np.pi)
-
-        def cubic_bezier_interpolation(
-            y_start: np.ndarray, y_end: np.ndarray, t: np.ndarray
-        ) -> np.ndarray:
-            y_diff = y_end - y_start
-            bezier = t**3 + 3 * (t**2 * (1 - t))
-            return np.asarray(y_start + y_diff * bezier, dtype=get_global_dtype())
-
-        stance = cubic_bezier_interpolation(np.zeros_like(x), np.full_like(x, swing_height), 2 * x)
-        swing = cubic_bezier_interpolation(
-            np.full_like(x, swing_height), np.zeros_like(x), 2 * x - 1
+        x = (phi_normalized + np.pi) / (2 * math.pi)
+        stance = x <= 0.5
+        stance_t = np.clip(2 * x, None, 1.0)
+        swing_t = np.clip(2 * x - 1.0, 0.0, None)
+        bezier = np.where(
+            stance,
+            stance_t**3 + 3 * stance_t**2 * (1 - stance_t),
+            1.0 - (swing_t**3 + 3 * swing_t**2 * (1 - swing_t)),
         )
-        return np.where(x <= 0.5, stance, swing)
+        return np.asarray(swing_height * bezier, dtype=get_global_dtype())
 
     left_target = cubic_bezier_height(gait_phase[:, 0], swing_height)
     right_target = cubic_bezier_height(gait_phase[:, 1], swing_height)
