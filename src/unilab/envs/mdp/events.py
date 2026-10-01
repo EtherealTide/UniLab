@@ -1305,7 +1305,21 @@ class ApplyBodyImpulse(ManagerTermBase):
         self._interval_time_left = self._sample_cooldown(self.num_envs)
 
     def _sample_cooldown(self, count: int) -> np.ndarray:
-        return self._env.rng.uniform(self._cooldown_s[0], self._cooldown_s[1], size=count)
+        return self._host_uniform(self._cooldown_s[0], self._cooldown_s[1], count)
+
+    def _host_uniform(self, lower: float, upper: float, count: int) -> np.ndarray:
+        generator = getattr(self._env, "torch_rng", None)
+        if generator is not None:
+            return (
+                (
+                    torch.rand((count,), generator=generator, device=generator.device)
+                    * float(upper - lower)
+                    + float(lower)
+                )
+                .cpu()
+                .numpy()
+            )
+        return self._env.rng.uniform(lower, upper, count)
 
     def __call__(
         self,
@@ -1339,12 +1353,12 @@ class ApplyBodyImpulse(ManagerTermBase):
             trigger_ids = np.flatnonzero(eligible)
             count = len(trigger_ids)
             num_bodies = self._backend_body_ids.size
-            forces = env.rng.uniform(
-                self._force_range[0], self._force_range[1], size=(count, num_bodies, 3)
-            )
-            torques = env.rng.uniform(
-                self._torque_range[0], self._torque_range[1], size=(count, num_bodies, 3)
-            )
+            forces = self._host_uniform(
+                self._force_range[0], self._force_range[1], count * num_bodies * 3
+            ).reshape(count, num_bodies, 3)
+            torques = self._host_uniform(
+                self._torque_range[0], self._torque_range[1], count * num_bodies * 3
+            ).reshape(count, num_bodies, 3)
             if self._body_point_offset is not None:
                 quats = self._entity.data.body_link_quat_w[trigger_ids][:, self._local_body_ids]
                 offset_w = np_quat_apply_batched(
@@ -1354,8 +1368,8 @@ class ApplyBodyImpulse(ManagerTermBase):
                 torques = torques + np.cross(offset_w, forces)
             self._active_forces[trigger_ids] = forces
             self._active_torques[trigger_ids] = torques
-            self._time_remaining[trigger_ids] = env.rng.uniform(
-                self._duration_s[0], self._duration_s[1], size=count
+            self._time_remaining[trigger_ids] = self._host_uniform(
+                self._duration_s[0], self._duration_s[1], count
             )
             self._active[trigger_ids] = True
             self._interval_time_left[trigger_ids] = self._sample_cooldown(count)
