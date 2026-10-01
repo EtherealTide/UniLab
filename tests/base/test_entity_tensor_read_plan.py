@@ -16,6 +16,7 @@ from unisim.backend.base import (
     TensorIOSpec,
     TensorLifecycleCapabilities,
     TensorProcessTopology,
+    TrackedBodyStateViews,
 )
 
 from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadSpec
@@ -33,6 +34,7 @@ class _SceneTensorBackend:
         self.full_reads = 0
         self.selected_reads = 0
         self.sensor_view_calls = 0
+        self.aggregate_body_view_calls = 0
         self.closes = 0
         self.qpos = torch.tensor([[0.1], [0.3]], dtype=torch.float32)
         self.qvel = torch.tensor([[10.0], [20.0]], dtype=torch.float32)
@@ -56,6 +58,8 @@ class _SceneTensorBackend:
                 state_views=True,
                 state_fields=frozenset(("qpos", "qvel")),
                 sensor_views=True,
+                selected_reset=True,
+                tracked_body_views=True,
                 process_topology=TensorProcessTopology.IN_PROCESS,
                 data_plane=TensorDataPlane.DIRECT,
                 stream_event_ownership="caller owns the Torch stream",
@@ -89,6 +93,20 @@ class _SceneTensorBackend:
     def get_sensor_view(self, name: str, device: str | torch.device = "cpu") -> torch.Tensor:
         self.sensor_view_calls += 1
         return self.sensors[name].to(torch.device(device))
+
+    def get_tracked_body_views(self, body_names=None, device=None) -> TrackedBodyStateViews:
+        self.aggregate_body_view_calls += 1
+        names = ("hip",) if body_names is None else tuple(body_names)
+        if names != ("hip",):
+            raise ValueError(f"unknown tracked bodies: {names}")
+        target = torch.device(device) if device is not None else torch.device("cpu")
+        return TrackedBodyStateViews(
+            body_names=names,
+            pos_w=self.sensors["track_pos_w_hip"].unsqueeze(1).to(target),
+            quat_w=self.sensors["track_quat_w_hip"].unsqueeze(1).to(target),
+            lin_vel_w=self.sensors["track_linvel_w_hip"].unsqueeze(1).to(target),
+            ang_vel_w=self.sensors["track_angvel_w_hip"].unsqueeze(1).to(target),
+        )
 
     def get_actuator_names(self) -> tuple[str, ...]:
         return ("hip_motor",)
@@ -270,6 +288,27 @@ def test_device_resident_scene_plan_refreshes_stable_public_views() -> None:
     plan.refresh()
     body = plan.body_tensor_view("robot")
     torch.testing.assert_close(body.ang_vel_w[:, 0], backend.sensors["track_angvel_w_hip"])
+
+
+def test_device_resident_scene_plan_reuses_aggregate_body_views() -> None:
+    backend = _SceneTensorBackend(device_resident=True)
+    scene = _scene(backend)
+    plan = scene.compile_tensor_reads("cpu", _specs())
+
+    plan.refresh()
+    first = plan.body_tensor_view("robot")
+    second = plan.body_tensor_view("robot")
+
+    assert first is second
+    assert backend.aggregate_body_view_calls == 1
+    assert first.body_names == ("hip",)
+    torch.testing.assert_close(first.pos_w[:, 0], backend.sensors["track_pos_w_hip"])
+
+    plan.refresh()
+    third = plan.body_tensor_view("robot")
+
+    assert third is not first
+    assert backend.aggregate_body_view_calls == 2
 
 
 def test_device_resident_scene_plan_reuses_stable_sensor_views() -> None:
