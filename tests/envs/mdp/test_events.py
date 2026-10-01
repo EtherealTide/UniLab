@@ -839,19 +839,21 @@ def test_min_step_count_gating_reuses_committed_field_values() -> None:
         },
         env,
     )
-    first_ids = np.array([0, 1], dtype=np.int32)
+    first_rows = torch.tensor([0, 1], dtype=torch.int64)
+    first_ids = first_rows.cpu().numpy()
     with transaction.scoped(first_ids):
-        mdp.reset_scene_to_default(env, first_ids)
-        manager.apply(mode="reset", env_ids=first_ids, global_env_step_count=0)
+        mdp.reset_scene_to_default(env, first_rows)
+        manager.apply(mode="reset", env_ids=first_rows, global_env_step_count=0)
     first = backend.randomization_calls[-1]
     assert first is not None and first.body_mass is not None
 
     # Env 2 has never triggered, so the first-trigger override fires it while
     # envs 0 and 1 stay gated; their payload rows reuse committed values.
-    ids = np.array([0, 1, 2], dtype=np.int32)
+    rows = torch.tensor([0, 1, 2], dtype=torch.int64)
+    ids = rows.cpu().numpy()
     with transaction.scoped(ids):
-        mdp.reset_scene_to_default(env, ids)
-        manager.apply(mode="reset", env_ids=ids, global_env_step_count=50)
+        mdp.reset_scene_to_default(env, rows)
+        manager.apply(mode="reset", env_ids=rows, global_env_step_count=50)
     second = backend.randomization_calls[-1]
     assert second is not None and second.body_mass is not None
     np.testing.assert_allclose(second.body_mass[:2], first.body_mass)
@@ -863,14 +865,14 @@ def test_min_step_count_gating_reuses_committed_field_values() -> None:
     # previously applied per-env values, so no dense payload is needed.
     with transaction.scoped(first_ids):
         mdp.reset_scene_to_default(env, first_ids)
-        manager.apply(mode="reset", env_ids=first_ids, global_env_step_count=60)
+        manager.apply(mode="reset", env_ids=first_rows, global_env_step_count=60)
     third = backend.randomization_calls[-1]
     assert third is None or third.body_mass is None
 
     # Once enough steps elapsed the gate reopens and the term resamples.
     with transaction.scoped(first_ids):
         mdp.reset_scene_to_default(env, first_ids)
-        manager.apply(mode="reset", env_ids=first_ids, global_env_step_count=200)
+        manager.apply(mode="reset", env_ids=first_rows, global_env_step_count=200)
     fourth = backend.randomization_calls[-1]
     assert fourth is not None and fourth.body_mass is not None
     torch.testing.assert_close(
@@ -893,16 +895,18 @@ def test_min_step_count_gating_applies_to_pd_gains_payload_rows() -> None:
         },
         env,
     )
-    first_ids = np.array([0, 1], dtype=np.int32)
+    first_rows = torch.tensor([0, 1], dtype=torch.int64)
+    first_ids = first_rows.cpu().numpy()
     with transaction.scoped(first_ids):
-        manager.apply(mode="reset", env_ids=first_ids, global_env_step_count=0)
+        manager.apply(mode="reset", env_ids=first_rows, global_env_step_count=0)
     first = backend.randomization_calls[-1]
     assert first is not None and first.kp is not None and first.kd is not None
 
-    ids = np.array([0, 1, 2], dtype=np.int32)
+    rows = torch.tensor([0, 1, 2], dtype=torch.int64)
+    ids = rows.cpu().numpy()
     with transaction.scoped(ids):
-        mdp.reset_scene_to_default(env, ids)
-        manager.apply(mode="reset", env_ids=ids, global_env_step_count=10)
+        mdp.reset_scene_to_default(env, rows)
+        manager.apply(mode="reset", env_ids=rows, global_env_step_count=10)
     second = backend.randomization_calls[-1]
     assert second is not None and second.kp is not None and second.kd is not None
     np.testing.assert_allclose(second.kp[:2], first.kp)
@@ -1019,7 +1023,7 @@ def test_apply_body_impulse_reset_clears_active_wrench() -> None:
     manager.apply(mode="step", dt=0.02)
     assert len(backend.interval_plans) == 1
 
-    manager.reset(np.array([1], dtype=np.int32))
+    manager.reset(torch.tensor([1], dtype=torch.int64))
     assert len(backend.interval_plans) == 2
     np.testing.assert_allclose(backend.interval_plans[1].body_force[:, 0], 0.0)
 
@@ -1294,7 +1298,11 @@ def test_randomize_encoder_bias_samples_selected_joints_within_range() -> None:
         env,
     )
 
-    manager.apply(mode="reset", env_ids=np.asarray([0, 2], dtype=np.int32), global_env_step_count=0)
+    manager.apply(
+        mode="reset",
+        env_ids=torch.tensor([0, 2], dtype=torch.int64),
+        global_env_step_count=0,
+    )
 
     bias = env.scene["robot"].data.encoder_bias
     assert bias.shape == (3, 4)

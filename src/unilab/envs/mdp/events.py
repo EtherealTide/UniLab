@@ -240,11 +240,13 @@ def _validate_event_term(
         raise ValueError(f"EventManager term '{term_name}' is missing parameters {missing}")
 
 
-def resolve_env_ids(env: ManagerBasedRlEnv, env_ids: np.ndarray | None) -> np.ndarray:
-    """Return concrete NumPy environment IDs, preserving community sentinel semantics."""
+def resolve_env_ids(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> np.ndarray:
+    """Return the NumPy rows still owned by generic event-term internals."""
     if env_ids is None:
         return np.arange(env.num_envs, dtype=np.int32)
-    return env_ids
+    if isinstance(env_ids, torch.Tensor):
+        return env_ids.detach().cpu().numpy().astype(np.int32, copy=False)
+    return np.asarray(env_ids, dtype=np.int32)
 
 
 def _selected_reset_defaults(
@@ -518,7 +520,7 @@ class _ModelFieldRandomizer(ManagerTermBase):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
-        env_ids: np.ndarray | None,
+        env_ids: torch.Tensor | None,
         ranges: Any,
         asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
         distribution: str = "uniform",
@@ -677,7 +679,7 @@ class PdGains(ManagerTermBase):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
-        env_ids: np.ndarray | None,
+        env_ids: torch.Tensor | None,
         kp_range: tuple[float, float],
         kd_range: tuple[float, float],
         asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
@@ -786,7 +788,7 @@ class RandomizeRigidBodyMass(ManagerTermBase):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
-        env_ids: np.ndarray | None,
+        env_ids: torch.Tensor | None,
         asset_cfg: SceneEntityCfg,
         mass_distribution_params: tuple[float, float],
         operation: Literal["add", "scale", "abs"],
@@ -898,7 +900,7 @@ class RandomizeBodyMassInertia(ManagerTermBase):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
-        env_ids: np.ndarray | None,
+        env_ids: torch.Tensor | None,
         asset_cfg: SceneEntityCfg,
         scale_range: tuple[float, float],
     ) -> None:
@@ -980,7 +982,7 @@ class RandomizeRigidBodyCom(ManagerTermBase):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
-        env_ids: np.ndarray | None,
+        env_ids: torch.Tensor | None,
         com_range: dict[str, tuple[float, float]],
         asset_cfg: SceneEntityCfg,
     ) -> None:
@@ -1051,7 +1053,7 @@ class RandomizePhysicsSceneGravity(ManagerTermBase):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
-        env_ids: np.ndarray | None,
+        env_ids: torch.Tensor | None,
         gravity_distribution_params: tuple[list[float], list[float]],
         operation: Literal["add", "scale", "abs"],
         distribution: Literal["uniform", "log_uniform", "gaussian"] = "uniform",
@@ -1130,7 +1132,7 @@ class PushBySettingVelocity(ManagerTermBase):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
-        env_ids: np.ndarray | None,
+        env_ids: torch.Tensor | None,
         velocity_range: dict[str, tuple[float, float]],
         asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     ) -> None:
@@ -1308,7 +1310,7 @@ class ApplyBodyImpulse(ManagerTermBase):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
-        env_ids: np.ndarray | None,
+        env_ids: torch.Tensor | None,
         force_range: tuple[float, float],
         torque_range: tuple[float, float],
         duration_s: tuple[float, float],
@@ -1373,13 +1375,13 @@ class ApplyBodyImpulse(ManagerTermBase):
                 term_name="apply_body_impulse",
             )
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         ids = (
             np.arange(self.num_envs, dtype=np.intp)
             if env_ids is None
             else np.arange(self.num_envs, dtype=np.intp)[env_ids]
             if isinstance(env_ids, slice)
-            else np.asarray(env_ids, dtype=np.intp)
+            else resolve_env_ids(self._env, env_ids).astype(np.intp, copy=False)
         )
         was_active = ids[self._active[ids]]
         self._active[ids] = False
@@ -1437,7 +1439,7 @@ class RandomizeEncoderBias(ManagerTermBase):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
-        env_ids: np.ndarray | None,
+        env_ids: torch.Tensor | None,
         bias_range: tuple[float, float],
         asset_cfg: SceneEntityCfg,
     ) -> None:
@@ -1453,7 +1455,7 @@ class RandomizeEncoderBias(ManagerTermBase):
 randomize_encoder_bias = RandomizeEncoderBias
 
 
-def reset_scene_to_default(env: ManagerBasedRlEnv, env_ids: np.ndarray | None) -> None:
+def reset_scene_to_default(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> None:
     """Reset all materialized scene entities to backend default qpos/qvel."""
     ids = resolve_env_ids(env, env_ids)
     if not env.scene.entities:
@@ -1463,7 +1465,7 @@ def reset_scene_to_default(env: ManagerBasedRlEnv, env_ids: np.ndarray | None) -
 
 def reset_root_state_uniform(
     env: ManagerBasedRlEnv,
-    env_ids: np.ndarray | None,
+    env_ids: torch.Tensor | None,
     pose_range: dict[str, tuple[float, float]],
     velocity_range: dict[str, tuple[float, float]] | None = None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,

@@ -56,11 +56,11 @@ def test_event_modes_interval_reset_throttle_and_order(fake_env: FakeEnv) -> Non
     }
     manager = EventManager(cfg, fake_env)
     assert list(manager.active_terms) == ["startup", "reset", "interval", "step"]
-    manager.apply("startup", env_ids=np.array([0, 2]))
+    manager.apply("startup", env_ids=torch.tensor([0, 2], dtype=torch.int64))
     manager.apply("step", dt=0.01)
     manager.apply("interval", dt=0.1)
-    manager.apply("reset", env_ids=np.array([1, 3]), global_env_step_count=1)
-    manager.apply("reset", env_ids=np.array([1, 3]), global_env_step_count=2)
+    manager.apply("reset", env_ids=torch.tensor([1, 3], dtype=torch.int64), global_env_step_count=1)
+    manager.apply("reset", env_ids=torch.tensor([1, 3], dtype=torch.int64), global_env_step_count=2)
     assert [label for label, _ in fake_env.calls] == ["startup", "step", "interval", "reset"]
     np.testing.assert_array_equal(fake_env.calls[2][1], np.arange(fake_env.num_envs))
 
