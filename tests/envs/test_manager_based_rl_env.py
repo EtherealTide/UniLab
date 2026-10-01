@@ -601,14 +601,14 @@ class _Command(CommandTerm):
     def command(self) -> np.ndarray:
         return self._command
 
-    def _update_metrics(self, env_ids: np.ndarray | None = None) -> None:
+    def _update_metrics(self, env_ids: torch.Tensor | None = None) -> None:
         return None
 
-    def _resample_command(self, env_ids: np.ndarray) -> None:
-        self._command[env_ids, 0] = self._env.rng.uniform(size=len(env_ids))
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
+        self._command[env_ids.cpu().numpy(), 0] = self._env.rng.uniform(size=env_ids.numel())
 
-    def _update_command(self, env_ids: np.ndarray | None) -> None:
-        ids = None if env_ids is None else env_ids.copy()
+    def _update_command(self, env_ids: torch.Tensor | None) -> None:
+        ids = None if env_ids is None else env_ids.clone()
         self._env.command_update_ids.append(ids)
 
 
@@ -619,12 +619,12 @@ class _StateWritingCommandCfg(CommandTermCfg):
 
 
 class _StateWritingCommand(_Command):
-    def _resample_command(self, env_ids: np.ndarray) -> None:
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
         self._command[env_ids, 0] = 0.75
         self._env.scene["robot"].write_joint_state_to_sim(
             np.full((len(env_ids), 1), 0.75, dtype=np.float32),
             np.full((len(env_ids), 1), -0.75, dtype=np.float32),
-            env_ids=env_ids,
+            env_ids=env_ids.cpu().numpy(),
         )
 
 
@@ -648,14 +648,14 @@ class _AliasedSensorCommand(CommandTerm):
     def command(self) -> np.ndarray:
         return self._command
 
-    def _update_metrics(self, env_ids: np.ndarray | None = None) -> None:
+    def _update_metrics(self, env_ids: torch.Tensor | None = None) -> None:
         return None
 
-    def _resample_command(self, env_ids: np.ndarray) -> None:
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
         self._command[env_ids, 0] = 0.5
         self._command[env_ids, 1] = -0.25
 
-    def _update_command(self, env_ids: np.ndarray | None) -> None:
+    def _update_command(self, env_ids: torch.Tensor | None) -> None:
         return None
 
     def _metric_velocities(self) -> tuple[torch.Tensor, torch.Tensor]:

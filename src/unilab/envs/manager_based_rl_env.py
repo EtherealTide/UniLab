@@ -1227,7 +1227,7 @@ class ManagerBasedRlEnv(TorchEnv):
                     env_ids=rows if tensor_reset_events else ids,
                     global_env_step_count=self.step_counter,
                 )
-            log.update(self.command_manager.reset(ids))
+            log.update(self.command_manager.reset(rows))
 
         for manager in (
             self.observation_manager,
@@ -1265,7 +1265,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 else:
                     self._warm_external_cuda_ipc_views()
                     read_plan.refresh()
-            self.command_manager.compute(dt=0.0, env_ids=ids)
+            self.command_manager.compute(dt=0.0, env_ids=rows)
             self.command_manager.post_compute()
             # Row-scoped reset rebuild (issue #1259 R2): the observation manager
             # returns only the reset rows, so no full-batch slice is needed here.

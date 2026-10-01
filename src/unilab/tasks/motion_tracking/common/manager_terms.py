@@ -349,14 +349,11 @@ class MotionCommand(CommandTerm):
     def robot_anchor_ang_vel_w(self) -> np.ndarray:
         return self.robot_body_ang_vel_w[:, self.anchor_body_idx]
 
-    def reset(self, env_ids: np.ndarray | slice | None) -> dict[str, float]:
-        ids = (
-            np.arange(self.num_envs, dtype=np.int32)
-            if env_ids is None
-            else np.arange(self.num_envs, dtype=np.int32)[env_ids]
-            if isinstance(env_ids, slice)
-            else env_ids
-        )
+    def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+        if isinstance(env_ids, torch.Tensor):
+            ids = env_ids.detach().cpu().numpy().astype(np.int32, copy=False)
+        else:
+            ids = np.arange(self.num_envs, dtype=np.int32)[env_ids or slice(None)]
         # Row-wise error metrics are consumed only here (CommandTerm.reset logs
         # per-episode means from these rows, then zeroes them). The per-step
         # compute path skips the full-batch metrics kernel (issue #1355), so
@@ -368,7 +365,9 @@ class MotionCommand(CommandTerm):
         self.joint_default_bias[ids] = self._env.rng.uniform(
             lower, upper, size=(len(ids), self.motion.num_joints)
         )
-        return super().reset(ids)
+        return super().reset(
+            env_ids if isinstance(env_ids, torch.Tensor) else torch.from_numpy(ids)
+        )
 
     def _refresh_motion(self, env_ids: np.ndarray | None = None) -> None:
         """Refresh motion-reference buffers from the current frame indices.
@@ -466,14 +465,19 @@ class MotionCommand(CommandTerm):
             self.robot_body_ori_b,
         )
 
-    def _update_metrics(self, env_ids: np.ndarray | None = None) -> None:
+    def _update_metrics(self, env_ids: torch.Tensor | None = None) -> None:
         # The row-wise error metrics are consumed only by `reset()` (episode
         # log extras), which refreshes exactly the rows it reads. The per-step
         # call (env_ids=None) therefore skips the Numba kernel over all rows
         # (issue #1355); the reset path (env_ids set) refreshes the reset rows
         # so post-reset metrics track the post-reset state.
         if env_ids is not None:
-            self._update_error_metrics(env_ids)
+            rows = (
+                env_ids.detach().cpu().numpy()
+                if isinstance(env_ids, torch.Tensor)
+                else np.asarray(env_ids)
+            )
+            self._update_error_metrics(rows)
         # Sampler statistics are global scalars, so every row tracks them.
         # These scalar sampling settings and the Numba error kernel below are
         # still NumPy-owned; assert that migration boundary explicitly.
@@ -526,7 +530,7 @@ class MotionCommand(CommandTerm):
             )
         return value
 
-    def _resample_command(self, env_ids: np.ndarray) -> None:
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
         """Resample motion frames and stage the corresponding state writes.
 
         The base implementation gathers the resampled frames once, ingests them
@@ -538,9 +542,10 @@ class MotionCommand(CommandTerm):
         unset, and the reset-path `_update_command` falls back to a fresh
         `_refresh_motion(env_ids)` gather.
         """
-        frames = self.sampler.sample_frames(env_ids)
+        ids = env_ids.detach().cpu().numpy()
+        frames = self.sampler.sample_frames(ids)
         motion = self.motion.get_motion_at_frame(frames)
-        count = len(env_ids)
+        count = env_ids.numel()
         pose = self._env.rng.uniform(
             self._pose_range[:, 0], self._pose_range[:, 1], size=(count, 6)
         )
@@ -548,7 +553,7 @@ class MotionCommand(CommandTerm):
             self._velocity_range[:, 0], self._velocity_range[:, 1], size=(count, 6)
         )
         root_pos = motion.body_pos_w[:, 0].copy()
-        root_pos += self._env.scene.env_origins[env_ids]
+        root_pos += self._env.scene.env_origins[ids]
         root_pos += pose[:, :3]
         root_quat = np_quat_mul(
             np_quat_from_euler_xyz(pose[:, 3], pose[:, 4], pose[:, 5]),
@@ -563,19 +568,21 @@ class MotionCommand(CommandTerm):
         )
         limits = self.robot.data.soft_joint_pos_limits
         np.clip(joint_pos, limits[:, 0], limits[:, 1], out=joint_pos)
-        self.robot.write_joint_state_to_sim(joint_pos, motion.joint_vel, env_ids=env_ids)
+        self.robot.write_joint_state_to_sim(joint_pos, motion.joint_vel, env_ids=ids)
         root_state = np.concatenate((root_pos, root_quat, root_lin_vel, root_ang_vel), axis=-1)
-        self.robot.write_root_state_to_sim(root_state, env_ids=env_ids)
+        self.robot.write_root_state_to_sim(root_state, env_ids=ids)
         # Keep the motion-reference buffers in sync with the resampled frames so
         # the reset-path `_update_command` does not gather the same rows again
         # (issue #1355). Subclasses reuse `self._resample_motion` for their own
         # reset writes instead of re-gathering the same frames.
-        self._ingest_motion_rows(env_ids, motion)
-        self._resample_ingested_ids = env_ids
+        self._ingest_motion_rows(ids, motion)
+        self._resample_ingested_ids = ids
         self._resample_motion = motion
 
-    def _update_command(self, env_ids: np.ndarray | None) -> None:
-        self._post_compute_env_ids = env_ids
+    def _update_command(self, env_ids: torch.Tensor | None) -> None:
+        self._post_compute_env_ids = (
+            env_ids.detach().cpu().numpy() if isinstance(env_ids, torch.Tensor) else env_ids
+        )
         if env_ids is not None:
             ingested = self._resample_ingested_ids
             self._resample_ingested_ids = None

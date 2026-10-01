@@ -81,8 +81,8 @@ class CommandTerm(ManagerTermBase):
     def command(self):
         raise NotImplementedError
 
-    def reset(self, env_ids: np.ndarray | slice | None) -> dict[str, float]:
-        assert isinstance(env_ids, np.ndarray)
+    def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+        assert isinstance(env_ids, torch.Tensor)
         extras = {}
         metric_values = list(self.metrics.items())
         tensor_metrics = [
@@ -119,7 +119,7 @@ class CommandTerm(ManagerTermBase):
         return extras
 
     def compute(
-        self, dt: float | np.ndarray | torch.Tensor, env_ids: np.ndarray | None = None
+        self, dt: float | np.ndarray | torch.Tensor, env_ids: torch.Tensor | None = None
     ) -> None:
         """Advance the command state by dt.
 
@@ -168,6 +168,7 @@ class CommandTerm(ManagerTermBase):
             raise ValueError(f"CommandTerm '{self.name}' received non-finite dt.")
         self._update_metrics(env_ids)
         self._validate_metrics()
+        resample_env_ids: torch.Tensor
         if env_ids is None:
             if dt_tensor is not None:
                 self.time_left -= dt_tensor
@@ -175,16 +176,12 @@ class CommandTerm(ManagerTermBase):
                 assert dt_scalar is not None
                 self.time_left -= dt_scalar
             resample_env_ids = torch.nonzero(self.time_left <= 0.0, as_tuple=False).flatten()
-            resample_env_ids = resample_env_ids.detach().cpu().numpy()
         else:
             assert not tensor_dt
             assert dt_scalar is not None
             self.time_left[env_ids] -= dt_scalar
-            expired = self.time_left[env_ids] <= 0.0
-            if isinstance(expired, torch.Tensor):
-                expired = expired.detach().cpu().numpy()
-            resample_env_ids = np.asarray(env_ids)[expired]
-        if len(resample_env_ids) > 0:
+            resample_env_ids = env_ids[self.time_left[env_ids] <= 0.0]
+        if resample_env_ids.numel() > 0:
             self._resample(resample_env_ids)
         self._update_command(env_ids)
 
@@ -220,13 +217,13 @@ class CommandTerm(ManagerTermBase):
         if len(sig.parameters) == 0:
             raise TypeError(
                 f"{type(self).__name__}._update_command must accept env_ids: "
-                "_update_command(self, env_ids: np.ndarray | None). It receives "
+                "_update_command(self, env_ids: torch.Tensor | None). It receives "
                 "None on the per-step update and the reset env ids on reset(); "
                 "scope per-step state advances to env_ids."
             )
 
-    def _resample(self, env_ids: np.ndarray) -> None:
-        if len(env_ids) != 0:
+    def _resample(self, env_ids: torch.Tensor) -> None:
+        if env_ids.numel() != 0:
             lower, upper = self._resampling_time_range
             sampled = self._env.rng.uniform(lower, upper, len(env_ids))
             self.time_left[env_ids] = torch.as_tensor(
@@ -236,7 +233,7 @@ class CommandTerm(ManagerTermBase):
             self.command_counter[env_ids] += 1
 
     @abc.abstractmethod
-    def _update_metrics(self, env_ids: np.ndarray | None = None) -> None:
+    def _update_metrics(self, env_ids: torch.Tensor | None = None) -> None:
         """Update the metrics based on the current state.
 
         env_ids is None on the per-step update (all envs) and the reset env ids on
@@ -246,12 +243,12 @@ class CommandTerm(ManagerTermBase):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def _resample_command(self, env_ids: np.ndarray) -> None:
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
         """Resample the command for the specified environments."""
         raise NotImplementedError
 
     @abc.abstractmethod
-    def _update_command(self, env_ids: np.ndarray | None) -> None:
+    def _update_command(self, env_ids: torch.Tensor | None) -> None:
         """Update the command based on the current state.
 
         env_ids is None on the per-step update (all envs) and the reset env ids on reset().
@@ -306,11 +303,11 @@ class CommandManager(ManagerBase):
             terms.append((name, command[env_idx].tolist()))
         return terms
 
-    def reset(self, env_ids: np.ndarray | slice | None) -> dict[str, float]:
+    def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         if env_ids is None:
-            env_ids = np.arange(self.num_envs)
+            env_ids = torch.arange(self.num_envs, device=self._device)
         elif isinstance(env_ids, slice):
-            env_ids = np.arange(self.num_envs)[env_ids]
+            env_ids = torch.arange(self.num_envs, device=self._device)[env_ids]
         extras = {}
         for name, term in self._terms.items():
             metrics = term.reset(env_ids=env_ids)
@@ -319,7 +316,9 @@ class CommandManager(ManagerBase):
                 extras[f"Metrics/{name}/{metric_name}"] = metric_value
         return extras
 
-    def compute(self, dt: float | np.ndarray, env_ids: np.ndarray | None = None) -> None:
+    def compute(
+        self, dt: float | np.ndarray | torch.Tensor, env_ids: torch.Tensor | None = None
+    ) -> None:
         for name, term in self._terms.items():
             term.compute(dt, env_ids)
             self._validate_command(name, term.command)
@@ -394,11 +393,11 @@ class NullCommandManager:
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:
         return []
 
-    def reset(self, env_ids: np.ndarray | None = None) -> dict[str, np.ndarray]:
+    def reset(self, env_ids: torch.Tensor | None = None) -> dict[str, np.ndarray]:
         return {}
 
     def compute(
-        self, dt: float | np.ndarray | torch.Tensor, env_ids: np.ndarray | None = None
+        self, dt: float | np.ndarray | torch.Tensor, env_ids: torch.Tensor | None = None
     ) -> None:
         pass
 

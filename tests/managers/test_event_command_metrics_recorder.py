@@ -129,7 +129,7 @@ class DummyCommandCfg(CommandTermCfg):
 
 def test_command_resample_metrics_validation_and_null(fake_env: FakeEnv) -> None:
     manager = CommandManager({"goal": DummyCommandCfg(resampling_time_range=(0.5, 0.5))}, fake_env)
-    extras = manager.reset(np.array([1, 2]))
+    extras = manager.reset(torch.tensor([1, 2], dtype=torch.int64))
     assert extras == {"Metrics/goal/error": 1.5}
     np.testing.assert_array_equal(manager.get_command("goal")[[1, 2]], 0.0)
     manager.compute(0.5)

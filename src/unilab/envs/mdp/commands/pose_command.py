@@ -13,6 +13,7 @@ from numbers import Real
 from typing import TYPE_CHECKING
 
 import numpy as np
+import torch
 
 from unilab.dtype_config import get_global_dtype
 from unilab.managers.command_manager import CommandTerm, CommandTermCfg
@@ -83,12 +84,13 @@ class UniformPoseCommand(CommandTerm):
     def command(self) -> np.ndarray:
         return self._command
 
-    def _update_metrics(self, env_ids: np.ndarray | None = None) -> None:
+    def _update_metrics(self, env_ids: torch.Tensor | None = None) -> None:
         del env_ids
 
-    def _resample_command(self, env_ids: np.ndarray) -> None:
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
         if len(env_ids) == 0:
             return
+        host_ids = env_ids.detach().cpu().numpy()
         ranges = self._validated_ranges(self.cfg.ranges)
         if len(ranges) != self._command.shape[1]:
             raise ValueError(
@@ -97,16 +99,16 @@ class UniformPoseCommand(CommandTerm):
                 "change per-axis bounds"
             )
         for column, (lower, upper) in enumerate(ranges):
-            self._command[env_ids, column] = self._env.rng.uniform(
+            self._command[host_ids, column] = self._env.rng.uniform(
                 lower,
                 upper,
                 size=len(env_ids),
             )
         if self._zero_command_prob > 0.0:
             zero = self._env.rng.uniform(0.0, 1.0, size=len(env_ids)) < self._zero_command_prob
-            self._command[env_ids[zero]] = 0.0
+            self._command[host_ids[zero]] = 0.0
 
-    def _update_command(self, env_ids: np.ndarray | None) -> None:
+    def _update_command(self, env_ids: torch.Tensor | None) -> None:
         del env_ids
 
 
