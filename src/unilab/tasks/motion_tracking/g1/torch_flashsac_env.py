@@ -102,6 +102,12 @@ _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V1 = (
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V2 = (
     "6838841dfebc4d64ddaec3a2fcf123b29f28f858b397495a5bf2680f00af1b60"
 )
+# V3 applies only to the MJWARP owner: its two anchor observations use the
+# Manager tensor read phase instead of the command-owned NumPy buffers. The
+# equations, ordering, noise, and all other owner terms remain unchanged.
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V3 = (
+    "a9c1887c8e49cb4eebea298aac95eb6ccac6f1f7de2239367853ca9b33375f82"
+)
 _TORCH_G1_SAC_OWNER_IDENTITY_V1 = "90236c9e02e460817208b6a8e14f614ae4d2a797f16d1a5bfd0d306f4059d385"
 # Mapped IsaacSim physical names are namespace-equivalent to the local G1 owner:
 # every local body/joint/sensor name is prefixed by the declared physical
@@ -119,6 +125,7 @@ def _validate_torch_g1_flashsac_owner_contract(cfg: ManagerBasedRlEnvCfg) -> Non
     if identity not in {
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V1,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V2,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V3,
         _TORCH_G1_SAC_OWNER_IDENTITY_V1,
         _TORCH_G1_FLIP_SAC_OWNER_IDENTITY_V1,
         _TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V1,

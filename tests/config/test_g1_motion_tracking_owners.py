@@ -106,10 +106,29 @@ def test_flashsac_g1_motion_tracking_uses_comparable_dr_free_owner() -> None:
         == "unilab.tasks.motion_tracking.common.manager_terms.motion_joint_pos_rel"
     )
     assert mjwarp_cfg.training.sim_backend == "mjwarp"
-    for section in ("env", "reward"):
-        assert OmegaConf.to_container(mjwarp_cfg[section]) == OmegaConf.to_container(
-            mujoco_cfg[section]
-        )
+    assert (
+        mjwarp_cfg.env.observations.actor.terms.motion_anchor_pos_b.func
+        == "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorPositionObservation"
+    )
+    assert (
+        mjwarp_cfg.env.observations.actor.terms.motion_anchor_ori_b.func
+        == "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorOrientationObservation"
+    )
+    assert mjwarp_cfg.env.observations.critic.terms.motion_anchor_pos_b.func == (
+        "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorPositionObservation"
+    )
+    assert mjwarp_cfg.env.observations.critic.terms.motion_anchor_ori_b.func == (
+        "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorOrientationObservation"
+    )
+    # Anchor term execution is the only intended cross-backend difference; the
+    # rest remains the DR-free parity owner.
+    mujoco_env = OmegaConf.to_container(mujoco_cfg.env)
+    mjwarp_env = OmegaConf.to_container(mjwarp_cfg.env)
+    assert isinstance(mujoco_env, dict) and isinstance(mjwarp_env, dict)
+    del mjwarp_env["observations"]
+    del mujoco_env["observations"]
+    assert mjwarp_env == mujoco_env
+    assert OmegaConf.to_container(mjwarp_cfg.reward) == OmegaConf.to_container(mujoco_cfg.reward)
 
 
 def test_flashsac_g1_motion_tracking_contact_policy_is_reward_only() -> None:

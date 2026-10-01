@@ -44,9 +44,12 @@ def _materialize_task(task: str, *, algo: str = "flashsac") -> ManagerBasedRlEnv
 def test_torch_owner_fingerprint_accepts_both_canonical_backends() -> None:
     mujoco = _materialize_task("g1_motion_tracking/mujoco")
     mjwarp = _materialize_task("g1_motion_tracking/mjwarp")
-    expected = module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V2
-    assert module._torch_g1_flashsac_owner_identity(mujoco) == expected
-    assert module._torch_g1_flashsac_owner_identity(mjwarp) == expected
+    assert module._torch_g1_flashsac_owner_identity(mujoco) == (
+        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V2
+    )
+    assert module._torch_g1_flashsac_owner_identity(mjwarp) == (
+        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V3
+    )
 
 
 def test_flashsac_motrix_owner_uses_task_host_bridge_runtime() -> None:
