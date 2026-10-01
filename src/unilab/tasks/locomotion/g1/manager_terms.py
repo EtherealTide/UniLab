@@ -281,6 +281,7 @@ class _G1GaitContext:
 
 
 _GAIT_CONTEXTS: WeakKeyDictionary[Any, _G1GaitContext] = WeakKeyDictionary()
+_GAIT_PHASE_CACHE: WeakKeyDictionary[Any, tuple[_G1GaitContext, int]] = WeakKeyDictionary()
 
 
 def _gait_context(env: _G1Env, term: str, frequency: float, init_mode: str) -> _G1GaitContext:
@@ -337,6 +338,27 @@ def _advance_gait(env: _G1Env, context: _G1GaitContext) -> np.ndarray | torch.Te
         )
     context.last_counter = counter
     return context.phase
+
+
+def _cached_gait_phase(env: _G1Env, context: _G1GaitContext) -> np.ndarray | torch.Tensor:
+    """Return the phase already advanced for this env and step.
+
+    Gait rewards are semantically pure in the phase for a given counter:
+    ``_advance_gait`` is counter-idempotent, but its earlier host-side dispatch
+    and tensor ops were repeated by every gait reward. The cache is keyed by
+    the same weak env identity and exact context object, and reset only changes
+    selected rows after the latest public phase read. A backward counter is
+    still rejected by ``_advance_gait`` on the first call of a new step.
+    """
+    cached = _GAIT_PHASE_CACHE.get(env)
+    counter = int(env.common_step_counter)
+    if cached is not None:
+        cached_context, cached_counter = cached
+        if cached_context is context and cached_counter == counter:
+            return cached_context.phase
+    phase = _advance_gait(env, context)
+    _GAIT_PHASE_CACHE[env] = (context, counter)
+    return phase
 
 
 def _resample_gait(env: _G1Env, context: _G1GaitContext, env_ids: np.ndarray) -> None:
@@ -447,7 +469,7 @@ class _GaitRewardTerm(_SensorTerm):
         return (*_FOOT_POS_SENSORS, "pelvis_local_linvel")
 
     def _targets(self, env: _G1Env) -> tuple[np.ndarray | torch.Tensor, np.ndarray | torch.Tensor]:
-        phase = _advance_gait(env, self._context)
+        phase = _cached_gait_phase(env, self._context)
         return compute_feet_phase_height_targets(phase, self._swing_height)
 
     def _foot_heights(
@@ -496,7 +518,7 @@ class _GaitRewardTerm(_SensorTerm):
             (self._phase_inputs_view, (*_FOOT_POS_SENSORS, "pelvis_local_linvel")),
             (self.num_envs, 9),
         )
-        phase = _advance_gait(env, self._context)
+        phase = _cached_gait_phase(env, self._context)
         left_target, right_target = compute_feet_phase_height_targets(phase, self._swing_height)
         if isinstance(values, torch.Tensor):
             if not isinstance(left_target, torch.Tensor):
@@ -567,7 +589,7 @@ class feet_phase_contact(_FootContactTerm):
 
     def __call__(self, env: _G1Env, **params: Any) -> np.ndarray | torch.Tensor:
         del params
-        phase = _advance_gait(env, self._context)
+        phase = _cached_gait_phase(env, self._context)
         left_target, right_target = compute_feet_phase_contact_targets(phase, self._swing_height)
         left_contact, right_contact = self._contact_pair(env)
         left_values: np.ndarray | torch.Tensor = left_contact
