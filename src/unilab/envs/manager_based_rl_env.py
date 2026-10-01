@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import re
 import secrets
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -1067,6 +1068,8 @@ class ManagerBasedRlEnv(TorchEnv):
             return self._update_state_in_read_phase(state)
 
     def _update_state_in_read_phase(self, state: TorchEnvState) -> TorchEnvState:
+        timing = state.info.setdefault("timing", {})
+        phase_started = time.perf_counter()
         log: dict[str, Any] = {}
         state.info["log"] = log
         self.extras = state.info
@@ -1076,6 +1079,8 @@ class ManagerBasedRlEnv(TorchEnv):
         self._sim_step_counter = self.common_step_counter * self._cfg.sim_substeps
 
         self.termination_manager.compute()
+        timing["update_state_termination_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        phase_started = time.perf_counter()
         terminated = self.termination_manager.terminated
         time_outs = self.termination_manager.time_outs
         if self._cfg.is_finite_horizon:
@@ -1087,11 +1092,15 @@ class ManagerBasedRlEnv(TorchEnv):
         torch.logical_or(self.reset_terminated, self.reset_time_outs, out=self.reset_buf)
 
         self.reward_buf = self.reward_manager.compute(dt=self.step_dt)
+        timing["update_state_reward_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        phase_started = time.perf_counter()
         log.update(self.reward_manager.step_reward_extras())
 
         if self._cfg.sim_substeps == 1:
             self.metrics_manager.compute_substep()
         self.metrics_manager.compute()
+        timing["update_state_metrics_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        phase_started = time.perf_counter()
 
         applied_runtime_event = False
         if "step" in self.event_manager.available_modes:
@@ -1123,8 +1132,11 @@ class ManagerBasedRlEnv(TorchEnv):
             self.scene._invalidate_state_reads()
             self._refresh_tensor_reads_after_mutation()
         self.command_manager.post_compute()
+        timing["update_state_command_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        phase_started = time.perf_counter()
 
         manager_obs = self.observation_manager.compute(update_history=True)
+        timing["update_state_observation_ms"] = (time.perf_counter() - phase_started) * 1000.0
 
         mapped_obs = self._map_observations(manager_obs)
         self.obs_buf = mapped_obs
