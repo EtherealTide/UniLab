@@ -422,11 +422,11 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
         # only when negotiation still reports no tensor lifecycle.
         if backend.tensor_execution() is TensorExecution.UNSUPPORTED:
             backend.materialize()
-        if backend.backend_type == "isaacgym":
-            # Preview 4 does not publish fresh rigid-body/sensor views until
-            # its first CUDA-IPC step.  This is a cold-path worker
-            # initialization barrier; the direct runtime resets the state
-            # before exposing the first observation.
+        if backend.get_tensor_capabilities().requires_post_construction_publication_barrier:
+            # Some external CUDA-IPC workers do not publish fresh rigid-body
+            # and sensor views until their first step. The declared cold-path
+            # worker barrier materializes those views; the direct runtime then
+            # resets state before exposing the first observation.
             backend.step_tensor(
                 torch.zeros(
                     (self._num_envs, backend.num_actuators),

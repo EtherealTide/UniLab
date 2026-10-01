@@ -18,18 +18,7 @@ _NAME_DISPATCH_EXEMPT_FILES = {
     Path("scripts/train_offpolicy.py"),
 }
 
-_MIGRATION_DEBT_NODES = frozenset(
-    {
-        "src/unilab/tasks/motion_tracking/g1/torch_flashsac_env.py:_sensor_map",
-        "src/unilab/tasks/motion_tracking/g1/torch_flashsac_env.py:backend_type:isaacgym",
-    }
-)
-
-_NAME_DISPATCH_EXEMPT_NODES = frozenset(
-    {
-        "src/unilab/tasks/motion_tracking/g1/torch_flashsac_env.py:backend_type:isaacgym",
-    }
-)
+_MIGRATION_DEBT_NODES = frozenset()
 
 
 @dataclass(frozen=True)
@@ -75,7 +64,6 @@ def find_violations() -> list[Violation]:
                     and left.attr == "backend_type"
                     and isinstance(right, ast.Constant)
                     and isinstance(right.value, str)
-                    and f"{relative}:backend_type:{right.value}" not in _NAME_DISPATCH_EXEMPT_NODES
                     and relative not in _NAME_DISPATCH_EXEMPT_FILES
                 ):
                     violations.append(
@@ -94,7 +82,4 @@ def test_runtime_and_tasks_do_not_probe_backend_private_state() -> None:
 
 
 def test_migration_exception_list_remains_explicit() -> None:
-    assert set(_MIGRATION_DEBT_NODES) == {
-        "src/unilab/tasks/motion_tracking/g1/torch_flashsac_env.py:_sensor_map",
-        "src/unilab/tasks/motion_tracking/g1/torch_flashsac_env.py:backend_type:isaacgym",
-    }
+    assert not _MIGRATION_DEBT_NODES
