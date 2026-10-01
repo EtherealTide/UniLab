@@ -1457,10 +1457,9 @@ randomize_encoder_bias = RandomizeEncoderBias
 
 def reset_scene_to_default(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> None:
     """Reset all materialized scene entities to backend default qpos/qvel."""
-    ids = resolve_env_ids(env, env_ids)
     if not env.scene.entities:
         return
-    env.scene.reset_to_default(ids, term_name="reset_scene_to_default")
+    env.scene.reset_to_default(env_ids, term_name="reset_scene_to_default")
 
 
 def reset_root_state_uniform(
@@ -1476,8 +1475,6 @@ def reset_root_state_uniform(
     no public mocap-pose write contract, so fixed-base/mocap requests fail through
     the entity's cached floating-root capability instead of falling back.
     """
-    if isinstance(env_ids, torch.Tensor):
-        raise TypeError("reset_root_state_uniform does not accept tensor reset rows")
     ids = resolve_env_ids(env, env_ids)
     asset = cast("Entity", env.scene[asset_cfg.name])
     try:

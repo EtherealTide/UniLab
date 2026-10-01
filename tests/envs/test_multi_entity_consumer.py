@@ -202,7 +202,7 @@ def test_registry_factory_mujoco_multi_entity_reset_isolation(num_envs):
         env.step(torch.full((num_envs, 1), 0.2, dtype=torch.float32))
         robot_before = env.scene["robot"].data.joint_pos.copy()
         object_before = env.scene["object"].data.root_link_pose_w.copy()
-        with env._reset_state.scoped(np.array([1])):
+        with env._reset_state.scoped(torch.tensor([1], dtype=torch.int64)):
             env.scene["object"].write_root_link_pose_to_sim(
                 np.array([[0.3, 0.4, 2.0, 1.0, 0.0, 0.0, 0.0]]), env_ids=np.array([1])
             )
@@ -211,7 +211,10 @@ def test_registry_factory_mujoco_multi_entity_reset_isolation(num_envs):
             env.scene["object"].data.root_link_pose_w[0], object_before[0]
         )
         np.testing.assert_allclose(env.scene["object"].data.root_link_pos_w[1], [0.3, 0.4, 2.0])
-        with pytest.raises(ValueError), env._reset_state.scoped(np.array([1])):
+        with (
+            pytest.raises(ValueError),
+            env._reset_state.scoped(torch.tensor([1], dtype=torch.int64)),
+        ):
             env.scene["object"].write_root_link_pose_to_sim(np.zeros((1, 7)), env_ids=np.array([1]))
         np.testing.assert_array_equal(env.scene["robot"].data.joint_pos, robot_before)
     finally:
@@ -232,7 +235,7 @@ def test_registry_factory_mujoco_consumes_portable_profile_operation_fixture():
         assert env.scene["object"].data.joint_pos.shape == (5, 1)
 
         mirror_before = env.scene["target"].data.root_link_pose_w.copy()
-        with env._reset_state.scoped(np.array([3])):
+        with env._reset_state.scoped(torch.tensor([3], dtype=torch.int64)):
             env.scene["object"].write_root_link_pose_to_sim(
                 np.array([[0.4, -0.2, 1.5, 1.0, 0.0, 0.0, 0.0]]), env_ids=np.array([3])
             )
@@ -314,13 +317,13 @@ def test_native_isaacsim_same_manager_task(passive, tmp_path):
         assert env.action_space.shape == (1,)
         env.step(torch.zeros((2, 1), dtype=torch.float32))
         before = env.scene["robot"].data.joint_pos.copy()
-        with env._reset_state.scoped(np.array([1])):
+        with env._reset_state.scoped(torch.tensor([1], dtype=torch.int64)):
             env.scene["object"].write_root_link_pose_to_sim(
                 np.array([[0.3, 0.4, 2.0, 1.0, 0.0, 0.0, 0.0]]), env_ids=np.array([1])
             )
         np.testing.assert_array_equal(env.scene["robot"].data.joint_pos, before)
         if not passive:
-            with env._reset_state.scoped(np.array([1])):
+            with env._reset_state.scoped(torch.tensor([1], dtype=torch.int64)):
                 env.scene["target"].write_root_link_pose_to_sim(
                     np.array([[3.0, 2.0, 1.0, 1.0, 0.0, 0.0, 0.0]]), env_ids=np.array([1])
                 )

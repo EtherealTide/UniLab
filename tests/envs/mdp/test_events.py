@@ -443,7 +443,7 @@ def test_pd_gains_event_uses_selector_scale_and_exactly_once_reset_payload() -> 
         },
         env,
     )
-    ids = np.array([0, 2], dtype=np.int32)
+    ids = torch.tensor([0, 2], dtype=torch.int64)
 
     with transaction.scoped(ids):
         manager.apply(mode="reset", env_ids=ids, global_env_step_count=0)
@@ -508,7 +508,7 @@ def test_pd_gains_event_uses_selected_per_world_default_rows() -> None:
         },
         env,
     )
-    ids = np.array([0, 2], dtype=np.int32)
+    ids = torch.tensor([0, 2], dtype=torch.int64)
 
     with transaction.scoped(ids):
         manager.apply(mode="reset", env_ids=ids, global_env_step_count=0)
@@ -600,7 +600,7 @@ def test_reset_randomization_terms_compose_with_state_and_gains_exactly_once() -
         },
         env,
     )
-    ids = np.array([0, 2], dtype=np.int32)
+    ids = torch.tensor([0, 2], dtype=torch.int64)
 
     with transaction.scoped(ids):
         mdp.reset_scene_to_default(env, ids)
@@ -652,7 +652,7 @@ def test_model_field_terms_use_cached_selectors_and_one_dense_reset_payload() ->
         },
         env,
     )
-    ids = np.array([0, 2], dtype=np.int32)
+    ids = torch.tensor([0, 2], dtype=torch.int64)
 
     with transaction.scoped(ids):
         mdp.reset_scene_to_default(env, ids)
@@ -697,7 +697,7 @@ def test_model_field_term_uses_selected_per_world_default_rows() -> None:
         },
         env,
     )
-    ids = np.array([0, 2], dtype=np.int32)
+    ids = torch.tensor([0, 2], dtype=torch.int64)
 
     with transaction.scoped(ids):
         mdp.reset_scene_to_default(env, ids)
@@ -752,7 +752,7 @@ def test_model_field_invalid_requests_fail_explicitly(func, params, match: str) 
             {"field": EventTermCfg(func=func, mode="reset", params=params)},
             env,
         )
-        ids = np.array([0, 1], dtype=np.int32)
+        ids = torch.tensor([0, 1], dtype=torch.int64)
         with pytest.raises(ValueError, match=match):
             with transaction.scoped(ids):
                 mdp.reset_scene_to_default(env, ids)
@@ -812,7 +812,7 @@ def test_reset_randomization_sparse_rows_abort_without_backend_mutation() -> Non
         env,
     )
     cfg = manager.get_term_cfg("gravity")
-    ids = np.array([0, 1], dtype=np.int32)
+    ids = torch.tensor([0, 1], dtype=torch.int64)
 
     with pytest.raises(RuntimeError, match=r"gravity payload.*sparse rows.*missing env IDs \[1\]"):
         with transaction.scoped(ids):
@@ -1226,7 +1226,7 @@ def test_uniform_root_state_fixed_or_mocap_capability_fails_closed() -> None:
         NotImplementedError,
         match="reset_root_state_uniform.*entity 'robot'.*fixed-base/mocap.*backend 'fake'",
     ):
-        with transaction.scoped(np.asarray([1], dtype=np.int32)):
+        with transaction.scoped(torch.tensor([1], dtype=torch.int64)):
             mdp.reset_root_state_uniform(env, np.asarray([1], dtype=np.int32), pose_range={})
 
     assert backend.set_state_calls == []
@@ -1375,7 +1375,7 @@ def test_rigid_body_com_event_consumes_live_params_between_applies() -> None:
         },
         env,
     )
-    ids = np.array([0, 1], dtype=np.int32)
+    ids = torch.tensor([0, 1], dtype=torch.int64)
 
     with transaction.scoped(ids):
         manager.apply(mode="reset", env_ids=ids, global_env_step_count=0)
@@ -1524,7 +1524,7 @@ def _mass_inertia_manager(env: ManagerBasedRlEnv) -> EventManager:
 def test_randomize_body_mass_inertia_scales_once_and_replays_cached_factor() -> None:
     env, backend, transaction = _mass_inertia_env(rng_seed=11)
     manager = _mass_inertia_manager(env)
-    ids = np.array([0, 2], dtype=np.int32)
+    ids = torch.tensor([0, 2], dtype=torch.int64)
 
     with transaction.scoped(ids):
         mdp.reset_scene_to_default(env, ids)
@@ -1551,7 +1551,7 @@ def test_randomize_body_mass_inertia_scales_once_and_replays_cached_factor() -> 
 
     # The factor is sampled once (startup semantics): a later reset replays the
     # cached per-env values instead of resampling.
-    second_ids = np.array([2], dtype=np.int32)
+    second_ids = torch.tensor([2], dtype=torch.int64)
     with transaction.scoped(second_ids):
         mdp.reset_scene_to_default(env, second_ids)
         manager.apply(mode="reset", env_ids=second_ids, global_env_step_count=1)
@@ -1587,7 +1587,7 @@ def test_randomize_body_mass_inertia_uses_selected_per_world_baselines() -> None
         },
         env,
     )
-    ids = np.array([0, 2], dtype=np.int32)
+    ids = torch.tensor([0, 2], dtype=torch.int64)
 
     with transaction.scoped(ids):
         mdp.reset_scene_to_default(env, ids)

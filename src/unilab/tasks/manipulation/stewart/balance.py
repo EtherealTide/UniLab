@@ -100,12 +100,12 @@ def _pair(term: str, name: str, value: Any) -> tuple[float, float]:
     return lower, upper
 
 
-def _env_ids(env: ManagerBasedRlEnv, env_ids: np.ndarray | slice | None) -> np.ndarray:
+def _env_ids(env: ManagerBasedRlEnv, env_ids: torch.Tensor | slice | None) -> np.ndarray:
     if env_ids is None:
         return np.arange(env.num_envs, dtype=np.int32)
     if isinstance(env_ids, slice):
         return np.arange(env.num_envs, dtype=np.int32)[env_ids]
-    return env_ids
+    return env_ids.detach().cpu().numpy().astype(np.int32, copy=False)
 
 
 def _body_id(entity: Entity, name: str, *, term: str) -> int:
@@ -855,7 +855,7 @@ class StewartBallReset(ManagerTermBase):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
-        env_ids: np.ndarray | None,
+        env_ids: torch.Tensor | None,
         **params: Any,
     ) -> None:
         del params

@@ -3878,7 +3878,7 @@ class EntityScene(Mapping[str, Entity]):
         if self._tensor_read_plan is not None:
             self._tensor_read_plan.invalidate()
 
-    def reset_to_default(self, env_ids: np.ndarray, *, term_name: str) -> None:
+    def reset_to_default(self, env_ids: torch.Tensor, *, term_name: str) -> None:
         """Stage a full-scene default state in the active reset transaction."""
         if self._reset_state is None:
             raise NotImplementedError(
