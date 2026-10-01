@@ -87,6 +87,7 @@ def _env(scene: _Scene | None = None, command: np.ndarray | None = None) -> Mana
         SimpleNamespace(
             num_envs=2,
             step_dt=0.02,
+            device=torch.device("cpu"),
             scene=scene or _Scene(),
             command_manager=_Commands(command),
         ),
