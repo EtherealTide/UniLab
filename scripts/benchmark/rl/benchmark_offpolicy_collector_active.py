@@ -95,6 +95,7 @@ ENV_STEP_TIMING_KEYS = (
     "update_state_observation_ms",
     "update_state_map_ms",
     "update_state_publish_ms",
+    "update_state_nonattributed_ms",
     "reset_done_ms",
     "env_step_internal_gap_ms",
     "reset_done_terminal_obs_ms",

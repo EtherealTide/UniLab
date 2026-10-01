@@ -12,7 +12,7 @@ import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import gymnasium as gym
 import numpy as np
@@ -1157,6 +1157,23 @@ class ManagerBasedRlEnv(TorchEnv):
             truncated=self._manager_tensor(self.reset_time_outs, dtype=torch.bool),
         )
         timing["update_state_publish_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        update_children = (
+            timing.get("update_state_termination_ms"),
+            timing.get("update_state_reward_ms"),
+            timing.get("update_state_metrics_ms"),
+            timing.get("update_state_command_ms"),
+            timing.get("update_state_observation_ms"),
+            timing.get("update_state_map_ms"),
+            timing.get("update_state_publish_ms"),
+        )
+        if all(value is not None for value in update_children):
+            # Queue drain is excluded: it is the pre-update GPU stream boundary
+            # and would double-count work already timed by step_core_ms.
+            timing["update_state_nonattributed_ms"] = (
+                time.perf_counter()
+                - queue_started
+                - sum(cast(float, value) for value in update_children)
+            ) * 1000.0
         return replacement
 
     def _refresh_tensor_reads_after_mutation(self) -> None:
