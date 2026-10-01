@@ -124,7 +124,7 @@ class MetricsManager(ManagerBase):
 
     # Methods.
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> dict[str, float]:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
         if env_ids is None:
             env_ids = slice(None)
         extras = {}
@@ -241,16 +241,24 @@ class MetricsManager(ManagerBase):
             raise ValueError(f"MetricsManager term '{name}' returned non-finite values.")
         return result
 
-    def _reset_mask(self, env_ids: np.ndarray | slice) -> torch.Tensor:
+    def _reset_mask(self, env_ids: torch.Tensor | slice) -> torch.Tensor:
         if env_ids is None:
             return torch.ones(self.num_envs, dtype=torch.bool, device=self._device)
         if isinstance(env_ids, slice):
             indices = torch.arange(self.num_envs, dtype=torch.int64, device=self._device)[env_ids]
             mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
             return mask.index_fill(0, indices, True)
-        rows = torch.as_tensor(np.asarray(env_ids), device=self._device)
-        if rows.ndim != 1 or rows.dtype not in {torch.int32, torch.int64}:
+        if (
+            not isinstance(env_ids, torch.Tensor)
+            or env_ids.ndim != 1
+            or env_ids.dtype
+            not in {
+                torch.int32,
+                torch.int64,
+            }
+        ):
             raise TypeError("MetricsManager reset rows must be one-dimensional integers")
+        rows = env_ids.to(self._device)
         if rows.numel() and (rows.min() < 0 or rows.max() >= self.num_envs):
             raise IndexError(f"MetricsManager reset rows out of range: {rows.tolist()}")
         mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
@@ -279,7 +287,7 @@ class NullMetricsManager:
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:
         return []
 
-    def reset(self, env_ids: np.ndarray | None = None) -> dict[str, float]:
+    def reset(self, env_ids: torch.Tensor | None = None) -> dict[str, float]:
         return {}
 
     def compute_substep(self) -> None:

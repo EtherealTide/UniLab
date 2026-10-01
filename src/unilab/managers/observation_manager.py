@@ -253,7 +253,7 @@ class ObservationManager(ManagerBase):
         index = self._group_obs_term_names[group_name].index(term_name)
         return self._group_obs_term_cfgs[group_name][index]
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> dict[str, float]:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
         # Invalidate cache since reset envs will have different observations.
         self._obs_buffer = None
 
@@ -280,7 +280,7 @@ class ObservationManager(ManagerBase):
         tensor: np.ndarray | torch.Tensor,
         context: str,
         policy: str,
-        env_ids: np.ndarray | None = None,
+        env_ids: torch.Tensor | None = None,
     ) -> np.ndarray:
         """Check for NaN/Inf and handle according to policy.
 
@@ -327,7 +327,7 @@ class ObservationManager(ManagerBase):
         def _row_env_ids(mask: np.ndarray) -> list[int]:
             rows = np.flatnonzero(np.asarray(mask, dtype=bool))
             if env_ids is not None:
-                rows = np.asarray(env_ids)[rows]
+                rows = env_ids.detach().cpu().numpy()[rows]
             result: list[int] = rows.tolist()
             return result
 
@@ -403,7 +403,7 @@ class ObservationManager(ManagerBase):
         self,
         group_name: str,
         update_history: bool = False,
-        env_ids: np.ndarray | None = None,
+        env_ids: torch.Tensor | None = None,
         *,
         share_cache: dict[tuple, np.ndarray | torch.Tensor] | None = None,
     ) -> torch.Tensor | dict[str, torch.Tensor]:
@@ -471,12 +471,11 @@ class ObservationManager(ManagerBase):
                 # rows only (issue #1349 removed the full-batch RNG-stream
                 # parity requirement). Fancy indexing already returns a fresh
                 # row copy, safe for the in-place clip/scale below.
+                assert env_ids is not None
                 if tensor_obs:
-                    obs = cast("torch.Tensor", obs)[
-                        torch.as_tensor(np.asarray(env_ids), device=self._device)
-                    ]
+                    obs = cast("torch.Tensor", obs)[env_ids.to(self._device)]
                 else:
-                    obs = obs[env_ids]
+                    obs = obs[env_ids.detach().cpu().numpy()]
                 fresh = True
             if isinstance(term_cfg.noise, noise_cfg.NoiseCfg):
                 # Noise accepts either carrier and returns a fresh allocation.
@@ -541,11 +540,7 @@ class ObservationManager(ManagerBase):
                         # Row-scoped reset terms slice the observation before
                         # in-place scaling. Slice the prebroadcast full-batch
                         # scale by the same manager row indices.
-                        scale_tensor = scale_tensor[
-                            torch.as_tensor(
-                                np.asarray(env_ids, dtype=np.int64), device=self._device
-                            )
-                        ]
+                        scale_tensor = scale_tensor[env_ids.to(self._device)]
                     torch.multiply(
                         tensor_obs_value,
                         scale_tensor,
@@ -677,12 +672,13 @@ class ObservationManager(ManagerBase):
             # (buffer readout stays full-batch); slice the reset rows to match
             # the reset-path return contract.
             if isinstance(result, dict):
-                result = {name: values[env_ids] for name, values in result.items()}
+                rows = env_ids.detach().cpu().numpy()
+                result = {name: values[rows] for name, values in result.items()}
             else:
                 if isinstance(result, torch.Tensor):
-                    result = result[torch.as_tensor(np.asarray(env_ids), device=result.device)]
+                    result = result[env_ids.to(result.device)]
                 else:
-                    result = result[env_ids]
+                    result = result[env_ids.detach().cpu().numpy()]
 
         return self._observations_to_tensor_boundary(result)
 

@@ -99,7 +99,7 @@ class RewardManager(ManagerBase):
 
     # Methods.
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> dict[str, float]:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
         if env_ids is None:
             env_ids = slice(None)
         for term_cfg in self._class_term_cfgs:

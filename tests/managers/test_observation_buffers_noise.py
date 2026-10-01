@@ -389,7 +389,9 @@ def test_tensor_terms_are_row_scoped_on_reset(fake_env: FakeEnv) -> None:
         fake_env,
     )
 
-    rows = manager.compute(update_history=True, env_ids=np.array([1]))["policy"]
+    rows = manager.compute(update_history=True, env_ids=torch.tensor([1], dtype=torch.int64))[
+        "policy"
+    ]
 
     assert isinstance(rows, torch.Tensor)
     assert rows.device == device

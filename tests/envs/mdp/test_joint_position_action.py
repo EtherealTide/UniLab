@@ -199,7 +199,7 @@ def test_regex_scale_offset_clip_and_local_reset() -> None:
 
     np.testing.assert_allclose(action.processed_action, [[1.0, 5.5], [-1.0, -6.5]])
     np.testing.assert_array_equal(action.raw_action, raw)
-    action.reset(np.asarray([1], dtype=np.int32))
+    action.reset(torch.tensor([1], dtype=torch.int64))
     np.testing.assert_array_equal(action.raw_action[0], raw[0])
     np.testing.assert_array_equal(action.raw_action[1], 0.0)
 

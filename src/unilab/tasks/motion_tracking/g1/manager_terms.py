@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
+import torch
 
 from unilab.managers import ManagerTermBase, ManagerTermBaseCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
@@ -96,8 +97,9 @@ class BoxMotionCommand(MotionCommand):
         # len(env_ids)); scatter positionally into the full-batch buffer.
         self._object_pos_w[env_ids] = value + self._env.scene.env_origins[env_ids]
 
-    def _resample_command(self, env_ids: np.ndarray) -> None:
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
         super()._resample_command(env_ids)
+        host_ids = env_ids.detach().cpu().numpy()
         # The base resample already gathered exactly these frames; reuse them
         # instead of gathering the same rows a second time (issue #1355).
         motion = self._resample_motion
@@ -113,7 +115,7 @@ class BoxMotionCommand(MotionCommand):
         if any(value is None for value in values):
             raise RuntimeError("Box motion reset requires complete object state")
         object_pos = cast(np.ndarray, motion.object_pos_w).copy()
-        object_pos += self._env.scene.env_origins[env_ids]
+        object_pos += self._env.scene.env_origins[host_ids]
         object_state = np.concatenate(
             (
                 object_pos,
@@ -123,7 +125,7 @@ class BoxMotionCommand(MotionCommand):
             ),
             axis=-1,
         )
-        self.object.write_root_state_to_sim(object_state, env_ids=env_ids)
+        self.object.write_root_state_to_sim(object_state, env_ids=host_ids)
 
     def _refresh_object_state(self, env_ids: np.ndarray | None = None) -> None:
         rows = self._all_env_ids if env_ids is None else env_ids

@@ -88,7 +88,7 @@ class TerminationManager(ManagerBase):
 
     # Methods.
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> dict[str, int]:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, int]:
         if env_ids is None:
             env_ids = slice(None)
         extras = {}
@@ -168,7 +168,7 @@ class TerminationManager(ManagerBase):
             )
         return result
 
-    def _reset_mask(self, env_ids: np.ndarray | slice) -> torch.Tensor:
+    def _reset_mask(self, env_ids: torch.Tensor | slice) -> torch.Tensor:
         if env_ids is None:
             return torch.ones(self.num_envs, dtype=torch.bool, device=self._device)
         if isinstance(env_ids, slice):
@@ -176,9 +176,17 @@ class TerminationManager(ManagerBase):
             return torch.zeros(self.num_envs, dtype=torch.bool, device=self._device).index_fill(
                 0, indices, True
             )
-        rows = torch.as_tensor(np.asarray(env_ids), device=self._device)
-        if rows.ndim != 1 or rows.dtype not in {torch.int32, torch.int64}:
+        if (
+            not isinstance(env_ids, torch.Tensor)
+            or env_ids.ndim != 1
+            or env_ids.dtype
+            not in {
+                torch.int32,
+                torch.int64,
+            }
+        ):
             raise TypeError("TerminationManager reset rows must be one-dimensional integers")
+        rows = env_ids.to(self._device)
         if rows.numel() and (rows.min() < 0 or rows.max() >= self.num_envs):
             raise IndexError(f"TerminationManager reset rows out of range: {rows.tolist()}")
         return torch.zeros(self.num_envs, dtype=torch.bool, device=self._device).index_fill(

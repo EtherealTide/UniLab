@@ -211,7 +211,7 @@ class BaseAction(ActionTerm):
                 max=self._clip[..., 1],
             )
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         if env_ids is None:
             env_ids = slice(None)
         selector = self._reset_selector(env_ids)
@@ -220,10 +220,17 @@ class BaseAction(ActionTerm):
     def _reset_selector(self, env_ids: np.ndarray | slice) -> torch.Tensor | slice:
         if isinstance(env_ids, slice):
             return env_ids
-        rows = torch.as_tensor(np.asarray(env_ids), device=self._device)
-        if rows.ndim != 1 or rows.dtype not in {torch.int32, torch.int64}:
+        if (
+            not isinstance(env_ids, torch.Tensor)
+            or env_ids.ndim != 1
+            or env_ids.dtype
+            not in {
+                torch.int32,
+                torch.int64,
+            }
+        ):
             raise TypeError(f"{type(self).__name__} reset rows must be 1-D integers")
-        return rows.to(torch.int64)
+        return env_ids.to(self._device, torch.int64)
 
     def _entity_values(self, values: torch.Tensor) -> np.ndarray:
         """Publish processed controls to the temporary NumPy Entity write boundary."""

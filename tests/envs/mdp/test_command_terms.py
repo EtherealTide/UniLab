@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 
 from unilab.envs.mdp import UniformPoseCommand, UniformPoseCommandCfg
 
@@ -27,7 +28,7 @@ def test_uniform_pose_command_samples_configured_width_and_zero_bucket() -> None
     term = cfg.build(env)
     assert isinstance(term, UniformPoseCommand)
 
-    term.reset(np.asarray([0, 1], dtype=np.int32))
+    term.reset(torch.tensor([0, 1], dtype=torch.int64))
     assert term.command.shape == (2, 2)
     np.testing.assert_array_equal(term.command, 0.0)
 
@@ -39,7 +40,7 @@ def test_uniform_pose_command_reads_curriculum_updates_without_changing_width() 
         ranges=[[0.0, 0.0], [1.0, 1.0]],
     )
     term = cfg.build(env)
-    ids = np.asarray([0, 1], dtype=np.int32)
+    ids = torch.tensor([0, 1], dtype=torch.int64)
 
     cfg.ranges[0] = [2.0, 2.0]
     term.reset(ids)
