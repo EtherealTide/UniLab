@@ -1069,6 +1069,7 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def _update_state_in_read_phase(self, state: TorchEnvState) -> TorchEnvState:
         timing = state.info.setdefault("timing", {})
+        queue_started = time.perf_counter()
         phase_started = time.perf_counter()
         log: dict[str, Any] = {}
         state.info["log"] = log
@@ -1079,6 +1080,7 @@ class ManagerBasedRlEnv(TorchEnv):
         self._sim_step_counter = self.common_step_counter * self._cfg.sim_substeps
 
         self.termination_manager.compute()
+        timing["update_state_queue_drain_ms"] = (time.perf_counter() - queue_started) * 1000.0
         timing["update_state_termination_ms"] = (time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
         terminated = self.termination_manager.terminated
