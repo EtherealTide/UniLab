@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import numpy as np
+import torch
 
 from unilab.dtype_config import get_global_dtype
 from unilab.managers.manager_base import ManagerTermBaseCfg
@@ -67,6 +68,9 @@ def _command_gate(
     if command_name is None:
         return None
     command = _command(env, term, command_name)
+    if isinstance(command, torch.Tensor):
+        total = torch.linalg.vector_norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+        return total > command_threshold
     total = np.linalg.norm(command[:, :2], axis=1) + np.abs(command[:, 2])
     return np.asarray(total > command_threshold)
 
@@ -204,6 +208,10 @@ class feet_air_time(_FootContactTerm):
         reward = np.sum(in_range.astype(get_global_dtype()), axis=1)
         gate = _command_gate(env, self.name, self._command_name, self._command_threshold)
         if gate is not None:
+            if isinstance(gate, torch.Tensor):
+                return (torch.as_tensor(reward, device=gate.device) * gate).to(
+                    dtype=torch.float32
+                )
             reward = reward * gate
         return np.asarray(reward, dtype=get_global_dtype())
 
