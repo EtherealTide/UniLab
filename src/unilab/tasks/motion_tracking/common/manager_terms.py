@@ -208,6 +208,7 @@ class MotionCommand(CommandTerm):
         self._robot_body_quat_w = np.empty((self.num_envs, num_bodies, 4), dtype=dtype)
         self._robot_body_lin_vel_w = np.empty_like(self._body_pos_w)
         self._robot_body_ang_vel_w = np.empty_like(self._body_pos_w)
+        self._bind_read_phase = False
 
         for name in (
             "error_anchor_pos",
@@ -225,6 +226,17 @@ class MotionCommand(CommandTerm):
             "sampling_top1_bin",
         ):
             self.metrics[name] = np.zeros(self.num_envs, dtype=dtype)
+        self._defer_read_phase_binding()
+
+    def _defer_read_phase_binding(self) -> None:
+        """Defer public state-view binding until the Manager read phase exists.
+
+        Command construction happens before ``EntityScene`` compiles its packed
+        tensor read plan. NumPy commands complete their cold initialization
+        eagerly because their entity facade is already available; a tensor
+        command overrides this method and finishes only metadata allocation,
+        then binds public views from ``bind_read_phase``.
+        """
         self._refresh_motion()
         self._refresh_robot_state(force=True)
         # Configure and compile both fused kernels on the cold path so the first
@@ -232,6 +244,12 @@ class MotionCommand(CommandTerm):
         configure_motion_kernel_runtime()
         self._refresh_relative_state()
         self._update_metrics(torch.from_numpy(self._all_env_ids).to(self._device))
+
+    def bind_read_phase(self) -> None:
+        if self._bind_read_phase:
+            return
+        self._defer_read_phase_binding()
+        self._bind_read_phase = True
 
     def _make_motion_loader(
         self,
