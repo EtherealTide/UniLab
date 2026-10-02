@@ -186,6 +186,11 @@ class CommandTerm(ManagerTermBase):
         preceding command reset or reset-owner transaction remains the
         authoritative validation boundary for freshly reset rows.
         """
+        timing = getattr(self, "last_step_timing_ms", None)
+        if timing is None:
+            timing = {}
+            self.last_step_timing_ms = timing
+        dt_started = time.perf_counter()
         tensor_dt = isinstance(dt, torch.Tensor)
         dt_scalar: float | None = None
         dt_tensor: torch.Tensor | None
@@ -218,10 +223,9 @@ class CommandTerm(ManagerTermBase):
             dt_is_finite = bool(np.isfinite(dt_scalar))
         if not dt_is_finite:
             raise ValueError(f"CommandTerm '{self.name}' received non-finite dt.")
-        timing = getattr(self, "last_step_timing_ms", None)
-        if timing is None:
-            timing = {}
-            self.last_step_timing_ms = timing
+        timing["update_state_command_dt_validation_ms"] = (
+            time.perf_counter() - dt_started
+        ) * 1000.0
         metrics_started = time.perf_counter()
         self._update_metrics(env_ids)
         timing["update_state_command_metrics_update_ms"] = (
