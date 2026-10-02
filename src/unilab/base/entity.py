@@ -319,7 +319,10 @@ class SceneTensorReadPlan:
     def refresh(self) -> None:
         """Publish one full-batch packet for the current read phase."""
         self._require_not_closed()
-        packet = self._read_packet(self._host_plan.read_state_sensors if self._host_plan else None)
+        if self._host_plan is not None:
+            packet = self._read_packet(self._host_plan.read_state_sensors)
+        else:
+            packet = self._reuse_stable_device_packet()
         self._publish_packet(packet)
 
     def refresh_selected(self) -> None:
@@ -330,11 +333,23 @@ class SceneTensorReadPlan:
         their stable public views through the same normal read path.
         """
         self._require_not_closed()
-        reader = (
-            self._host_plan.read_selected_state_sensors if self._host_plan is not None else None
-        )
-        packet = self._read_packet(reader)
+        if self._host_plan is not None:
+            packet = self._read_packet(self._host_plan.read_selected_state_sensors)
+        else:
+            packet = self._reuse_stable_device_packet()
         self._publish_packet(packet)
+
+    def _reuse_stable_device_packet(self) -> dict[str, torch.Tensor]:
+        """Publish stable device-resident views without another sensor crossing.
+
+        The first device-resident refresh owns the public adapter projection
+        crossing. Stable aliases remain live after selected reset, so a
+        subsequent read phase can republish them without repeating one
+        Python/DLPack boundary per sensor family.
+        """
+        if not self._refreshed:
+            return self._read_packet(None)
+        return dict(self._packet)
 
     def invalidate(self) -> None:
         """Drop phase values after an in-phase simulation mutation."""
