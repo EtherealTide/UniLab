@@ -1093,7 +1093,7 @@ class TensorMotionCommand(MotionCommand):
             dtype=torch.float32,
         )
         rng_ms = (time.perf_counter() - sampler_started) * 1000.0 - sampler_ms - packet_ms
-        construction_started = time.perf_counter()
+        values_started = time.perf_counter()
         joint_start, joint_end = offsets["joint_pos"]
         joint_pos = packet[:, joint_start:joint_end].clone()
         joint_pos += self._env.torch_rng.uniform(
@@ -1105,7 +1105,11 @@ class TensorMotionCommand(MotionCommand):
         joint_pos.clamp_(self._soft_joint_limits[:, 0], self._soft_joint_limits[:, 1])
         vel_start, vel_end = offsets["joint_vel"]
         motion_joint_vel = packet[:, vel_start:vel_end].contiguous()
+        values_ms = (time.perf_counter() - values_started) * 1000.0
+        write_started = time.perf_counter()
         self.robot.write_joint_state_tensor_to_sim(joint_pos, motion_joint_vel, env_ids=rows)
+        joint_write_ms = (time.perf_counter() - write_started) * 1000.0
+        root_started = time.perf_counter()
         count = rows.numel()
         pos_start, pos_end = offsets["body_pos_w"]
         quat_start, quat_end = offsets["body_quat_w"]
@@ -1130,8 +1134,11 @@ class TensorMotionCommand(MotionCommand):
             ),
             dim=-1,
         )
+        root_values_ms = (time.perf_counter() - root_started) * 1000.0
+        root_write_started = time.perf_counter()
         self.robot.write_root_state_tensor_to_sim(root_state, env_ids=rows)
-        construction_ms = (time.perf_counter() - construction_started) * 1000.0
+        root_write_ms = (time.perf_counter() - root_write_started) * 1000.0
+        construction_ms = values_ms + joint_write_ms + root_values_ms + root_write_ms
         publish_started = time.perf_counter()
         self._ingest_motion_packet(rows, packet)
         publish_ms = (time.perf_counter() - publish_started) * 1000.0
@@ -1142,7 +1149,9 @@ class TensorMotionCommand(MotionCommand):
                 "reset_done_motion_sampler_ms": sampler_ms,
                 "reset_done_motion_packet_ms": packet_ms,
                 "reset_done_motion_reset_rng_ms": rng_ms,
+                "reset_done_motion_reset_values_ms": values_ms + root_values_ms,
                 "reset_done_motion_reset_construction_ms": construction_ms,
+                "reset_done_motion_reset_write_ms": joint_write_ms + root_write_ms,
                 "reset_done_motion_reset_publish_ms": publish_ms,
             }
         )
