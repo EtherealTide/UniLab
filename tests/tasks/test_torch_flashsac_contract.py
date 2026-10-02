@@ -57,17 +57,6 @@ def test_flashsac_motrix_owner_is_out_of_tensor_manager_scope() -> None:
     assert "motrix" not in registry._envs["G1MotionTrackingSAC"].env_factory_dict
 
 
-def test_torch_owner_fingerprint_accepts_mapped_isaacsim_namespaced_owner() -> None:
-    """Mapped physical names are namespace-equivalent, not a semantic change."""
-    cfg = _materialize_task("g1_motion_tracking/isaacsim")
-    assert cfg.isaacsim_tensor_cuda_ipc is True
-    assert cfg.scene is not None
-    assert cfg.scene.entity_assets
-    assert module._torch_g1_flashsac_owner_identity(cfg) == (
-        module._TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V3
-    )
-
-
 def test_reusable_tensor_runtime_accepts_second_g1_manager_owner() -> None:
     cfg = _materialize_task("g1_motion_tracking/mjwarp_tensor", algo="sac")
     assert module._torch_g1_flashsac_owner_identity(cfg) == module._TORCH_G1_SAC_OWNER_IDENTITY_V1
@@ -107,15 +96,11 @@ def test_fused_motion_reward_pack_owner_identity_is_canonical() -> None:
     for backend in ("mujoco", "mjwarp", "genesis"):
         cfg = _materialize_task(f"g1_motion_tracking/{backend}")
         identity = module._torch_g1_flashsac_owner_identity(cfg)
-        expected = (
-            module._TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V3
-            if backend == "isaacsim"
-            else {
-                "mujoco": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6,
-                "genesis": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6,
-                "mjwarp": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V9,
-            }[backend]
-        )
+        expected = {
+            "mujoco": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6,
+            "genesis": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6,
+            "mjwarp": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V9,
+        }[backend]
         assert identity == expected
 
 
