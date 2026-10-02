@@ -325,6 +325,85 @@ def test_numba_body_rewards_preserve_body_subset_contract(
     assert command.cfg.body_names == tuple(f"b{i}" for i in range(12))
 
 
+@pytest.mark.parametrize(
+    ("term_type", "reference_name", "actual_name", "std", "orientation"),
+    [
+        (
+            mt.motion_relative_body_position_error_exp,
+            "body_pos_relative_w",
+            "robot_body_pos_w",
+            0.3,
+            False,
+        ),
+        (
+            mt.motion_relative_body_orientation_error_exp,
+            "body_quat_relative_w",
+            "robot_body_quat_w",
+            0.4,
+            True,
+        ),
+        (
+            mt.motion_global_body_linear_velocity_error_exp,
+            "body_lin_vel_w",
+            "robot_body_lin_vel_w",
+            1.0,
+            False,
+        ),
+        (
+            mt.motion_global_body_angular_velocity_error_exp,
+            "body_ang_vel_w",
+            "robot_body_ang_vel_w",
+            3.14,
+            False,
+        ),
+    ],
+)
+def test_body_rewards_dispatch_tensor_carrier_without_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    body_setup,
+    term_type,
+    reference_name: str,
+    actual_name: str,
+    std: float,
+    orientation: bool,
+) -> None:
+    command, env, snapshots = body_setup
+    tensor_command = SimpleNamespace(
+        num_envs=command.num_envs,
+        cfg=command.cfg,
+        tensor_carrier=True,
+        **{
+            name: torch.from_numpy(value.copy())
+            for name, value in snapshots.items()
+            if isinstance(value, np.ndarray)
+        },
+    )
+    monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
+    term = term_type(_reward_cfg(), env)
+
+    out = term(env, "motion", std=std)
+
+    expected = torch.from_numpy(
+        _expected_body_reward(
+            snapshots[reference_name],
+            snapshots[actual_name],
+            slice(None),
+            std,
+            orientation=orientation,
+        )
+    )
+    assert isinstance(out, torch.Tensor)
+    torch.testing.assert_close(out, expected, rtol=2e-6, atol=2e-7)
+    torch.testing.assert_close(
+        getattr(tensor_command, reference_name),
+        torch.from_numpy(snapshots[reference_name]),
+    )
+    torch.testing.assert_close(
+        getattr(tensor_command, actual_name),
+        torch.from_numpy(snapshots[actual_name]),
+    )
+
+
 def test_motion_hot_kernels_compile_parallel_on_term_construction(body_setup) -> None:
     _, env, _ = body_setup
     mt.bad_anchor_pos_z_only(
