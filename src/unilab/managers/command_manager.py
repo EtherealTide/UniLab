@@ -331,11 +331,30 @@ class CommandManager(ManagerBase):
         elif isinstance(env_ids, slice):
             env_ids = torch.arange(self.num_envs, device=self._device)[env_ids]
         extras = {}
+        reset_commands: list[tuple[str, torch.Tensor]] = []
         for name, term in self._terms.items():
             metrics = term.reset(env_ids=env_ids)
-            self._validate_command(name, term.command)
+            reset_commands.append((name, term.command))
             for metric_name, metric_value in metrics.items():
                 extras[f"Metrics/{name}/{metric_name}"] = metric_value
+        commands: list[torch.Tensor] = []
+        labels: list[str] = []
+        for name, command in reset_commands:
+            if isinstance(command, np.ndarray):
+                command = torch.from_numpy(np.ascontiguousarray(command)).to(
+                    dtype=torch.float32, device=self._device
+                )
+            self._validate_command_contract(name, command)
+            commands.append(command)
+            labels.append(name)
+        if commands and not bool(
+            torch.isfinite(
+                torch.cat(tuple(value.reshape(value.shape[0], -1) for value in commands), dim=1)
+            ).all()
+        ):
+            for name, command in zip(labels, commands, strict=True):
+                if not bool(torch.isfinite(command).all()):
+                    raise ValueError(f"CommandManager term '{name}' returned NaN or Inf.")
         return extras
 
     def compute(
@@ -393,6 +412,12 @@ class CommandManager(ManagerBase):
             command = torch.from_numpy(np.ascontiguousarray(command)).to(
                 dtype=torch.float32, device=self._device
             )
+        self._validate_command_contract(name, command)
+        if not bool(torch.isfinite(command).all()):
+            raise ValueError(f"CommandManager term '{name}' returned NaN or Inf.")
+        return command
+
+    def _validate_command_contract(self, name: str, command: torch.Tensor) -> None:
         if not isinstance(command, torch.Tensor):
             raise TypeError(
                 f"CommandManager term '{name}' returned {type(command).__name__}, "
@@ -403,9 +428,6 @@ class CommandManager(ManagerBase):
                 f"CommandManager term '{name}' returned shape {command.shape}, "
                 f"expected leading dimension {self.num_envs}."
             )
-        if not bool(torch.isfinite(command).all()):
-            raise ValueError(f"CommandManager term '{name}' returned NaN or Inf.")
-        return command
 
 
 class NullCommandManager:
