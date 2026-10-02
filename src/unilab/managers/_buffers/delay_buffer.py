@@ -185,7 +185,9 @@ class DelayBuffer:
         idx = slice(None) if batch_ids is None else batch_ids
         self._current_lags[idx] = np.clip(lags, self.min_lag, self.max_lag)
 
-    def reset(self, batch_ids: Sequence[int] | np.ndarray | slice | None = None) -> None:
+    def reset(
+        self, batch_ids: Sequence[int] | np.ndarray | torch.Tensor | slice | None = None
+    ) -> None:
         """Reset specified environments to initial state.
 
         Args:
@@ -213,7 +215,9 @@ class DelayBuffer:
         """
         self._buffer.append(data)
 
-    def backfill(self, data: np.ndarray | torch.Tensor, batch_ids: np.ndarray) -> None:
+    def backfill(
+        self, data: np.ndarray | torch.Tensor, batch_ids: np.ndarray | torch.Tensor
+    ) -> None:
         """Backfill the given rows with one frame, without advancing time.
 
         Used after a partial reset: the reset rows (whose lags and step counters

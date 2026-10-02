@@ -257,23 +257,23 @@ class ObservationManager(ManagerBase):
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
         # Invalidate cache since reset envs will have different observations.
         self._obs_buffer = None
+        rows: torch.Tensor | slice = (
+            env_ids
+            if isinstance(env_ids, torch.Tensor)
+            else torch.arange(self.num_envs, device=self._device)[env_ids or slice(None)]
+        )
 
         for group_name, group_cfg in self._group_obs_class_term_cfgs.items():
             for term_cfg in group_cfg:
                 term_cfg.func.reset(env_ids=env_ids)
             for term_name in self._group_obs_term_names[group_name]:
-                batch_ids = env_ids
                 if term_name in self._group_obs_term_delay_buffer[group_name]:
-                    self._group_obs_term_delay_buffer[group_name][term_name].reset(
-                        batch_ids=batch_ids
-                    )
+                    self._group_obs_term_delay_buffer[group_name][term_name].reset(batch_ids=rows)
                 if term_name in self._group_obs_term_history_buffer[group_name]:
-                    self._group_obs_term_history_buffer[group_name][term_name].reset(
-                        batch_ids=batch_ids
-                    )
+                    self._group_obs_term_history_buffer[group_name][term_name].reset(batch_ids=rows)
         for group_mods in self._group_obs_class_instances.values():
             for mod in group_mods.values():
-                mod.reset(env_ids=env_ids)
+                mod.reset(env_ids=rows)
         return {}
 
     def _check_and_handle_nans(
@@ -361,7 +361,7 @@ class ObservationManager(ManagerBase):
     def compute(
         self,
         update_history: bool = False,
-        env_ids: np.ndarray | None = None,
+        env_ids: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
         """Compute observations for all groups.
 

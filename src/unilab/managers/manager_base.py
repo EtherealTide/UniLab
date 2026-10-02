@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import torch
 
 from unilab.base.config_overrides import (
     CONFIG_MAPPING_POLICY_KEY,
@@ -87,7 +88,7 @@ class ManagerTermBase:
 
     # Methods.
 
-    def reset(self, env_ids: np.ndarray | slice | None) -> Any:
+    def reset(self, env_ids: torch.Tensor | slice | None) -> Any:
         """Resets the manager term."""
         del env_ids  # Unused.
         pass
@@ -118,7 +119,7 @@ class ManagerBase(abc.ABC):
 
     # Methods.
 
-    def reset(self, env_ids: np.ndarray) -> dict[str, Any]:
+    def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, Any]:
         """Resets the manager and returns logging info for the current step."""
         del env_ids  # Unused.
         return {}
