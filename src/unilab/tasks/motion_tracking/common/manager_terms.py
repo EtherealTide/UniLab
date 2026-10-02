@@ -1072,6 +1072,7 @@ class TensorMotionCommand(MotionCommand):
     def _prepare_tensor_carrier(self) -> None:
         """Allocate Torch buffers before Manager probes the command carrier."""
         device = self._device
+        self.last_step_timing_ms: dict[str, float] = {}
         self._motion_feature_layout: (
             tuple[dict[str, tuple[int, ...]], dict[str, tuple[int, int]]] | None
         ) = None
@@ -1408,6 +1409,8 @@ class TensorMotionCommand(MotionCommand):
         if timing is None:
             timing = {}
             self.last_step_timing_ms = timing
+        else:
+            timing.clear()
         failure_started = time.perf_counter()
         if env_ids is not None:
             ingested = self._tensor_resample_ingested
