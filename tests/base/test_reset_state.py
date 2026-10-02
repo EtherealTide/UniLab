@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, cast
 
 import numpy as np
@@ -59,7 +60,7 @@ class _Backend:
 
     def get_dr_capabilities(self) -> DomainRandomizationCapabilities:
         return DomainRandomizationCapabilities(
-            supported_reset_terms=frozenset((RESET_TERM_KP, RESET_TERM_KD))
+            supported_reset_terms=frozenset((RESET_TERM_KP, RESET_TERM_KD, "gravity"))
         )
 
     def get_actuator_gains(self) -> tuple[np.ndarray, np.ndarray]:
@@ -70,6 +71,8 @@ class _Backend:
             return self.default_kp.copy()
         if term == RESET_TERM_KD:
             return self.default_kd.copy()
+        if term == "gravity":
+            return np.array([-1.0, 0.0, 9.81])
         raise NotImplementedError(term)
 
     def set_state(
@@ -107,6 +110,7 @@ class _TensorResetBackend(_Backend):
             sensor_views=False,
             stepping=True,
             selected_reset=True,
+            reset_randomization=True,
             process_topology=TensorProcessTopology.IN_PROCESS,
             data_plane=TensorDataPlane.DIRECT,
             stream_event_ownership="fake synchronous stream",
@@ -114,9 +118,8 @@ class _TensorResetBackend(_Backend):
         )
 
     def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> dict:
-        assert randomization is None
         rows = torch.as_tensor(env_indices, dtype=torch.int64)
-        self.tensor_reset_calls.append((rows.clone(), qpos.clone(), qvel.clone()))
+        self.tensor_reset_calls.append((rows.clone(), qpos.clone(), qvel.clone(), randomization))
         return {"ok": True}
 
 
@@ -809,7 +812,8 @@ def test_tensor_motion_state_write_combines_root_and_joint_boundaries() -> None:
 
     backend = transaction._backend  # noqa: SLF001 - scoped test owns the fake
     assert len(backend.tensor_reset_calls) == 1
-    committed_rows, qpos, qvel = backend.tensor_reset_calls[0]
+    committed_rows, qpos, qvel, committed_randomization = backend.tensor_reset_calls[0]
+    assert committed_randomization is None
     torch.testing.assert_close(committed_rows, rows)
     expected_qpos = torch.zeros((2, 9), dtype=torch.float32)
     expected_qpos[:, :7] = root_state[:, :7]
@@ -871,4 +875,45 @@ def test_tensor_motion_state_write_fails_closed() -> None:
                 nonfinite_position,
                 velocity,
                 term_name="motion_owner",
+            )
+
+
+def test_tensor_reset_commit_carries_randomization_payload() -> None:
+    backend = _TensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    rows = torch.tensor([1, 3], dtype=torch.int64)
+    transaction.bind_gravity_write(term_name="gravity_owner")
+
+    with transaction.scoped_device_event_tensor(rows):
+        transaction.write_gravity(
+            rows.detach().cpu().numpy(),
+            np.array([[0.0, 0.0, -9.5], [0.0, 0.0, -10.0]], dtype=np.float64),
+            term_name="gravity_owner",
+        )
+
+    assert len(backend.tensor_reset_calls) == 1
+    committed_rows, _qpos, _qvel, randomization = backend.tensor_reset_calls[0]
+    torch.testing.assert_close(committed_rows, rows)
+    assert randomization is not None
+    np.testing.assert_allclose(randomization.gravity, [[0.0, 0.0, -9.5], [0.0, 0.0, -10.0]])
+
+
+def test_tensor_reset_commit_rejects_randomization_without_capability() -> None:
+    class NoRandomizationBackend(_TensorResetBackend):
+        def get_tensor_capabilities(self):
+            capabilities = super().get_tensor_capabilities()
+            return replace(capabilities, reset_randomization=False)
+
+    transaction = _transaction(NoRandomizationBackend())
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    rows = torch.tensor([0], dtype=torch.int64)
+    transaction.bind_gravity_write(term_name="gravity_owner")
+
+    with pytest.raises(NotImplementedError, match="does not support reset randomization"):
+        with transaction.scoped_device_event_tensor(rows):
+            transaction.write_gravity(
+                rows.detach().cpu().numpy(),
+                np.array([[0.0, 0.0, -9.8]], dtype=np.float64),
+                term_name="gravity_owner",
             )
