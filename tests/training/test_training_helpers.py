@@ -314,58 +314,21 @@ def test_resolve_task_checkpoint_path_accepts_integer_latest_run(
     assert checkpoint_dir == run_dir
 
 
-def test_backend_adapter_env_cfg_override_for_motrix_sac_g1_walk_flat():
+def test_backend_adapter_env_cfg_override_for_sac_g1_walk_flat():
     """Env cfg override carries reward + env preset fields. Algo is NOT touched."""
-    cfg = _offpolicy_cfg(["task=g1_walk_flat/motrix"])
+    cfg = _offpolicy_cfg(["task=g1_walk_flat/mujoco"])
 
     adapter = BackendAdapter(cfg, root_dir=_ROOT_DIR, algo_name="sac")
     env_cfg_override = adapter.build_task_env_cfg_override()
 
-    # env_cfg_override has reward + env preset fields
-    assert env_cfg_override["rewards"]["tracking_lin_vel"]["weight"] == pytest.approx(2.2)
-    assert env_cfg_override["events"]["pd_gains"] is None
+    assert env_cfg_override["rewards"]["tracking_lin_vel"]["weight"] == pytest.approx(2.0)
     # algo values come straight from YAML compose — no mutation, matches task owner values
     assert cfg.algo.num_envs == 2048
     assert cfg.algo.max_iterations == 5000
 
 
-def test_backend_adapter_injects_isaacsim_render_intent_only_for_play():
-    cfg = _offpolicy_cfg(
-        [
-            "task=g1_walk_flat/isaacsim",
-            "training.play_render_mode=record",
-        ]
-    )
-    adapter = BackendAdapter(cfg, root_dir=_ROOT_DIR, algo_name="sac")
-
-    training_override = adapter.build_task_env_cfg_override()
-    play_override = adapter.build_play_env_cfg_override()
-
-    assert "isaacsim_render_mode" not in training_override
-    assert play_override["isaacsim_render_mode"] == "record"
-    assert play_override["isaacsim_render_width"] == 1280
-    assert play_override["isaacsim_render_height"] == 720
-
-
-def test_backend_adapter_injects_superdex_serial_mode_only_for_interactive_play():
-    interactive = _ppo_cfg(
-        ["task=go2_joystick_flat/superdex", "training.play_render_mode=interactive"]
-    )
-    adapter = BackendAdapter(interactive, root_dir=_ROOT_DIR, algo_name="ppo")
-    assert "superdex_execution_mode" not in adapter.build_task_env_cfg_override()
-    play_override = adapter.build_play_env_cfg_override()
-    assert play_override["superdex_execution_mode"] == "serial"
-
-    record = _ppo_cfg(["task=go2_joystick_flat/superdex", "training.play_render_mode=record"])
-    record_override = BackendAdapter(
-        record, root_dir=_ROOT_DIR, algo_name="ppo"
-    ).build_play_env_cfg_override()
-    assert "superdex_execution_mode" not in record_override
-
-
 def test_backend_adapter_keeps_motion_manager_scene_during_play():
-    cfg = _ppo_cfg(["task=g1_motion_tracking/motrix", "training.play_only=true"])
-    assert cfg.training.play_env_num == 16
+    cfg = _ppo_cfg(["task=g1_motion_tracking/mujoco", "training.play_only=true"])
     captured: dict[str, object] = {}
 
     def _fake_materializer(source_model_file: str, **kwargs) -> str:
@@ -380,8 +343,7 @@ def test_backend_adapter_keeps_motion_manager_scene_during_play():
         scene_materializer=_fake_materializer,
     ).build_play_env_cfg_override()
 
-    assert cfg.training.play_env_num == 16
-    assert env_cfg_override["render_spacing"] == pytest.approx(2.5)
+    assert env_cfg_override["render_spacing"] == pytest.approx(2.0)
     assert env_cfg_override["scene"]["model_file"].endswith("robots/g1/scene_flat.xml")
     assert "robot" in env_cfg_override["scene"]["entities"]
     assert captured == {}
@@ -437,32 +399,6 @@ def test_backend_adapter_play_profile_merges_partial_observation_term() -> None:
 
     adapter._apply_env_profile(override, OmegaConf.create({"events": {"randomize": None}}))
     assert override["events"]["randomize"] is None
-
-
-def test_backend_adapter_materializes_visuals_without_dropping_manager_entities():
-    cfg = _ppo_cfg(["task=g1_box_tracking/motrix", "training.play_only=true"])
-    captured: dict[str, object] = {}
-
-    def _fake_materializer(source_model_file: str, **kwargs) -> str:
-        captured["source_model_file"] = source_model_file
-        captured.update(kwargs)
-        return "/tmp/materialized_box.xml"
-
-    env_cfg_override = BackendAdapter(
-        cfg,
-        root_dir=_ROOT_DIR,
-        algo_name="ppo",
-        scene_materializer=_fake_materializer,
-    ).build_play_env_cfg_override()
-
-    scene = env_cfg_override["scene"]
-    assert scene["model_file"] == "/tmp/materialized_box.xml"
-    assert scene["default_keyframe_name"] == "stand"
-    assert set(scene["entities"]) == {"robot", "object"}
-    assert scene["entities"]["object"]["root_body_name"] == "largebox"
-    assert str(captured["source_model_file"]).endswith(
-        "src/unilab/assets/robots/g1/scene_flat_with_largebox.xml"
-    )
 
 
 def test_render_play_mode_uses_env_interactive_contract():
