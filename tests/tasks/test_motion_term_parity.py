@@ -989,18 +989,30 @@ def test_tensor_command_publishes_sampler_advance_exactly_once() -> None:
     command = mt.TensorMotionCommand.__new__(mt.TensorMotionCommand)
     command._device = torch.device("cpu")
     command.time_steps = torch.tensor([4, 0, 9], dtype=torch.int32)
-    command.sampler = SimpleNamespace(
-        current_frames=np.asarray([5, 0, 10], dtype=np.int32),
-        current_clip_indices=np.zeros(3, dtype=np.int32),
-        current_clip_end_frames=np.asarray([100, 100, 100], dtype=np.int32),
-        update_failure_stats=lambda terminated: None,
+    command.tensor_sampler = mt.TensorMotionSampler(
+        mode="adaptive",
+        num_envs=3,
+        num_frames=11,
+        clip_offsets=np.asarray([0], dtype=np.int64),
+        clip_end_frames=np.asarray([100], dtype=np.int32),
+        bin_count=1,
+        adaptive_lambda=0.8,
+        adaptive_kernel_size=1,
+        adaptive_uniform_ratio=0.1,
+        adaptive_alpha=0.001,
+        start_ratio=0.0,
+        initial_frames=np.asarray([4, 0, 9], dtype=np.int32),
+        initial_clip_end_frames=np.asarray([100, 100, 100], dtype=np.int32),
+        device=torch.device("cpu"),
     )
+    command.tensor_sampler.current_frames.copy_(command.time_steps)
     command.current_clip_end_frames = torch.tensor([90, 90, 90], dtype=torch.int32)
     command._clip_offsets_torch = torch.tensor([0], dtype=torch.int64)
     command._clip_end_frames_torch = torch.tensor([100], dtype=torch.int64)
     command.cfg = SimpleNamespace(params=SimpleNamespace(truncate_on_clip_end=True))
     command._tensor_post_compute_env_ids = None
     command._resample_ingested_ids = None
+    command._tensor_resample_ingested = None
     command._env = SimpleNamespace(
         termination_manager=SimpleNamespace(terminated=torch.tensor([False, False, False])),
         reset_buf=torch.tensor([False, False, False]),
