@@ -16,6 +16,7 @@ from unilab.managers import (
     CommandTermCfg,
     ManagerTermBase,
     ManagerTermBaseCfg,
+    ObservationTermCfg,
     RewardTermCfg,
 )
 from unilab.managers.scene_entity_config import SceneEntityCfg
@@ -1780,6 +1781,13 @@ class undesired_body_contacts(_BodyTerm):
 
 
 @dataclass(kw_only=True)
+class MotionAnchorObservationPackCfg(ObservationTermCfg):
+    """Fused motion anchor observation pack over one aggregate body read."""
+
+    command_name: str = "motion"
+
+
+@dataclass(kw_only=True)
 class MotionRewardPackCfg(RewardTermCfg):
     """Fused motion reward pack owned by the tensor motion command."""
 
@@ -2016,42 +2024,6 @@ def motion_clip_end(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray | t
     return command.time_steps >= command.sampler.current_clip_end_frames
 
 
-__all__ = [
-    "MotionCommand",
-    "MotionCommandCfg",
-    "MotionCommandParamsCfg",
-    "MotionJointPositionAction",
-    "MotionJointPositionActionCfg",
-    "MotionRewardPack",
-    "MotionRewardPackCfg",
-    "MotionAnchorObservation",
-    "MotionAnchorOrientationObservation",
-    "MotionAnchorPositionObservation",
-    "bad_anchor_ori",
-    "bad_anchor_pos_z_only",
-    "bad_motion_body_pos_z_only",
-    "bad_undesired_body_contacts",
-    "joint_pos_limits",
-    "motion_anchor_ori_b",
-    "motion_anchor_pos_b",
-    "motion_clip_end",
-    "motion_global_anchor_orientation_error_exp",
-    "motion_global_anchor_position_error_exp",
-    "motion_global_body_angular_velocity_error_exp",
-    "motion_global_body_linear_velocity_error_exp",
-    "motion_joint_pos_rel",
-    "motion_joint_pos_rel_biased",
-    "motion_joint_position_error_exp",
-    "motion_joint_velocity_error_exp",
-    "motion_relative_body_orientation_error_exp",
-    "motion_relative_body_position_error_exp",
-    "motion_relative_body_position_z_error_exp",
-    "robot_body_ori_b",
-    "robot_body_pos_b",
-    "undesired_body_contacts",
-]
-
-
 class MotionAnchorObservation(ManagerTermBase):
     """Tensor-native anchor-relative observation over the scene body phase.
 
@@ -2138,3 +2110,86 @@ class MotionAnchorOrientationObservation(MotionAnchorObservation):
             device=view.quat_w.device,
         )
         return quat_to_rot6(quat_mul(quat_conjugate(robot_quat), motion_quat))
+
+
+class MotionAnchorObservationPack(MotionAnchorObservation):
+    """Evaluate both anchor-relative motion observations in one body read."""
+
+    def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
+        if not isinstance(cfg, MotionAnchorObservationPackCfg):
+            raise TypeError("MotionAnchorObservationPack requires MotionAnchorObservationPackCfg")
+        super().__init__(cfg, env)
+
+    def _cold_observation(self, command: MotionCommand) -> torch.Tensor:
+        del command
+        return torch.zeros((self.num_envs, 9), dtype=torch.float32)
+
+    def __call__(self, env: ManagerBasedRlEnv, command_name: str = "motion") -> torch.Tensor:
+        if command_name != self._command_name:
+            raise ValueError(
+                f"Motion anchor observation pack was bound to {self._command_name!r}, "
+                f"received {command_name!r}"
+            )
+        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        if read_plan is None:
+            return self._cold_observation(_command(env, self._command_name))
+        view = read_plan.body_tensor_view(self._entity_name, self._body_names)
+        command = _command(env, self._command_name)
+        anchor_idx = self._anchor_body_idx
+        motion_anchor_pos = torch.as_tensor(
+            command.body_pos_w[:, anchor_idx],
+            dtype=torch.float32,
+            device=view.pos_w.device,
+        )
+        motion_anchor_quat = torch.as_tensor(
+            command.body_quat_w[:, anchor_idx],
+            dtype=torch.float32,
+            device=view.quat_w.device,
+        )
+        robot_anchor_pos = view.pos_w[:, anchor_idx]
+        robot_anchor_quat = view.quat_w[:, anchor_idx]
+        return torch.cat(
+            (
+                quat_apply_inverse(robot_anchor_quat, motion_anchor_pos - robot_anchor_pos),
+                quat_to_rot6(quat_mul(quat_conjugate(robot_anchor_quat), motion_anchor_quat)),
+            ),
+            dim=-1,
+        )
+
+
+__all__ = [
+    "MotionCommand",
+    "MotionCommandCfg",
+    "MotionCommandParamsCfg",
+    "MotionJointPositionAction",
+    "MotionJointPositionActionCfg",
+    "MotionRewardPack",
+    "MotionRewardPackCfg",
+    "MotionAnchorObservation",
+    "MotionAnchorObservationPack",
+    "MotionAnchorObservationPackCfg",
+    "MotionAnchorOrientationObservation",
+    "MotionAnchorPositionObservation",
+    "bad_anchor_ori",
+    "bad_anchor_pos_z_only",
+    "bad_motion_body_pos_z_only",
+    "bad_undesired_body_contacts",
+    "joint_pos_limits",
+    "motion_anchor_ori_b",
+    "motion_anchor_pos_b",
+    "motion_clip_end",
+    "motion_global_anchor_orientation_error_exp",
+    "motion_global_anchor_position_error_exp",
+    "motion_global_body_angular_velocity_error_exp",
+    "motion_global_body_linear_velocity_error_exp",
+    "motion_joint_pos_rel",
+    "motion_joint_pos_rel_biased",
+    "motion_joint_position_error_exp",
+    "motion_joint_velocity_error_exp",
+    "motion_relative_body_orientation_error_exp",
+    "motion_relative_body_position_error_exp",
+    "motion_relative_body_position_z_error_exp",
+    "robot_body_ori_b",
+    "robot_body_pos_b",
+    "undesired_body_contacts",
+]

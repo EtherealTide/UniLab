@@ -123,6 +123,14 @@ _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6 = (
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V7 = (
     "169f05b8fe4616bd7a8c7b10b5d8fee475b60089d4d6dc32448415b1f78594d8"
 )
+# V8 applies only to MJWarp: the two anchor observations are fused into one
+# Manager tensor term. Segment order and values remain unchanged.
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V8 = (
+    "0343eec5fb31edf5053f61d76b340afcc5d216364a208abb29b0461438019995"
+)
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V9 = (
+    "34b78dd9d19532e65e23f97672f658e4670b88281706f39e80e9fbe927f8b46f"
+)
 # V3 applies only to the MJWARP owner: its two anchor observations use the
 # Manager tensor read phase instead of the command-owned NumPy buffers. The
 # equations, ordering, noise, and all other owner terms remain unchanged.
@@ -162,6 +170,8 @@ def _validate_torch_g1_flashsac_owner_contract(cfg: ManagerBasedRlEnvCfg) -> Non
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V5,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V7,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V8,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V9,
         _TORCH_G1_SAC_OWNER_IDENTITY_V1,
         _TORCH_G1_FLIP_SAC_OWNER_IDENTITY_V1,
         _TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V1,
@@ -675,6 +685,15 @@ class _TorchG1MotionTrackingFlashSACEnv(TorchEnv):
             "joint_vel",
             "actions",
         )
+        fused_expected_actor = (
+            "command",
+            "motion_anchor_pack",
+            "base_lin_vel",
+            "base_ang_vel",
+            "joint_pos",
+            "joint_vel",
+            "actions",
+        )
         expected_critic = (*expected_actor, "body_pos", "body_ori", "sac_base_lin_vel")
         expected_sac_critic = (
             "command",
@@ -689,7 +708,10 @@ class _TorchG1MotionTrackingFlashSACEnv(TorchEnv):
             "body_ori",
             "sac_base_lin_vel",
         )
-        if actor_terms != expected_actor or critic_terms not in {
+        expected_actor_options = {expected_actor}
+        if "motion_anchor_pack" in actor_terms:
+            expected_actor_options.add(fused_expected_actor)  # type: ignore[arg-type]
+        if actor_terms not in expected_actor_options or critic_terms not in {
             expected_critic,
             expected_sac_critic,
         }:

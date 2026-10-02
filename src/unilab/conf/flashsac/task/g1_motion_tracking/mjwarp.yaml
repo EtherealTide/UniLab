@@ -19,17 +19,15 @@ env:
   observations:
     actor:
       terms:
-        motion_anchor_pos_b:
-          func: unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorPositionObservation
-          params: {command_name: motion}
-        motion_anchor_ori_b:
-          func: unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorOrientationObservation
-          params: {command_name: motion}
+        motion_anchor_pos_b: null
+        motion_anchor_ori_b: null
+        motion_anchor_pack:
+          _target_: unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorObservationPackCfg
+          func: unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorObservationPack
     critic:
       terms:
-        motion_anchor_pos_b:
-          func: unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorPositionObservation
-          params: {command_name: motion}
-        motion_anchor_ori_b:
-          func: unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorOrientationObservation
-          params: {command_name: motion}
+        motion_anchor_pos_b: null
+        motion_anchor_ori_b: null
+        motion_anchor_pack:
+          _target_: unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorObservationPackCfg
+          func: unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorObservationPack

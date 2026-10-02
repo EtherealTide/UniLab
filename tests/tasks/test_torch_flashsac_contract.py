@@ -48,7 +48,7 @@ def test_torch_owner_fingerprint_accepts_both_canonical_backends() -> None:
         module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6
     )
     assert module._torch_g1_flashsac_owner_identity(mjwarp) == (
-        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V7
+        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V9
     )
 
 
@@ -113,7 +113,7 @@ def test_fused_motion_reward_pack_owner_identity_is_canonical() -> None:
             else {
                 "mujoco": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6,
                 "genesis": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6,
-                "mjwarp": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V7,
+                "mjwarp": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V9,
             }[backend]
         )
         assert identity == expected

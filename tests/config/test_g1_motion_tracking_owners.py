@@ -107,18 +107,16 @@ def test_flashsac_g1_motion_tracking_uses_comparable_dr_free_owner() -> None:
     )
     assert mjwarp_cfg.training.sim_backend == "mjwarp"
     assert (
-        mjwarp_cfg.env.observations.actor.terms.motion_anchor_pos_b.func
-        == "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorPositionObservation"
+        mjwarp_cfg.env.observations.actor.terms.motion_anchor_pack.func
+        == "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorObservationPack"
     )
     assert (
-        mjwarp_cfg.env.observations.actor.terms.motion_anchor_ori_b.func
-        == "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorOrientationObservation"
+        mjwarp_cfg.env.observations.critic.terms.motion_anchor_pack.func
+        == "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorObservationPack"
     )
-    assert mjwarp_cfg.env.observations.critic.terms.motion_anchor_pos_b.func == (
-        "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorPositionObservation"
-    )
-    assert mjwarp_cfg.env.observations.critic.terms.motion_anchor_ori_b.func == (
-        "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorOrientationObservation"
+    assert (
+        mjwarp_cfg.env.observations.actor.terms.motion_anchor_pack._target_
+        == "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorObservationPackCfg"
     )
     # Anchor term execution and the MJWARP-only tensor command implementation are
     # intended cross-backend differences; the semantic owner remains DR-free.

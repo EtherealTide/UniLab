@@ -206,6 +206,58 @@ def test_anchor_terms_declare_command_body_namespace() -> None:
     assert term.entity_name == "robot"
 
 
+def test_anchor_observation_pack_matches_individual_tensor_terms() -> None:
+    body_pos_w, body_quat_w = _reference_state()
+    command = _command(body_pos_w=body_pos_w.copy(), body_quat_w=body_quat_w.copy())
+    env = _env(command, _view())
+    cfg = mt.MotionAnchorObservationPackCfg(func=mt.MotionAnchorObservationPack)
+    pack = mt.MotionAnchorObservationPack(cfg, cast(ManagerBasedRlEnv, env))
+    position = mt.MotionAnchorPositionObservation(
+        _cfg(mt.MotionAnchorPositionObservation), cast(ManagerBasedRlEnv, env)
+    )
+    orientation = mt.MotionAnchorOrientationObservation(
+        _cfg(mt.MotionAnchorOrientationObservation), cast(ManagerBasedRlEnv, env)
+    )
+
+    value = pack(cast(ManagerBasedRlEnv, env), command_name="motion")
+
+    expected = torch.cat(
+        (
+            position(cast(ManagerBasedRlEnv, env), command_name="motion"),
+            orientation(cast(ManagerBasedRlEnv, env), command_name="motion"),
+        ),
+        dim=-1,
+    )
+    assert value.shape == (2, 9)
+    torch.testing.assert_close(value, expected)
+
+
+def test_anchor_observation_pack_returns_default_shape_probe_without_read_plan() -> None:
+    command = _command(
+        body_pos_w=np.zeros((2, 2, 3), dtype=np.float32),
+        body_quat_w=np.zeros((2, 2, 4), dtype=np.float32),
+    )
+    env = _env(command, _view())
+    env.scene._tensor_read_plan = None
+    cfg = mt.MotionAnchorObservationPackCfg(func=mt.MotionAnchorObservationPack)
+    term = mt.MotionAnchorObservationPack(cfg, cast(ManagerBasedRlEnv, env))
+
+    assert term(cast(ManagerBasedRlEnv, env), command_name="motion").shape == (2, 9)
+
+
+def test_anchor_observation_pack_rejects_wrong_command_and_config() -> None:
+    body_pos_w, body_quat_w = _reference_state()
+    command = _command(body_pos_w=body_pos_w.copy(), body_quat_w=body_quat_w.copy())
+    env = _env(command, _view())
+    cfg = mt.MotionAnchorObservationPackCfg(func=mt.MotionAnchorObservationPack)
+    term = mt.MotionAnchorObservationPack(cfg, cast(ManagerBasedRlEnv, env))
+
+    with pytest.raises(ValueError, match="bound to 'motion'"):
+        term(cast(ManagerBasedRlEnv, env), command_name="other")
+    with pytest.raises(TypeError, match="requires MotionAnchorObservationPackCfg"):
+        mt.MotionAnchorObservationPack(_cfg(mt.MotionAnchorObservationPack), env)
+
+
 def test_tensor_command_observation_accessors_return_carrier_views() -> None:
     command = _MotionCommand(tensor_carrier=True)
     command.motion_anchor_pos_b = torch.zeros((2, 3), dtype=torch.float32)
