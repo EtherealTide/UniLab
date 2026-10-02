@@ -180,6 +180,7 @@ def _update_motion_relative_state_torch(
 
 _MotionRelativeStateFn = Callable[..., None]
 _update_motion_relative_state_compiled: _MotionRelativeStateFn | None = None
+_ingest_motion_packet_compiled: Callable[..., None] | None = None
 
 
 def _compiled_motion_relative_state_available() -> bool:
@@ -199,6 +200,62 @@ def _bind_compiled_motion_relative_state() -> _MotionRelativeStateFn:
         dynamic=True,
     )
     return _update_motion_relative_state_compiled
+
+
+def _ingest_motion_packet_kernel(
+    rows: torch.Tensor,
+    packet: torch.Tensor,
+    joint_pos: torch.Tensor,
+    joint_vel: torch.Tensor,
+    body_pos: torch.Tensor,
+    body_quat: torch.Tensor,
+    body_lin_vel: torch.Tensor,
+    body_ang_vel: torch.Tensor,
+    published_body_pos: torch.Tensor,
+    command: torch.Tensor,
+    origins: torch.Tensor,
+    *,
+    num_bodies: int,
+    num_joints: int,
+) -> None:
+    """Scatter one motion feature packet into the owner's device carriers."""
+    count = rows.numel()
+    joint_width = num_joints
+    vel_start, vel_end = joint_width, joint_width * 2
+    body_start = vel_end
+    quat_start = body_start + num_bodies * 3
+    lin_start = quat_start + num_bodies * 4
+    ang_start = lin_start + num_bodies * 3
+    joint_pos.index_copy_(0, rows, packet[:, :joint_width])
+    joint_vel.index_copy_(0, rows, packet[:, vel_start:vel_end])
+    body_pos.index_copy_(0, rows, packet[:, body_start:quat_start].view(count, num_bodies, 3))
+    body_quat.index_copy_(0, rows, packet[:, quat_start:lin_start].view(count, num_bodies, 4))
+    body_lin_vel.index_copy_(0, rows, packet[:, lin_start:ang_start].view(count, num_bodies, 3))
+    body_ang_vel.index_copy_(0, rows, packet[:, ang_start:].view(count, num_bodies, 3))
+    published_body_pos.index_copy_(
+        0,
+        rows,
+        packet[:, body_start:quat_start].view(count, num_bodies, 3) + origins[:, None, :],
+    )
+    command.index_copy_(
+        0,
+        rows,
+        torch.cat((packet[:, :joint_width], packet[:, vel_start:vel_end]), dim=1),
+    )
+
+
+def _bind_compiled_motion_packet_ingest() -> Callable[..., None]:
+    """Compile the owner packet scatter once for full and selected rows."""
+    global _ingest_motion_packet_compiled
+    if _ingest_motion_packet_compiled is not None:
+        return _ingest_motion_packet_compiled
+    if not _compiled_motion_relative_state_available():
+        return _ingest_motion_packet_kernel
+    _ingest_motion_packet_compiled = torch.compile(
+        _ingest_motion_packet_kernel,
+        dynamic=True,
+    )
+    return _ingest_motion_packet_compiled
 
 
 if TYPE_CHECKING:
@@ -1190,25 +1247,24 @@ class TensorMotionCommand(MotionCommand):
     def _ingest_motion_packet(self, rows: torch.Tensor, packet: torch.Tensor) -> None:
         """Scatter one device motion packet into the command carriers."""
         count = rows.numel()
-        offsets = self._motion_feature_offsets
-        tail_shapes = self._motion_feature_tail_shapes
         origins = (
             self._env_origins if count == self.num_envs else self._env_origins.index_select(0, rows)
         )
-        for name, (start, end) in offsets.items():
-            getattr(self._motion_data, name).index_copy_(
-                0, rows, packet[:, start:end].reshape(count, *tail_shapes[name])
-            )
-        body_start, body_end = offsets["body_pos_w"]
-        self._body_pos_w.index_copy_(
-            0, rows, packet[:, body_start:body_end].view(count, -1, 3) + origins[:, None, :]
+        _bind_compiled_motion_packet_ingest()(
+            rows,
+            packet,
+            cast("torch.Tensor", self._motion_data.joint_pos),
+            cast("torch.Tensor", self._motion_data.joint_vel),
+            cast("torch.Tensor", self._motion_data.body_pos_w),
+            cast("torch.Tensor", self._motion_data.body_quat_w),
+            cast("torch.Tensor", self._motion_data.body_lin_vel_w),
+            cast("torch.Tensor", self._motion_data.body_ang_vel_w),
+            self._body_pos_w,
+            self._command,
+            origins,
+            num_bodies=len(self.cfg.body_names),
+            num_joints=self.motion.num_joints,
         )
-        joint_start, joint_end = offsets["joint_pos"]
-        vel_start, vel_end = offsets["joint_vel"]
-        command_packet = torch.cat(
-            (packet[:, joint_start:joint_end], packet[:, vel_start:vel_end]), dim=1
-        )
-        self._command.index_copy_(0, rows, command_packet)
 
     def _refresh_relative_state_torch(self, rows: torch.Tensor | None = None) -> None:
         row_selector = self._tensor_all_rows if rows is None else rows
