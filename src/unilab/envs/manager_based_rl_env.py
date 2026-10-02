@@ -1168,12 +1168,14 @@ class ManagerBasedRlEnv(TorchEnv):
             timing.get("update_state_publish_ms"),
         )
         if all(value is not None for value in update_children):
-            # Queue drain is excluded: it is the pre-update GPU stream boundary
-            # and would double-count work already timed by step_core_ms.
+            # Queue drain and the same boundary inside termination are excluded:
+            # they drain pre-update GPU work already timed by step_core_ms.
+            drain = cast(float, timing["update_state_queue_drain_ms"])
             timing["update_state_nonattributed_ms"] = (
                 time.perf_counter()
                 - update_started
                 - sum(cast(float, value) for value in update_children)
+                + drain
             ) * 1000.0
         return replacement
 
