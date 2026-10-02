@@ -114,7 +114,7 @@ def test_public_exports_and_cfg_build_are_canonical() -> None:
     assert UniformVelocityCommandCfg is ExportedUniformVelocityCommandCfg
     assert isinstance(term, UniformVelocityCommand)
     assert term.command.shape == (env.num_envs, 3)
-    assert term.command.dtype == np.float32
+    assert term.command.dtype == torch.float32
 
 
 def test_manager_boundary_publishes_torch_commands() -> None:

@@ -65,10 +65,8 @@ class UniformVelocityCommand(CommandTerm):
 
         self.robot = cast("Entity", env.scene[cfg.entity_name])
         dtype = get_global_dtype()
-        self._tensor_command = (
-            torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self._device)
-            if self._device.type == "cuda"
-            else None
+        self._tensor_command = torch.zeros(
+            (self.num_envs, 3), dtype=torch.float32, device=self._device
         )
         self.vel_command_b = np.zeros((self.num_envs, 3), dtype=dtype)
         self.vel_command_w = np.zeros_like(self.vel_command_b)
@@ -120,11 +118,10 @@ class UniformVelocityCommand(CommandTerm):
             raise ValueError("resampling_time_range upper bound must be positive")
 
     @property
-    def command(self) -> np.ndarray:
-        tensor = getattr(self, "_tensor_command", None)
-        if tensor is not None:
-            return tensor
-        return self.vel_command_b
+    def command(self) -> torch.Tensor:
+        tensor = self._tensor_command
+        assert tensor is not None
+        return tensor
 
     @property
     def tensor_sensor_names(self) -> tuple[str, ...]:
@@ -174,38 +171,7 @@ class UniformVelocityCommand(CommandTerm):
         self.metrics["error_vel_yaw"] += errors[:, 1]
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
-        tensor = getattr(self, "_tensor_command", None)
-        if tensor is not None:
-            self._resample_tensor_command(env_ids)
-            return
-        host_ids = env_ids.detach().cpu().numpy()
-        count = len(env_ids)
-        rng = self._env.rng
-        ranges = self.cfg.ranges
-        self.vel_command_b[host_ids, 0] = rng.uniform(*ranges.lin_vel_x, size=count)
-        self.vel_command_b[host_ids, 1] = rng.uniform(*ranges.lin_vel_y, size=count)
-        self.vel_command_b[host_ids, 2] = rng.uniform(*ranges.ang_vel_z, size=count)
-
-        if self.cfg.heading_command:
-            assert ranges.heading is not None
-            self.heading_target[host_ids] = rng.uniform(*ranges.heading, size=count)
-            self.is_heading_env[host_ids] = (
-                rng.uniform(0.0, 1.0, size=count) <= self.cfg.rel_heading_envs
-            )
-        self.is_standing_env[host_ids] = (
-            rng.uniform(0.0, 1.0, size=count) <= self.cfg.rel_standing_envs
-        )
-        self.is_world_env[host_ids] = rng.uniform(0.0, 1.0, size=count) <= self.cfg.rel_world_envs
-        self.vel_command_w[host_ids] = self.vel_command_b[host_ids]
-        self.is_forward_env[host_ids] = (
-            rng.uniform(0.0, 1.0, size=count) <= self.cfg.rel_forward_envs
-        )
-        forward_ids = host_ids[self.is_forward_env[host_ids]]
-        if len(forward_ids) > 0:
-            self.vel_command_b[forward_ids, 0] = np.maximum(
-                np.abs(self.vel_command_b[forward_ids, 0]), 0.3
-            )
-            self.vel_command_b[forward_ids, 1:] = 0.0
+        self._resample_tensor_command(env_ids)
 
     def _resample_tensor_command(self, env_ids: torch.Tensor) -> None:
         count = len(env_ids)
@@ -233,15 +199,15 @@ class UniformVelocityCommand(CommandTerm):
         self.is_world_env[host_ids] = (
             self._host_uniform(0.0, 1.0, count=count, dtype=np.float32) <= self.cfg.rel_world_envs
         )
-        self.vel_command_w[host_ids] = self.vel_command_b[host_ids]
         self.is_forward_env[host_ids] = (
             self._host_uniform(0.0, 1.0, count=count, dtype=np.float32) <= self.cfg.rel_forward_envs
         )
-        if bool(self.is_forward_env[host_ids].any()):
-            forward = rows[self.is_forward_env[host_ids]]
-            tensor[forward, 0] = torch.clamp(tensor[forward, 0].abs(), min=0.3)
-            tensor[forward, 1:] = 0.0
+        forward = self.is_forward_env[host_ids]
+        if forward.any():
+            samples[forward, 0] = torch.clamp(samples[forward, 0].abs(), min=0.3)
+            samples[forward, 1:] = 0.0
         tensor.index_copy_(0, rows, samples)
+        self.vel_command_w[host_ids] = samples.detach().cpu().numpy()
 
     def _sample_uniform(self, lower: float, upper: float, count: int) -> torch.Tensor:
         rng_owner = getattr(self._env, "torch_rng", None)
@@ -266,6 +232,8 @@ class UniformVelocityCommand(CommandTerm):
 
     def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
         del env_ids
+        tensor = self._tensor_command
+        assert tensor is not None
         if self.cfg.heading_command:
             self.heading_error[:] = np_wrap_to_pi(self.heading_target - self.robot.data.heading_w)
             heading_ids = np.flatnonzero(self.is_heading_env)
@@ -292,6 +260,7 @@ class UniformVelocityCommand(CommandTerm):
         standing_ids = np.flatnonzero(self.is_standing_env)
         self.vel_command_b[standing_ids] = 0.0
         self.vel_command_w[standing_ids] = 0.0
+        tensor.copy_(torch.as_tensor(self.vel_command_b, dtype=torch.float32, device=tensor.device))
 
 
 @dataclass(kw_only=True)
