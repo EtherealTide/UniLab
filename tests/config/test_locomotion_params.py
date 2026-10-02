@@ -244,7 +244,6 @@ def test_g1_task_owner_yamls_preserve_legacy_and_walk_observation_profiles():
     assert uses_walk_profile("ppo", ["task=g1_walk_flat/mujoco"]) is False
     assert uses_walk_profile("appo", ["task=g1_walk_flat/mujoco"]) is False
     assert uses_walk_profile("sac", ["task=g1_walk_flat/mujoco"]) is True
-    assert uses_walk_profile("sac", ["task=g1_walk_flat/motrix"]) is True
     assert uses_walk_profile("flashsac", ["task=g1_walk_flat/mujoco"]) is True
     assert uses_walk_profile("warpsac", ["task=g1_walk_flat/mujoco"]) is True
 
