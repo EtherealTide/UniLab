@@ -350,13 +350,13 @@ class CommandManager(ManagerBase):
         extras = {}
         reset_commands: list[tuple[str, torch.Tensor]] = []
         self._last_term_reset_timing_ms.clear()
-        validation_started = time.perf_counter()
         for name, term in self._terms.items():
             metrics = term.reset(env_ids=env_ids)
             reset_commands.append((name, term.command))
             self._last_term_reset_timing_ms.update(term.last_reset_timing_ms)
             for metric_name, metric_value in metrics.items():
                 extras[f"Metrics/{name}/{metric_name}"] = metric_value
+        validation_started = time.perf_counter()
         commands: list[torch.Tensor] = []
         labels: list[str] = []
         for name, command in reset_commands:
