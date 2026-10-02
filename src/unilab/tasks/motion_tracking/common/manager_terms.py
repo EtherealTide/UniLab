@@ -183,6 +183,8 @@ def _update_motion_relative_state_torch(
 _MotionRelativeStateFn = Callable[..., None]
 _update_motion_relative_state_compiled: _MotionRelativeStateFn | None = None
 _update_motion_metrics_compiled: _MotionRelativeStateFn | None = None
+_motion_reward_pack_compiled: _MotionRelativeStateFn | None = None
+_motion_penalty_reward_pack_compiled: _MotionRelativeStateFn | None = None
 _ingest_motion_packet_compiled: Callable[..., None] | None = None
 _refresh_motion_robot_state_compiled: Callable[..., None] | None = None
 
@@ -218,6 +220,116 @@ def _bind_compiled_motion_metrics() -> _MotionRelativeStateFn:
         dynamic=True,
     )
     return _update_motion_metrics_compiled
+
+
+def _motion_reward_pack_kernel(
+    anchor_pos_w: torch.Tensor,
+    robot_anchor_pos_w: torch.Tensor,
+    anchor_quat_w: torch.Tensor,
+    robot_anchor_quat_w: torch.Tensor,
+    body_pos_relative_w: torch.Tensor,
+    robot_body_pos_w: torch.Tensor,
+    body_quat_relative_w: torch.Tensor,
+    robot_body_quat_w: torch.Tensor,
+    body_lin_vel_w: torch.Tensor,
+    robot_body_lin_vel_w: torch.Tensor,
+    body_ang_vel_w: torch.Tensor,
+    robot_body_ang_vel_w: torch.Tensor,
+    root_pos_weight: float,
+    root_pos_std: float,
+    root_ori_weight: float,
+    root_ori_std: float,
+    body_pos_weight: float,
+    body_pos_std: float,
+    body_ori_weight: float,
+    body_ori_std: float,
+    body_lin_vel_weight: float,
+    body_lin_vel_std: float,
+    body_ang_vel_weight: float,
+    body_ang_vel_std: float,
+    body_count: int,
+    output: torch.Tensor,
+) -> None:
+    anchor_delta = anchor_pos_w - robot_anchor_pos_w
+    root_pos = torch.exp(-(anchor_delta * anchor_delta).sum(dim=-1) / (root_pos_std**2))
+
+    rel = quat_mul(quat_conjugate(anchor_quat_w), robot_anchor_quat_w)
+    xyz = torch.linalg.vector_norm(rel[..., 1:4], dim=-1)
+    angle = 2.0 * torch.atan2(xyz, rel[..., 0].abs().clamp(max=1.0))
+    root_ori = torch.exp(-(angle * angle) / (root_ori_std**2))
+
+    body_pos_error = (body_pos_relative_w - robot_body_pos_w).square().sum(dim=(-1, -2))
+    body_pos = torch.exp(-body_pos_error / (body_count * body_pos_std**2))
+
+    body_rel = quat_mul(quat_conjugate(body_quat_relative_w), robot_body_quat_w)
+    body_xyz = torch.linalg.vector_norm(body_rel[..., 1:4], dim=-1)
+    body_angle = 2.0 * torch.atan2(body_xyz, body_rel[..., 0].abs().clamp(max=1.0))
+    body_ori = torch.exp(-(body_angle * body_angle).sum(dim=-1) / (body_count * body_ori_std**2))
+
+    lin_error = (body_lin_vel_w - robot_body_lin_vel_w).square().sum(dim=(-1, -2))
+    body_lin = torch.exp(-lin_error / (body_count * body_lin_vel_std**2))
+    ang_error = (body_ang_vel_w - robot_body_ang_vel_w).square().sum(dim=(-1, -2))
+    body_ang = torch.exp(-ang_error / (body_count * body_ang_vel_std**2))
+
+    torch.mul(root_pos, root_pos_weight, out=output)
+    output.add_(root_ori * root_ori_weight)
+    output.add_(body_pos * body_pos_weight)
+    output.add_(body_ori * body_ori_weight)
+    output.add_(body_lin * body_lin_vel_weight)
+    output.add_(body_ang * body_ang_vel_weight)
+
+
+def _bind_compiled_motion_reward_pack() -> _MotionRelativeStateFn:
+    """Compile the fused motion reward kernel once per process."""
+    global _motion_reward_pack_compiled
+    if _motion_reward_pack_compiled is not None:
+        return _motion_reward_pack_compiled
+    if not _compiled_motion_relative_state_available():
+        return _motion_reward_pack_kernel
+    _motion_reward_pack_compiled = torch.compile(_motion_reward_pack_kernel, dynamic=True)
+    return _motion_reward_pack_compiled
+
+
+def _motion_penalty_reward_pack_kernel(
+    action: torch.Tensor,
+    prev_action: torch.Tensor,
+    joint_pos: torch.Tensor,
+    soft_limits: torch.Tensor,
+    robot_body_pos_w: torch.Tensor,
+    contact_body_ids: torch.Tensor,
+    contact_threshold: float,
+    action_rate_weight: float,
+    joint_limit_weight: float,
+    undesired_contact_weight: float,
+    output: torch.Tensor,
+) -> None:
+    action_delta = action - prev_action
+    action_rate = action_delta.square().sum(dim=-1)
+
+    lower_error = torch.clamp(soft_limits[:, 0] - joint_pos, min=0.0)
+    upper_error = torch.clamp(joint_pos - soft_limits[:, 1], min=0.0)
+    joint_limit = (lower_error + upper_error).square().sum(dim=-1)
+
+    contact_heights = robot_body_pos_w.index_select(1, contact_body_ids)[..., 2]
+    contacts = (contact_heights < contact_threshold).sum(dim=-1).to(dtype=torch.float32)
+
+    torch.mul(action_rate, action_rate_weight, out=output)
+    output.add_(joint_limit * joint_limit_weight)
+    output.add_(contacts * undesired_contact_weight)
+
+
+def _bind_compiled_motion_penalty_reward_pack() -> _MotionRelativeStateFn:
+    """Compile the fused motion penalty kernel once per process."""
+    global _motion_penalty_reward_pack_compiled
+    if _motion_penalty_reward_pack_compiled is not None:
+        return _motion_penalty_reward_pack_compiled
+    if not _compiled_motion_relative_state_available():
+        return _motion_penalty_reward_pack_kernel
+    _motion_penalty_reward_pack_compiled = torch.compile(
+        _motion_penalty_reward_pack_kernel,
+        dynamic=True,
+    )
+    return _motion_penalty_reward_pack_compiled
 
 
 def _ingest_motion_packet_kernel(
@@ -2497,76 +2609,36 @@ class MotionRewardPack(ManagerTermBase):
 
     def __call__(self, env: ManagerBasedRlEnv) -> torch.Tensor:
         del env
-        command = self._command
         c = self.cfg
-        command_tensors = {
-            name: cast(torch.Tensor, getattr(command, name))
-            for name in (
-                "anchor_pos_w",
-                "robot_anchor_pos_w",
-                "anchor_quat_w",
-                "robot_anchor_quat_w",
-                "body_pos_relative_w",
-                "robot_body_pos_w",
-                "body_quat_relative_w",
-                "robot_body_quat_w",
-                "body_lin_vel_w",
-                "robot_body_lin_vel_w",
-                "body_ang_vel_w",
-                "robot_body_ang_vel_w",
-            )
-        }
-        anchor_delta = command_tensors["anchor_pos_w"] - command_tensors["robot_anchor_pos_w"]
-        root_pos = torch.exp(-(anchor_delta * anchor_delta).sum(dim=-1) / (c.root_pos_std**2))
-
-        rel = quat_mul(
-            quat_conjugate(command_tensors["anchor_quat_w"]),
-            command_tensors["robot_anchor_quat_w"],
-        )
-        xyz = torch.linalg.vector_norm(rel[..., 1:4], dim=-1)
-        angle = 2.0 * torch.atan2(xyz, rel[..., 0].abs().clamp(max=1.0))
-        root_ori = torch.exp(-(angle * angle) / (c.root_ori_std**2))
-
-        body_pos_error = (
-            (command_tensors["body_pos_relative_w"] - command_tensors["robot_body_pos_w"])
-            .square()
-            .sum(dim=(-1, -2))
-        )
-        body_pos = torch.exp(-body_pos_error / (self._body_count * c.body_pos_std**2))
-
-        body_rel = quat_mul(
-            quat_conjugate(command_tensors["body_quat_relative_w"]),
-            command_tensors["robot_body_quat_w"],
-        )
-        body_xyz = torch.linalg.vector_norm(body_rel[..., 1:4], dim=-1)
-        body_angle = 2.0 * torch.atan2(body_xyz, body_rel[..., 0].abs().clamp(max=1.0))
-        body_ori = torch.exp(
-            -(body_angle * body_angle).sum(dim=-1) / (self._body_count * c.body_ori_std**2)
-        )
-
-        lin_error = (
-            (command_tensors["body_lin_vel_w"] - command_tensors["robot_body_lin_vel_w"])
-            .square()
-            .sum(dim=(-1, -2))
-        )
-        body_lin = torch.exp(-lin_error / (self._body_count * c.body_lin_vel_std**2))
-        ang_error = (
-            (command_tensors["body_ang_vel_w"] - command_tensors["robot_body_ang_vel_w"])
-            .square()
-            .sum(dim=(-1, -2))
-        )
-        body_ang = torch.exp(-ang_error / (self._body_count * c.body_ang_vel_std**2))
-
-        torch.mul(
-            root_pos,
+        command = self._command
+        _bind_compiled_motion_reward_pack()(
+            cast(torch.Tensor, command.anchor_pos_w),
+            cast(torch.Tensor, command.robot_anchor_pos_w),
+            cast(torch.Tensor, command.anchor_quat_w),
+            cast(torch.Tensor, command.robot_anchor_quat_w),
+            cast(torch.Tensor, command.body_pos_relative_w),
+            cast(torch.Tensor, command.robot_body_pos_w),
+            cast(torch.Tensor, command.body_quat_relative_w),
+            cast(torch.Tensor, command.robot_body_quat_w),
+            cast(torch.Tensor, command.body_lin_vel_w),
+            cast(torch.Tensor, command.robot_body_lin_vel_w),
+            cast(torch.Tensor, command.body_ang_vel_w),
+            cast(torch.Tensor, command.robot_body_ang_vel_w),
             c.root_pos_weight,
-            out=self._output,
+            c.root_pos_std,
+            c.root_ori_weight,
+            c.root_ori_std,
+            c.body_pos_weight,
+            c.body_pos_std,
+            c.body_ori_weight,
+            c.body_ori_std,
+            c.body_lin_vel_weight,
+            c.body_lin_vel_std,
+            c.body_ang_vel_weight,
+            c.body_ang_vel_std,
+            self._body_count,
+            self._output,
         )
-        self._output.add_(root_ori * c.root_ori_weight)
-        self._output.add_(body_pos * c.body_pos_weight)
-        self._output.add_(body_ori * c.body_ori_weight)
-        self._output.add_(body_lin * c.body_lin_vel_weight)
-        self._output.add_(body_ang * c.body_ang_vel_weight)
         return self._output
 
 
@@ -2608,24 +2680,19 @@ class MotionPenaltyRewardPack(ManagerTermBase):
         del env
         command = cast(TensorMotionCommand, self._command)
         action = cast(Any, self._env.action_manager)
-        action_delta = action.action - action.prev_action
-        action_rate = action_delta.square().sum(dim=-1)
-
-        joint_pos = command.device_robot_joint_pos
-        lower_error = torch.clamp(self._soft_limits[:, 0] - joint_pos, min=0.0)
-        upper_error = torch.clamp(joint_pos - self._soft_limits[:, 1], min=0.0)
-        joint_limit = (lower_error + upper_error).square().sum(dim=-1)
-
-        contact_heights = cast(torch.Tensor, command.robot_body_pos_w).index_select(
-            1, self._contact_body_ids
-        )[..., 2]
-        contacts = (
-            (contact_heights < self.cfg.contact_threshold).sum(dim=-1).to(dtype=torch.float32)
+        _bind_compiled_motion_penalty_reward_pack()(
+            cast(torch.Tensor, action.action),
+            cast(torch.Tensor, action.prev_action),
+            cast(torch.Tensor, command.device_robot_joint_pos),
+            self._soft_limits,
+            cast(torch.Tensor, command.robot_body_pos_w),
+            self._contact_body_ids,
+            self.cfg.contact_threshold,
+            self.cfg.action_rate_weight,
+            self.cfg.joint_limit_weight,
+            self.cfg.undesired_contact_weight,
+            self._output,
         )
-
-        torch.mul(action_rate, self.cfg.action_rate_weight, out=self._output)
-        self._output.add_(joint_limit * self.cfg.joint_limit_weight)
-        self._output.add_(contacts * self.cfg.undesired_contact_weight)
         return self._output
 
 
