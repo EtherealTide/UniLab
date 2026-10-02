@@ -25,14 +25,13 @@ def test_isaacsim_fixture_loader_is_rejected_after_productionization() -> None:
 
 
 def test_isaacsim_fixture_cli_flag_is_obsolete(capsys: pytest.CaptureFixture[str]) -> None:
-    args, backends = _parse_args(["--backends", "isaacsim,mujoco"])
-    assert backends == ["isaacsim", "mujoco"]
-    assert args.isaacsim_test_fixture is False
-
     with pytest.raises(SystemExit):
-        _parse_args(["--backends", "isaacsim", "--isaacsim-test-fixture"])
+        _parse_args(["--backends", "isaacsim,mujoco"])
+    assert "shelved benchmark backend(s)" in capsys.readouterr().err
 
-    assert "--isaacsim-test-fixture is obsolete" in capsys.readouterr().err
+    args, backends = _parse_args(["--backends", "mujoco,mjwarp"])
+    assert backends == ["mujoco", "mjwarp"]
+    assert args.isaacsim_test_fixture is False
 
 
 def test_tensor_runtime_diagnostics_are_serialized_for_backend_provenance() -> None:
@@ -369,3 +368,17 @@ def test_tensor_benchmark_closes_backend_when_lifecycle_setup_fails(
         g1_backend._run("mjwarp", 2, warmup=0, iters=1)
 
     assert backend.closed is True
+
+
+@pytest.mark.parametrize(
+    "backend", ("motrix", "newton", "drake", "isaacgym", "isaacsim", "superdex")
+)
+def test_shelved_benchmark_backends_fail_closed(
+    backend: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit):
+        _parse_args(["--backends", backend])
+
+    error = capsys.readouterr().err
+    assert backend in error
+    assert "issue #1811" in error
