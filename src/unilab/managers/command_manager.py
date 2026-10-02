@@ -180,6 +180,11 @@ class CommandTerm(ManagerTermBase):
         dt may be a scalar (all envs) or a per-env tensor (auto-reset path,
         where freshly reset envs get zero to keep their timers full). A tensor
         dt requires env_ids=None.
+
+        Full-command and metric finite diagnostics run only on the per-step
+        full-batch path. The reset refresh is row-scoped; the immediately
+        preceding command reset or reset-owner transaction remains the
+        authoritative validation boundary for freshly reset rows.
         """
         tensor_dt = isinstance(dt, torch.Tensor)
         dt_scalar: float | None = None
@@ -214,7 +219,6 @@ class CommandTerm(ManagerTermBase):
         if not dt_is_finite:
             raise ValueError(f"CommandTerm '{self.name}' received non-finite dt.")
         self._update_metrics(env_ids)
-        self._validate_metrics()
         resample_env_ids: torch.Tensor
         if env_ids is None:
             if dt_tensor is not None:
@@ -439,7 +443,8 @@ class CommandManager(ManagerBase):
     ) -> None:
         for name, term in self._terms.items():
             term.compute(dt, env_ids)
-            self._validate_command(name, term.command)
+            if env_ids is None:
+                self._validate_command(name, term.command)
 
     def post_compute(self) -> None:
         self.last_post_compute_timing_ms.clear()

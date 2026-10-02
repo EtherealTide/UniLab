@@ -225,6 +225,34 @@ def test_command_viewer_request_and_old_signature_fail_closed(fake_env: FakeEnv)
         CommandManager({"old": OldCfg(resampling_time_range=(1.0, 1.0))}, fake_env)
 
 
+def test_command_reset_refresh_does_not_validate_full_command_or_metrics(
+    fake_env: FakeEnv,
+) -> None:
+    manager = CommandManager({"goal": DummyCommandCfg(resampling_time_range=(1.0, 1.0))}, fake_env)
+    command = manager.get_term("goal")
+    rows = torch.tensor([1], dtype=torch.int64)
+    command._command[2, 0] = np.nan
+    command.metrics["error"][1] = np.nan
+    scalar_conversions = 0
+    original_bool = torch.Tensor.__bool__
+
+    def counted_bool(self: torch.Tensor) -> bool:
+        nonlocal scalar_conversions
+        scalar_conversions += 1
+        return original_bool(self)
+
+    torch.Tensor.__bool__ = counted_bool  # type: ignore[method-assign]
+    try:
+        manager.compute(0.0, rows)
+    finally:
+        torch.Tensor.__bool__ = original_bool  # type: ignore[method-assign]
+
+    assert scalar_conversions == 0
+    np.testing.assert_array_equal(command._command[:, 0], [0.0, 0.0, np.nan, 0.0])
+    np.testing.assert_array_equal(command.metrics["error"][[0, 2, 3]], [1.0, 3.0, 4.0])
+    assert np.isnan(command.metrics["error"][1])
+
+
 def test_metrics_reductions_substeps_reset_and_finite_failure(fake_env: FakeEnv) -> None:
     manager = MetricsManager(
         {
