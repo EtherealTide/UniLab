@@ -821,7 +821,11 @@ class ObservationManager(ManagerBase):
                             f"{noise_model_cls} is not a NoiseModel subclass."
                         )
                     self._group_obs_class_instances[group_name][term_name] = noise_model_cls(
-                        term_cfg.noise, num_envs=self._env.num_envs, rng=self._env.rng
+                        term_cfg.noise,
+                        num_envs=self._env.num_envs,
+                        rng=self._env.rng,
+                        torch_rng=self._torch_generator,
+                        device=self._device,
                     )
 
                 if term_cfg.delay_max_lag > 0:

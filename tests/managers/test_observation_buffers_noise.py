@@ -187,13 +187,18 @@ def test_additive_bias_noise_supports_scalar_terms() -> None:
         noise_cfg=ConstantNoiseCfg(bias=0.0),
         bias_noise_cfg=ConstantNoiseCfg(bias=0.5),
     )
-    model = NoiseModelWithAdditiveBias(cfg, num_envs=4, rng=np.random.default_rng(2))
-    result = model(np.ones(4, dtype=np.float32))
-    np.testing.assert_array_equal(result, 1.5)
+    model = NoiseModelWithAdditiveBias(
+        cfg,
+        num_envs=4,
+        rng=np.random.default_rng(2),
+        device=torch.device("cpu"),
+    )
+    result = model(torch.ones(4, dtype=torch.float32))
+    torch.testing.assert_close(result, torch.full((4,), 1.5))
     assert result.shape == (4,)
 
 
-def test_additive_bias_noise_model_supports_tensor_carriers(fake_env: FakeEnv) -> None:
+def test_additive_bias_noise_model_uses_manager_torch_generator(fake_env: FakeEnv) -> None:
     from unilab.managers._noise import NoiseModelWithAdditiveBias
 
     device = fake_env.device
@@ -202,17 +207,20 @@ def test_additive_bias_noise_model_supports_tensor_carriers(fake_env: FakeEnv) -
         bias_noise_cfg=UniformNoiseCfg(n_min=-0.2, n_max=0.2),
     )
     data = torch.ones((4, 3), dtype=torch.float32, device=device)
-    host_model = NoiseModelWithAdditiveBias(cfg, num_envs=4, rng=np.random.default_rng(17))
-    tensor_model = NoiseModelWithAdditiveBias(cfg, num_envs=4, rng=np.random.default_rng(17))
+    generator = torch.Generator(device=device)
+    generator.manual_seed(17)
+    model = NoiseModelWithAdditiveBias(
+        cfg,
+        num_envs=4,
+        torch_rng=generator,
+        device=device,
+    )
 
-    host_result = host_model(data.cpu().numpy())
-    tensor_result = tensor_model(data)
-
-    assert isinstance(tensor_result, torch.Tensor)
-    assert tensor_result.device == device
-    np.testing.assert_array_equal(tensor_result.cpu().numpy(), host_result)
-    assert isinstance(tensor_model._bias, torch.Tensor)
-    assert tensor_model._bias.device == device
+    result = model(data)
+    assert isinstance(result, torch.Tensor)
+    assert result.device == device
+    assert isinstance(model._bias, torch.Tensor)
+    assert model._bias.device == device
 
 
 def test_observation_groups_pipeline_order_and_history(fake_env: FakeEnv) -> None:
@@ -420,7 +428,7 @@ def test_concatenated_result_owns_each_result_and_protects_term_buffers(
     assert isinstance(first, torch.Tensor)
     assert first.dtype == torch.float32
     first_address = first.data_ptr()
-    expected_first = np.concatenate((source.copy(), np.ones((fake_env.num_envs, 1))), axis=1)
+    expected_first = torch.cat((source.clone(), torch.ones((fake_env.num_envs, 1))), dim=1)
     np.testing.assert_array_equal(first, expected_first)
 
     fake_env.obs += 100.0
@@ -435,7 +443,7 @@ def test_concatenated_result_owns_each_result_and_protects_term_buffers(
 def test_concatenated_nan_sanitize_does_not_mutate_term_owned_input(
     fake_env: FakeEnv,
 ) -> None:
-    source = fake_env.obs.copy()
+    source = fake_env.obs.clone()
     source[0, 0] = np.nan
     manager = ObservationManager(
         {
@@ -515,8 +523,8 @@ def test_observation_finite_error_keeps_kind_term_and_env_diagnostics(
     invalid_kind: str,
 ) -> None:
     def invalid(env: FakeEnv) -> np.ndarray:
-        result = env.obs.copy()
-        result[2] = invalid_values
+        result = env.obs.clone()
+        result[2] = torch.tensor(invalid_values, dtype=result.dtype)
         return result
 
     manager = ObservationManager(
@@ -532,7 +540,7 @@ def test_observation_finite_warn_sanitizes_and_disabled_preserves(
     fake_env: FakeEnv, capsys: pytest.CaptureFixture[str]
 ) -> None:
     def invalid(env: FakeEnv) -> np.ndarray:
-        result = env.obs.copy()
+        result = env.obs.clone()
         result[1, 0] = np.nan
         return result
 
@@ -635,7 +643,7 @@ def test_class_terms_are_never_shared_across_groups() -> None:
 
     class StatefulTerm:
         def __call__(self, env: FakeEnv) -> np.ndarray:
-            return env.obs.copy()
+            return env.obs.clone()
 
         def reset(self, env_ids: np.ndarray | None = None) -> None:
             del env_ids
