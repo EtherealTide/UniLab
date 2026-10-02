@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 import numpy as np
 import torch
+from unisim.backend.base import SimBackend
 
 from unilab.managers.torch_rng import TorchManagerRng
 
@@ -257,6 +258,12 @@ class ManagerBasedRlEnv(Protocol):
 
     @property
     def torch_rng(self) -> TorchManagerRng | None: ...
+
+    @property
+    def cfg(self) -> Any: ...
+
+    @property
+    def backend(self) -> SimBackend: ...
 
     _tensor_reset_default_root_state: torch.Tensor | None
     _tensor_reset_env_origins: torch.Tensor | None

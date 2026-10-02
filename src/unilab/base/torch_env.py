@@ -164,6 +164,11 @@ class TorchEnv(ABEnv):
         return self._cfg
 
     @property
+    def backend(self) -> SimBackend:
+        """Public backend owner used by Manager terms and tensor contracts."""
+        return self._backend
+
+    @property
     def num_envs(self) -> int:
         return self._num_envs
 

@@ -217,7 +217,7 @@ class BaseAction(ActionTerm):
         selector = self._reset_selector(env_ids)
         self._raw_actions[selector] = 0.0
 
-    def _reset_selector(self, env_ids: np.ndarray | slice) -> torch.Tensor | slice:
+    def _reset_selector(self, env_ids: torch.Tensor | np.ndarray | slice) -> torch.Tensor | slice:
         if isinstance(env_ids, slice):
             return env_ids
         if (

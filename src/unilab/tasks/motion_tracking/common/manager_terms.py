@@ -599,7 +599,7 @@ class MotionCommand(CommandTerm):
         active_ids = np.flatnonzero(~self._env.reset_buf).astype(np.int32, copy=False)
         wrap_ids = self.sampler.step(active_ids)
         if len(wrap_ids) and not self.cfg.params.truncate_on_clip_end:
-            self._resample_command(wrap_ids)
+            self._resample_command(torch.from_numpy(wrap_ids).to(self._device))
         self._refresh_motion()
 
     def post_compute(self) -> None:
@@ -643,7 +643,15 @@ class MotionJointPositionAction(JointPositionAction):
 
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         super().reset(env_ids)
-        selector = slice(None) if env_ids is None else self._reset_selector(env_ids)
+        selector = (
+            slice(None)
+            if env_ids is None
+            else self._reset_selector(
+                torch.arange(self.num_envs, device=self._device)[env_ids]
+                if isinstance(env_ids, slice)
+                else env_ids
+            )
+        )
         self._previous_raw_actions[selector] = 0.0
 
     def apply_actions(self) -> None:
