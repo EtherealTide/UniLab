@@ -31,7 +31,7 @@ from unilab.utils.rotation import (
 
 
 def _make_env(command: Any) -> SimpleNamespace:
-    return SimpleNamespace(num_envs=command.num_envs)
+    return SimpleNamespace(num_envs=command.num_envs, device=torch.device("cpu"))
 
 
 def _unit_quat(value: np.ndarray) -> np.ndarray:
@@ -100,6 +100,8 @@ def body_setup(monkeypatch: pytest.MonkeyPatch):
         robot_body_pos_w=robot_body_pos_w,
         anchor_pos_w=body_pos_w[:, anchor_body_idx],
         robot_anchor_pos_w=robot_body_pos_w[:, anchor_body_idx],
+        anchor_quat_w=body_quat_relative_w[:, anchor_body_idx],
+        robot_anchor_quat_w=robot_body_quat_w[:, anchor_body_idx],
         joint_pos=rng.standard_normal((num_envs, 29), dtype=np.float32),
         joint_vel=rng.standard_normal((num_envs, 29), dtype=np.float32),
         robot_joint_pos=rng.standard_normal((num_envs, 29), dtype=np.float32),
@@ -1006,3 +1008,77 @@ def test_tensor_command_publishes_sampler_advance_exactly_once() -> None:
     command._update_command(None)
 
     torch.testing.assert_close(command.time_steps, torch.tensor([5, 0, 10], dtype=torch.int32))
+
+
+def test_motion_reward_pack_matches_individual_tensor_rewards(
+    monkeypatch: pytest.MonkeyPatch, body_setup
+) -> None:
+    command, env, snapshots = body_setup
+    tensor_command = SimpleNamespace(
+        num_envs=command.num_envs,
+        cfg=command.cfg,
+        anchor_body_idx=command.anchor_body_idx,
+        tensor_carrier=True,
+        **{
+            name: torch.from_numpy(value.copy())
+            for name, value in snapshots.items()
+            if isinstance(value, np.ndarray)
+        },
+    )
+    monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
+    cfg = mt.MotionRewardPackCfg(func=mt.MotionRewardPack, weight=1.0)
+    term = mt.MotionRewardPack(cfg, env)
+
+    out = term(env)
+
+    root_pos_np = np.exp(
+        -np.sum(np.square(snapshots["anchor_pos_w"] - snapshots["robot_anchor_pos_w"]), axis=-1)
+        / 0.3**2
+    )
+    root_ori_np = np.sqrt(
+        np_quat_error_magnitude_squared_batched(
+            snapshots["anchor_quat_w"], snapshots["robot_anchor_quat_w"]
+        )
+    )
+    root_ori_np = np.exp(-(root_ori_np**2) / 0.4**2)
+    root_pos = torch.from_numpy(root_pos_np)
+    root_ori = torch.from_numpy(root_ori_np)
+    body_pos = torch.from_numpy(
+        _expected_body_reward(
+            snapshots["body_pos_relative_w"],
+            snapshots["robot_body_pos_w"],
+            slice(None),
+            0.3,
+            orientation=False,
+        )
+    )
+    body_ori = torch.from_numpy(
+        _expected_body_reward(
+            snapshots["body_quat_relative_w"],
+            snapshots["robot_body_quat_w"],
+            slice(None),
+            0.4,
+            orientation=True,
+        )
+    )
+    body_lin = torch.from_numpy(
+        _expected_body_reward(
+            snapshots["body_lin_vel_w"],
+            snapshots["robot_body_lin_vel_w"],
+            slice(None),
+            1.0,
+            orientation=False,
+        )
+    )
+    body_ang = torch.from_numpy(
+        _expected_body_reward(
+            snapshots["body_ang_vel_w"],
+            snapshots["robot_body_ang_vel_w"],
+            slice(None),
+            3.14,
+            orientation=False,
+        )
+    )
+    expected = root_pos + 0.5 * root_ori + 2.0 * body_pos + body_ori + body_lin + body_ang
+    assert isinstance(out, torch.Tensor)
+    torch.testing.assert_close(out, expected, rtol=2e-6, atol=2e-7)

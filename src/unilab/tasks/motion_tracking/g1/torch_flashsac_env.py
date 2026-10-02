@@ -32,6 +32,7 @@ from unilab.envs.manager_based_rl_env import (
     ManagerBasedRlEnv,
     ManagerBasedRlEnvCfg,
     _resolve_backend_entity_contract,
+    make_manager_based_rl_env,
 )
 from unilab.managers._noise.noise_cfg import UniformNoiseCfg
 from unilab.managers.observation_manager import ObservationGroupCfg
@@ -51,6 +52,10 @@ from unilab.tasks.motion_tracking.common.tensor_runtime import (
     semantic_fingerprint,
 )
 from unilab.tasks.motion_tracking.common.tensor_state_store import TensorDeviceStateStore
+
+
+class _UseManagerTensorRuntimeError(Exception):
+    """Internal cold-path signal: construct the Manager tensor environment."""
 
 
 def _to_device(value: np.ndarray, device: torch.device) -> torch.Tensor:
@@ -110,6 +115,14 @@ _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V2 = (
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V5 = (
     "2bbf5c686fc47192cc8ea06d5ef82a19a44fdd25dd1b607c8a1adef6f29bdd38"
 )
+# V6 fuses the six canonical motion rewards into one Manager-owned tensor term.
+# Their equations, weights, stds, ordering, and total weighted sum are unchanged.
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6 = (
+    "fd3956454bdb85ec8e2affc738a4d5f0dfac128d15464bfb948a2be22d522788"
+)
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V7 = (
+    "169f05b8fe4616bd7a8c7b10b5d8fee475b60089d4d6dc32448415b1f78594d8"
+)
 # V3 applies only to the MJWARP owner: its two anchor observations use the
 # Manager tensor read phase instead of the command-owned NumPy buffers. The
 # equations, ordering, noise, and all other owner terms remain unchanged.
@@ -131,6 +144,9 @@ _TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V1 = (
 _TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V2 = (
     "8f4a3b97771e8fa5e54a5c68b28e034e6a8b6011ae96b0376fd7a63c1dc766af"
 )
+_TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V3 = (
+    "682c3b91fcdaab1057e9bbad21736e557f5cb2f288d9bfde6a5c4eb022b371d4"
+)
 _TORCH_G1_FLIP_SAC_OWNER_IDENTITY_V1 = (
     "764e0d5061654c52b3658bb8b074684773f531167a958c8c7c57f467c5b5e784"
 )
@@ -144,10 +160,13 @@ def _validate_torch_g1_flashsac_owner_contract(cfg: ManagerBasedRlEnvCfg) -> Non
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V3,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V4,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V5,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V7,
         _TORCH_G1_SAC_OWNER_IDENTITY_V1,
         _TORCH_G1_FLIP_SAC_OWNER_IDENTITY_V1,
         _TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V1,
         _TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V2,
+        _TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V3,
     }:
         raise ValueError(
             "Torch G1 tensor runtime supports only canonical owner contracts; "
@@ -404,6 +423,16 @@ class _TorchG1MotionTrackingFlashSACEnv(TorchEnv):
             raise RuntimeError("cold Manager-Based proxy is not available")
         return self._cpu_env
 
+    def __getattr__(self, name: str) -> Any:
+        # The fused motion-reward owner delegates its complete lifecycle to the
+        # sole Manager-Based tensor runtime after its cold semantic checks.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        delegate = self.__dict__.get("_delegate")
+        if delegate is None:
+            raise AttributeError(name)
+        return getattr(delegate, name)
+
     def __init__(
         self,
         cfg: ManagerBasedRlEnvCfg,
@@ -417,6 +446,7 @@ class _TorchG1MotionTrackingFlashSACEnv(TorchEnv):
         self._backend = backend
         self._num_envs = int(num_envs)
         self._cfg = cfg
+        self._fused_motion_reward = "motion_reward_pack" in getattr(cfg, "rewards", {})
         self._device = torch.device(device)
         if self._device.type == "cuda" and self._device.index is None:
             self._device = torch.device("cuda", index=torch.cuda.current_device())
@@ -474,6 +504,10 @@ class _TorchG1MotionTrackingFlashSACEnv(TorchEnv):
         self._cpu_env = proxy_type(cfg, backend, self._num_envs)
         try:
             self._extract_contract()
+            if self._fused_motion_reward:
+                # Fused owners construct the ordinary Manager environment; the
+                # cold proxy above only established the semantic contract.
+                raise _UseManagerTensorRuntimeError
             self._state_store = TensorDeviceStateStore(
                 backend=self._backend,
                 device=self.device,
@@ -502,6 +536,19 @@ class _TorchG1MotionTrackingFlashSACEnv(TorchEnv):
             self._state: TorchEnvState | None = None
             self._initial_seed = cfg.seed
             self._last_backend_reset_result: dict | None = None
+        except _UseManagerTensorRuntimeError:
+            self._cpu_env.close()
+            del self._cpu_env
+            cfg.isaacsim_tensor_cuda_ipc = saved_isaacsim_cuda_ipc
+            self._manager_env = make_manager_based_rl_env(cfg, num_envs, backend.backend_type)
+            self._delegate = self._manager_env
+            self._observation_space = self._manager_env.observation_space
+            self._action_space = self._manager_env.action_space
+            self._obs_groups_spec = self._manager_env.obs_groups_spec
+            self._device = self._manager_env.device
+            self._num_envs = self._manager_env.num_envs
+            self.step_counter = self._manager_env.step_counter
+            self._autoreset = bool(self._manager_env._cfg.auto_reset)
         except BaseException:
             if self._cpu_env is not None:
                 self._cpu_env.close()
@@ -654,6 +701,29 @@ class _TorchG1MotionTrackingFlashSACEnv(TorchEnv):
             if not isinstance(term, RewardTermCfg):
                 raise TypeError("FlashSAC G1 rewards must all be concrete RewardTermCfg terms")
             reward_terms[name] = term
+        if "motion_reward_pack" in reward_terms:
+            # The scoped Manager runtime owns the fused motion-reward execution.
+            # The private direct reference below is retained only for its cold
+            # semantic fingerprint checks and must never be registered as an env.
+            core_rewards = {
+                "motion_reward_pack",
+                "motion_joint_pos",
+                "motion_joint_vel",
+                "action_rate_l2",
+                "joint_limit",
+                "undesired_contacts",
+            }
+            supported_rewards = {
+                frozenset(core_rewards),
+                frozenset({*core_rewards, "motion_ee_body_pos_z"}),
+            }
+            if frozenset(reward_terms) not in supported_rewards:
+                raise ValueError(f"unsupported G1 tensor rewards: {sorted(reward_terms)}")
+            self._reward_terms = reward_terms
+            self._fused_motion_reward = True
+            self._validate_torch_g1_flashsac_owner_contract(cfg)
+            self._validate_backend()
+            return
         core_rewards = {
             "motion_global_root_pos",
             "motion_global_root_ori",
@@ -1492,6 +1562,10 @@ class _TorchG1MotionTrackingFlashSACEnv(TorchEnv):
         another public API reference intentionally keep the backend's fail-closed
         cleanup check active.
         """
+        delegate = self.__dict__.get("_delegate")
+        if delegate is not None:
+            delegate.close()
+            return
         view_refs = (
             "_state_store",
             "_qpos",
