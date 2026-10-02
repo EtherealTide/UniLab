@@ -1115,11 +1115,12 @@ class TensorMotionCommand(MotionCommand):
             self._bin_count_torch
         )
         top1_prob, top1_bin = torch.max(probabilities, dim=0)
+        host_rows = rows.detach().cpu().numpy()
         host_clip_indices = clip_indices.detach().cpu().numpy()
         host_clip_ends = clip_ends.detach().cpu().numpy()
         self.sampler.current_frames[...] = cast(torch.Tensor, self.time_steps).cpu().numpy()
-        self.sampler.current_clip_indices[...] = host_clip_indices
-        self.sampler.current_clip_end_frames[...] = host_clip_ends
+        self.sampler.current_clip_indices[host_rows] = host_clip_indices
+        self.sampler.current_clip_end_frames[host_rows] = host_clip_ends
         self.sampler.sampling_entropy = float(entropy.item())
         self.sampler.sampling_top1_prob = float(top1_prob.item())
         self.sampler.sampling_top1_bin = float(top1_bin.item()) / float(self.sampler.bin_count)
