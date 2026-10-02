@@ -1247,9 +1247,102 @@ def test_flashsac_motion_reset_publishes_call_graph_counts() -> None:
         timing = state.info["timing"]
         assert timing["reset_done_event_term_count"] == 0.0
         assert timing["reset_done_command_term_count"] == 1.0
-        assert timing["reset_done_manager_reset_count"] == 7.0
+        assert timing["reset_done_manager_reset_count"] == 5.0
         assert timing["reset_done_observation_term_count"] == 17.0
         assert timing["reset_done_sampler_host_transfer_count"] == 0.0
     finally:
         env.close()
         env._backend.close()
+
+
+def test_flashsac_motion_reset_owner_matches_generic_command_and_action_state() -> None:
+    """Owned command/action/metric reset state matches generic Manager reset."""
+    ensure_registries()
+    _require_mjwarp_runtime()
+    from unilab.base import registry
+    from unilab.envs import ManagerBasedRlEnv
+    from unilab.tasks.motion_tracking.common.manager_terms import (
+        TensorMotionCommand,
+    )
+
+    def make(owner: bool) -> ManagerBasedRlEnv:
+        _, override = _motion_manager_override(
+            "g1_motion_tracking", "mjwarp", config_root="flashsac"
+        )
+        if not owner:
+            override["reset_owners"] = {}
+        env = registry.make(
+            "G1MotionTrackingSAC",
+            num_envs=8,
+            sim_backend="mjwarp",
+            env_cfg_override=override,
+        )
+        assert isinstance(env, ManagerBasedRlEnv)
+        return env
+
+    generic = make(False)
+    owned = make(True)
+    try:
+        generic.reset(seed=1811)
+        owned.reset(seed=1811)
+        # One step gives action history and command metrics nonzero state.
+        actions = torch.zeros((8, 29), dtype=torch.float32, device=generic.device)
+        generic.step(actions)
+        owned.step(actions)
+        # Autoreset can clear counts before manual partial reset; force the
+        # selected rows done so both environments execute selected reset.
+        rows = torch.tensor([0, 2, 5, 7], dtype=torch.int64, device=generic.device)
+        generic.reset_terminated.fill_(False)
+        generic.reset_time_outs.fill_(False)
+        owned.reset_terminated.fill_(False)
+        owned.reset_time_outs.fill_(False)
+        generic.reset_terminated[rows] = True
+        generic.reset_time_outs[rows] = True
+        owned.reset_terminated[rows] = True
+        owned.reset_time_outs[rows] = True
+        generic.reset_buf.fill_(False)
+        owned.reset_buf.fill_(False)
+        generic.reset_buf[rows] = True
+        owned.reset_buf[rows] = True
+        generic_obs, _generic_info = generic.reset(env_indices=rows)
+        owned_obs, _owned_info = owned.reset(env_indices=rows)
+
+        for name in generic_obs:
+            assert name in owned_obs
+            assert torch.isfinite(owned_obs[name]).all()
+            assert owned_obs[name].shape == generic_obs[name].shape
+        torch.testing.assert_close(owned_obs, generic_obs, rtol=2e-6, atol=2e-6)
+
+        generic_action = generic.action_manager
+        owned_action = owned.action_manager
+        for field in ("action", "prev_action", "prev_prev_action"):
+            torch.testing.assert_close(
+                getattr(owned_action, field),
+                getattr(generic_action, field),
+                rtol=0,
+                atol=0,
+            )
+        generic_command = generic.command_manager.get_term("motion")
+        owned_command = owned.command_manager.get_term("motion")
+        assert isinstance(generic_command, TensorMotionCommand)
+        assert isinstance(owned_command, TensorMotionCommand)
+        torch.testing.assert_close(owned_command.command, generic_command.command, rtol=0, atol=0)
+        torch.testing.assert_close(
+            owned_command.time_steps, generic_command.time_steps, rtol=0, atol=0
+        )
+        torch.testing.assert_close(
+            owned_command.joint_default_bias,
+            generic_command.joint_default_bias,
+            rtol=0,
+            atol=0,
+        )
+        generic_timing = generic._last_reset_manager_timing_ms
+        owned_timing = owned._last_reset_manager_timing_ms
+        assert generic_timing["reset_done_manager_reset_count"] == 7.0
+        assert owned_timing["reset_done_manager_reset_count"] == 5.0
+        assert owned_timing["reset_done_sampler_host_transfer_count"] == 0.0
+    finally:
+        generic.close()
+        generic._backend.close()
+        owned.close()
+        owned._backend.close()

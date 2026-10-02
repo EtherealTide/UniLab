@@ -1261,7 +1261,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 )
             if owns_command_reset:
                 assert reset_owner is not None
-                reset_owner.reset_transaction(rows)
+                log.update(reset_owner.reset_transaction(rows))
             else:
                 log.update(self.command_manager.reset(rows))
             reset_timing.update(getattr(self.command_manager, "last_reset_timing_ms", {}))
@@ -1295,7 +1295,7 @@ class ManagerBasedRlEnv(TorchEnv):
         for manager in reset_managers:
             log.update(manager.reset(rows))
         if reset_owner is not None:
-            reset_owner.reset_committed(rows)
+            log.update(reset_owner.reset_committed(rows))
         observation_term_count = sum(
             len(terms) for terms in self.observation_manager.active_terms.values()
         )
