@@ -771,6 +771,12 @@ class TensorMotionCommand(MotionCommand):
             device=device,
         )
         self._motion_features = self._make_motion_features(device)
+        self._clip_offsets_torch = torch.as_tensor(
+            self.motion.clip_offsets, dtype=torch.int64, device=device
+        )
+        self._clip_end_frames_torch = torch.as_tensor(
+            self.motion.clip_end_frames, dtype=torch.int64, device=device
+        )
         self._motion_data = MotionData(
             joint_pos=cast("np.ndarray", torch.empty((self.num_envs, num_joints), device=device)),
             joint_vel=cast("np.ndarray", torch.empty((self.num_envs, num_joints), device=device)),
@@ -1017,16 +1023,32 @@ class TensorMotionCommand(MotionCommand):
         self._resample_ingested_ids = None
         terminated = self._env.termination_manager.terminated.detach().cpu().numpy()
         self.sampler.update_failure_stats(terminated)
-        reset_buf = self._env.reset_buf
-        reset_buf_host = (
-            reset_buf.detach().cpu().numpy() if isinstance(reset_buf, torch.Tensor) else reset_buf
-        )
-        active_ids = np.flatnonzero(~reset_buf_host).astype(np.int32, copy=False)
-        wrap_ids = self.sampler.step(active_ids)
-        self._sync_tensor_sampler_state()
-        if len(wrap_ids) and not self.cfg.params.truncate_on_clip_end:
-            self._resample_command(torch.as_tensor(wrap_ids, device=self._device))
+        wrap_rows = self._step_tensor_sampler()
+        if wrap_rows.numel() and not self.cfg.params.truncate_on_clip_end:
+            self._resample_command(wrap_rows)
         self._refresh_motion_torch()
+
+    def _step_tensor_sampler(self) -> torch.Tensor:
+        """Advance the device frame carrier once without a host row transfer."""
+        time_steps = cast(torch.Tensor, self.time_steps)
+        current_clip_ends = cast(torch.Tensor, self.current_clip_end_frames)
+        active = ~cast(torch.Tensor, self._env.reset_buf)
+        time_steps.add_(active.to(dtype=torch.int32))
+        frames = time_steps.to(dtype=torch.int64)
+        clip_indices = (
+            torch.searchsorted(self._clip_offsets_torch, frames, right=True).sub_(1).clamp_(min=0)
+        )
+        clip_ends = self._clip_end_frames_torch.index_select(0, clip_indices)
+        current_clip_ends.copy_(clip_ends.to(dtype=torch.int32))
+        done = frames > current_clip_ends
+        done.logical_and_(active)
+        host_frames = frames.detach().cpu().numpy()
+        host_clip_indices = clip_indices.detach().cpu().numpy()
+        host_clip_ends = clip_ends.detach().cpu().numpy()
+        self.sampler.current_frames[...] = host_frames
+        self.sampler.current_clip_indices[...] = host_clip_indices
+        self.sampler.current_clip_end_frames[...] = host_clip_ends
+        return done.nonzero(as_tuple=False).flatten()
 
     def post_compute(self) -> None:
         rows = self._tensor_post_compute_env_ids
