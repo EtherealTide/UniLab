@@ -330,9 +330,7 @@ class ManagerBasedRlEnv(TorchEnv):
         actual_seed = cfg.seed if cfg.seed is not None else secrets.randbits(63)
         cfg.seed = actual_seed
         self.rng = np.random.default_rng(actual_seed)
-        self._torch_rng_owner = (
-            TorchManagerRng(device=self.device) if self.device.type == "cuda" else None
-        )
+        self._torch_rng_owner = TorchManagerRng(device=self.device)
         self.torch_rng = self._torch_rng_owner
         self._torch_generator = self._torch_rng_owner.generator if self._torch_rng_owner else None
         self._tensor_reset_default_root_state = None
@@ -1216,7 +1214,13 @@ class ManagerBasedRlEnv(TorchEnv):
             assert read_plan is not None
             assert read_plan.host_plan is not None
             self._reset_state.declare_packed_reset_device(read_plan.device)
-            reset_context = self._reset_state.scoped_tensor(rows, read_plan.host_plan)
+            tensor_reset_events = self.command_manager.uses_tensor_reset_rows()
+            if tensor_reset_events:
+                reset_context = self._reset_state.scoped_device_event_tensor_with_host_commit(
+                    rows, read_plan.host_plan
+                )
+            else:
+                reset_context = self._reset_state.scoped_tensor(rows, read_plan.host_plan)
         elif device_resident_reset:
             assert read_plan is not None
             self._reset_state.declare_packed_reset_device(read_plan.device)

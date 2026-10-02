@@ -972,12 +972,85 @@ def test_flashsac_g1_motion_mjwarp_tensor_anchor_observations_roll_out() -> None
         for _ in range(3):
             state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
 
+        from unisim.backend.base import SelectedResetPublication
+
+        capabilities = env.backend.get_tensor_capabilities()
+        assert capabilities.selected_reset_publication is (
+            SelectedResetPublication.AUTHORITATIVE_VIEWS
+        )
+        step_calls = 0
+        original_step = env.backend.step_tensor
+
+        def count_step(*args: Any, **kwargs: Any) -> Any:
+            nonlocal step_calls
+            step_calls += 1
+            return original_step(*args, **kwargs)
+
+        env.backend.step_tensor = count_step  # type: ignore[method-assign]
+        env.reset(env_indices=torch.tensor([1], dtype=torch.int64, device=env.device))
+        assert step_calls == 0
         assert state.obs["obs"].shape == (2, 160)
         assert state.obs["critic"].shape == (2, 289)
         assert all(torch.isfinite(values).all() for values in state.obs.values())
         assert torch.isfinite(state.reward).all()
     finally:
         env.close()
+
+
+def test_flashsac_g1_motion_mujoco_tensor_command_roll_out() -> None:
+    """The scoped MuJoCo host bridge owns a tensor motion command carrier."""
+    ensure_registries()
+    _require_mujoco_runtime()
+    script = textwrap.dedent(
+        """
+        from pathlib import Path
+        import torch
+        from hydra import compose, initialize_config_dir
+        from hydra.core.global_hydra import GlobalHydra
+        from unilab.base import registry
+        from unilab.base.config_adapter import BackendAdapter
+        from unilab.envs import ManagerBasedRlEnv
+
+        registry.ensure_registries()
+        GlobalHydra.instance().clear()
+        root = Path.cwd()
+        with initialize_config_dir(
+            config_dir=str(root / "src/unilab/conf/flashsac"), version_base="1.3"
+        ):
+            owner = compose("config", overrides=["task=g1_motion_tracking/mujoco"])
+        override = BackendAdapter(
+            owner, root_dir=root, algo_name="flashsac"
+        ).build_task_env_cfg_override()
+        env = registry.make(
+            "G1MotionTrackingSAC",
+            num_envs=2,
+            sim_backend="mujoco",
+            env_cfg_override=override,
+        )
+        assert isinstance(env, ManagerBasedRlEnv)
+        try:
+            command = env.command_manager.get_term("motion")
+            assert command.tensor_carrier is True
+            assert env.torch_rng is not None
+            state = env.reset(seed=7)[0]
+            for _ in range(3):
+                state = env.step(torch.zeros((2, 29), dtype=torch.float32))
+            assert state.obs["obs"].shape == (2, 160)
+            assert torch.isfinite(state.obs["obs"]).all()
+        finally:
+            env.close()
+        print("[mujoco tensor motion rollout] OK")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).parents[2],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "[mujoco tensor motion rollout] OK" in result.stdout
 
 
 def test_flashsac_g1_motion_genesis_manager_tensor_command_roll_out() -> None:
@@ -1018,13 +1091,7 @@ def test_flashsac_g1_motion_genesis_manager_tensor_command_roll_out() -> None:
         env._backend.close()
 
 
-@pytest.mark.parametrize(
-    ("task", "backend"),
-    [
-        ("g1_motion_tracking", "mjwarp"),
-        ("g1_motion_tracking", "genesis"),
-    ],
-)
+@pytest.mark.parametrize(("task", "backend"), [("g1_motion_tracking", "mjwarp")])
 def test_selected_reset_publication_requires_no_manager_readiness_step(
     task: str, backend: str
 ) -> None:

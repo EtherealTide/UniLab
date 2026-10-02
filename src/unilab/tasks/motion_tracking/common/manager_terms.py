@@ -392,6 +392,7 @@ class MotionCommand(CommandTerm):
             "sampling_top1_bin",
         ):
             self.metrics[name] = np.zeros(self.num_envs, dtype=dtype)
+        self._prepare_tensor_carrier()
         self._defer_read_phase_binding()
 
     def _defer_read_phase_binding(self) -> None:
@@ -418,6 +419,9 @@ class MotionCommand(CommandTerm):
             return
         self._defer_read_phase_binding()
         self._bind_read_phase = True
+
+    def _prepare_tensor_carrier(self) -> None:
+        """Hook for subclasses to replace cold carrier buffers before probing."""
 
     def _make_motion_loader(
         self,
@@ -746,10 +750,14 @@ class TensorMotionCommand(MotionCommand):
     cfg: TensorMotionCommandCfg  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def __init__(self, cfg: TensorMotionCommandCfg, env: ManagerBasedRlEnv):
+        import os
+
+        if os.environ.get("DEBUG"):
+            print("BUILD TENSOR", cfg)
         super().__init__(cfg, env)
 
-    def _defer_read_phase_binding(self) -> None:
-        """Allocate Torch buffers only; robot views bind with the read phase."""
+    def _prepare_tensor_carrier(self) -> None:
+        """Allocate Torch buffers before Manager probes the command carrier."""
         device = self._device
         num_bodies = len(self.cfg.body_names)
         num_joints = self.motion.num_joints
@@ -808,6 +816,10 @@ class TensorMotionCommand(MotionCommand):
         )
         for name in self.metrics:
             self.metrics[name] = torch.zeros(self.num_envs, dtype=torch.float32, device=device)
+        self._refresh_motion()
+
+    def _defer_read_phase_binding(self) -> None:
+        """Torch carriers were allocated eagerly; defer state-view binding."""
 
     def bind_read_phase(self) -> None:
         if self._bind_read_phase:
@@ -856,7 +868,7 @@ class TensorMotionCommand(MotionCommand):
         self._update_torch_error_metrics(rows)
         if self._env.torch_rng is None:
             raise NotImplementedError(
-                "TensorMotionCommand reset requires the Manager-owned CUDA Torch generator"
+                "TensorMotionCommand reset requires the Manager-owned Torch generator"
             )
         lower, upper = self._joint_default_position_range
         self.joint_default_bias[rows] = self._env.torch_rng.uniform(
@@ -897,7 +909,7 @@ class TensorMotionCommand(MotionCommand):
         rows = env_ids.to(dtype=torch.int64)
         if self._env.torch_rng is None:
             raise NotImplementedError(
-                "TensorMotionCommand reset sampling requires the Manager CUDA Torch generator"
+                "TensorMotionCommand reset sampling requires the Manager-owned Torch generator"
             )
         pose = self._env.torch_rng.uniform(
             self._pose_range_torch[:, 0],
@@ -1264,6 +1276,10 @@ def motion_joint_pos_rel(env: ManagerBasedRlEnv, command_name: str) -> np.ndarra
         robot_joint_pos = getattr(command, "device_robot_joint_pos", None)
         if robot_joint_pos is None:
             robot_joint_pos = command.robot_joint_pos
+        if not isinstance(robot_joint_pos, torch.Tensor):
+            robot_joint_pos = torch.as_tensor(
+                np.asarray(robot_joint_pos), dtype=torch.float32, device=env.device
+            )
         return (
             cast(torch.Tensor, robot_joint_pos)
             - command.robot.data.default_joint_pos_torch(env.device)

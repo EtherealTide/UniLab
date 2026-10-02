@@ -105,6 +105,11 @@ _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V1 = (
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V2 = (
     "6838841dfebc4d64ddaec3a2fcf123b29f28f858b397495a5bf2680f00af1b60"
 )
+# V5 changes only the MuJoCo command implementation class to the tensor carrier;
+# the semantic parameters and all other owner terms remain unchanged.
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V5 = (
+    "2bbf5c686fc47192cc8ea06d5ef82a19a44fdd25dd1b607c8a1adef6f29bdd38"
+)
 # V3 applies only to the MJWARP owner: its two anchor observations use the
 # Manager tensor read phase instead of the command-owned NumPy buffers. The
 # equations, ordering, noise, and all other owner terms remain unchanged.
@@ -123,6 +128,9 @@ _TORCH_G1_SAC_OWNER_IDENTITY_V1 = "90236c9e02e460817208b6a8e14f614ae4d2a797f16d1
 _TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V1 = (
     "200bc8c9c6fcc58f1f16066ad2beecd10de83ee52ce59e69b0b192c1dfe0bd86"
 )
+_TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V2 = (
+    "8f4a3b97771e8fa5e54a5c68b28e034e6a8b6011ae96b0376fd7a63c1dc766af"
+)
 _TORCH_G1_FLIP_SAC_OWNER_IDENTITY_V1 = (
     "764e0d5061654c52b3658bb8b074684773f531167a958c8c7c57f467c5b5e784"
 )
@@ -135,9 +143,11 @@ def _validate_torch_g1_flashsac_owner_contract(cfg: ManagerBasedRlEnvCfg) -> Non
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V2,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V3,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V4,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V5,
         _TORCH_G1_SAC_OWNER_IDENTITY_V1,
         _TORCH_G1_FLIP_SAC_OWNER_IDENTITY_V1,
         _TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V1,
+        _TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V2,
     }:
         raise ValueError(
             "Torch G1 tensor runtime supports only canonical owner contracts; "
