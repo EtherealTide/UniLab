@@ -748,24 +748,35 @@ def _positive_std(value: float, *, term_name: str) -> float:
 
 def motion_global_anchor_position_error_exp(
     env: ManagerBasedRlEnv, command_name: str, std: float
-) -> np.ndarray:
+) -> np.ndarray | torch.Tensor:
     command = _command(env, command_name)
+    scale = _positive_std(std, term_name="motion anchor position")
+    if getattr(command, "tensor_carrier", False):
+        anchor_delta = command.anchor_pos_w - command.robot_anchor_pos_w
+        error = cast(torch.Tensor, anchor_delta).square().sum(dim=-1)
+        return torch.exp(-error / (scale * scale))
     diff = command.anchor_pos_w - command.robot_anchor_pos_w
     np.square(diff, out=diff)
     error = np.sum(diff, axis=-1)
-    scale = _positive_std(std, term_name="motion anchor position")
     np.divide(error, -(scale**2), out=error)
     return np.exp(error, out=error)
 
 
 def motion_global_anchor_orientation_error_exp(
     env: ManagerBasedRlEnv, command_name: str, std: float
-) -> np.ndarray:
+) -> np.ndarray | torch.Tensor:
     command = _command(env, command_name)
+    scale = _positive_std(std, term_name="motion anchor orientation")
+    if getattr(command, "tensor_carrier", False):
+        motion_anchor_quat = cast(torch.Tensor, command.anchor_quat_w)
+        robot_anchor_quat = cast(torch.Tensor, command.robot_anchor_quat_w)
+        rel = quat_mul(quat_conjugate(motion_anchor_quat), robot_anchor_quat)
+        xyz = torch.linalg.vector_norm(rel[..., 1:4], dim=-1)
+        angle = 2.0 * torch.atan2(xyz, rel[..., 0].abs().clamp(max=1.0))
+        return torch.exp(-angle.square() / (scale * scale))
     error = np_quat_error_magnitude_squared_batched(
         command.anchor_quat_w, command.robot_anchor_quat_w
     )
-    scale = _positive_std(std, term_name="motion anchor orientation")
     np.divide(error, -(scale**2), out=error)
     return np.exp(error, out=error)
 
@@ -1032,24 +1043,32 @@ class motion_relative_body_position_z_error_exp(_BodyTerm):
 
 def motion_joint_position_error_exp(
     env: ManagerBasedRlEnv, command_name: str, std: float
-) -> np.ndarray:
+) -> np.ndarray | torch.Tensor:
     command = _command(env, command_name)
+    scale = _positive_std(std, term_name="motion joint position")
+    if getattr(command, "tensor_carrier", False):
+        joint_delta = command.joint_pos - command.robot_joint_pos
+        error = cast(torch.Tensor, joint_delta).square().mean(dim=-1)
+        return torch.exp(-error / (scale * scale))
     diff = command.joint_pos - command.robot_joint_pos
     np.square(diff, out=diff)
     error = diff.mean(axis=-1)
-    scale = _positive_std(std, term_name="motion joint position")
     np.divide(error, -(scale**2), out=error)
     return np.exp(error, out=error)
 
 
 def motion_joint_velocity_error_exp(
     env: ManagerBasedRlEnv, command_name: str, std: float
-) -> np.ndarray:
+) -> np.ndarray | torch.Tensor:
     command = _command(env, command_name)
+    scale = _positive_std(std, term_name="motion joint velocity")
+    if getattr(command, "tensor_carrier", False):
+        joint_delta = command.joint_vel - command.robot_joint_vel
+        error = cast(torch.Tensor, joint_delta).square().mean(dim=-1)
+        return torch.exp(-error / (scale * scale))
     diff = command.joint_vel - command.robot_joint_vel
     np.square(diff, out=diff)
     error = diff.mean(axis=-1)
-    scale = _positive_std(std, term_name="motion joint velocity")
     np.divide(error, -(scale**2), out=error)
     return np.exp(error, out=error)
 
