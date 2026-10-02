@@ -1,3 +1,9 @@
+# HISTORICAL SHELVED-BACKEND BENCHMARK (#1811)
+# This adapter-specific probe is retained for migration context only.
+# It is not part of the scoped tensor Manager benchmark surface
+# (mujoco/mjwarp/genesis), is not discovered by default benchmark
+# selection, and must not be used as a production support claim.
+
 #!/usr/bin/env python3
 """Benchmark IsaacGym fixed-variant construction, memory, and stepping.
 

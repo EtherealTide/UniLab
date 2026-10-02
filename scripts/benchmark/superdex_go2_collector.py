@@ -1,3 +1,9 @@
+# HISTORICAL SHELVED-BACKEND BENCHMARK (#1811)
+# This adapter-specific probe is retained for migration context only.
+# It is not part of the scoped tensor Manager benchmark surface
+# (mujoco/mjwarp/genesis), is not discovered by default benchmark
+# selection, and must not be used as a production support claim.
+
 """Short end-to-end Go2 collector benchmark for the SuperDex roadmap.
 
 The timed loop includes policy inference, action conversion, env.step (including
