@@ -15,8 +15,14 @@ from unilab.base.registry import ensure_registries
 
 BEGIN_MARKER = "<!-- BEGIN GENERATED SUPPORT MATRIX -->"
 END_MARKER = "<!-- END GENERATED SUPPORT MATRIX -->"
-# UniSim owns the reviewed tensor adapter inventory and its deterministic order.
-BACKENDS: tuple[str, ...] = tuple(get_tensor_platform_profiles())
+# UniSim owns the reviewed tensor adapter inventory. During issue #1811 the
+# production runtime exposes only the scoped tensor Manager backends; shelved
+# adapters remain in UniSim but are intentionally absent from this support
+# matrix until capability/parity evidence re-enables them.
+_ALL_BACKENDS: tuple[str, ...] = tuple(get_tensor_platform_profiles())
+BACKENDS: tuple[str, ...] = tuple(
+    backend for backend in _ALL_BACKENDS if backend in {"mujoco", "mjwarp", "genesis"}
+)
 
 # Issue-gated M9 candidate owners (#1674) are benchmark/test fixtures,
 # not support claims.  Exclude them from the generated matrix until those
@@ -389,10 +395,10 @@ def render_support_matrix(root: Path | None = None, language: str = "zh") -> str
     if language not in {"zh", "en"}:
         raise ValueError(f"Unsupported support-matrix language: {language!r}")
     profiles = get_tensor_platform_profiles()
-    if tuple(profiles) != BACKENDS:
+    if tuple(profiles) != _ALL_BACKENDS:
         raise ValueError(
             "UniSim tensor platform inventory does not match the UniLab backend order: "
-            f"{tuple(profiles)} != {BACKENDS}"
+            f"{tuple(profiles)} != {_ALL_BACKENDS}"
         )
 
     if language == "zh":

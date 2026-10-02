@@ -880,8 +880,6 @@ class StewartBallReset(ManagerTermBase):
 
 registry.register_env_config("StewartBalance", ManagerBasedRlEnvCfg)
 registry.register_env("StewartBalance", make_manager_based_rl_env, sim_backend="mujoco")
-registry.register_env("StewartBalance", make_manager_based_rl_env, sim_backend="motrix")
-registry.register_env("StewartBalance", make_manager_based_rl_env, sim_backend="drake")
 
 
 __all__ = [

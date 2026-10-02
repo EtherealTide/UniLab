@@ -523,7 +523,7 @@ def test_eval_fallback_prefers_same_profile_owner(
     (owner_dir / "mujoco_nodr.yaml").write_text(
         "training:\n  sim_backend: mujoco\n", encoding="utf-8"
     )
-    (owner_dir / "motrix.yaml").write_text("training:\n  sim_backend: motrix\n", encoding="utf-8")
+    (owner_dir / "genesis.yaml").write_text("training:\n  sim_backend: genesis\n", encoding="utf-8")
     _pretend_motrix_is_installed(monkeypatch)
     monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
 
@@ -575,7 +575,7 @@ def test_eval_mujoco_interactive_falls_back_to_sibling_owner(
     (scripts_dir / "play_interactive.py").write_text("", encoding="utf-8")
     owner_dir = tmp_path / "conf" / "ppo" / "task" / "go2_joystick_flat"
     owner_dir.mkdir(parents=True)
-    (owner_dir / "motrix.yaml").write_text("training:\n  sim_backend: motrix\n", encoding="utf-8")
+    (owner_dir / "genesis.yaml").write_text("training:\n  sim_backend: genesis\n", encoding="utf-8")
     monkeypatch.setattr(
         cli,
         "find_spec",
@@ -602,7 +602,7 @@ def test_eval_mujoco_interactive_falls_back_to_sibling_owner(
         "--task",
         "go2_joystick_flat",
         "--sim",
-        "motrix",
+        "genesis",
     ]
     assert "training.sim_backend=mujoco" in command
     assert "training.play_only=true" in command

@@ -185,7 +185,7 @@ def build_fixture_cfg(*, passive: bool, num_envs: int = 2, mirror: bool | None =
 
 
 registry.register_env_config(TASK, make_fixture_cfg)
-for _backend in ("mujoco", "isaacsim"):
+for _backend in ("mujoco",):
     registry.register_env(TASK, make_manager_based_rl_env, sim_backend=_backend)
 
 

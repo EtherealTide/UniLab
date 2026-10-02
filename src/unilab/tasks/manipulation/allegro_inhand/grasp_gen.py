@@ -373,7 +373,6 @@ class AllegroGraspRecorder(RecorderTerm):
 
 registry.register_env_config("AllegroInhandRotationGrasp", ManagerBasedRlEnvCfg)
 registry.register_env("AllegroInhandRotationGrasp", make_manager_based_rl_env, sim_backend="mujoco")
-registry.register_env("AllegroInhandRotationGrasp", make_manager_based_rl_env, sim_backend="motrix")
 
 
 __all__ = [

@@ -52,12 +52,9 @@ def test_torch_owner_fingerprint_accepts_both_canonical_backends() -> None:
     )
 
 
-def test_flashsac_motrix_owner_uses_task_host_bridge_runtime() -> None:
-    """The FlashSAC Motrix owner must bypass CUDA-generic NumPy observations."""
+def test_flashsac_motrix_owner_is_out_of_tensor_manager_scope() -> None:
     registry.ensure_registries()
-    factory = registry._envs["G1MotionTrackingSAC"].env_factory_dict["motrix"]
-
-    assert factory is module.make_torch_g1_motion_tracking_flashsac_env
+    assert "motrix" not in registry._envs["G1MotionTrackingSAC"].env_factory_dict
 
 
 def test_torch_owner_fingerprint_accepts_mapped_isaacsim_namespaced_owner() -> None:

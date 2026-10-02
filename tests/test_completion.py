@@ -40,10 +40,10 @@ defaults:
 algo:
   algo_log_name: nodr_ppo
 """,
-        root / "conf" / "ppo" / "task" / "go1" / "motrix_lab.yaml": """
+        root / "conf" / "ppo" / "task" / "go1" / "genesis_lab.yaml": """
 training:
   task_name: Go1
-  sim_backend: motrix
+  sim_backend: genesis
 """,
         root / "conf" / "ppo" / "task" / "go2" / "mujoco_lab.yaml": """
 training:
@@ -251,7 +251,7 @@ def test_train_profile_value_position_completes_profile_names(tmp_path: Path) ->
             "--task",
             "go1",
             "--sim",
-            "motrix",
+            "genesis",
             "--profile",
             "",
         ],

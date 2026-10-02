@@ -352,9 +352,6 @@ def test_go2_runtime_does_not_add_backend_registrations() -> None:
     registry.ensure_registries()
     assert registry.list_registered_envs()["Go2JoystickFlat"]["available_backends"] == [
         "mujoco",
-        "motrix",
-        "drake",
-        "superdex",
     ]
 
 

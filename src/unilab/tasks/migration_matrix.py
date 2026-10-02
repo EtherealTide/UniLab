@@ -28,8 +28,6 @@ _MBA_TASKS = frozenset(
     {
         "AllegroInhandRotation",
         "AllegroInhandRotationGrasp",
-        # #1534 starts directly on the canonical manager runtime; no legacy seam.
-        "FR3JointTarget",
         "Go2JoystickFlat",
         "StewartBalance",
     }

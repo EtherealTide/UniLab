@@ -1131,7 +1131,7 @@ def test_public_names_are_spelling_only_aliases() -> None:
     assert make_manager_based_rl_env is manager_env_module.make_manager_based_rl_env
 
 
-@pytest.mark.parametrize("backend_type", ["mujoco", "motrix", "mjwarp", "drake"])
+@pytest.mark.parametrize("backend_type", ["mujoco", "mjwarp"])
 def test_generic_factory_routes_only_public_backend_contract(
     monkeypatch: pytest.MonkeyPatch,
     backend_type: str,

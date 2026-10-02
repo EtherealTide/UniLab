@@ -51,7 +51,11 @@ def test_check_runtime_requirements_requires_isolated_newton_extra(
 
 
 def test_newton_is_a_supported_sim() -> None:
-    assert "newton" in cli.SUPPORTED_SIMS
+    assert "newton" not in cli.SUPPORTED_SIMS
+
+
+def test_cli_backend_choices_are_tensor_manager_scope() -> None:
+    assert cli.SUPPORTED_SIMS == ("mujoco", "mjwarp", "genesis")
 
 
 def test_superdex_missing_runtime_reports_python_and_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
