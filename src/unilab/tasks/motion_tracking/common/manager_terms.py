@@ -986,6 +986,9 @@ class TensorMotionCommand(MotionCommand):
         )
         active_ids = np.flatnonzero(~reset_buf_host).astype(np.int32, copy=False)
         wrap_ids = self.sampler.step(active_ids)
+        cast(torch.Tensor, self.time_steps).copy_(
+            torch.as_tensor(self.sampler.current_frames, device=self._device)
+        )
         if len(wrap_ids) and not self.cfg.params.truncate_on_clip_end:
             self._resample_command(torch.as_tensor(wrap_ids, device=self._device))
         self._refresh_motion_torch()
