@@ -1211,3 +1211,56 @@ def test_motion_reward_pack_matches_individual_tensor_rewards(
     expected = root_pos + 0.5 * root_ori + 2.0 * body_pos + body_ori + body_lin + body_ang
     assert isinstance(out, torch.Tensor)
     torch.testing.assert_close(out, expected, rtol=2e-6, atol=2e-7)
+
+
+def test_motion_penalty_pack_matches_individual_tensor_penalties(
+    monkeypatch: pytest.MonkeyPatch, body_setup
+) -> None:
+    command, env, _snapshots = body_setup
+    num_envs, num_bodies, num_joints = command.num_envs, len(command.cfg.body_names), 29
+    robot_body_pos_w = torch.arange(num_envs * num_bodies * 3, dtype=torch.float32).reshape(
+        num_envs, num_bodies, 3
+    )
+    device_joint_pos = torch.linspace(
+        -1.5, 1.5, num_envs * num_joints, dtype=torch.float32
+    ).reshape(num_envs, num_joints)
+    tensor_command = SimpleNamespace(
+        cfg=command.cfg,
+        tensor_carrier=True,
+        robot_body_pos_w=robot_body_pos_w,
+        device_robot_joint_pos=device_joint_pos,
+    )
+    env.action_manager = SimpleNamespace(
+        action=torch.linspace(-1.0, 1.0, num_envs * num_joints, dtype=torch.float32).reshape(
+            num_envs, num_joints
+        ),
+        prev_action=torch.linspace(-0.5, 0.5, num_envs * num_joints, dtype=torch.float32).reshape(
+            num_envs, num_joints
+        ),
+    )
+    limits = np.asarray([[-1.0, 1.0]] * num_joints, dtype=np.float32)
+    env.scene = {"robot": SimpleNamespace(data=SimpleNamespace(soft_joint_pos_limits=limits))}
+    monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
+    contact_body_names = tuple(command.cfg.body_names[:3])
+    cfg = mt.MotionPenaltyRewardPackCfg(
+        func=mt.MotionPenaltyRewardPack,
+        weight=1.0,
+        contact_body_names=contact_body_names,
+    )
+    term = mt.MotionPenaltyRewardPack(cfg, env)
+
+    value = term(env)
+
+    action_delta = env.action_manager.action - env.action_manager.prev_action
+    action_rate = action_delta.square().sum(dim=-1)
+    lower = torch.clamp(torch.asarray(limits[:, 0]) - device_joint_pos, min=0.0)
+    upper = torch.clamp(device_joint_pos - torch.asarray(limits[:, 1]), min=0.0)
+    joint_limit = (lower + upper).square().sum(dim=-1)
+    contact_ids = [command.cfg.body_names.index(name) for name in contact_body_names]
+    contacts = (
+        (robot_body_pos_w[:, contact_ids, 2] < cfg.contact_threshold)
+        .sum(dim=-1)
+        .to(dtype=torch.float32)
+    )
+    expected = -0.1 * action_rate - 2.0 * joint_limit - 0.1 * contacts
+    torch.testing.assert_close(value, expected)

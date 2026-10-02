@@ -93,6 +93,13 @@ def test_flashsac_g1_motion_tracking_uses_comparable_dr_free_owner() -> None:
     assert mjwarp_cfg.env.reset_owners.motion._target_ == (
         "unilab.tasks.motion_tracking.common.manager_terms.MotionResetOwnerCfg"
     )
+    assert (
+        mjwarp_cfg.reward.motion_penalty_pack.func
+        == "unilab.tasks.motion_tracking.common.manager_terms.MotionPenaltyRewardPack"
+    )
+    assert mjwarp_cfg.reward.motion_penalty_pack._target_ == (
+        "unilab.tasks.motion_tracking.common.manager_terms.MotionPenaltyRewardPackCfg"
+    )
     # Anchor term execution, the MJWARP-only tensor command implementation, and
     # its fused selected-reset owner are intended cross-backend differences;
     # the semantic owner remains DR-free.
@@ -105,7 +112,14 @@ def test_flashsac_g1_motion_tracking_uses_comparable_dr_free_owner() -> None:
     del mujoco_env["commands"]
     del mjwarp_env["reset_owners"]
     assert mjwarp_env == mujoco_env
-    assert OmegaConf.to_container(mjwarp_cfg.reward) == OmegaConf.to_container(mujoco_cfg.reward)
+    mjwarp_reward = OmegaConf.to_container(mjwarp_cfg.reward)
+    mujoco_reward = OmegaConf.to_container(mujoco_cfg.reward)
+    assert isinstance(mjwarp_reward, dict) and isinstance(mujoco_reward, dict)
+    del mjwarp_reward["motion_penalty_pack"]
+    for fused_name in ("action_rate_l2", "joint_limit", "undesired_contacts"):
+        del mjwarp_reward[fused_name]
+        del mujoco_reward[fused_name]
+    assert mjwarp_reward == mujoco_reward
 
 
 def test_flashsac_g1_motion_tracking_contact_policy_is_reward_only() -> None:
