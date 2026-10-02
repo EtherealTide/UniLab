@@ -40,6 +40,15 @@ def _require_mjwarp_runtime() -> None:
         pytest.fail("mjwarp runtime tests require an active CUDA Warp device")
 
 
+def _require_genesis_runtime() -> None:
+    from unisim.backend.genesis.dependencies import genesis_dependencies_available
+
+    if not genesis_dependencies_available():
+        pytest.skip("genesis requires the genesis-world extra")
+    if not torch.cuda.is_available():
+        pytest.skip("genesis runtime tests require a CUDA device")
+
+
 def _allegro_manager_override(
     backend: str = "mujoco",
     *,
@@ -969,6 +978,44 @@ def test_flashsac_g1_motion_mjwarp_tensor_anchor_observations_roll_out() -> None
         assert torch.isfinite(state.reward).all()
     finally:
         env.close()
+
+
+def test_flashsac_g1_motion_genesis_manager_tensor_command_roll_out() -> None:
+    """The canonical FlashSAC Genesis owner exercises the Manager tensor path."""
+    ensure_registries()
+    _require_genesis_runtime()
+    from unilab.base import registry
+    from unilab.envs import ManagerBasedRlEnv
+
+    _, override = _motion_manager_override(
+        "g1_motion_tracking",
+        "genesis",
+        config_root="flashsac",
+    )
+    env = registry.make(
+        "G1MotionTrackingSAC",
+        num_envs=2,
+        sim_backend="genesis",
+        env_cfg_override=override,
+    )
+    assert isinstance(env, ManagerBasedRlEnv)
+    try:
+        assert env.obs_groups_spec == {"obs": 160, "critic": 289}
+        command = env.command_manager.get_term("motion")
+        assert command.tensor_carrier is True
+        assert env.command_manager.uses_tensor_reset_rows()
+
+        state = env.init_state()
+        for _ in range(3):
+            state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
+
+        assert state.obs["obs"].shape == (2, 160)
+        assert state.obs["critic"].shape == (2, 289)
+        assert all(torch.isfinite(values).all() for values in state.obs.values())
+        assert torch.isfinite(state.reward).all()
+    finally:
+        env.close()
+        env._backend.close()
 
 
 @pytest.mark.parametrize(
