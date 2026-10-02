@@ -851,9 +851,15 @@ class TensorMotionCommand(MotionCommand):
         )
         return torch.from_numpy(np.ascontiguousarray(host)).to(device=device)
 
-    def _motion_packet(self, frames: np.ndarray) -> torch.Tensor:
+    def _motion_packet(self, frames: np.ndarray | torch.Tensor) -> torch.Tensor:
         """Gather motion rows from the device-resident feature table."""
-        rows = torch.as_tensor(frames, dtype=torch.int64, device=self._device)
+        rows = (
+            frames
+            if isinstance(frames, torch.Tensor)
+            else torch.as_tensor(frames, dtype=torch.int64, device=self._device)
+        )
+        if rows.device != self._device or rows.dtype != torch.int64:
+            rows = rows.to(device=self._device, dtype=torch.int64)
         return self._motion_features.index_select(0, rows)
 
     def _defer_read_phase_binding(self) -> None:
@@ -1070,12 +1076,13 @@ class TensorMotionCommand(MotionCommand):
 
     def _refresh_motion_torch(self, rows: torch.Tensor | None = None) -> None:
         """Gather motion rows and publish the device-resident command carrier."""
-        host_rows = None if rows is None else rows.detach().cpu().numpy()
-        frames = (
-            self.sampler.current_frames
-            if host_rows is None
-            else self.sampler.current_frames[host_rows]
-        )
+        frames: np.ndarray | torch.Tensor
+        if rows is None:
+            frames = self.sampler.current_frames
+        elif isinstance(self.time_steps, torch.Tensor):
+            frames = cast(torch.Tensor, self.time_steps)[rows]
+        else:
+            frames = self.sampler.current_frames[rows.detach().cpu().numpy()]
         self._ingest_motion_packet(
             self._tensor_all_rows if rows is None else rows, self._motion_packet(frames)
         )
