@@ -1117,7 +1117,17 @@ class bad_anchor_pos_z_only(ManagerTermBase):
         self._command_name = command_name
         self._result = np.empty(self.num_envs, dtype=np.bool_)
         command = _command(env, command_name)
-        threshold = command.body_pos_w.dtype.type(cfg.params.get("threshold", 0.0))
+        tensor_carrier = bool(getattr(command, "tensor_carrier", False))
+        configured_threshold = cfg.params.get("threshold", 0.0)
+        threshold = (
+            float(configured_threshold)
+            if tensor_carrier
+            else command.body_pos_w.dtype.type(configured_threshold)
+        )
+        if tensor_carrier:
+            # Numba warmup is host-only; the tensor peer is pure Torch and has
+            # no lazy dispatch to precompile.
+            return
         termination_anchor_pos_kernel(
             command.body_pos_w,
             command.robot_body_pos_w,
@@ -1131,13 +1141,20 @@ class bad_anchor_pos_z_only(ManagerTermBase):
         env: ManagerBasedRlEnv,
         command_name: str,
         threshold: float,
-    ) -> np.ndarray:
+    ) -> np.ndarray | torch.Tensor:
         del env
         if command_name != self._command_name:
             raise ValueError(
                 f"{type(self).__name__} was bound to '{self._command_name}', got '{command_name}'"
             )
         command = _command(self._env, command_name)
+        if getattr(command, "tensor_carrier", False):
+            motion_anchor_pos = cast(torch.Tensor, command.body_pos_w)
+            robot_anchor_pos = cast(torch.Tensor, command.robot_body_pos_w)
+            return (
+                motion_anchor_pos[:, command.anchor_body_idx, 2]
+                - robot_anchor_pos[:, command.anchor_body_idx, 2]
+            ).abs() > threshold
         threshold_value = command.body_pos_w.dtype.type(threshold)
         termination_anchor_pos_kernel(
             command.body_pos_w,
@@ -1154,8 +1171,14 @@ def bad_anchor_ori(
     command_name: str,
     threshold: float,
     asset_cfg: SceneEntityCfg | None = None,
-) -> np.ndarray:
+) -> np.ndarray | torch.Tensor:
     command = _command(env, command_name)
+    if getattr(command, "tensor_carrier", False):
+        motion_anchor_quat = cast(torch.Tensor, command.anchor_quat_w)
+        robot_anchor_quat = cast(torch.Tensor, command.robot_anchor_quat_w)
+        motion_z = 2.0 * (motion_anchor_quat[:, 1] ** 2 + motion_anchor_quat[:, 2] ** 2) - 1.0
+        robot_z = 2.0 * (robot_anchor_quat[:, 1] ** 2 + robot_anchor_quat[:, 2] ** 2) - 1.0
+        return (motion_z - robot_z).abs() > threshold
     asset = command.robot if asset_cfg is None else cast("Entity", env.scene[asset_cfg.name])
     gravity_vec_w = asset.data.gravity_vec_w
     motion_z = np_quat_apply_inverse(command.anchor_quat_w, gravity_vec_w)[:, 2]
@@ -1170,9 +1193,14 @@ class bad_motion_body_pos_z_only(_BodyTerm):
         command_name: str,
         threshold: float,
         body_names: tuple[str, ...] | None = None,
-    ) -> np.ndarray:
+    ) -> np.ndarray | torch.Tensor:
         del env, body_names
         command = _command(self._env, command_name)
+        if getattr(command, "tensor_carrier", False):
+            reference = cast(torch.Tensor, command.body_pos_relative_w)
+            actual = cast(torch.Tensor, command.robot_body_pos_w)
+            error = (reference[:, self._body_ids, 2] - actual[:, self._body_ids, 2]).abs()
+            return torch.any(error > threshold, dim=-1)
         error = np.abs(
             command.body_pos_relative_w[:, self._body_ids, 2]
             - command.robot_body_pos_w[:, self._body_ids, 2]
@@ -1187,14 +1215,21 @@ class bad_undesired_body_contacts(_BodyTerm):
         command_name: str,
         threshold: float,
         body_names: tuple[str, ...] | None = None,
-    ) -> np.ndarray:
+    ) -> np.ndarray | torch.Tensor:
         del env, body_names
         command = _command(self._env, command_name)
+        if getattr(command, "tensor_carrier", False):
+            robot_body_pos = cast(torch.Tensor, command.robot_body_pos_w)
+            return torch.any(robot_body_pos[:, self._body_ids, 2] < threshold, dim=-1)
         return np.any(command.robot_body_pos_w[:, self._body_ids, 2] < threshold, axis=-1)
 
 
-def motion_clip_end(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray:
+def motion_clip_end(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray | torch.Tensor:
     command = _command(env, command_name)
+    if getattr(command, "tensor_carrier", False):
+        current_clip_ends = getattr(command, "current_clip_end_frames", None)
+        if current_clip_ends is not None:
+            return cast(torch.Tensor, command.time_steps) >= cast(torch.Tensor, current_clip_ends)
     return command.time_steps >= command.sampler.current_clip_end_frames
 
 
