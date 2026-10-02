@@ -13,7 +13,7 @@ trains `rsl_rl.algorithms:PPO`. The config follows the native RSL-RL v5 schema â
 
 ```bash
 uv run train --algo ppo --task go2_joystick_flat --sim mujoco
-uv run train --algo ppo --task go2_joystick_flat --sim motrix training.no_play=true
+uv run train --algo ppo --task go2_joystick_flat --sim mujoco training.no_play=true
 ```
 
 ## Common Overrides

@@ -1,5 +1,8 @@
 # SuperDex Backend
 
+> **SuperDex is temporarily shelved.** This adapter is outside the tensor-only Manager runtime during #1811 and is not a production support claim. The train/eval CLI rejects it until new capability, parity, and support-matrix evidence is provided.
+
+
 SuperDex is an optional CPU physics adapter owned by `unisim.backend.superdex`.
 The initial UniLab owner is the fixed-base `FR3JointTarget` task:
 `src/unilab/conf/ppo/task/fr3_joint_target/superdex.yaml`. It uses seven torque

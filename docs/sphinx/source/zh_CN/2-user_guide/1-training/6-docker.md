@@ -2,7 +2,7 @@
 
 仓库内置的 `Dockerfile` 是 Linux NVIDIA/CUDA 容器路径。它会安装 UniLab 运行时依
 赖、MuJoCo 和 Motrix 两个物理后端 extra 以及 dev/test 工具，容器内训练支持
-`--sim mujoco` 和 `--sim motrix`。macOS Docker 目前不作为主要路径，ROCm 则使用
+`--sim mujoco` 和 `--sim mujoco`。macOS Docker 目前不作为主要路径，ROCm 则使用
 另外的镜像（见下文），而不是这个 CUDA `Dockerfile`。
 
 ## 构建
@@ -41,7 +41,7 @@ docker run --rm --gpus all -it \
 
 ```bash
 uv run train --algo ppo --task go2_joystick_flat --sim mujoco
-uv run train --algo ppo --task go2_joystick_flat --sim motrix
+uv run train --algo ppo --task go2_joystick_flat --sim mujoco
 ```
 
 容器内的评估和回放方式相同；`--load-run -1` 会选择最新的 run：

@@ -1,5 +1,8 @@
 # Motrix 后端
 
+> **Motrix 暂时搁置。** 该适配器在 #1811 期间不属于 tensor-only Manager runtime，也不构成生产支持声明。在提供新的 capability、parity 与支持矩阵证据之前，train/eval CLI 会直接拒绝该后端。
+
+
 Motrix 是一个可选后端，通过 `motrix` extra 安装。该 extra 委托给
 `unisim-core[motrix]`，runtime 版本固定在 UniSim 的 `pyproject.toml`
 中，适配层位于 `unisim.backend.motrix` 下。
@@ -10,7 +13,7 @@ Motrix 是一个可选后端，通过 `motrix` extra 安装。该 extra 委托�
 uv sync --extra motrix
 ```
 
-`make setup-motrix` 会执行相同的依赖同步，并安装 shell 自动补全。
+`make setup` 会执行相同的依赖同步，并安装 shell 自动补全。
 
 ## 何时使用
 

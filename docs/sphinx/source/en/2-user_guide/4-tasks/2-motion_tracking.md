@@ -41,7 +41,7 @@ runs `algo.max_iterations=15000`; `g1_flip_tracking` runs `20000`; and
 uv run train --algo ppo --task g1_motion_tracking --sim mujoco
 uv run train --algo ppo --task g1_flip_tracking --sim mujoco
 uv run train --algo ppo --task x2_wall_flip_tracking --sim mujoco
-uv run train --algo ppo --task g1_motion_tracking --sim motrix
+uv run train --algo ppo --task g1_motion_tracking --sim mujoco
 uv run train --algo appo --task g1_motion_tracking --sim mujoco training.no_play=true
 uv run train --algo ppo --task g1_motion_tracking --sim mujoco \
   algo.num_envs=128 algo.max_iterations=5 training.no_play=true
@@ -69,7 +69,7 @@ documented in the sim-to-real deployment guide. When a Motrix sim2sim replay nee
 a checkpoint from another log root, pass the absolute path through `uv run eval`:
 
 ```bash
-uv run eval --algo sac --task g1_motion_tracking --sim motrix \
+uv run eval --algo sac --task g1_motion_tracking --sim mujoco \
   algo.load_run=/abs/path/to/logs/fast_sac/G1MotionTrackingSAC/2026-04-23_14-06-57_mujoco
 ```
 
