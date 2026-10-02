@@ -101,5 +101,5 @@ jobs:
       - name: CUDA task contract tests
         run: >
           uv run --no-sync pytest -q
-          tests/tasks/test_torch_flashsac_contract.py
+          tests/tasks/test_flashsac_owner_contract.py
           tests/tasks/test_tensor_runtime_components.py
