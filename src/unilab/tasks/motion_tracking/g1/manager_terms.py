@@ -227,7 +227,7 @@ class joint_acc_l2(ManagerTermBase):
         self._joint_ids = np.arange(self._entity.num_joints, dtype=np.intp)[asset_cfg.joint_ids]
         self._previous = self._entity.data.joint_vel[:, self._joint_ids].copy()
 
-    def reset(self, env_ids: np.ndarray | slice | None) -> None:
+    def reset(self, env_ids: torch.Tensor | np.ndarray | slice | None) -> None:
         ids = np.arange(self.num_envs, dtype=np.intp)
         if env_ids is not None:
             ids = ids[env_ids]

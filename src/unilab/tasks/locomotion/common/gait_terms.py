@@ -237,7 +237,7 @@ class feet_air_time(_FootContactTerm):
             (env.num_envs, self.num_feet), dtype=torch.float32, device=env.device
         )
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | np.ndarray | slice | None = None) -> None:
         rows = env_ids if env_ids is not None else slice(None)
         if isinstance(rows, np.ndarray):
             rows = torch.from_numpy(rows).to(device=self._air_time.device)
@@ -306,7 +306,7 @@ class feet_swing_height(_FootContactTerm):
         self._peak_heights = np.zeros((env.num_envs, self.num_feet), dtype=get_global_dtype())
         self._was_in_air = np.zeros((env.num_envs, self.num_feet), dtype=np.bool_)
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | np.ndarray | slice | None = None) -> None:
         rows = env_ids if env_ids is not None else slice(None)
         self._peak_heights[rows] = 0.0
         self._was_in_air[rows] = False
@@ -491,7 +491,7 @@ class foot_air_time(_FootContactTerm):
             (env.num_envs, self.num_feet), dtype=torch.float32, device=env.device
         )
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | np.ndarray | slice | None = None) -> None:
         rows = env_ids if env_ids is not None else slice(None)
         if isinstance(rows, np.ndarray):
             rows = torch.from_numpy(rows).to(device=self._air_time.device)

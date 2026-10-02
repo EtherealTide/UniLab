@@ -260,7 +260,9 @@ class ObservationManager(ManagerBase):
         rows: torch.Tensor | slice = (
             env_ids
             if isinstance(env_ids, torch.Tensor)
-            else torch.arange(self.num_envs, device=self._device)[env_ids or slice(None)]
+            else torch.arange(self.num_envs, device=self._device)[
+                env_ids if env_ids is not None else slice(None)
+            ]
         )
 
         for group_name, group_cfg in self._group_obs_class_term_cfgs.items():

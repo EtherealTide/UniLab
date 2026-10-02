@@ -231,7 +231,7 @@ class MotionCommand(CommandTerm):
         # measured manager step contains no Numba worker/JIT initialization.
         configure_motion_kernel_runtime()
         self._refresh_relative_state()
-        self._update_metrics(self._all_env_ids)
+        self._update_metrics(torch.from_numpy(self._all_env_ids).to(self._device))
 
     def _make_motion_loader(
         self,
@@ -587,8 +587,9 @@ class MotionCommand(CommandTerm):
         if env_ids is not None:
             ingested = self._resample_ingested_ids
             self._resample_ingested_ids = None
-            if ingested is None or not np.array_equal(ingested, env_ids):
-                self._refresh_motion(env_ids)
+            host_rows = env_ids.detach().cpu().numpy()
+            if ingested is None or not np.array_equal(ingested, host_rows):
+                self._refresh_motion(host_rows)
             return
         self._resample_ingested_ids = None
         terminated = self._env.termination_manager.terminated
