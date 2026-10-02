@@ -463,14 +463,22 @@ class CommandManager(ManagerBase):
         self, dt: float | np.ndarray | torch.Tensor, env_ids: torch.Tensor | None = None
     ) -> None:
         step_timing: dict[str, float] = {}
+        dispatch_ms = 0.0
+        validation_ms = 0.0
         for name, term in self._terms.items():
             term_timing = getattr(term, "last_step_timing_ms", None)
             if term_timing is not None:
                 term_timing.clear()
+            dispatch_started = time.perf_counter()
             term.compute(dt, env_ids)
+            dispatch_ms += time.perf_counter() - dispatch_started
             step_timing.update(getattr(term, "last_step_timing_ms", {}))
             if env_ids is None:
+                validation_started = time.perf_counter()
                 self._validate_command(name, term.command)
+                validation_ms += time.perf_counter() - validation_started
+        step_timing["update_state_command_term_dispatch_ms"] = dispatch_ms * 1000.0
+        step_timing["update_state_command_validation_ms"] = validation_ms * 1000.0
         self.last_step_timing_ms = step_timing
 
     def post_compute(self) -> None:
