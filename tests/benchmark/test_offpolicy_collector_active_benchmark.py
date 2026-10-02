@@ -521,6 +521,27 @@ def test_variant_ablation_table_compares_each_variant_to_default() -> None:
     assert "1.500x" in table
 
 
+def test_variant_ablation_table_pairs_each_head_with_preceding_base() -> None:
+    base_low = _make_result(num_envs=2, throughput=1000.0)
+    head_low = _make_result(num_envs=2, throughput=1200.0)
+    base_high = _make_result(num_envs=2, throughput=1500.0)
+    head_high = _make_result(num_envs=2, throughput=1500.0)
+    for result, variant in (
+        (base_low, "base"),
+        (head_low, "head"),
+        (base_high, "base"),
+        (head_high, "head"),
+    ):
+        result.case = bench.CollectorCase(**{**vars(result.case), "variant": variant})
+
+    table = bench._format_variant_ablation_table(
+        [base_low, head_low, base_high, head_high], paired=True
+    )
+
+    assert "1.200x" in table
+    assert "1.500x" in table
+
+
 def test_numpy_random_profiler_times_generator_bound_calls() -> None:
     import numpy as np
 

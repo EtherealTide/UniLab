@@ -1323,8 +1323,13 @@ def _format_set_state_sub_ms(result: CollectorResult, key: str) -> str:
     return f"{stat.mean_ms:.3f} ({pct:.1f}%)"
 
 
-def _format_variant_ablation_table(results: list[CollectorResult]) -> str:
-    """Compare variants within each algo/task/backend and num_envs tuple."""
+def _format_variant_ablation_table(results: list[CollectorResult], *, paired: bool = False) -> str:
+    """Compare variants within each algo/task/backend and num_envs tuple.
+
+    With ``paired=True``, each non-baseline row uses the preceding baseline
+    result as its denominator. This exposes per-block in-process A/B effects
+    instead of dividing every row by one process-placement sample.
+    """
     groups: dict[tuple[str, str, str, int], list[CollectorResult]] = {}
     for result in results:
         key = (
@@ -1339,10 +1344,23 @@ def _format_variant_ablation_table(results: list[CollectorResult]) -> str:
     for key in sorted(groups):
         grouped = groups[key]
         baseline = next((item for item in grouped if item.case.variant == "default"), grouped[0])
-        baseline_throughput = baseline.collector_active_steps_per_sec
+        baseline_result = baseline
         for result in grouped:
             if result is baseline:
                 continue
+            if paired and result.case.variant == baseline.case.variant:
+                baseline_result = result
+                continue
+            if paired:
+                baseline_result = next(
+                    (
+                        item
+                        for item in grouped[: grouped.index(result)]
+                        if item.case.variant == baseline.case.variant
+                    ),
+                    baseline_result,
+                )
+            baseline_throughput = baseline_result.collector_active_steps_per_sec
             ratio = (
                 result.collector_active_steps_per_sec / baseline_throughput
                 if baseline_throughput > 0.0
@@ -1352,7 +1370,7 @@ def _format_variant_ablation_table(results: list[CollectorResult]) -> str:
                 (
                     *key[:3],
                     f"{key[3]:,}",
-                    baseline.case.variant,
+                    baseline_result.case.variant,
                     result.case.variant,
                     f"{ratio:.3f}x",
                 )
@@ -2023,9 +2041,15 @@ def main() -> int:
     print("\nTask throughput (active phases; phase percentages add to 100%):")
     if results:
         print(_format_throughput_table(results))
-        variant_table = _format_variant_ablation_table(results)
+        variant_table = _format_variant_ablation_table(
+            results,
+            paired=int(args.repeat_variant_blocks) > 1,
+        )
         if variant_table.count("\n") > 2:
-            print("\nVariant ablation (throughput ratio vs baseline; baseline=default or first):")
+            print(
+                "\nVariant ablation "
+                "(throughput ratio vs preceding baseline when repeat blocks > 1):"
+            )
             print(variant_table)
         print(
             "\nEnv step breakdown (subparts of Env step; do not add Env step together with its subparts):"
