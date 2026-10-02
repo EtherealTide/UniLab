@@ -1434,11 +1434,13 @@ class TensorMotionCommand(MotionCommand):
     def post_compute(self) -> None:
         rows = self._tensor_post_compute_env_ids
         read_plan = self._env.scene._tensor_read_plan
+        view_started = time.perf_counter()
         if read_plan is None or not read_plan.ready:
             if not self._bind_read_phase:
                 return
             raise RuntimeError("TensorMotionCommand requires a refreshed scene tensor read phase")
         view = read_plan.body_tensor_view(self.robot, self.cfg.body_names)
+        view_ms = (time.perf_counter() - view_started) * 1000.0
         robot_started = time.perf_counter()
         _bind_compiled_motion_post_compute()(
             self._tensor_all_rows if rows is None else rows,
@@ -1461,12 +1463,18 @@ class TensorMotionCommand(MotionCommand):
             self.robot_body_pos_b,
             self.robot_body_ori_b,
         )
+        kernel_ms = (time.perf_counter() - robot_started) * 1000.0
+        rebind_started = time.perf_counter()
         joint_view = read_plan.joint_tensor_view(self.robot)
         self._robot_joint_pos = joint_view.joint_pos
         self._robot_joint_vel = joint_view.joint_vel
         self._robot_cache_step = self._env.common_step_counter
+        rebind_ms = (time.perf_counter() - rebind_started) * 1000.0
         self.last_post_compute_timing_ms = {
-            "reset_done_motion_robot_refresh_ms": (time.perf_counter() - robot_started) * 1000.0
+            "reset_done_motion_robot_refresh_ms": kernel_ms,
+            "reset_done_motion_post_compute_view_ms": view_ms,
+            "reset_done_motion_post_compute_kernel_ms": kernel_ms,
+            "reset_done_motion_post_compute_rebind_ms": rebind_ms,
         }
         self.last_post_compute_timing_ms["reset_done_motion_relative_refresh_ms"] = 0.0
 
