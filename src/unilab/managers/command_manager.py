@@ -156,11 +156,13 @@ class CommandTerm(ManagerTermBase):
 
     def clear_episode_metrics(self, env_ids: torch.Tensor) -> None:
         """Clear selected command metrics without a host metric reduction."""
-        host_rows = env_ids.detach().cpu().numpy().tolist()
+        host_rows: list[int] | None = None
         for metric_value in self.metrics.values():
             if isinstance(metric_value, torch.Tensor):
                 metric_value[env_ids] = 0.0
             else:
+                if host_rows is None:
+                    host_rows = env_ids.detach().cpu().numpy().tolist()
                 metric_value[host_rows] = 0.0
 
     def compute(

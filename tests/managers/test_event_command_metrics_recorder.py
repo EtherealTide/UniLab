@@ -181,6 +181,30 @@ def test_command_resample_metrics_validation_and_null(fake_env: FakeEnv) -> None
     assert null.reset() == {}
 
 
+def test_tensor_metric_clearing_does_not_mirror_reset_rows_on_host(
+    fake_env: FakeEnv,
+) -> None:
+    command = DummyCommand(DummyCommandCfg(resampling_time_range=(1.0, 1.0)), fake_env)
+    command.metrics = {
+        "tensor": torch.arange(fake_env.num_envs, dtype=torch.float32),
+        "other": torch.arange(fake_env.num_envs, dtype=torch.float32) * 2.0,
+    }
+    rows = torch.tensor([1, 2], dtype=torch.int64)
+
+    def fail_cpu(*args: object) -> torch.Tensor:
+        raise AssertionError("all-tensor metric clearing must not mirror reset rows")
+
+    original_cpu = torch.Tensor.cpu
+    torch.Tensor.cpu = fail_cpu  # type: ignore[method-assign]
+    try:
+        command.clear_episode_metrics(rows)
+    finally:
+        torch.Tensor.cpu = original_cpu  # type: ignore[method-assign]
+
+    torch.testing.assert_close(command.metrics["tensor"], torch.tensor([0.0, 0.0, 0.0, 3.0]))
+    torch.testing.assert_close(command.metrics["other"], torch.tensor([0.0, 0.0, 0.0, 6.0]))
+
+
 def test_command_viewer_request_and_old_signature_fail_closed(fake_env: FakeEnv) -> None:
     with pytest.raises(NotImplementedError, match="viewer"):
         CommandManager(

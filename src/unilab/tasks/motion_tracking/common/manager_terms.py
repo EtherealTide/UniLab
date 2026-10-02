@@ -948,6 +948,9 @@ class TensorMotionCommand(MotionCommand):
     def _prepare_tensor_carrier(self) -> None:
         """Allocate Torch buffers before Manager probes the command carrier."""
         device = self._device
+        self._motion_feature_layout: (
+            tuple[dict[str, tuple[int, ...]], dict[str, tuple[int, int]]] | None
+        ) = None
         num_bodies = len(self.cfg.body_names)
         num_joints = self.motion.num_joints
         self.time_steps = torch.as_tensor(
@@ -1124,7 +1127,8 @@ class TensorMotionCommand(MotionCommand):
             if env_ids is None
             else self._tensor_all_rows[env_ids]
         )
-        self._update_torch_error_metrics(rows)
+        if publish_metrics:
+            self._update_torch_error_metrics(rows)
         if self._env.torch_rng is None:
             raise NotImplementedError(
                 "TensorMotionCommand reset requires the Manager-owned Torch generator"
@@ -1178,8 +1182,7 @@ class TensorMotionCommand(MotionCommand):
         packet_started = time.perf_counter()
         packet = self._motion_packet(frames)
         packet_ms = (time.perf_counter() - packet_started) * 1000.0
-        offsets = self._motion_feature_offsets
-        tails = self._motion_feature_tail_shapes
+        tails, offsets = self._cached_motion_feature_shapes()
         if self._env.torch_rng is None:
             raise NotImplementedError(
                 "TensorMotionCommand reset sampling requires the Manager-owned Torch generator"
@@ -1250,7 +1253,7 @@ class TensorMotionCommand(MotionCommand):
         publish_ms = (time.perf_counter() - publish_started) * 1000.0
         self._resample_ingested_ids = None
         self._resample_motion = None
-        self._tensor_resample_ingested = rows
+        self._tensor_resample_ingested = env_ids
         self.last_reset_timing_ms.update(
             {
                 "reset_done_motion_sampler_ms": sampler_ms,
@@ -1262,7 +1265,7 @@ class TensorMotionCommand(MotionCommand):
                 "reset_done_motion_reset_publish_ms": publish_ms,
             }
         )
-        self._sync_tensor_sampler_state()
+        self._sync_tensor_sampler_state(rows)
 
     def _update_command(self, env_ids: torch.Tensor | None) -> None:
         self._tensor_post_compute_env_ids = env_ids
@@ -1290,10 +1293,7 @@ class TensorMotionCommand(MotionCommand):
         """Advance the device frame carrier once without a host row transfer."""
         active = ~cast(torch.Tensor, self._env.reset_buf)
         done = self.tensor_sampler.step(active)
-        cast(torch.Tensor, self.time_steps).copy_(self.tensor_sampler.current_frames)
-        cast(torch.Tensor, self.current_clip_end_frames).copy_(
-            self.tensor_sampler.current_clip_end_frames
-        )
+        self._sync_tensor_sampler_state()
         return done
 
     def post_compute(self) -> None:
@@ -1335,10 +1335,13 @@ class TensorMotionCommand(MotionCommand):
         }
         self.last_post_compute_timing_ms["reset_done_motion_relative_refresh_ms"] = 0.0
 
-    def _sync_tensor_sampler_state(self) -> None:
-        cast(torch.Tensor, self.time_steps).copy_(self.tensor_sampler.current_frames)
-        cast(torch.Tensor, self.current_clip_end_frames).copy_(
-            self.tensor_sampler.current_clip_end_frames
+    def _sync_tensor_sampler_state(self, rows: torch.Tensor | None = None) -> None:
+        selector = self._tensor_all_rows if rows is None else rows
+        cast(torch.Tensor, self.time_steps).index_copy_(
+            0, selector, self.tensor_sampler.current_frames.index_select(0, selector)
+        )
+        cast(torch.Tensor, self.current_clip_end_frames).index_copy_(
+            0, selector, self.tensor_sampler.current_clip_end_frames.index_select(0, selector)
         )
 
     @property
@@ -1421,7 +1424,6 @@ class TensorMotionCommand(MotionCommand):
         self._robot_joint_vel.zero_()
         self._robot_cache_step = self._env.common_step_counter
 
-    @property
     def _motion_feature_tail_shapes(self) -> dict[str, tuple[int, ...]]:
         return {
             "joint_pos": (self.motion.num_joints,),
@@ -1432,15 +1434,22 @@ class TensorMotionCommand(MotionCommand):
             "body_ang_vel_w": (len(self.cfg.body_names), 3),
         }
 
-    @property
-    def _motion_feature_offsets(self) -> dict[str, tuple[int, int]]:
+    def _cached_motion_feature_shapes(
+        self,
+    ) -> tuple[dict[str, tuple[int, ...]], dict[str, tuple[int, int]]]:
+        cached = self._motion_feature_layout
+        if cached is not None:
+            return cached
+        tails = self._motion_feature_tail_shapes()
         offset = 0
         offsets: dict[str, tuple[int, int]] = {}
-        for name, tail in self._motion_feature_tail_shapes.items():
+        for name, tail in tails.items():
             width = int(np.prod(tail, dtype=np.int64))
             offsets[name] = (offset, offset + width)
             offset += width
-        return offsets
+        cached = (tails, offsets)
+        self._motion_feature_layout = cached
+        return cached
 
     def _ingest_motion_packet(self, rows: torch.Tensor, packet: torch.Tensor) -> None:
         """Scatter one device motion packet into the command carriers."""

@@ -1009,6 +1009,7 @@ def test_tensor_command_publishes_sampler_advance_exactly_once() -> None:
     command.current_clip_end_frames = torch.tensor([90, 90, 90], dtype=torch.int32)
     command._clip_offsets_torch = torch.tensor([0], dtype=torch.int64)
     command._clip_end_frames_torch = torch.tensor([100], dtype=torch.int64)
+    command._tensor_all_rows = torch.arange(3, dtype=torch.int64)
     command.cfg = SimpleNamespace(params=SimpleNamespace(truncate_on_clip_end=True))
     command._tensor_post_compute_env_ids = None
     command._resample_ingested_ids = None
@@ -1022,6 +1023,79 @@ def test_tensor_command_publishes_sampler_advance_exactly_once() -> None:
     command._update_command(None)
 
     torch.testing.assert_close(command.time_steps, torch.tensor([5, 1, 10], dtype=torch.int32))
+
+
+def test_tensor_command_syncs_sampler_mirrors_on_selected_rows_only() -> None:
+    command = mt.TensorMotionCommand.__new__(mt.TensorMotionCommand)
+    command._device = torch.device("cpu")
+    command._tensor_all_rows = torch.arange(3, dtype=torch.int64)
+    command._tensor_post_compute_env_ids = torch.tensor([0, 2], dtype=torch.int64)
+    command.time_steps = torch.tensor([4, 20, 9], dtype=torch.int32)
+    command.current_clip_end_frames = torch.tensor([90, 90, 90], dtype=torch.int32)
+    command.tensor_sampler = mt.TensorMotionSampler(
+        mode="adaptive",
+        num_envs=3,
+        num_frames=11,
+        clip_offsets=np.asarray([0], dtype=np.int64),
+        clip_end_frames=np.asarray([100], dtype=np.int32),
+        bin_count=1,
+        adaptive_lambda=0.8,
+        adaptive_kernel_size=1,
+        adaptive_uniform_ratio=0.1,
+        adaptive_alpha=0.001,
+        start_ratio=0.0,
+        initial_frames=np.asarray([7, 0, 8], dtype=np.int32),
+        initial_clip_end_frames=np.asarray([100, 100, 100], dtype=np.int32),
+        device=torch.device("cpu"),
+    )
+
+    command._sync_tensor_sampler_state(torch.tensor([0, 2], dtype=torch.int64))
+
+    torch.testing.assert_close(command.time_steps, torch.tensor([7, 20, 8], dtype=torch.int32))
+    torch.testing.assert_close(
+        command.current_clip_end_frames, torch.tensor([100, 90, 100], dtype=torch.int32)
+    )
+
+
+def test_motion_feature_layout_is_cached_without_recomputing_shapes() -> None:
+    command = mt.TensorMotionCommand.__new__(mt.TensorMotionCommand)
+    command._motion_feature_layout = None
+    command.motion = SimpleNamespace(num_joints=3)
+    command.cfg = SimpleNamespace(body_names=("pelvis", "torso"))
+
+    calls = 0
+
+    def counted_tails(_: object) -> dict[str, tuple[int, ...]]:
+        nonlocal calls
+        calls += 1
+        return {
+            "joint_pos": (command.motion.num_joints,),
+            "joint_vel": (command.motion.num_joints,),
+            "body_pos_w": (len(command.cfg.body_names), 3),
+            "body_quat_w": (len(command.cfg.body_names), 4),
+            "body_lin_vel_w": (len(command.cfg.body_names), 3),
+            "body_ang_vel_w": (len(command.cfg.body_names), 3),
+        }
+
+    original = command._motion_feature_tail_shapes
+    mt.TensorMotionCommand._motion_feature_tail_shapes = counted_tails
+    try:
+        first_tails, first_offsets = command._cached_motion_feature_shapes()
+        second_tails, second_offsets = command._cached_motion_feature_shapes()
+    finally:
+        mt.TensorMotionCommand._motion_feature_tail_shapes = original
+
+    assert calls == 1
+    assert first_tails is second_tails
+    assert first_offsets is second_offsets
+    assert first_offsets == {
+        "joint_pos": (0, 3),
+        "joint_vel": (3, 6),
+        "body_pos_w": (6, 12),
+        "body_quat_w": (12, 20),
+        "body_lin_vel_w": (20, 26),
+        "body_ang_vel_w": (26, 32),
+    }
 
 
 def test_motion_reward_pack_matches_individual_tensor_rewards(
