@@ -212,12 +212,13 @@ def _curriculum_env(weights: dict[str, float], num_envs: int = 4) -> Any:
     cfgs = {name: SimpleNamespace(weight=value) for name, value in weights.items()}
     return SimpleNamespace(
         num_envs=num_envs,
+        device=torch.device("cpu"),
         reward_manager=SimpleNamespace(
             active_terms=list(weights),
             get_term_cfg=lambda name: cfgs[name],
         ),
-        reset_buf=np.zeros(num_envs, dtype=np.bool_),
-        episode_length_buf=np.zeros(num_envs, dtype=np.int64),
+        reset_buf=torch.zeros(num_envs, dtype=torch.bool),
+        episode_length_buf=torch.zeros(num_envs, dtype=torch.int64),
         rng=np.random.default_rng(0),
     )
 
@@ -275,9 +276,10 @@ def test_penalty_curriculum_repeated_construction_never_mutates_source_cfg():
         reward_manager = RewardManager(source_cfg, cast(Any, SimpleNamespace(num_envs=4)))
         env = SimpleNamespace(
             num_envs=4,
+            device=torch.device("cpu"),
             reward_manager=reward_manager,
-            reset_buf=np.zeros(4, dtype=np.bool_),
-            episode_length_buf=np.zeros(4, dtype=np.int64),
+            reset_buf=torch.zeros(4, dtype=torch.bool),
+            episode_length_buf=torch.zeros(4, dtype=torch.int64),
             rng=np.random.default_rng(0),
         )
         G1PenaltyCurriculum(

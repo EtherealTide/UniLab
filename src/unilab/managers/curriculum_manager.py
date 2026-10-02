@@ -1,6 +1,6 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681), src/mjlab/managers/curriculum_manager.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy and UniLab contracts; licensed under Apache-2.0.
+# Modified by UniLab for the tensor-only Manager runtime; licensed under Apache-2.0.
 """Curriculum manager for updating environment quantities subject to a training curriculum."""
 
 from __future__ import annotations
@@ -84,12 +84,12 @@ class CurriculumManager(ManagerBase):
                 data = []
                 if isinstance(term_state, dict):
                     for _key, value in term_state.items():
-                        if isinstance(value, np.ndarray):
-                            value = value.item()
+                        if isinstance(value, torch.Tensor):
+                            value = value.detach().cpu().item()
                         data.append(value)
                 else:
-                    if isinstance(term_state, np.ndarray):
-                        term_state = term_state.item()
+                    if isinstance(term_state, torch.Tensor):
+                        term_state = term_state.detach().cpu().item()
                     data.append(term_state)
                 terms.append((term_name, data))
         return terms
@@ -100,12 +100,12 @@ class CurriculumManager(ManagerBase):
             if term_state is not None:
                 if isinstance(term_state, dict):
                     for key, value in term_state.items():
-                        if isinstance(value, np.ndarray):
-                            value = value.item()
+                        if isinstance(value, torch.Tensor):
+                            value = value.detach().cpu().item()
                         extras[f"Curriculum/{term_name}/{key}"] = value
                 else:
-                    if isinstance(term_state, np.ndarray):
-                        term_state = term_state.item()
+                    if isinstance(term_state, torch.Tensor):
+                        term_state = term_state.detach().cpu().item()
                     extras[f"Curriculum/{term_name}"] = term_state
         for term_cfg in self._class_term_cfgs:
             term_cfg.func.reset(env_ids=env_ids)
@@ -122,9 +122,9 @@ class CurriculumManager(ManagerBase):
     def _validate_state(self, term_name: str, state: Any) -> None:
         values = state.values() if isinstance(state, dict) else (state,)
         for value in values:
-            if isinstance(value, np.ndarray):
-                finite = np.isfinite(value).all()
-            elif isinstance(value, (int, float, np.number)):
+            if isinstance(value, torch.Tensor):
+                finite = bool(torch.isfinite(value).all())
+            elif isinstance(value, (int, float)):
                 finite = bool(np.isfinite(value))
             else:
                 continue
