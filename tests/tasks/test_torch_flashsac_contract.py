@@ -45,7 +45,7 @@ def test_torch_owner_fingerprint_accepts_both_canonical_backends() -> None:
     mujoco = _materialize_task("g1_motion_tracking/mujoco")
     mjwarp = _materialize_task("g1_motion_tracking/mjwarp")
     assert module._torch_g1_flashsac_owner_identity(mujoco) == (
-        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V2
+        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V5
     )
     assert module._torch_g1_flashsac_owner_identity(mjwarp) == (
         module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V4
@@ -64,7 +64,7 @@ def test_torch_owner_fingerprint_accepts_mapped_isaacsim_namespaced_owner() -> N
     assert cfg.scene is not None
     assert cfg.scene.entity_assets
     assert module._torch_g1_flashsac_owner_identity(cfg) == (
-        module._TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V1
+        module._TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V2
     )
 
 

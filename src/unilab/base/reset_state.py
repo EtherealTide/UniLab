@@ -229,6 +229,47 @@ class ResetStateTransaction:
         else:
             self.commit_device_tensor()
 
+    @contextmanager
+    def scoped_device_event_tensor_with_host_commit(
+        self, env_ids: torch.Tensor, host_plan: HostBridgeTransferPlan
+    ) -> Iterator[ResetStateTransaction]:
+        """Commit an owner tensor reset through one packed host-bridge boundary."""
+        self.begin_tensor(env_ids)
+        try:
+            yield self
+        except BaseException:
+            self.abort()
+            raise
+        else:
+            self._commit_tensor_event_through_host_bridge(host_plan)
+
+    def _commit_tensor_event_through_host_bridge(
+        self, host_plan: HostBridgeTransferPlan
+    ) -> dict | None:
+        """Commit owner-staged tensor rows through the packed host bridge."""
+        self._last_commit_had_writes = self._tensor_has_writes
+        try:
+            if not self._tensor_has_writes:
+                return None
+            if self.scene_layout is not None or self._randomization_dirty_masks:
+                raise NotImplementedError(
+                    "packed tensor reset event commit supports scalar qpos/qvel rows only"
+                )
+            assert self._tensor_rows is not None
+            assert self._tensor_qpos is not None
+            assert self._tensor_qvel is not None
+            rows = self._tensor_rows
+            qpos = self._tensor_qpos.index_select(0, rows).detach().cpu()
+            qvel = self._tensor_qvel.index_select(0, rows).detach().cpu()
+            started = time.perf_counter()
+            result = host_plan.apply_reset(rows.detach().cpu(), qpos, qvel, randomization=None)
+            self._last_set_state_timing_ms = {
+                "dr_reset_set_state_ms": (time.perf_counter() - started) * 1000.0
+            }
+            return cast(dict | None, result)
+        finally:
+            self._finish()
+
     def can_commit_packed(self, *, term_name: str = "reset") -> bool:
         """Report whether staged widths can use the public packed reset API.
 
