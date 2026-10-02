@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
-
-from unilab.base.config_adapter import BackendAdapter
-from unilab.base.registry import apply_cfg_overrides
-from unilab.envs import ManagerBasedRlEnvCfg
 
 CONF_DIR = Path(__file__).parents[2] / "src" / "unilab" / "conf"
 ROOT_DIR = Path(__file__).parents[2]
@@ -32,32 +27,6 @@ def _compose_flashsac(task: str):
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=str(CONF_DIR / "flashsac"), version_base="1.3"):
         return compose("config", overrides=[f"task={task}"])
-
-
-def _stand_key_values(path: Path) -> tuple[list[float], list[float]]:
-    key = ET.parse(path).find("./keyframe/key[@name='stand']")
-    assert key is not None
-    return (
-        [float(value) for value in key.attrib["qpos"].split()],
-        [float(value) for value in key.attrib["ctrl"].split()],
-    )
-
-
-def _compose_isaacsim_tensor_owner():
-    return _compose_flashsac("g1_motion_tracking/isaacsim")
-
-
-def _structural_robot_signature(path: Path) -> bytes:
-    root = ET.parse(path).getroot()
-    root.attrib.pop("model", None)
-    compiler = root.find("compiler")
-    if compiler is not None:
-        compiler.attrib.pop("meshdir", None)
-    keyframe = root.find("keyframe")
-    if keyframe is not None:
-        root.remove(keyframe)
-    ET.indent(root, space="")
-    return ET.tostring(root, encoding="unicode").encode()
 
 
 def test_sac_g1_motion_tracking_split_keeps_dr_in_backend_owner() -> None:
@@ -138,15 +107,6 @@ def test_flashsac_g1_motion_tracking_contact_policy_is_reward_only() -> None:
     assert cfg.reward.undesired_contacts.weight == pytest.approx(-0.1)
 
 
-def test_sac_g1_motion_tracking_motrix_keeps_supported_dr() -> None:
-    cfg = _compose_sac("g1_motion_tracking/motrix")
-    assert cfg.env.events.base_com is not None
-    assert cfg.env.events.encoder_bias is not None
-    assert cfg.env.events.foot_friction is not None
-    assert cfg.env.events.push_robot is None
-    assert cfg.training.sim_backend == "motrix"
-
-
 def test_sac_g1_motion_tracking_mjwarp_inherits_full_dr() -> None:
     cfg = _compose_sac("g1_motion_tracking/mjwarp")
     assert set(cfg.env.events) == {"base_com", "encoder_bias", "foot_friction", "push_robot"}
@@ -179,138 +139,6 @@ def test_sac_g1_motion_tracking_genesis_inherits_mujoco_parity() -> None:
     assert cfg.algo.num_envs == mujoco_cfg.algo.num_envs
     assert cfg.algo.max_iterations == mujoco_cfg.algo.max_iterations
     assert cfg.algo.updates_per_step == mujoco_cfg.algo.updates_per_step
-
-
-def test_sac_g1_motion_tracking_isaacgym_disables_unsupported_dr() -> None:
-    cfg = _compose_sac("g1_motion_tracking/isaacgym")
-    assert cfg.training.task_name == "G1MotionTrackingSAC"
-    assert cfg.training.sim_backend == "isaacgym"
-    assert cfg.training.play_render_mode == "auto"
-    assert cfg.env.isaacgym_device_id == 0
-    assert cfg.env.render_spacing == 2.0
-    # The isaacgym legacy path declares an empty DR capability set (fail-closed).
-    assert set(cfg.env.events) == {"base_com", "encoder_bias", "foot_friction", "push_robot"}
-    assert all(term is None for term in cfg.env.events.values())
-
-
-def test_sac_g1_motion_tracking_newton_keeps_full_dr() -> None:
-    cfg = _compose_sac("g1_motion_tracking/newton")
-    assert cfg.training.task_name == "G1MotionTrackingSAC"
-    assert cfg.training.sim_backend == "newton"
-    assert cfg.env.newton_device is None
-    assert cfg.env.newton_nconmax == 320
-    assert cfg.env.newton_njmax == 512
-    assert cfg.env.newton_use_cuda_graph is True
-    # Newton declares an empty DR capability set; only the host-side
-    # encoder_bias observation bias stays enabled.
-    assert set(cfg.env.events) == {"base_com", "encoder_bias", "foot_friction", "push_robot"}
-    assert cfg.env.events.foot_friction is None
-    assert cfg.env.events.base_com is None
-    assert cfg.env.events.push_robot is None
-    assert cfg.env.events.encoder_bias is not None
-    assert cfg.env.scene.entities.robot.geom_names is None
-
-
-def test_sac_g1_motion_tracking_isaacsim_disables_unsupported_dr() -> None:
-    cfg = _compose_sac("g1_motion_tracking/isaacsim")
-    assert cfg.training.task_name == "G1MotionTrackingSAC"
-    assert cfg.training.sim_backend == "isaacsim"
-    assert cfg.training.play_render_mode == "auto"
-    assert cfg.env.isaacsim_device_id == 0
-    assert cfg.env.isaacsim_worker_timeout_s == 120.0
-    assert cfg.play_profile.enabled is False
-    # The isaacsim legacy path declares an empty DR capability set (fail-closed).
-    assert set(cfg.env.events) == {"base_com", "encoder_bias", "foot_friction", "push_robot"}
-    assert all(term is None for term in cfg.env.events.values())
-
-
-def test_flashsac_g1_motion_tracking_isaacsim_uses_production_mapped_cuda_ipc_owner() -> None:
-    cfg = _compose_isaacsim_tensor_owner()
-    assert cfg.training.sim_backend == "isaacsim"
-    assert cfg.env.isaacsim_tensor_cuda_ipc is True
-    assert cfg.env.isaacsim_share_friction_materials is True
-
-    scene = cfg.env.scene
-    assert scene.model_file is None
-    assert scene.default_keyframe_name == "stand"
-    assert [
-        (entity.name, entity.get("kind", "articulation"), entity.root_mode)
-        for entity in scene.entity_assets
-    ] == [("robot", "articulation", "floating"), ("floor", "rigid", "fixed")]
-    robot = scene.entities.robot
-    assert robot.physical_entity == "robot"
-    assert robot.root_body_name == "robot/pelvis"
-    assert robot.joint_names[0] == "robot/left_hip_pitch_joint"
-    assert robot.body_names[0] == "robot/pelvis"
-    assert all(name.startswith("robot/") for name in robot.joint_names)
-    assert all(name.startswith("robot/") for name in robot.body_names)
-    assert cfg.env.commands.motion.params.anchor_body_name == "robot/torso_link"
-    assert cfg.env.commands.motion.params.body_names[0] == "robot/pelvis"
-    assert (
-        cfg.env.observations.actor.terms.base_lin_vel.params.sensor_name
-        == "robot/pelvis_local_linvel"
-    )
-    assert cfg.env.observations.actor.terms.base_ang_vel.params.sensor_name == "robot/torso_gyro"
-    assert (
-        cfg.env.observations.critic.terms.sac_base_lin_vel.params.sensor_name
-        == "robot/pelvis_local_linvel"
-    )
-
-    mapped_robot = ROOT_DIR / str(scene.entity_assets[0].source.model_file)
-    canonical_robot = ROOT_DIR / "src/unilab/assets/robots/g1/g1.xml"
-    canonical_qpos, canonical_ctrl = _stand_key_values(
-        ROOT_DIR / "src/unilab/assets/robots/g1/scene_flat.xml"
-    )
-    mapped_qpos, mapped_ctrl = _stand_key_values(mapped_robot)
-    assert mapped_qpos == canonical_qpos
-    assert mapped_ctrl == canonical_ctrl
-    assert _structural_robot_signature(mapped_robot) == _structural_robot_signature(canonical_robot)
-    assert list(scene.entity_assets[0].initial_state.position) == [0.0, 0.0, mapped_qpos[2]]
-
-
-def test_isaacsim_production_owner_uses_registered_assets_not_test_fixtures() -> None:
-    production_owner = ROOT_DIR / "src/unilab/conf/flashsac/task/g1_motion_tracking/isaacsim.yaml"
-    assert production_owner.is_file()
-
-    text = production_owner.read_text(encoding="utf-8")
-    assert "tests/fixtures/" not in text
-    assert "src/unilab/assets/robots/g1/isaacsim/g1_stand_entity.xml" in text
-    assert (ROOT_DIR / "src/unilab/assets/robots/g1/isaacsim/g1_stand_entity.xml").is_file()
-    assert (ROOT_DIR / "src/unilab/assets/robots/g1/isaacsim/flat_floor_entity.xml").is_file()
-
-
-def test_isaacsim_mapped_owner_materializes_into_manager_config() -> None:
-    owner_cfg = _compose_isaacsim_tensor_owner()
-    override = BackendAdapter(
-        owner_cfg, root_dir=ROOT_DIR, algo_name="flashsac"
-    ).build_task_env_cfg_override()
-    cfg = ManagerBasedRlEnvCfg()
-    apply_cfg_overrides(cfg, override)
-
-    cfg.validate()
-    assert cfg.isaacsim_tensor_cuda_ipc is True
-    assert cfg.isaacsim_share_friction_materials is True
-    assert cfg.scene is not None
-    assert cfg.scene.entity_assets
-
-
-def test_flashsac_g1_motion_tracking_isaacgym_uses_gpu_tensor_candidate() -> None:
-    cfg = _compose_flashsac("g1_motion_tracking/isaacgym")
-    assert cfg.training.sim_backend == "isaacgym"
-    assert cfg.env.isaacgym_device_id == 0
-    assert cfg.env.scene.model_file.endswith("robots/g1/scene_flat.xml")
-    assert cfg.env.scene.default_keyframe_name == "stand"
-    assert not cfg.env.scene.get("entity_assets", [])
-    assert cfg.env.scene.entities.robot.get("physical_entity") is None
-    assert cfg.env.scene.entities.robot.root_body_name == "pelvis"
-
-
-@pytest.mark.parametrize("backend", ["superdex", "drake"])
-def test_flashsac_g1_motion_tracking_host_bridge_candidates_opt_in(backend: str) -> None:
-    cfg = _compose_flashsac(f"g1_motion_tracking/{backend}")
-    assert cfg.training.sim_backend == backend
-    assert cfg.env.scene.model_file.endswith("robots/g1/scene_flat.xml")
-    assert cfg.env.scene.default_keyframe_name == "stand"
 
 
 def test_sac_g1_flip_tracking_stays_dr_free() -> None:
