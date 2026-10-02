@@ -359,6 +359,7 @@ class MotionCommand(CommandTerm):
         # per-step compute. Written by `_update_command`, consumed by
         # `post_compute` to restrict refresh work to the reset rows.
         self._post_compute_env_ids: np.ndarray | None = None
+        self._tensor_post_compute_env_ids: torch.Tensor | None = None
         # Reset rows whose motion-reference buffers were already ingested by
         # `_resample_command` during the in-flight reset; consumed by the
         # reset-path `_update_command` to skip the redundant `_refresh_motion`
@@ -712,6 +713,7 @@ class MotionCommand(CommandTerm):
         self._post_compute_env_ids = (
             env_ids.detach().cpu().numpy() if isinstance(env_ids, torch.Tensor) else env_ids
         )
+        self._tensor_post_compute_env_ids = env_ids if isinstance(env_ids, torch.Tensor) else None
         if env_ids is not None:
             ingested = self._resample_ingested_ids
             self._resample_ingested_ids = None
@@ -812,7 +814,12 @@ class TensorMotionCommand(MotionCommand):
             return
         self._bind_read_phase = True
         self._refresh_motion()
-        self._refresh_robot_state(force=True)
+        read_plan = self._env.scene._tensor_read_plan
+        if read_plan is not None:
+            read_plan.refresh()
+            self._refresh_robot_state(force=True)
+        else:
+            self._seed_robot_state_torch_from_defaults()
         self._refresh_relative_state()
         self._update_metrics(self._tensor_all_rows)
 
@@ -858,7 +865,7 @@ class TensorMotionCommand(MotionCommand):
             (rows.numel(), self.motion.num_joints),
             dtype=torch.float32,
         )
-        return super().reset(rows)
+        return CommandTerm.reset(self, rows)
 
     def _refresh_motion(self, env_ids: np.ndarray | None = None) -> None:
         del env_ids
@@ -950,10 +957,7 @@ class TensorMotionCommand(MotionCommand):
         self._resample_motion = motion
 
     def _update_command(self, env_ids: torch.Tensor | None) -> None:
-        self._post_compute_env_ids = cast(
-            "np.ndarray | None",
-            env_ids.detach().cpu().numpy() if isinstance(env_ids, torch.Tensor) else env_ids,
-        )
+        self._tensor_post_compute_env_ids = env_ids
         if env_ids is not None:
             ingested = self._resample_ingested_ids
             self._resample_ingested_ids = None
@@ -962,22 +966,21 @@ class TensorMotionCommand(MotionCommand):
                 self._refresh_motion_torch(env_ids)
             return
         self._resample_ingested_ids = None
-        terminated = self._env.termination_manager.terminated
-        if isinstance(terminated, torch.Tensor):
-            terminated = terminated.detach().cpu().numpy()
+        terminated = self._env.termination_manager.terminated.detach().cpu().numpy()
         self.sampler.update_failure_stats(terminated)
-        active_ids = np.flatnonzero(~self._env.reset_buf).astype(np.int32, copy=False)
+        reset_buf = self._env.reset_buf
+        reset_buf_host = (
+            reset_buf.detach().cpu().numpy() if isinstance(reset_buf, torch.Tensor) else reset_buf
+        )
+        active_ids = np.flatnonzero(~reset_buf_host).astype(np.int32, copy=False)
         wrap_ids = self.sampler.step(active_ids)
         if len(wrap_ids) and not self.cfg.params.truncate_on_clip_end:
             self._resample_command(torch.as_tensor(wrap_ids, device=self._device))
         self._refresh_motion_torch()
 
     def post_compute(self) -> None:
-        rows = self._post_compute_env_ids
-        self._refresh_robot_state_torch(
-            force=True,
-            rows=None if rows is None else torch.as_tensor(rows, device=self._device),
-        )
+        rows = self._tensor_post_compute_env_ids
+        self._refresh_robot_state_torch(force=True, rows=rows)
         self._refresh_relative_state_torch(
             None if rows is None else torch.as_tensor(rows, device=self._device)
         )
@@ -1001,7 +1004,10 @@ class TensorMotionCommand(MotionCommand):
             return
         read_plan = self._env.scene._tensor_read_plan
         if read_plan is None or not read_plan.ready:
-            if bool(getattr(self._env, "_suppress_hot_state_refresh", False)):
+            # Manager term construction probes command carriers before the scene
+            # read plan exists. Before `bind_read_phase`, immutable defaults are
+            # the explicit cold seed; after binding, a missing phase fails closed.
+            if not self._bind_read_phase:
                 self._seed_robot_state_torch_from_defaults()
                 return
             raise RuntimeError("TensorMotionCommand requires a refreshed scene tensor read phase")
@@ -1049,7 +1055,9 @@ class TensorMotionCommand(MotionCommand):
                     np.ascontiguousarray(source), dtype=torch.float32, device=self._device
                 ),
             )
-        body_pos = torch.as_tensor(np.ascontiguousarray(data.body_pos_w))
+        body_pos = torch.as_tensor(
+            np.ascontiguousarray(data.body_pos_w), dtype=torch.float32, device=self._device
+        )
         origins = (
             self._env_origins
             if rows.numel() == self.num_envs
@@ -1058,10 +1066,14 @@ class TensorMotionCommand(MotionCommand):
         self._body_pos_w.index_copy_(0, rows, body_pos + origins[:, None, :])
         width = self.motion.num_joints
         self._command[rows, :width] = torch.as_tensor(
-            np.ascontiguousarray(data.joint_pos), device=self._device
+            np.ascontiguousarray(data.joint_pos),
+            dtype=torch.float32,
+            device=self._device,
         )
         self._command[rows, width:] = torch.as_tensor(
-            np.ascontiguousarray(data.joint_vel), device=self._device
+            np.ascontiguousarray(data.joint_vel),
+            dtype=torch.float32,
+            device=self._device,
         )
 
     def _refresh_relative_state_torch(self, rows: torch.Tensor | None = None) -> None:
@@ -1634,9 +1646,16 @@ class undesired_body_contacts(_BodyTerm):
         command_name: str,
         threshold: float,
         body_names: tuple[str, ...] | None = None,
-    ) -> np.ndarray:
+    ) -> np.ndarray | torch.Tensor:
         del env, body_names
         command = _command(self._env, command_name)
+        if getattr(command, "tensor_carrier", False):
+            robot_body_pos = cast(torch.Tensor, command.robot_body_pos_w)
+            return (
+                (robot_body_pos[:, self._body_ids, 2] < threshold)
+                .sum(dim=-1)
+                .to(dtype=torch.float32)
+            )
         return np.sum(command.robot_body_pos_w[:, self._body_ids, 2] < threshold, axis=-1)
 
 
