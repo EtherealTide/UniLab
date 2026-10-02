@@ -204,12 +204,12 @@ def test_command_viewer_request_and_old_signature_fail_closed(fake_env: FakeEnv)
 def test_metrics_reductions_substeps_reset_and_finite_failure(fake_env: FakeEnv) -> None:
     manager = MetricsManager(
         {
-            "mean": MetricsTermCfg(func=lambda env: env.value.copy(), reduce="mean"),
-            "max": MetricsTermCfg(func=lambda env: env.value.copy(), reduce="max"),
-            "sum": MetricsTermCfg(func=lambda env: env.value.copy(), reduce="sum"),
-            "last": MetricsTermCfg(func=lambda env: env.value.copy(), reduce="last"),
+            "mean": MetricsTermCfg(func=lambda env: torch.as_tensor(env.value), reduce="mean"),
+            "max": MetricsTermCfg(func=lambda env: torch.as_tensor(env.value), reduce="max"),
+            "sum": MetricsTermCfg(func=lambda env: torch.as_tensor(env.value), reduce="sum"),
+            "last": MetricsTermCfg(func=lambda env: torch.as_tensor(env.value), reduce="last"),
             "substep": MetricsTermCfg(
-                func=lambda env: env.value.copy(), per_substep=True, reduce="mean"
+                func=lambda env: torch.as_tensor(env.value), per_substep=True, reduce="mean"
             ),
         },
         fake_env,
@@ -229,7 +229,8 @@ def test_metrics_reductions_substeps_reset_and_finite_failure(fake_env: FakeEnv)
     assert extras["Episode_Metrics/substep"] == pytest.approx(2.5)
 
     bad = MetricsManager(
-        {"bad": MetricsTermCfg(func=lambda env: np.full(env.num_envs, np.inf))}, fake_env
+        {"bad": MetricsTermCfg(func=lambda env: torch.full((env.num_envs,), torch.inf))},
+        fake_env,
     )
     with pytest.raises(ValueError, match="MetricsManager term 'bad'"):
         bad.compute()

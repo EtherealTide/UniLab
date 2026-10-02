@@ -127,7 +127,11 @@ class CommandTerm(ManagerTermBase):
                     metric_value[env_ids] = 0.0
             else:
                 for metric_name, metric_value in metric_values:
-                    metric_slice = metric_value[env_ids]
+                    metric_slice = (
+                        metric_value[env_ids]
+                        if isinstance(metric_value, torch.Tensor)
+                        else metric_value[env_ids.detach().cpu().numpy()]
+                    )
                     if not _finite(metric_slice):
                         raise ValueError(
                             f"CommandTerm '{self.name}' metric '{metric_name}' contains NaN or Inf."

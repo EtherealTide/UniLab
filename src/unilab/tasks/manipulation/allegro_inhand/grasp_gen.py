@@ -47,6 +47,9 @@ if TYPE_CHECKING:
         @property
         def extras(self) -> dict[str, Any]: ...
 
+        @property
+        def device(self) -> torch.device: ...
+
 
 def _name(term: str, field: str, value: Any) -> str:
     if not isinstance(value, str) or not value:
@@ -167,11 +170,11 @@ class AllegroGraspQualityTermination(ManagerTermBase):
         )
         self._enabled = _bool(term, "enabled", cfg.params.get("enabled"))
 
-        self.fingertips_close = np.zeros(env.num_envs, dtype=np.bool_)
-        self.enough_contacts = np.zeros(env.num_envs, dtype=np.bool_)
-        self.ball_held = np.zeros(env.num_envs, dtype=np.bool_)
-        self.valid = np.zeros(env.num_envs, dtype=np.bool_)
-        self._disabled = np.zeros(env.num_envs, dtype=np.bool_)
+        self.fingertips_close = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        self.enough_contacts = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        self.ball_held = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        self.valid = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        self._disabled = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
         self._last_counter = int(env.common_step_counter)
 
     @property
@@ -186,21 +189,34 @@ class AllegroGraspQualityTermination(ManagerTermBase):
         self.valid[ids] = False
         self._last_counter = int(cast("_GraspEnv", self._env).common_step_counter)
 
-    def __call__(self, env: _GraspEnv, **params: Any) -> np.ndarray:
+    def __call__(self, env: _GraspEnv, **params: Any) -> torch.Tensor:
         del params
         self.observation.snapshot(env)
-        fingertip_pos = self._entity.data.body_link_pos_w[:, self._fingertip_ids]
-        distance = np.linalg.norm(fingertip_pos - self.observation.ball_pos[:, None, :], axis=-1)
-        self.fingertips_close[:] = np.all(distance < self._maximum_distance, axis=1)
-        contacts = self._contact_view.read()
-        self.enough_contacts[:] = np.count_nonzero(contacts > 0.5, axis=1) >= self._minimum_contacts
-        self.ball_held[:] = self.observation.ball_pos[:, 2] > self._minimum_height
-        np.logical_and(self.fingertips_close, self.enough_contacts, out=self.valid)
-        np.logical_and(self.valid, self.ball_held, out=self.valid)
+        fingertip_pos = torch.as_tensor(
+            self._entity.data.body_link_pos_w,
+            dtype=torch.float32,
+            device=env.device,
+        )[:, self._fingertip_ids]
+        ball_pos = torch.as_tensor(
+            self.observation.ball_pos,
+            dtype=torch.float32,
+            device=fingertip_pos.device,
+        )
+        distance = torch.linalg.vector_norm(fingertip_pos - ball_pos[:, None, :], dim=-1)
+        self.fingertips_close.copy_(torch.all(distance < self._maximum_distance, dim=1))
+        contacts = torch.as_tensor(
+            self._contact_view.read(), dtype=torch.float32, device=fingertip_pos.device
+        )
+        self.enough_contacts.copy_(
+            torch.count_nonzero(contacts > 0.5, dim=1) >= self._minimum_contacts
+        )
+        self.ball_held.copy_(ball_pos[:, 2] > self._minimum_height)
+        torch.logical_and(self.fingertips_close, self.enough_contacts, out=self.valid)
+        torch.logical_and(self.valid, self.ball_held, out=self.valid)
         self._last_counter = int(env.common_step_counter)
         if not self._enabled:
             return self._disabled
-        return np.logical_not(self.valid)
+        return torch.logical_not(self.valid)
 
 
 class AllegroGraspQualityMetric(ManagerTermBase):
@@ -235,14 +251,14 @@ class AllegroGraspQualityMetric(ManagerTermBase):
         self._quality = quality
         self._quality_name = quality_name
 
-    def __call__(self, env: _GraspEnv, **params: Any) -> np.ndarray:
+    def __call__(self, env: _GraspEnv, **params: Any) -> torch.Tensor:
         del params
         if self._quality.last_counter != int(env.common_step_counter):
             raise RuntimeError(
                 f"{type(self).__name__} term {self._quality_name!r} was not computed for "
                 f"control step {env.common_step_counter}"
             )
-        return np.asarray(self._value, dtype=get_global_dtype())
+        return self._value.to(dtype=torch.float32)
 
 
 class AllegroGraspRecorder(RecorderTerm):
