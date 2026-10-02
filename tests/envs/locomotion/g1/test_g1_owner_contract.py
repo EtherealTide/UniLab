@@ -55,15 +55,6 @@ _PPO_WALK_FLAT_REWARDS = (
     "action_rate",
     "pose",
 )
-_MOTRIX_EXTRA_REWARDS = (
-    "forward_progress",
-    "under_speed",
-    "upper_body_pose",
-    "penalty_feet_ori",
-    "feet_phase_contrast",
-    "feet_phase_contact",
-    "feet_double_stance",
-)
 _OFFPOLICY_REWARDS = (
     "tracking_lin_vel",
     "tracking_ang_vel",
@@ -104,19 +95,6 @@ _OWNER_CASES = (
     ),
     pytest.param(
         "ppo",
-        ("task=g1_walk_flat/motrix",),
-        "G1WalkFlat",
-        "motrix",
-        29,
-        0.5,
-        "scene_flat.xml",
-        (*_PPO_WALK_FLAT_REWARDS, *_MOTRIX_EXTRA_REWARDS),
-        _RESET_EVENTS,
-        False,
-        id="ppo-motrix",
-    ),
-    pytest.param(
-        "ppo",
         ("task=g1_walk_flat/mjwarp",),
         "G1WalkFlat",
         "mjwarp",
@@ -127,32 +105,6 @@ _OWNER_CASES = (
         _RESET_EVENTS,
         False,
         id="ppo-mjwarp",
-    ),
-    pytest.param(
-        "ppo",
-        ("task=g1_walk_flat/newton",),
-        "G1WalkFlat",
-        "newton",
-        29,
-        0.25,
-        "scene_flat.xml",
-        _PPO_WALK_FLAT_REWARDS,
-        _RESET_EVENTS,
-        False,
-        id="ppo-newton",
-    ),
-    pytest.param(
-        "ppo",
-        ("task=g1_walk_flat/isaacgym",),
-        "G1WalkFlat",
-        "isaacgym",
-        29,
-        0.25,
-        "scene_flat.xml",
-        _PPO_WALK_FLAT_REWARDS,
-        _RESET_EVENTS,
-        False,
-        id="ppo-isaacgym",
     ),
     pytest.param(
         "ppo",
@@ -168,19 +120,6 @@ _OWNER_CASES = (
         (*_RESET_EVENTS, "pd_gains"),
         False,
         id="ppo-genesis",
-    ),
-    pytest.param(
-        "ppo",
-        ("task=g1_walk_flat/isaacsim",),
-        "G1WalkFlat",
-        "isaacsim",
-        29,
-        0.25,
-        "scene_flat.xml",
-        _PPO_WALK_FLAT_REWARDS,
-        _RESET_EVENTS,
-        False,
-        id="ppo-isaacsim",
     ),
     pytest.param(
         "appo",
@@ -210,19 +149,6 @@ _OWNER_CASES = (
     ),
     pytest.param(
         "sac",
-        ("task=g1_walk_flat/motrix",),
-        "G1WalkFlat",
-        "motrix",
-        29,
-        1.0,
-        "scene_flat.xml",
-        _OFFPOLICY_REWARDS,
-        _RESET_EVENTS,
-        True,
-        id="sac-motrix",
-    ),
-    pytest.param(
-        "sac",
         ("task=g1_walk_flat/mjwarp",),
         "G1WalkFlat",
         "mjwarp",
@@ -236,19 +162,6 @@ _OWNER_CASES = (
     ),
     pytest.param(
         "sac",
-        ("task=g1_walk_flat/newton",),
-        "G1WalkFlat",
-        "newton",
-        29,
-        1.0,
-        "scene_flat.xml",
-        _OFFPOLICY_REWARDS,
-        _RESET_EVENTS,
-        True,
-        id="sac-newton",
-    ),
-    pytest.param(
-        "sac",
         ("task=g1_walk_flat/genesis",),
         "G1WalkFlat",
         "genesis",
@@ -257,24 +170,10 @@ _OWNER_CASES = (
         "scene_flat.xml",
         _OFFPOLICY_REWARDS,
         # kp/kd reset randomization stays enabled: the backend declares the
-        # measured RESET_TERM_KP/KD DR terms (REPORT #1372 §5.7), unlike the
-        # isaacgym owner which disables pd_gains.
+        # measured RESET_TERM_KP/KD DR terms (REPORT #1372 §5.7).
         (*_RESET_EVENTS, "pd_gains"),
         True,
         id="sac-genesis",
-    ),
-    pytest.param(
-        "sac",
-        ("task=g1_walk_flat/isaacsim",),
-        "G1WalkFlat",
-        "isaacsim",
-        29,
-        1.0,
-        "scene_flat.xml",
-        _OFFPOLICY_REWARDS,
-        _RESET_EVENTS,
-        True,
-        id="sac-isaacsim",
     ),
     pytest.param(
         "flashsac",
@@ -293,13 +192,9 @@ _OWNER_CASES = (
 
 _WALK_PROFILE_IDS = {
     "sac-mujoco",
-    "sac-motrix",
     "sac-mjwarp",
-    "sac-newton",
     "sac-genesis",
-    "sac-isaacsim",
     "sac-rough-mujoco",
-    "sac-rough-motrix",
     "flashsac-mujoco",
 }
 
@@ -450,58 +345,26 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
     assert isinstance(command, g1_terms.G1VelocityCommandCfg)
     assert command.planar_dead_zone == pytest.approx(0.2)
     assert command.resampling_time_range == [20.0, 20.0]
-    if backend == "motrix" and config_group == "ppo":
-        assert tuple(command.ranges.lin_vel_x) == (0.4, 0.7)
-        assert tuple(command.ranges.lin_vel_y) == (0.0, 0.0)
-    else:
-        assert tuple(command.ranges.lin_vel_x) == (-0.6, 1.0)
-        assert tuple(command.ranges.lin_vel_y) == (-0.4, 0.4)
-        assert tuple(command.ranges.ang_vel_z) == (-0.8, 0.8)
+    assert tuple(command.ranges.lin_vel_x) == (-0.6, 1.0)
+    assert tuple(command.ranges.lin_vel_y) == (-0.4, 0.4)
+    assert tuple(command.ranges.ang_vel_z) == (-0.8, 0.8)
 
     if backend == "mjwarp":
         assert env_cfg.mjwarp_nconmax == 128
         assert env_cfg.mjwarp_njmax == 256
-    if backend == "newton":
-        assert env_cfg.newton_device is None
-        assert env_cfg.newton_nconmax == 320
-        assert env_cfg.newton_njmax == 512
-        assert env_cfg.newton_capacity_check_steps == 1
-        assert env_cfg.newton_use_cuda_graph is True
-        # Native ViewerGL rendering (interactive viewer + offscreen record)
-        # is supported; playback stays on the base config's auto mode.
-        assert hydra_cfg.training.play_render_mode == "auto"
-    if backend == "isaacgym":
-        assert env_cfg.isaacgym_device_id == 0
-        # The subprocess backend consumes the self-contained MJCF scene
-        # directly; scene fragments and generated terrain stay unset.
+        assert hydra_cfg.training.play_render_mode == "record"
         assert env_cfg.scene.fragment_files == []
         assert env_cfg.scene.terrain is None
-        # Effort-mode dofs carry no PD gains, so the owner disables kp/kd
-        # randomization like the mjwarp/motrix owners.
         assert env_cfg.events["pd_gains"] is None
-        # Native rendering (viewer + camera-sensor record) is supported;
-        # playback stays on the base config's auto mode.
-        assert hydra_cfg.training.play_render_mode == "auto"
     if backend == "genesis":
         assert env_cfg.genesis_device_id == 0
-        # The in-process backend consumes the self-contained MJCF scene
-        # directly; scene fragments and generated terrain stay unset.
         assert env_cfg.scene.fragment_files == []
         assert env_cfg.scene.terrain is None
-        # Re-declares the MJCF <option integrator="implicitfast"> that Genesis
-        # drops at import; the other global options keep Genesis defaults.
         assert env_cfg.genesis_integrator == "implicitfast"
         assert env_cfg.genesis_constraint_solver is None
         assert env_cfg.genesis_friction_cone is None
         assert env_cfg.genesis_solver_iterations is None
-        # Native rendering (interactive viewer + offscreen record) is
-        # supported; playback stays on the base config's auto mode.
         assert hydra_cfg.training.play_render_mode == "auto"
-    if backend == "isaacsim":
-        assert env_cfg.isaacsim_device_id == 0
-        assert env_cfg.isaacsim_worker_timeout_s == pytest.approx(120.0)
-        assert hydra_cfg.training.play_render_mode == "auto"
-        assert hydra_cfg.play_profile.enabled is False
 
     pose = env_cfg.rewards["pose"]
     expected_weights = _POSE_WEIGHTS_29
@@ -523,11 +386,8 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
                     name in module
                     for name in (
                         ".mujoco",
-                        ".motrix",
                         ".mjwarp",
-                        ".isaacgym",
-                        ".isaacsim",
-                        ".newton",
+                        ".genesis",
                     )
                 )
 
@@ -543,11 +403,7 @@ def test_g1_walk_registries_are_manager_only() -> None:
         "available_backends": [
             "mujoco",
             "mjwarp",
-            "motrix",
-            "isaacgym",
             "genesis",
-            "isaacsim",
-            "newton",
         ],
     }
 
@@ -564,16 +420,6 @@ def test_g1_walk_registries_are_manager_only() -> None:
             98,
             101,
             id="ppo-mujoco",
-        ),
-        pytest.param(
-            "ppo",
-            ("task=g1_walk_flat/motrix",),
-            "G1WalkFlat",
-            "motrix",
-            29,
-            98,
-            101,
-            id="ppo-motrix",
         ),
         pytest.param(
             "sac",
