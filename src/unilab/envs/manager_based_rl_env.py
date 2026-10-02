@@ -1145,7 +1145,12 @@ class ManagerBasedRlEnv(TorchEnv):
         if self._reset_state.last_commit_had_writes:
             self.scene._invalidate_state_reads()
             self._refresh_tensor_reads_after_mutation()
+        read_refresh_ms = (time.perf_counter() - command_epilogue_started) * 1000.0
+        post_compute_started = time.perf_counter()
         self.command_manager.post_compute()
+        post_compute_ms = (time.perf_counter() - post_compute_started) * 1000.0
+        timing["update_state_command_read_refresh_ms"] = read_refresh_ms
+        timing["update_state_command_post_compute_ms"] = post_compute_ms
         timing["update_state_command_epilogue_ms"] = (
             time.perf_counter() - command_epilogue_started
         ) * 1000.0
