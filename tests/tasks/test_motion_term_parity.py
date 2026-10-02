@@ -749,6 +749,77 @@ def test_motion_metrics_kernel_matches_numpy_and_scopes_rows() -> None:
     assert kernels.update_motion_metrics_kernel.signatures
 
 
+def test_motion_metrics_tensor_peer_matches_numpy_and_scopes_rows() -> None:
+    rng = np.random.default_rng(1820)
+    num_envs, num_bodies, num_joints, anchor_body_idx = 257, 12, 29, 4
+    motion_pos = rng.standard_normal((num_envs, num_bodies, 3), dtype=np.float32)
+    robot_pos = rng.standard_normal((num_envs, num_bodies, 3), dtype=np.float32)
+    motion_quat = _unit_quat(rng.standard_normal((num_envs, num_bodies, 4), dtype=np.float32))
+    robot_quat = _unit_quat(rng.standard_normal((num_envs, num_bodies, 4), dtype=np.float32))
+    motion_lin = rng.standard_normal((num_envs, num_bodies, 3), dtype=np.float32)
+    robot_lin = rng.standard_normal((num_envs, num_bodies, 3), dtype=np.float32)
+    motion_ang = rng.standard_normal((num_envs, num_bodies, 3), dtype=np.float32)
+    robot_ang = rng.standard_normal((num_envs, num_bodies, 3), dtype=np.float32)
+    relative_pos = rng.standard_normal((num_envs, num_bodies, 3), dtype=np.float32)
+    relative_quat = _unit_quat(rng.standard_normal((num_envs, num_bodies, 4), dtype=np.float32))
+    motion_joint_pos = rng.standard_normal((num_envs, num_joints), dtype=np.float32)
+    robot_joint_pos = rng.standard_normal((num_envs, num_joints), dtype=np.float32)
+    motion_joint_vel = rng.standard_normal((num_envs, num_joints), dtype=np.float32)
+    robot_joint_vel = rng.standard_normal((num_envs, num_joints), dtype=np.float32)
+
+    inputs = (
+        motion_pos,
+        robot_pos,
+        motion_quat,
+        robot_quat,
+        motion_lin,
+        robot_lin,
+        motion_ang,
+        robot_ang,
+        relative_pos,
+        relative_quat,
+        motion_joint_pos,
+        robot_joint_pos,
+        motion_joint_vel,
+        robot_joint_vel,
+    )
+    expected = (
+        np.linalg.norm(motion_pos[:, anchor_body_idx] - robot_pos[:, anchor_body_idx], axis=-1),
+        np.sqrt(
+            np_quat_error_magnitude_squared_batched(
+                motion_quat[:, anchor_body_idx], robot_quat[:, anchor_body_idx]
+            )
+        ),
+        np.linalg.norm(motion_lin[:, anchor_body_idx] - robot_lin[:, anchor_body_idx], axis=-1),
+        np.linalg.norm(motion_ang[:, anchor_body_idx] - robot_ang[:, anchor_body_idx], axis=-1),
+        np.linalg.norm(relative_pos - robot_pos, axis=-1).mean(axis=-1),
+        np.sqrt(np_quat_error_magnitude_squared_batched(relative_quat, robot_quat)).mean(axis=-1),
+        np.linalg.norm(motion_lin - robot_lin, axis=-1).mean(axis=-1),
+        np.linalg.norm(motion_ang - robot_ang, axis=-1).mean(axis=-1),
+        np.linalg.norm(motion_joint_pos - robot_joint_pos, axis=-1),
+        np.linalg.norm(motion_joint_vel - robot_joint_vel, axis=-1),
+    )
+    outputs = tuple(torch.full((num_envs,), -123.0, dtype=torch.float32) for _ in expected)
+    tensor_inputs = tuple(torch.from_numpy(value) for value in inputs)
+
+    selected = torch.tensor([0, 3, 128, 256], dtype=torch.int64)
+    mt._update_motion_metrics_torch(selected, anchor_body_idx, *tensor_inputs, outputs)
+    untouched = torch.ones(num_envs, dtype=torch.bool)
+    untouched[selected] = False
+    for actual, reference in zip(outputs, expected, strict=True):
+        torch.testing.assert_close(actual[selected], torch.from_numpy(reference[selected]))
+    for actual in outputs:
+        assert torch.equal(actual[untouched], torch.full_like(actual[untouched], -123.0))
+
+    mt._update_motion_metrics_torch(
+        torch.arange(num_envs, dtype=torch.int64), anchor_body_idx, *tensor_inputs, outputs
+    )
+    for actual, reference in zip(outputs, expected, strict=True):
+        torch.testing.assert_close(actual, torch.from_numpy(reference))
+    for actual, snapshot in zip(tensor_inputs, inputs, strict=True):
+        torch.testing.assert_close(actual, torch.from_numpy(snapshot))
+
+
 def test_motion_relative_state_kernel_matches_numpy_and_scopes_rows() -> None:
     rng = np.random.default_rng(1818)
     num_envs, num_bodies = 257, 12

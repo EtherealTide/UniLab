@@ -48,7 +48,7 @@ def test_torch_owner_fingerprint_accepts_both_canonical_backends() -> None:
         module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V2
     )
     assert module._torch_g1_flashsac_owner_identity(mjwarp) == (
-        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V3
+        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V4
     )
 
 

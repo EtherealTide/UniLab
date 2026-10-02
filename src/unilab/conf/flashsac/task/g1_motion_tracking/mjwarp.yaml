@@ -1,9 +1,6 @@
 # @package _global_
-# FlashSAC mjwarp (GPU) owner for G1 WBT. Inherits the FlashSAC MuJoCo owner
-# with only the motion-anchor observations replaced by tensor-native Manager
-# terms. The live tracked-body phase is declared from the bound MotionCommand
-# and shares the aggregate MJWarp body view; MuJoCo/Motrix retain the NumPy
-# command buffers until parity evidence covers their host-bridge phase.
+# FlashSAC mjwarp (GPU) owner for G1 WBT. The command carrier, selected reset
+# writes, and anchor observations stay on MJWarp's device-resident tensor path.
 defaults:
   - /task/g1_motion_tracking/mujoco
   - _self_
@@ -16,6 +13,9 @@ training:
   # remains CLI-overridable so ring depth can be measured without task forks.
   collector_metrics_interval: 100
 env:
+  commands:
+    motion:
+      _target_: unilab.tasks.motion_tracking.common.manager_terms.TensorMotionCommandCfg
   observations:
     actor:
       terms:

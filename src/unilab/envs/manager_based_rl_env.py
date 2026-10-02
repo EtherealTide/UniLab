@@ -1274,6 +1274,9 @@ class ManagerBasedRlEnv(TorchEnv):
             assert read_plan is not None
             self._reset_state.declare_packed_reset_device(read_plan.device)
             tensor_reset_events = self.event_manager.uses_tensor_reset_rows
+            tensor_reset_events = tensor_reset_events or (
+                self.command_manager.uses_tensor_reset_rows()
+            )
             if tensor_reset_events:
                 reset_context = self._reset_state.scoped_device_event_tensor(rows)
             else:

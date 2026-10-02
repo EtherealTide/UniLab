@@ -348,6 +348,12 @@ class CommandManager(ManagerBase):
         for term in self._terms.values():
             term.bind_read_phase()
 
+    def uses_tensor_reset_rows(self) -> bool:
+        """Whether every command can consume a device row selector on reset."""
+        return bool(self._terms) and all(
+            bool(getattr(term, "uses_tensor_reset_rows", False)) for term in self._terms.values()
+        )
+
     def get_command(self, name: str) -> torch.Tensor:
         return self._validate_command(name, self._terms[name].command)
 
@@ -427,6 +433,9 @@ class NullCommandManager:
 
     def bind_read_phase(self) -> None:
         pass
+
+    def uses_tensor_reset_rows(self) -> bool:
+        return False
 
     def get_command(self, name: str) -> None:
         return None
