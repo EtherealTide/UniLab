@@ -991,8 +991,10 @@ class ManagerBasedRlEnv(TorchEnv):
         """Return the contiguous authoritative Torch control tensor."""
         return self._control
 
-    def _manager_tensor(self, values: np.ndarray, *, dtype: torch.dtype) -> torch.Tensor:
-        """Copy one completed NumPy Manager result across the public Torch boundary."""
+    def _manager_tensor(
+        self, values: np.ndarray | torch.Tensor, *, dtype: torch.dtype
+    ) -> torch.Tensor:
+        """Publish one completed Manager result on the public Torch carrier."""
         if isinstance(values, torch.Tensor):
             return values.to(device=self.device, dtype=dtype, copy=True)
         host = np.array(values, order="C", copy=True)
