@@ -101,7 +101,9 @@ def body_setup(monkeypatch: pytest.MonkeyPatch):
         anchor_pos_w=body_pos_w[:, anchor_body_idx],
         robot_anchor_pos_w=robot_body_pos_w[:, anchor_body_idx],
         joint_pos=rng.standard_normal((num_envs, 29), dtype=np.float32),
+        joint_vel=rng.standard_normal((num_envs, 29), dtype=np.float32),
         robot_joint_pos=rng.standard_normal((num_envs, 29), dtype=np.float32),
+        robot_joint_vel=rng.standard_normal((num_envs, 29), dtype=np.float32),
         body_pos_relative_w=body_pos_relative_w,
         body_quat_relative_w=body_quat_relative_w,
         robot_body_quat_w=robot_body_quat_w,
@@ -163,6 +165,89 @@ def test_joint_position_error_exp_bit_parity(body_setup) -> None:
         -np.square(snapshots["joint_pos"] - snapshots["robot_joint_pos"]).mean(axis=-1) / 0.2**2
     )
     np.testing.assert_array_equal(out, expected)
+
+
+@pytest.mark.parametrize(
+    ("function", "reference_name", "actual_name", "std", "mean"),
+    [
+        (
+            mt.motion_global_anchor_position_error_exp,
+            "anchor_pos_w",
+            "robot_anchor_pos_w",
+            0.3,
+            False,
+        ),
+        (mt.motion_joint_position_error_exp, "joint_pos", "robot_joint_pos", 0.2, True),
+        (mt.motion_joint_velocity_error_exp, "joint_vel", "robot_joint_vel", 1.0, True),
+    ],
+)
+def test_tensor_scalar_error_rewards_match_numpy_and_do_not_mutate(
+    monkeypatch: pytest.MonkeyPatch,
+    body_setup,
+    function,
+    reference_name: str | None,
+    actual_name: str | None,
+    std: float,
+    mean: bool,
+) -> None:
+    command, env, snapshots = body_setup
+    tensor_command = SimpleNamespace(
+        num_envs=command.num_envs,
+        cfg=command.cfg,
+        tensor_carrier=True,
+        **{
+            name: torch.from_numpy(value.copy())
+            for name, value in snapshots.items()
+            if isinstance(value, np.ndarray)
+        },
+    )
+    monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
+
+    out = function(env, "motion", std=std)
+
+    reference = snapshots[reference_name]
+    actual = snapshots[actual_name]
+    error = np.square(reference - actual)
+    reduction = error.mean(axis=-1) if mean else error.sum(axis=-1)
+    expected = torch.from_numpy(np.exp(-reduction / std**2))
+    assert isinstance(out, torch.Tensor)
+    torch.testing.assert_close(out, expected, rtol=2e-6, atol=2e-7)
+    torch.testing.assert_close(
+        getattr(tensor_command, reference_name),
+        torch.from_numpy(snapshots[reference_name]),
+    )
+    torch.testing.assert_close(
+        getattr(tensor_command, actual_name),
+        torch.from_numpy(snapshots[actual_name]),
+    )
+
+
+def test_tensor_anchor_orientation_reward_matches_numpy(
+    monkeypatch: pytest.MonkeyPatch, body_setup
+) -> None:
+    command, env, snapshots = body_setup
+    motion_quat = _unit_quat(
+        np.random.default_rng(17).standard_normal((command.num_envs, 4), dtype=np.float32)
+    )
+    robot_quat = _unit_quat(
+        motion_quat
+        + 0.08 * np.random.default_rng(19).standard_normal(motion_quat.shape, dtype=np.float32)
+    )
+    tensor_command = SimpleNamespace(
+        num_envs=command.num_envs,
+        cfg=command.cfg,
+        tensor_carrier=True,
+        anchor_quat_w=torch.from_numpy(motion_quat.copy()),
+        robot_anchor_quat_w=torch.from_numpy(robot_quat.copy()),
+    )
+    monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
+
+    out = mt.motion_global_anchor_orientation_error_exp(env, "motion", std=0.4)
+    expected = torch.from_numpy(
+        np.exp(-np_quat_error_magnitude_squared_batched(motion_quat, robot_quat) / 0.4**2)
+    )
+    assert isinstance(out, torch.Tensor)
+    torch.testing.assert_close(out, expected, rtol=2e-6, atol=2e-7)
 
 
 def test_anchor_pos_termination_numba_parity_and_output_reuse(body_setup) -> None:
