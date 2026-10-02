@@ -460,7 +460,9 @@ class CommandManager(ManagerBase):
     ) -> None:
         step_timing: dict[str, float] = {}
         for name, term in self._terms.items():
-            step_timing.update(getattr(term, "last_step_timing_ms", {}))
+            term_timing = getattr(term, "last_step_timing_ms", None)
+            if term_timing is not None:
+                term_timing.clear()
             term.compute(dt, env_ids)
             step_timing.update(getattr(term, "last_step_timing_ms", {}))
             if env_ids is None:

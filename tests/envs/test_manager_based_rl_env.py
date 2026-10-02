@@ -1714,7 +1714,7 @@ def test_update_state_publishes_drain_vs_host_termination_attribution() -> None:
     assert timing["update_state_command_preflight_ms"] >= 0.0
     update_state_timing = state.info["update_state_timing"]
     if update_state_timing:
-        assert set(update_state_timing) == set(UPDATE_STATE_DETAIL_TIMING_KEYS)
+        assert set(update_state_timing) <= set(UPDATE_STATE_DETAIL_TIMING_KEYS)
         assert all(value >= 0.0 for value in update_state_timing.values())
     env.close()
 

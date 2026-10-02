@@ -1409,9 +1409,6 @@ class TensorMotionCommand(MotionCommand):
         if timing is None:
             timing = {}
             self.last_step_timing_ms = timing
-        else:
-            timing.clear()
-        failure_started = time.perf_counter()
         if env_ids is not None:
             ingested = self._tensor_resample_ingested
             self._resample_ingested_ids = None
@@ -1425,6 +1422,7 @@ class TensorMotionCommand(MotionCommand):
             return
         self._resample_ingested_ids = None
         self._tensor_resample_ingested = None
+        failure_started = time.perf_counter()
         terminated = cast(torch.Tensor, self._env.termination_manager.terminated)
         self.tensor_sampler.update_failure_stats(terminated)
         timing["update_state_motion_failure_stats_ms"] = (

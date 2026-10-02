@@ -82,6 +82,9 @@ RESET_DONE_DETAIL_TIMING_KEYS = (
 )
 
 UPDATE_STATE_DETAIL_TIMING_KEYS = (
+    "update_state_command_metrics_update_ms",
+    "update_state_command_timer_ms",
+    "update_state_command_update_dispatch_ms",
     "update_state_motion_failure_stats_ms",
     "update_state_motion_step_sampler_ms",
     "update_state_motion_refresh_current_ms",
