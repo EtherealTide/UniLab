@@ -13,6 +13,7 @@ from unilab.managers._noise import (
     ConstantNoiseCfg,
     GaussianNoiseCfg,
     NoiseModelWithAdditiveBiasCfg,
+    SegmentwiseUniformNoiseCfg,
     UniformNoiseCfg,
 )
 
@@ -152,7 +153,7 @@ def test_constant_tensor_noise_stays_on_device_without_rng(
 @pytest.mark.parametrize("operation", ["add", "scale", "abs"])
 def test_uniform_tensor_noise_preserves_rng_stream_and_device(operation: str) -> None:
     device = torch.device("cpu")
-    data = torch.arange(24, dtype=torch.float32).reshape(8, 3)
+    data = torch.ones((8, 3))
     cfg = UniformNoiseCfg(n_min=(-0.2, -0.1, -0.05), n_max=(0.3, 0.4, 0.5), operation=operation)
 
     host_rng = np.random.default_rng(1702)
@@ -164,6 +165,38 @@ def test_uniform_tensor_noise_preserves_rng_stream_and_device(operation: str) ->
     assert tensor_result.device == device
     np.testing.assert_array_equal(tensor_result.numpy(), host_result)
     assert host_rng.bit_generator.state == tensor_rng.bit_generator.state
+
+
+@pytest.mark.parametrize("operation", ["add", "scale", "abs"])
+def test_segmentwise_tensor_noise_bounds_each_final_column(operation: str) -> None:
+    cfg = SegmentwiseUniformNoiseCfg(
+        ranges=((-0.1, 0.1), (-0.2, 0.2), (0.0, 0.0)),
+        operation=operation,
+    )
+    data = torch.ones((8, 3), dtype=torch.float32)
+    host_rng = np.random.default_rng(1811)
+    tensor_rng = np.random.default_rng(1811)
+
+    host_result = cfg.apply(data.numpy(), rng=host_rng)
+    tensor_result = cfg.apply(data, rng=tensor_rng)
+
+    assert tensor_result.shape == data.shape
+    np.testing.assert_array_equal(tensor_result.numpy(), host_result)
+    if operation == "abs":
+        assert bool((host_result[:, 0] >= -0.1).all()) and bool((host_result[:, 0] < 0.1).all())
+        assert bool((host_result[:, 1] >= -0.2).all()) and bool((host_result[:, 1] < 0.2).all())
+    elif operation == "scale":
+        assert bool((host_result[:, 0] >= -0.1).all()) and bool((host_result[:, 0] < 0.1).all())
+        assert bool((host_result[:, 1] >= -0.2).all()) and bool((host_result[:, 1] < 0.2).all())
+    else:
+        assert bool((host_result[:, 0] >= 0.9).all()) and bool((host_result[:, 0] < 1.1).all())
+        assert bool((host_result[:, 1] >= 0.8).all()) and bool((host_result[:, 1] < 1.2).all())
+    if operation == "scale":
+        np.testing.assert_array_equal(host_result[:, 2], np.zeros(8))
+    elif operation == "abs":
+        np.testing.assert_array_equal(host_result[:, 2], np.zeros(8))
+    else:
+        np.testing.assert_array_equal(host_result[:, 2], np.ones(8))
 
 
 def test_gaussian_tensor_noise_preserves_rng_stream_and_device() -> None:

@@ -16,6 +16,8 @@ from unilab.managers._noise import noise_model
 # Type alias for noise parameters: scalar or per-dimension values.
 NoiseParam = float | tuple[float, ...]
 
+SegmentRange = tuple[float, float]
+
 
 @dataclass(kw_only=True)
 class NoiseCfg(abc.ABC):
@@ -167,6 +169,93 @@ class UniformNoiseCfg(NoiseCfg):
             # The env-owned NumPy RNG remains authoritative in the default path.
             unit_torch = torch.from_numpy(unit).to(device=data.device, dtype=data.dtype)
             noise = unit_torch * (n_max - n_min) + n_min
+        if self.operation == "add":
+            return data + noise
+        if self.operation == "scale":
+            return data * noise
+        if self.operation == "abs":
+            return noise
+        raise ValueError(f"Unsupported noise operation: {self.operation}")
+
+
+@dataclass(kw_only=True)
+class SegmentwiseUniformNoiseCfg(NoiseCfg):
+    """Independent additive uniform noise with a bound for each final column."""
+
+    ranges: tuple[SegmentRange, ...]
+
+    def __post_init__(self):
+        self.ranges = tuple((float(lower), float(upper)) for lower, upper in self.ranges)
+        if not self.ranges:
+            raise ValueError("SegmentwiseUniformNoiseCfg requires at least one range")
+        if any(lower > upper for lower, upper in self.ranges):
+            raise ValueError(
+                f"Each SegmentwiseUniformNoiseCfg range must satisfy min <= max; got {self.ranges}"
+            )
+
+    def _bounds(
+        self, *, dtype: np.dtype | torch.dtype, device: torch.device | None = None
+    ) -> tuple[np.ndarray, np.ndarray] | tuple[torch.Tensor, torch.Tensor]:
+        if isinstance(dtype, torch.dtype):
+            if device is None:
+                raise ValueError("Torch segment noise requires a device")
+            lower = torch.as_tensor([range[0] for range in self.ranges], dtype=dtype, device=device)
+            upper = torch.as_tensor([range[1] for range in self.ranges], dtype=dtype, device=device)
+            return lower, upper
+        return (
+            np.asarray([range[0] for range in self.ranges], dtype=dtype),
+            np.asarray([range[1] for range in self.ranges], dtype=dtype),
+        )
+
+    @override
+    def apply(
+        self,
+        data: np.ndarray | torch.Tensor,
+        *,
+        rng: np.random.Generator | None = None,
+        torch_rng: torch.Generator | None = None,
+    ) -> np.ndarray | torch.Tensor:
+        if data.ndim != 2 or data.shape[-1] != len(self.ranges):
+            raise ValueError(
+                "SegmentwiseUniformNoiseCfg expected a two-dimensional carrier with "
+                f"{len(self.ranges)} final columns; got {tuple(data.shape)}"
+            )
+        if not isinstance(data, torch.Tensor):
+            generator = self._require_generator(rng)
+            lower, upper = self._bounds(dtype=data.dtype)
+            assert isinstance(lower, np.ndarray) and isinstance(upper, np.ndarray)
+            if data.dtype == np.float32:
+                noise = generator.random(data.shape, dtype=np.float32)
+            else:
+                noise = generator.random(data.shape).astype(data.dtype, copy=False)
+            noise *= upper - lower
+            noise += lower
+            if self.operation == "add":
+                noise += data
+                return noise
+            if self.operation == "scale":
+                noise *= data
+                return noise
+            if self.operation == "abs":
+                return noise
+            raise ValueError(f"Unsupported noise operation: {self.operation}")
+
+        if torch_rng is not None and torch_rng.device != data.device:
+            raise ValueError("Torch noise generator and observation device do not match.")
+        lower, upper = self._bounds(dtype=data.dtype, device=data.device)
+        assert isinstance(lower, torch.Tensor) and isinstance(upper, torch.Tensor)
+        if torch_rng is not None:
+            unit = torch.rand(
+                tuple(data.shape), dtype=data.dtype, device=data.device, generator=torch_rng
+            )
+        else:
+            generator = self._require_generator(rng)
+            if data.dtype == torch.float32:
+                host_unit = generator.random(tuple(data.shape), dtype=np.float32)
+            else:
+                host_unit = generator.random(tuple(data.shape)).astype(np.float32, copy=False)
+            unit = torch.from_numpy(host_unit).to(device=data.device, dtype=data.dtype)
+        noise = unit * (upper - lower) + lower
         if self.operation == "add":
             return data + noise
         if self.operation == "scale":
