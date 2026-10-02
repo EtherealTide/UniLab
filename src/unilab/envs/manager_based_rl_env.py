@@ -1238,6 +1238,8 @@ class ManagerBasedRlEnv(TorchEnv):
         else:
             reset_context = self._reset_state.scoped(rows)
         command_event_started = time.perf_counter()
+        event_term_count = len(self.event_manager.active_terms.get("reset", ()))
+        command_term_count = len(self.command_manager.active_terms)
         with reset_context:
             if "reset" in self.event_manager.available_modes:
                 self.event_manager.apply(
@@ -1247,6 +1249,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 )
             log.update(self.command_manager.reset(rows))
             reset_timing.update(getattr(self.command_manager, "last_reset_timing_ms", {}))
+            reset_timing.update(self.command_manager.reset_diagnostics())
             reset_commit_started = time.perf_counter()
         reset_timing["reset_done_reset_commit_ms"] = (
             time.perf_counter() - reset_commit_started
@@ -1256,7 +1259,7 @@ class ManagerBasedRlEnv(TorchEnv):
         ) * 1000.0
 
         manager_state_started = time.perf_counter()
-        for manager in (
+        reset_managers = (
             self.observation_manager,
             self.action_manager,
             self.reward_manager,
@@ -1264,8 +1267,20 @@ class ManagerBasedRlEnv(TorchEnv):
             self.curriculum_manager,
             self.event_manager,
             self.termination_manager,
-        ):
+        )
+        for manager in reset_managers:
             log.update(manager.reset(rows))
+        observation_term_count = sum(
+            len(terms) for terms in self.observation_manager.active_terms.values()
+        )
+        reset_timing.update(
+            {
+                "reset_done_event_term_count": float(event_term_count),
+                "reset_done_command_term_count": float(command_term_count),
+                "reset_done_manager_reset_count": float(len(reset_managers)),
+                "reset_done_observation_term_count": float(observation_term_count),
+            }
+        )
         reset_timing["reset_done_manager_state_ms"] = (
             time.perf_counter() - manager_state_started
         ) * 1000.0

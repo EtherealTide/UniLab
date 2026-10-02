@@ -497,6 +497,7 @@ class MotionCommand(CommandTerm):
         self._robot_body_ang_vel_w = np.empty_like(self._body_pos_w)
         self._bind_read_phase = False
         self._tensor_all_rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._device)
+        self._sampler_host_transfers = 0
 
         for name in (
             "error_anchor_pos",
@@ -1040,7 +1041,11 @@ class TensorMotionCommand(MotionCommand):
             (rows.numel(), self.motion.num_joints),
             dtype=torch.float32,
         )
+        self._sampler_host_transfers = 0
         return CommandTerm.reset(self, rows)
+
+    def sampler_reset_diagnostics(self) -> dict[str, float]:
+        return {"reset_done_sampler_host_transfer_count": float(self._sampler_host_transfers)}
 
     def _refresh_motion(self, env_ids: np.ndarray | None = None) -> None:
         del env_ids
@@ -1067,6 +1072,7 @@ class TensorMotionCommand(MotionCommand):
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         host_rows = env_ids.detach().cpu().numpy()
+        self._sampler_host_transfers = getattr(self, "_sampler_host_transfers", 0) + 1
         sampler_started = time.perf_counter()
         frames = self.sampler.sample_frames(host_rows)
         sampler_ms = (time.perf_counter() - sampler_started) * 1000.0
@@ -1194,6 +1200,7 @@ class TensorMotionCommand(MotionCommand):
         host_frames = frames.detach().cpu().numpy()
         host_clip_indices = clip_indices.detach().cpu().numpy()
         host_clip_ends = clip_ends.detach().cpu().numpy()
+        self._sampler_host_transfers = getattr(self, "_sampler_host_transfers", 0) + 3
         self.sampler.current_frames[...] = host_frames
         self.sampler.current_clip_indices[...] = host_clip_indices
         self.sampler.current_clip_end_frames[...] = host_clip_ends
@@ -1219,6 +1226,15 @@ class TensorMotionCommand(MotionCommand):
         cast(torch.Tensor, self.current_clip_end_frames).copy_(
             torch.as_tensor(self.sampler.current_clip_end_frames, device=self._device)
         )
+
+    @property
+    def sampler_host_transfers(self) -> int:
+        """Count explicit sampler device-to-host transfers since the last read."""
+        return self._sampler_host_transfers
+
+    @sampler_host_transfers.setter
+    def sampler_host_transfers(self, value: int) -> None:
+        self._sampler_host_transfers = int(value)
 
     @staticmethod
     def _validate_cfg(cfg: MotionCommandCfg) -> None:

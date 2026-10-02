@@ -1211,3 +1211,45 @@ def test_g1_motion_core_manager_reset_and_step(
         assert all(torch.isfinite(values).all() for values in state.obs.values())
     finally:
         env.close()
+
+
+def test_flashsac_motion_reset_publishes_call_graph_counts() -> None:
+    """Selected-reset diagnostics count Manager dispatch, not only wall time."""
+    ensure_registries()
+    _require_mjwarp_runtime()
+    from unilab.base import registry
+    from unilab.envs import ManagerBasedRlEnv
+
+    _, override = _motion_manager_override(
+        "g1_motion_tracking",
+        "mjwarp",
+        config_root="flashsac",
+    )
+    env = registry.make(
+        "G1MotionTrackingSAC",
+        num_envs=4,
+        sim_backend="mjwarp",
+        env_cfg_override=override,
+    )
+    assert isinstance(env, ManagerBasedRlEnv)
+    try:
+        env.init_state()
+        # Force every row done so the selected-reset path executes deterministically.
+        original_compute = env._compute_truncated
+
+        def terminate_all(state):
+            del state
+            return torch.ones((env.num_envs,), dtype=torch.bool, device=env.device)
+
+        env._compute_truncated = terminate_all
+        state = env.step(torch.zeros((4, 29), dtype=torch.float32, device=env.device))
+        env._compute_truncated = original_compute
+        timing = state.info["timing"]
+        assert timing["reset_done_event_term_count"] == 0.0
+        assert timing["reset_done_command_term_count"] == 1.0
+        assert timing["reset_done_manager_reset_count"] == 7.0
+        assert timing["reset_done_observation_term_count"] == 17.0
+        assert timing["reset_done_sampler_host_transfer_count"] >= 1.0
+    finally:
+        env.close()
+        env._backend.close()

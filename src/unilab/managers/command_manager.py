@@ -405,6 +405,15 @@ class CommandManager(ManagerBase):
             bool(getattr(term, "uses_tensor_reset_rows", False)) for term in self._terms.values()
         )
 
+    def reset_diagnostics(self) -> dict[str, float]:
+        """Collect optional term-owned reset call-graph diagnostics."""
+        diagnostics: dict[str, float] = {}
+        for term in self._terms.values():
+            collector = getattr(term, "sampler_reset_diagnostics", None)
+            if callable(collector):
+                diagnostics.update(cast("dict[str, float]", collector()))
+        return diagnostics
+
     def get_command(self, name: str) -> torch.Tensor:
         return self._validate_command(name, self._terms[name].command)
 
@@ -475,6 +484,9 @@ class NullCommandManager:
         return []
 
     def reset(self, env_ids: torch.Tensor | None = None) -> dict[str, np.ndarray]:
+        return {}
+
+    def reset_diagnostics(self) -> dict[str, float]:
         return {}
 
     def compute(
