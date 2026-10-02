@@ -41,8 +41,10 @@ body:
         - Go2
         - dexterous-hand
         - WBT
-        - motrix
+        - historical adapter
         - mujoco
+        - mjwarp
+        - genesis
         - benchmark
         - CI/tooling
         - docs
