@@ -178,6 +178,29 @@ def _update_motion_relative_state_torch(
     )
 
 
+_MotionRelativeStateFn = Callable[..., None]
+_update_motion_relative_state_compiled: _MotionRelativeStateFn | None = None
+
+
+def _compiled_motion_relative_state_available() -> bool:
+    """Whether Torch compilation is available for the owner-relative kernel."""
+    return hasattr(torch, "compile") and hasattr(torch.compiler, "is_compiling")
+
+
+def _bind_compiled_motion_relative_state() -> _MotionRelativeStateFn:
+    """Compile the owner-relative kernel once on the declared device."""
+    global _update_motion_relative_state_compiled
+    if _update_motion_relative_state_compiled is not None:
+        return _update_motion_relative_state_compiled
+    if not _compiled_motion_relative_state_available():
+        return _update_motion_relative_state_torch
+    _update_motion_relative_state_compiled = torch.compile(
+        _update_motion_relative_state_torch,
+        dynamic=True,
+    )
+    return _update_motion_relative_state_compiled
+
+
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
     from unilab.managers._types import ManagerBasedRlEnv
@@ -1189,7 +1212,7 @@ class TensorMotionCommand(MotionCommand):
 
     def _refresh_relative_state_torch(self, rows: torch.Tensor | None = None) -> None:
         row_selector = self._tensor_all_rows if rows is None else rows
-        _update_motion_relative_state_torch(
+        _bind_compiled_motion_relative_state()(
             row_selector,
             self.anchor_body_idx,
             cast("torch.Tensor", self._motion_data.body_pos_w),
