@@ -1,5 +1,8 @@
 # Drake 后端
 
+> **Drake 暂时搁置。** 该适配器在 #1811 期间不属于 tensor-only Manager runtime，也不构成生产支持声明。在提供新的 capability、parity 与支持矩阵证据之前，train/eval CLI 会直接拒绝该后端。
+
+
 Drake 是实验性的 CPU 批量物理后端；task、reward、observation 和训练循环仍由
 UniLab 负责。渲染使用 MuJoCo 原生 renderer：Drake 推进物理，MuJoCo 只绘制当前状态。
 原生路径支持 Linux x86_64 与 Apple Silicon macOS（arm64）；Intel

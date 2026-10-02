@@ -38,7 +38,7 @@ YAML 将其提到 `30000`。）
 uv run train --algo ppo --task g1_motion_tracking --sim mujoco
 uv run train --algo ppo --task g1_flip_tracking --sim mujoco
 uv run train --algo ppo --task x2_wall_flip_tracking --sim mujoco
-uv run train --algo ppo --task g1_motion_tracking --sim motrix
+uv run train --algo ppo --task g1_motion_tracking --sim mujoco
 uv run train --algo appo --task g1_motion_tracking --sim mujoco training.no_play=true
 uv run train --algo ppo --task g1_motion_tracking --sim mujoco \
   algo.num_envs=128 algo.max_iterations=5 training.no_play=true
@@ -64,7 +64,7 @@ orientation term 保持单步，`base_ang_vel`、`joint_pos`、`joint_vel` 和 `
 `uv run eval` 透传绝对路径：
 
 ```bash
-uv run eval --algo sac --task g1_motion_tracking --sim motrix \
+uv run eval --algo sac --task g1_motion_tracking --sim mujoco \
   algo.load_run=/abs/path/to/logs/fast_sac/G1MotionTrackingSAC/2026-04-23_14-06-57_mujoco
 ```
 

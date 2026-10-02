@@ -1,5 +1,8 @@
 # Newton 后端
 
+> **Newton 暂时搁置。** 该适配器在 #1811 期间不属于 tensor-only Manager runtime，也不构成生产支持声明。在提供新的 capability、parity 与支持矩阵证据之前，train/eval CLI 会直接拒绝该后端。
+
+
 [Newton](https://github.com/newton-physics/newton)（PyPI 分发名 `newton`，
 仓库钉在 1.5.1）是基于 Warp 的 GPU 物理仿真器，UniLab 以**进程内**方式
 使用它：`unisim.backend.newton.NewtonBackend` 在其上提供标准的

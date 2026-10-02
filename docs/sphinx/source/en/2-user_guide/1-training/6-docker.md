@@ -3,7 +3,7 @@
 The checked-in `Dockerfile` is the Linux NVIDIA/CUDA container path. It installs
 UniLab runtime dependencies, the MuJoCo and Motrix physics backend extras, and
 dev/test tooling; training inside the container supports both `--sim mujoco`
-and `--sim motrix`. macOS Docker is not a primary path, and ROCm uses a
+and `--sim mujoco`. macOS Docker is not a primary path, and ROCm uses a
 separate image (see below) rather than this CUDA `Dockerfile`.
 
 ## Build
@@ -44,7 +44,7 @@ backends are available:
 
 ```bash
 uv run train --algo ppo --task go2_joystick_flat --sim mujoco
-uv run train --algo ppo --task go2_joystick_flat --sim motrix
+uv run train --algo ppo --task go2_joystick_flat --sim mujoco
 ```
 
 Evaluation and playback work the same way inside the container; `--load-run -1`

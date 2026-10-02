@@ -1,5 +1,8 @@
 # Drake Backend
 
+> **Drake is temporarily shelved.** This adapter is outside the tensor-only Manager runtime during #1811 and is not a production support claim. The train/eval CLI rejects it until new capability, parity, and support-matrix evidence is provided.
+
+
 Drake is an experimental CPU batch backend. UniLab still owns the task,
 reward, observations, and training loop. Rendering uses MuJoCo's native
 renderer: Drake advances physics and MuJoCo only draws the current state. The
