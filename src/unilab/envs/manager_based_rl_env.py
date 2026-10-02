@@ -1047,11 +1047,15 @@ class ManagerBasedRlEnv(TorchEnv):
         # scope, so values packed before ``step_tensor`` are stale here. Drop
         # the action-phase packet first; in-phase mutations explicitly invalidate
         # it below.
+        timing = state.info.setdefault("timing", {})
+        boundary_started = time.perf_counter()
         self.scene._invalidate_state_reads()
         with self.scene._scoped_state_reads():
             read_plan = self.scene._tensor_read_plan
             if read_plan is not None and not read_plan.ready:
                 read_plan.refresh()
+            boundary_ms = (time.perf_counter() - boundary_started) * 1000.0
+            timing["update_state_read_boundary_ms"] = boundary_ms
             return self._update_state_in_read_phase(state)
 
     def _update_state_in_read_phase(self, state: TorchEnvState) -> TorchEnvState:
@@ -1170,6 +1174,7 @@ class ManagerBasedRlEnv(TorchEnv):
             timing.get("update_state_publish_ms"),
         )
         if all(value is not None for value in update_children):
+            epilogue_started_ns = time.perf_counter_ns()
             # Queue drain and the same boundary inside termination are excluded:
             # they drain pre-update GPU work already timed by step_core_ms.
             drain_ns = int(float(timing["update_state_queue_drain_ms"]) * 1.0e6)
@@ -1178,6 +1183,9 @@ class ManagerBasedRlEnv(TorchEnv):
                 - update_started_ns
                 - sum(int(float(value) * 1.0e6) for value in update_children)
                 + drain_ns
+            ) / 1.0e6
+            timing["update_state_timing_epilogue_ms"] = (
+                time.perf_counter_ns() - epilogue_started_ns
             ) / 1.0e6
         return replacement
 
