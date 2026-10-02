@@ -300,6 +300,7 @@ class ManagerBasedRlEnv(TorchEnv):
     recorder_manager: RecorderManager | NullRecorderManager
     _tensor_read_plan: SceneTensorReadPlan | None
     _tensor_reset_default_root_state: torch.Tensor | None
+    _last_reset_manager_timing_ms: dict[str, float]
     _tensor_reset_env_origins: torch.Tensor | None
     _tensor_reset_pose_bounds: torch.Tensor | None
     _tensor_reset_velocity_bounds: torch.Tensor | None
@@ -333,6 +334,7 @@ class ManagerBasedRlEnv(TorchEnv):
         self._torch_rng_owner = TorchManagerRng(device=self.device)
         self.torch_rng = self._torch_rng_owner
         self._torch_generator = self._torch_rng_owner.generator if self._torch_rng_owner else None
+        self._last_reset_manager_timing_ms = {}
         self._tensor_reset_default_root_state = None
         self._tensor_reset_env_origins = None
         self._tensor_reset_pose_bounds = None
@@ -1180,6 +1182,7 @@ class ManagerBasedRlEnv(TorchEnv):
         options: dict[str, Any] | None = None,
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
         del options
+        reset_timing: dict[str, float] = {}
         rows = self._normalize_reset_indices(env_indices)
         if seed is not None:
             self.seed(seed)
@@ -1234,6 +1237,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 reset_context = self._reset_state.scoped_device_tensor(rows)
         else:
             reset_context = self._reset_state.scoped(rows)
+        command_event_started = time.perf_counter()
         with reset_context:
             if "reset" in self.event_manager.available_modes:
                 self.event_manager.apply(
@@ -1242,7 +1246,11 @@ class ManagerBasedRlEnv(TorchEnv):
                     global_env_step_count=self.step_counter,
                 )
             log.update(self.command_manager.reset(rows))
+        reset_timing["reset_done_command_event_ms"] = (
+            time.perf_counter() - command_event_started
+        ) * 1000.0
 
+        manager_state_started = time.perf_counter()
         for manager in (
             self.observation_manager,
             self.action_manager,
@@ -1253,6 +1261,9 @@ class ManagerBasedRlEnv(TorchEnv):
             self.termination_manager,
         ):
             log.update(manager.reset(rows))
+        reset_timing["reset_done_manager_state_ms"] = (
+            time.perf_counter() - manager_state_started
+        ) * 1000.0
 
         self.episode_length_buf[rows] = 0
         if self._reset_state.scene_layout is not None:
@@ -1266,6 +1277,7 @@ class ManagerBasedRlEnv(TorchEnv):
         # The read phase starts only after the reset-state transaction above
         # committed, so cached getter values are post-set_state reads shared
         # across terms (issue #1295).
+        state_publish_started = time.perf_counter()
         with self.scene._scoped_state_reads():
             read_plan = self.scene._tensor_read_plan
             if read_plan is not None:
@@ -1279,16 +1291,32 @@ class ManagerBasedRlEnv(TorchEnv):
                 else:
                     self._warm_external_cuda_ipc_views()
                     read_plan.refresh()
+            command_refresh_started = time.perf_counter()
             self.command_manager.compute(dt=0.0, env_ids=rows)
+            reset_timing["reset_done_command_refresh_ms"] = (
+                time.perf_counter() - command_refresh_started
+            ) * 1000.0
             self.command_manager.post_compute()
+            observation_started = time.perf_counter()
             # Row-scoped reset rebuild (issue #1259 R2): the observation manager
             # returns only the reset rows, so no full-batch slice is needed here.
             manager_obs = self.observation_manager.compute(update_history=True, env_ids=rows)
+            reset_timing["reset_done_observation_ms"] = (
+                time.perf_counter() - observation_started
+            ) * 1000.0
+        reset_timing["reset_done_state_publish_ms"] = (
+            time.perf_counter() - state_publish_started
+        ) * 1000.0
         mapped_obs = self._map_observations(manager_obs, num_rows=rows.numel())
+        observation_scatter_started = time.perf_counter()
         reset_obs = {
             name: self._manager_tensor(values, dtype=self._dtype)
             for name, values in mapped_obs.items()
         }
+        reset_timing["reset_done_observation_scatter_ms"] = (
+            time.perf_counter() - observation_scatter_started
+        ) * 1000.0
+        self._last_reset_manager_timing_ms = reset_timing
 
         if self._state is not None:
             for name in mapped_obs:
@@ -1320,6 +1348,7 @@ class ManagerBasedRlEnv(TorchEnv):
     def _collect_reset_backend_timing_ms(self) -> dict[str, float]:
         timing = dict(super()._collect_reset_backend_timing_ms())
         timing.update(self._reset_state.last_set_state_timing_ms)
+        timing.update(self._last_reset_manager_timing_ms)
         return timing
 
     def _map_observations(
