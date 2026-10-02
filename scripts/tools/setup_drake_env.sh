@@ -1,3 +1,9 @@
+# HISTORICAL SHELVED-BACKEND TOOL (#1811)
+# Retained only as adapter migration context. This tool does not install a
+# UniLab production runtime backend and must not be treated as a support
+# claim. The scoped tensor Manager runtime currently exposes mujoco, mjwarp,
+# and genesis.
+
 #!/usr/bin/env bash
 # Set up the UniLab Drake batch runtime on Linux or Apple Silicon macOS.
 #
