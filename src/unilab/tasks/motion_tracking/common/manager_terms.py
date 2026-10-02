@@ -1404,10 +1404,10 @@ class TensorMotionCommand(MotionCommand):
 
     def _update_command(self, env_ids: torch.Tensor | None) -> None:
         self._tensor_post_compute_env_ids = env_ids
-        timing = getattr(self, "last_reset_timing_ms", None)
+        timing = getattr(self, "last_step_timing_ms", None)
         if timing is None:
             timing = {}
-            self.last_reset_timing_ms = timing
+            self.last_step_timing_ms = timing
         failure_started = time.perf_counter()
         if env_ids is not None:
             ingested = self._tensor_resample_ingested
