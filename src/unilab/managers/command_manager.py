@@ -218,7 +218,16 @@ class CommandTerm(ManagerTermBase):
             dt_is_finite = bool(np.isfinite(dt_scalar))
         if not dt_is_finite:
             raise ValueError(f"CommandTerm '{self.name}' received non-finite dt.")
+        timing = getattr(self, "last_step_timing_ms", None)
+        if timing is None:
+            timing = {}
+            self.last_step_timing_ms = timing
+        metrics_started = time.perf_counter()
         self._update_metrics(env_ids)
+        timing["update_state_command_metrics_update_ms"] = (
+            time.perf_counter() - metrics_started
+        ) * 1000.0
+        timer_started = time.perf_counter()
         resample_env_ids: torch.Tensor
         if env_ids is None:
             if dt_tensor is not None:
@@ -234,7 +243,15 @@ class CommandTerm(ManagerTermBase):
             resample_env_ids = env_ids[self.time_left[env_ids] <= 0.0]
         if resample_env_ids.numel() > 0:
             self._resample(resample_env_ids)
+        timing["update_state_command_timer_ms"] = (time.perf_counter() - timer_started) * 1000.0
+        update_started = time.perf_counter()
         self._update_command(env_ids)
+        # The owner records detailed update-command phases in the same dict;
+        # total update time is kept only when this base method created it.
+        if "update_state_motion_failure_stats_ms" not in timing:
+            timing["update_state_command_update_dispatch_ms"] = (
+                time.perf_counter() - update_started
+            ) * 1000.0
 
     def _validate_metrics(self) -> None:
         metric_values = list(self.metrics.items())
