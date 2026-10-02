@@ -60,7 +60,6 @@ def test_flashsac_motrix_owner_is_out_of_tensor_manager_scope() -> None:
 def test_torch_owner_fingerprint_accepts_mapped_isaacsim_namespaced_owner() -> None:
     """Mapped physical names are namespace-equivalent, not a semantic change."""
     cfg = _materialize_task("g1_motion_tracking/isaacsim")
-    assert cfg.tensor_runtime is True
     assert cfg.isaacsim_tensor_cuda_ipc is True
     assert cfg.scene is not None
     assert cfg.scene.entity_assets
@@ -71,13 +70,11 @@ def test_torch_owner_fingerprint_accepts_mapped_isaacsim_namespaced_owner() -> N
 
 def test_reusable_tensor_runtime_accepts_second_g1_manager_owner() -> None:
     cfg = _materialize_task("g1_motion_tracking/mjwarp_tensor", algo="sac")
-    assert cfg.tensor_runtime is True
     assert module._torch_g1_flashsac_owner_identity(cfg) == module._TORCH_G1_SAC_OWNER_IDENTITY_V1
 
 
 def test_reusable_tensor_runtime_accepts_second_manager_based_task() -> None:
     cfg = _materialize_task("g1_flip_tracking/mjwarp_tensor", algo="sac")
-    assert cfg.tensor_runtime is True
     assert cfg.commands["motion"].sampling_mode == "mixed"
     # This owner now uses the Manager tensor path directly; the legacy direct
     # fingerprint remains valid only for canonical host-bridge identities.

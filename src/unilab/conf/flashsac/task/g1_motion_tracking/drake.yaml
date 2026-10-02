@@ -9,6 +9,3 @@ defaults:
 training:
   task_name: G1MotionTrackingSAC
   sim_backend: drake
-
-env:
-  tensor_runtime: true

@@ -57,3 +57,22 @@ def test_env_runtime_does_not_own_concrete_task_packages() -> None:
     ]
 
     assert violations == [], "concrete task source must be owned by unilab.tasks"
+
+
+def test_tensor_runtime_switch_is_absent_from_source_and_owner_configs() -> None:
+    offenders: list[str] = []
+    patterns = (
+        "cfg.tensor_runtime",
+        "env.tensor_runtime",
+        "tensor_runtime_device",
+        "tensor_runtime:",
+    )
+    for path in (_REPO_ROOT / "src").rglob("*"):
+        if not path.is_file() or path.suffix not in {".py", ".yaml"}:
+            continue
+        if ".venv" in path.parts or "__pycache__" in path.parts:
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if any(pattern in text for pattern in patterns):
+            offenders.append(path.relative_to(_REPO_ROOT).as_posix())
+    assert offenders == [], f"tensor-runtime switch references remain: {offenders}"

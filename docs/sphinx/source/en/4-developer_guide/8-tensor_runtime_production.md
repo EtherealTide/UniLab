@@ -10,7 +10,7 @@ claims live in {doc}`../5-reference/5-support_matrix`.
 | Owner | Responsibility |
 | --- | --- |
 | UniSim | Public `SimBackend` tensor lifecycle, execution/data-plane/process profiles, packed host-bridge contracts, platform support inventory, and backend adapters. |
-| UniLab task owners | Hydra owner identity, `training.sim_backend`, `env.tensor_runtime`, task semantics, parity fixtures, process-device binding, and training-entrypoint integration. |
+| UniLab task owners | Hydra owner identity, `training.sim_backend`, task semantics, parity fixtures, process-device binding, and training-entrypoint integration. |
 | `uni_rl` | Off-policy collector/learner process topology, CUDA inference ring, replay ingress, IPC synchronization, runner metrics, and metric/runtime-manifest producer schemas. |
 | UniLab training runtime | Soak monitoring, schema consumption, safe defaults and bounds, process-affinity integration, run artifacts, and fail-closed construction checks. |
 | UniLab documentation | Reproduction, operations, schema compatibility, support-matrix interpretation, and release-transition guidance. |

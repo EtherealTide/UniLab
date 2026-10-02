@@ -119,8 +119,6 @@ class ManagerBasedRlEnvCfg(EnvCfg):
     seed: int | None = None
     is_finite_horizon: bool = False
     auto_reset: bool = True
-    tensor_runtime: bool = False
-    tensor_runtime_device: str | None = None
     scale_rewards_by_dt: bool = True
     policy_observation_group: str = "policy"
     critic_observation_group: str | None = None
@@ -131,43 +129,6 @@ class ManagerBasedRlEnvCfg(EnvCfg):
                 raise TypeError(f"ManagerBasedRlEnvCfg {name} must be a real number")
             if not np.isfinite(value) or value <= 0.0:
                 raise ValueError(f"ManagerBasedRlEnvCfg {name} must be finite and positive")
-        if not isinstance(self.tensor_runtime, bool):
-            raise TypeError("ManagerBasedRlEnvCfg tensor_runtime must be a boolean")
-        if self.tensor_runtime_device is not None:
-            if (
-                not isinstance(self.tensor_runtime_device, str)
-                or not self.tensor_runtime_device.strip()
-            ):
-                raise TypeError(
-                    "ManagerBasedRlEnvCfg tensor_runtime_device must be a device string "
-                    f"or None; got {self.tensor_runtime_device!r}"
-                )
-            try:
-                requested_device = torch.device(self.tensor_runtime_device)
-            except (RuntimeError, ValueError) as exc:
-                raise ValueError(
-                    "ManagerBasedRlEnvCfg tensor_runtime_device is not a valid Torch "
-                    f"device: {self.tensor_runtime_device!r}"
-                ) from exc
-            if requested_device.type not in {"cpu", "cuda"}:
-                raise ValueError(
-                    "ManagerBasedRlEnvCfg tensor_runtime_device must be cpu, cuda, or "
-                    f"None; got {self.tensor_runtime_device!r}"
-                )
-            if self.tensor_runtime and requested_device.type != "cuda":
-                raise ValueError(
-                    "ManagerBasedRlEnvCfg tensor_runtime=true requires a CUDA "
-                    f"tensor_runtime_device; got {self.tensor_runtime_device!r}"
-                )
-            if not self.tensor_runtime and requested_device.type != "cpu":
-                raise ValueError(
-                    "ManagerBasedRlEnvCfg CPU tensor runtime requires cpu or None "
-                    f"tensor_runtime_device; got {self.tensor_runtime_device!r}"
-                )
-        if self.isaacsim_tensor_cuda_ipc and not self.tensor_runtime:
-            raise ValueError(
-                "ManagerBasedRlEnvCfg isaacsim_tensor_cuda_ipc requires tensor_runtime"
-            )
         super().validate()
         ratio = self.ctrl_dt / self.sim_dt
         if not np.isclose(ratio, round(ratio), rtol=0.0, atol=1e-9):
@@ -360,27 +321,19 @@ class ManagerBasedRlEnv(TorchEnv):
             )
 
         initial_capabilities = backend.get_tensor_capabilities()
-        requested_runtime_device = cfg.tensor_runtime_device
-        if requested_runtime_device is not None:
-            runtime_device = torch.device(requested_runtime_device)
-        else:
-            runtime_device = (
-                torch.device("cuda", index=torch.cuda.current_device())
-                if initial_capabilities.execution is TensorExecution.DEVICE_RESIDENT
-                else torch.device("cpu")
-            )
+        runtime_device = (
+            torch.device("cuda", index=torch.cuda.current_device())
+            if initial_capabilities.execution is TensorExecution.DEVICE_RESIDENT
+            else torch.device("cpu")
+        )
         super().__init__(cfg, backend, num_envs, device=runtime_device)
         actual_seed = cfg.seed if cfg.seed is not None else secrets.randbits(63)
         cfg.seed = actual_seed
         self.rng = np.random.default_rng(actual_seed)
         self._torch_rng_owner = (
-            TorchManagerRng(device=self.device)
-            if self.device.type == "cuda" and cfg.tensor_runtime
-            else None
+            TorchManagerRng(device=self.device) if self.device.type == "cuda" else None
         )
-        self.torch_rng = (
-            self._torch_rng_owner if self.device.type == "cuda" and cfg.tensor_runtime else None
-        )
+        self.torch_rng = self._torch_rng_owner
         self._torch_generator = self._torch_rng_owner.generator if self._torch_rng_owner else None
         self._tensor_reset_default_root_state = None
         self._tensor_reset_env_origins = None
@@ -438,12 +391,6 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def _compile_tensor_read_plan(self) -> None:
         """Compile the scene's only packed tensor read phase."""
-        if (
-            self._cfg.tensor_runtime is False
-            and self._backend.get_tensor_capabilities().execution is TensorExecution.UNSUPPORTED
-        ):
-            self.scene._tensor_read_plan = None
-            return
         specs: list[SceneTensorReadSpec] = []
         specs.extend(self._action_tensor_read_specs())
         specs.extend(self._observation_tensor_read_specs())

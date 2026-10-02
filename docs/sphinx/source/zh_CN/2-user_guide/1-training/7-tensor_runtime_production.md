@@ -12,7 +12,7 @@
 - FlashSAC；
 - `g1_motion_tracking`；
 - 通过统一 task-owner 路由选择的 `mjwarp` owner；
-- task owner 显式 opt-in tensor runtime。
+- Manager runtime 默认 tensor-native。
 
 它不是多 GPU 指南，不发布软件包，也不能推广为所有 MJWarp task 的通用
 声明。macOS 与 ROCm/HIP 没有该 device-resident lifecycle 的 fallback；
@@ -22,8 +22,7 @@
 
 `--algo`、`--task` 与 `--sim` 必须一起使用。它们组合
 `src/unilab/conf/<algo>/task/<task>/<sim>.yaml` 下的 owner YAML。真正声明
-`training.sim_backend` 的是该 owner，而不是 CLI 拼写本身；owner 也可以设置
-`env.tensor_runtime: true`。
+`training.sim_backend` 的是该 owner，而不是 CLI 拼写本身；tensor 执行是 Manager 不变量。
 
 canonical 组合使用：
 
@@ -37,7 +36,7 @@ MJWarp owner 继承 FlashSAC MuJoCo owner，并解析为：
 | --- | --- |
 | Task 语义名 | `G1MotionTrackingSAC` |
 | Backend 身份 | `mjwarp` |
-| Tensor-runtime opt-in | `env.tensor_runtime=true` |
+| Tensor runtime | Manager 生命周期不变量 |
 | Inference slot | `training.inference_slot_capacity=1` |
 | Replay-ingress depth | `training.replay_ingress_depth=2` |
 | Replay-ingress slot rows | `null`，解析为 `algo.num_envs` |
@@ -262,3 +261,11 @@ transfer counter。
 
 完整 schema 定义与 metric 判读见 {doc}`3-logging` 与
 {doc}`4-tensor_runtime`。
+
+## Tensor Runtime 破坏性迁移
+
+`env.tensor_runtime` 与 `env.tensor_runtime_device` 已移除，且没有兼容别名。
+Manager runtime 构造上就是 tensor-native：设备位置由 backend 声明的数据面与
+rank 进程设备推导。此前设置这两个字段的 owner YAML 和 runner override 必须
+删除它们。不支持的 tensor lifecycle 会在 binding 阶段失败，不会回退到 NumPy
+wire。

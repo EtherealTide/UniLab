@@ -961,8 +961,6 @@ def _make_tensor_runtime_env(
     backend: _FakeBackend,
 ) -> _TestEnv:
     cfg = _make_cfg()
-    cfg.tensor_runtime = True
-    cfg.tensor_runtime_device = "cuda"
     cfg.observations = {
         "actor": ObservationGroupCfg(
             terms={"policy": ObservationTermCfg(func=_tensor_runtime_policy_obs)}
@@ -1023,11 +1021,10 @@ def test_manager_public_inputs_and_episode_counters_are_tensor_first() -> None:
         ("cpu", torch.device("cpu")),
     ],
 )
-def test_tensor_runtime_device_defaults_to_cpu_for_host_bridge(
+def test_backend_capability_derives_cpu_placement_for_host_bridge(
     explicit_device: str | None, expected_device: torch.device
 ) -> None:
     cfg = _make_cfg()
-    cfg.tensor_runtime_device = explicit_device
 
     env, backend = _make_env(cfg)
 
@@ -1037,57 +1034,6 @@ def test_tensor_runtime_device_defaults_to_cpu_for_host_bridge(
     env.reset()
     assert all(value.device == env.device for value in env.obs_buf.values())
     env.close()
-
-
-def test_legacy_cpu_wire_skips_packed_reads_and_uses_numpy_step() -> None:
-    backend = _LegacyWireBackend(2)
-    cfg = _make_cfg()
-    cfg.tensor_runtime = False
-
-    env = _TestEnv(cfg, cast(SimBackend, backend), 2)
-
-    assert env._tensor_runtime_bound is True
-    assert env.scene._tensor_read_plan is None
-    env.reset()
-    env.step(torch.zeros((2, 1), dtype=torch.float32))
-    assert backend.applied_controls
-    assert backend.tensor_controls == []
-    env.close()
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a local CUDA device")
-def test_explicit_tensor_runtime_device_wins_before_materialize() -> None:
-    backend = _DeferredTensorBackend(2)
-    env = _make_tensor_runtime_env(backend)
-
-    # The pre-materialize UNSUPPORTED handshake must not override the owner's
-    # authoritative buffer placement.
-    assert env.device == torch.device("cuda", index=torch.cuda.current_device())
-    assert backend.lifecycle == ["materialize"]
-    assert env._tensor_runtime_bound is True
-    env.close()
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a local CUDA device")
-def test_materialize_rejects_explicit_tensor_runtime_device_not_advertised() -> None:
-    backend = _DeferredTensorBackend(
-        2,
-        post_capabilities=TensorLifecycleCapabilities(
-            execution=TensorExecution.HOST_BRIDGE,
-            state_fields=frozenset({"qpos", "qvel"}),
-            stepping=True,
-            selected_reset=True,
-            packed_host_bridge=True,
-            data_plane=TensorDataPlane.HOST_BRIDGE,
-            stream_event_ownership="test",
-            torch_devices=("cpu",),
-        ),
-    )
-
-    with pytest.raises(ValueError, match="supported devices are \\('cpu',\\)"):
-        _make_tensor_runtime_env(backend)
-
-    assert backend.materialize_calls == 1
 
 
 def _make_state_env(
@@ -2225,8 +2171,6 @@ def test_scene_read_plan_pairs_reset_with_selected_packed_transfer() -> None:
 )
 def test_device_resident_reset_dispatches_selected_tensor_commit(topology, data_plane) -> None:
     cfg = _make_cfg(include_optional_managers=False)
-    cfg.tensor_runtime = True
-    cfg.tensor_runtime_device = "cuda"
     cfg.observations = {
         "actor": ObservationGroupCfg(
             terms={"policy": ObservationTermCfg(func=_tensor_runtime_policy_obs)}
@@ -2305,8 +2249,6 @@ def test_device_resident_reset_dispatches_selected_tensor_commit(topology, data_
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA device reset test")
 def test_device_resident_tensor_root_event_commits_selected_rows_once() -> None:
     cfg = _make_cfg(include_optional_managers=False)
-    cfg.tensor_runtime = True
-    cfg.tensor_runtime_device = "cuda"
     cfg.observations = {
         "actor": ObservationGroupCfg(
             terms={"policy": ObservationTermCfg(func=_tensor_runtime_policy_obs)}
@@ -2408,8 +2350,6 @@ def test_device_resident_tensor_root_event_commits_selected_rows_once() -> None:
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA device reset test")
 def test_device_resident_tensor_joint_event_commits_selected_columns_once() -> None:
     cfg = _make_cfg(include_optional_managers=False)
-    cfg.tensor_runtime = True
-    cfg.tensor_runtime_device = "cuda"
     cfg.observations = {
         "actor": ObservationGroupCfg(
             terms={"policy": ObservationTermCfg(func=_tensor_runtime_policy_obs)}
@@ -2494,8 +2434,6 @@ def test_device_resident_tensor_joint_event_commits_selected_columns_once() -> N
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA device reset test")
 def test_device_resident_tensor_command_reset_commits_selected_rows_once() -> None:
     cfg = _make_cfg(include_optional_managers=False)
-    cfg.tensor_runtime = True
-    cfg.tensor_runtime_device = "cuda"
     cfg.observations = {
         "actor": ObservationGroupCfg(
             terms={"policy": ObservationTermCfg(func=_tensor_runtime_policy_obs)}
@@ -2885,3 +2823,8 @@ def test_get_playback_debug_overlays_frame_is_none_when_all_terms_return_none() 
 
     assert getter is not None
     assert getter() is None
+
+
+def test_manager_tensor_runtime_switch_is_removed() -> None:
+    assert not hasattr(ManagerBasedRlEnvCfg(), "tensor_runtime")
+    assert not hasattr(ManagerBasedRlEnvCfg(), "tensor_runtime_device")

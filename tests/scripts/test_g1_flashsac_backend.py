@@ -33,7 +33,6 @@ from unilab.base import backend_factory
 )
 def test_isaac_flashsac_candidate_owners_compose_for_tensor_benchmark(backend: str) -> None:
     cfg = _build_cfg(backend, num_envs=2)
-    assert cfg.tensor_runtime is True
     if backend == "isaacsim":
         assert cfg.isaacsim_tensor_cuda_ipc is True
         assert cfg.scene.entity_assets
