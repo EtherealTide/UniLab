@@ -441,10 +441,14 @@ class CommandManager(ManagerBase):
     def compute(
         self, dt: float | np.ndarray | torch.Tensor, env_ids: torch.Tensor | None = None
     ) -> None:
+        step_timing: dict[str, float] = {}
         for name, term in self._terms.items():
+            step_timing.update(getattr(term, "last_step_timing_ms", {}))
             term.compute(dt, env_ids)
+            step_timing.update(getattr(term, "last_step_timing_ms", {}))
             if env_ids is None:
                 self._validate_command(name, term.command)
+        self.last_step_timing_ms = step_timing
 
     def post_compute(self) -> None:
         self.last_post_compute_timing_ms.clear()
