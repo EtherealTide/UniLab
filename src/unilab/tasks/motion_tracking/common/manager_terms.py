@@ -815,7 +815,6 @@ class TensorMotionCommand(MotionCommand):
         self._robot_joint_vel = torch.empty(
             (self.num_envs, num_joints), dtype=torch.float32, device=device
         )
-        self._root_state_scratch = torch.empty((self.num_envs, 13), device=device)
         self._env_origins = torch.as_tensor(
             np.array(self._env.scene.env_origins, dtype=np.float32, copy=True), device=device
         )
@@ -989,18 +988,21 @@ class TensorMotionCommand(MotionCommand):
         motion_body_quat = packet[:, quat_start:quat_end].view(count, *tails["body_quat_w"])
         motion_body_lin_vel = packet[:, lin_start:lin_end].view(count, *tails["body_lin_vel_w"])
         motion_body_ang_vel = packet[:, ang_start:ang_end].view(count, *tails["body_ang_vel_w"])
-        root_state = self._root_state_scratch.index_select(0, rows)
-        root_state[:, 0:3] = motion_body_pos[:, 0]
-        root_state[:, 0:3] += self._env_origins.index_select(0, rows)
-        root_state[:, 0:3] += pose[:, :3]
-        root_state[:, 3:7] = quat_mul(
+        root_pos = motion_body_pos[:, 0] + self._env_origins.index_select(0, rows)
+        root_pos += pose[:, :3]
+        root_quat = quat_mul(
             quat_from_euler_xyz(pose[:, 3], pose[:, 4], pose[:, 5]),
             motion_body_quat[:, 0],
         )
-        root_state[:, 7:10] = motion_body_lin_vel[:, 0]
-        root_state[:, 7:10] += velocity[:, :3]
-        root_state[:, 10:13] = motion_body_ang_vel[:, 0]
-        root_state[:, 10:13] += velocity[:, 3:]
+        root_state = torch.cat(
+            (
+                root_pos,
+                root_quat,
+                motion_body_lin_vel[:, 0] + velocity[:, :3],
+                motion_body_ang_vel[:, 0] + velocity[:, 3:],
+            ),
+            dim=-1,
+        )
         self.robot.write_root_state_tensor_to_sim(root_state, env_ids=rows)
         self._ingest_motion_packet(rows, packet)
         self._resample_ingested_ids = host_rows
