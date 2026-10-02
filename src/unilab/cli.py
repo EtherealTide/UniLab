@@ -118,6 +118,12 @@ def _check_load_run(load_run: str) -> None:
 
 
 def _check_runtime_requirements(algo: str, sim: str) -> None:
+    if sim not in SUPPORTED_SIMS:
+        raise SystemExit(
+            f"sim={sim} is temporarily outside the tensor-only Manager runtime "
+            f"({', '.join(SUPPORTED_SIMS)}). Re-enabling it requires new UniSim "
+            "capability, parity, and support-matrix evidence; see issue #1811."
+        )
     # The MuJoCo physics backend (unisim.backend.mujoco.backend) needs the
     # mjbatch native batch engine; plain `mujoco` can also arrive via
     # other extras (e.g. superdex), so gate on `mjbatch` here.
@@ -131,62 +137,7 @@ def _check_runtime_requirements(algo: str, sim: str) -> None:
             "sim=mjwarp requires the mjwarp extra. Install it with "
             "`pip install unilab[mjwarp]` (or `uv sync --extra mjwarp` in a source checkout)."
         )
-    if sim == "newton":
-        required_modules = ("newton", "mujoco_warp", "mujoco", "warp")
-        missing = [module for module in required_modules if find_spec(module) is None]
-        if missing:
-            joined = ", ".join(missing)
-            raise SystemExit(
-                "sim=newton requires the Newton extra "
-                f"(missing: {joined}). Install it with `uv sync --extra newton` "
-                "in a source checkout (or `pip install unilab[newton]`)."
-            )
-    if sim == "superdex":
-        from unisim.backend.superdex.dependencies import superdex_dependencies_available
-
-        if not superdex_dependencies_available():
-            raise SystemExit(
-                "sim=superdex requires Python 3.12 or 3.13 on Linux x86_64 and the "
-                "SuperDex Physics/Robotics runtime. Install it with "
-                "`uv sync --extra superdex` in a source checkout "
-                "(or `pip install unilab[superdex]`)."
-            )
-    if sim == "motrix" and find_spec("motrixsim") is None:
-        raise SystemExit(
-            "sim=motrix requires the Motrix extra. Install it with "
-            "`pip install unilab[motrix]` (or `uv sync --extra motrix` in a source checkout)."
-        )
-    if sim == "drake":
-        if find_spec("drake_uni") is None:
-            raise SystemExit(
-                "sim=drake requires the Drake extra and a built DrakeUni batch extension. "
-                "Run `make setup-drake` in a source checkout (or use the setup script directly)."
-            )
-        try:
-            from drake_uni.runtime import batch_diagnostics
-
-            diagnostics = batch_diagnostics()
-        except Exception as exc:
-            raise SystemExit(
-                "sim=drake could not load the Drake batch extension. "
-                "Set DRAKE_HOME and the platform library path (LD_LIBRARY_PATH on Linux, "
-                "DYLD_LIBRARY_PATH on macOS), then rerun `make setup-drake`; details: "
-                f"{exc}"
-            ) from exc
-        if not diagnostics.batch_available:
-            detail = diagnostics.batch_import_error or "unknown import error"
-            raise SystemExit(
-                f"sim=drake requires a working Drake batch extension; diagnostic reported: {detail}"
-            )
-    if sim == "isaacgym":
-        from unisim.backend.isaacgym.dependencies import isaacgym_runtime_available
-
-        if not isaacgym_runtime_available():
-            raise SystemExit(
-                "sim=isaacgym requires the external Python 3.8 worker runtime. "
-                "Install it with `scripts/tools/setup_isaacgym_env.sh` (see the "
-                "IsaacGym backend docs page)."
-            )
+    del algo
     if sim == "genesis":
         from unisim.backend.genesis.dependencies import genesis_dependencies_available
 
@@ -195,15 +146,6 @@ def _check_runtime_requirements(algo: str, sim: str) -> None:
                 "sim=genesis requires the genesis-world extra (pinned 1.3.3, torch>=2.8). "
                 "Install it with `pip install unilab[genesis]` (or `uv sync --extra genesis` "
                 "in a source checkout; see the Genesis backend docs page)."
-            )
-    if sim == "isaacsim":
-        from unisim.backend.isaacsim.dependencies import isaacsim_runtime_available
-
-        if not isaacsim_runtime_available():
-            raise SystemExit(
-                "sim=isaacsim requires the external Python 3.11 IsaacSim/IsaacLab worker "
-                "runtime. Install it with `scripts/tools/setup_isaacsim_env.sh` (see the "
-                "IsaacSim backend docs page)."
             )
 
 
@@ -229,47 +171,11 @@ def _override_value(overrides: Sequence[str], key: str) -> str | None:
     return selected
 
 
-def _needs_motrix_renderer(mode: str, sim: str, overrides: Sequence[str]) -> bool:
-    if sim != "motrix":
-        return False
-    play_render_mode = _override_value(overrides, "training.play_render_mode")
-    if play_render_mode is not None and play_render_mode.strip().lower() in {
-        "none",
-        "record",
-        "viser",
-    }:
-        return False
-    if mode == "eval":
-        return True
-    if mode == "train":
-        return _override_bool(overrides, "training.no_play") is not True
-    return False
-
-
 def _python_executable_for_route(mode: str, sim: str, overrides: Sequence[str]) -> str:
-    if platform.system() != "Darwin" or not _needs_motrix_renderer(mode, sim, overrides):
+    del mode, sim, overrides
+    if platform.system() != "Darwin":
         return sys.executable
-
-    return _mxpython_executable()
-
-
-def _mxpython_executable() -> str:
-    if Path(sys.executable).name == "mxpython":
-        return sys.executable
-
-    mxpython = shutil.which("mxpython")
-    if mxpython is not None:
-        return mxpython
-
-    venv_mxpython = Path(sys.executable).with_name("mxpython")
-    if venv_mxpython.is_file():
-        return str(venv_mxpython)
-
-    raise SystemExit(
-        "macOS Motrix playback uses the native renderer and must be launched with "
-        "`mxpython`. Install the Motrix extra so `mxpython` is on PATH, or use "
-        "`training.no_play=true` for non-rendering training."
-    )
+    return sys.executable
 
 
 def _mujoco_package_dir() -> Path:

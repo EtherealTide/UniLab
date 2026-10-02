@@ -176,9 +176,22 @@ def build_demo_command(
 
 
 def _mxpython_executable() -> str:
-    from unilab.cli import _mxpython_executable as resolve_mxpython_executable
+    if Path(sys.executable).name == "mxpython":
+        return sys.executable
 
-    return resolve_mxpython_executable()
+    mxpython = shutil.which("mxpython")
+    if mxpython is not None:
+        return mxpython
+
+    venv_mxpython = Path(sys.executable).with_name("mxpython")
+    if venv_mxpython.is_file():
+        return str(venv_mxpython)
+
+    raise SystemExit(
+        "The macOS teaser renderer uses Motrix's native renderer and must be "
+        "launched with `mxpython`. Install the Motrix extra so `mxpython` is on "
+        "PATH, or run the teaser on a non-macOS platform."
+    )
 
 
 def _run_teaser_demo() -> int:
