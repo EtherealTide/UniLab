@@ -2186,7 +2186,21 @@ class MotionResetOwner(ResetOwner):
 
     def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         rows = self._normalize_rows(env_ids)
-        extras, _commands = self._command_manager.reset_command_state(rows, publish_metrics=False)
+        extras, commands = self._command_manager.reset_command_state(
+            rows,
+            publish_metrics=False,
+            validate_commands=False,
+        )
+        # Validation stays at this owner boundary, but the fused command
+        # carrier is already one contiguous device tensor. A single finite
+        # reduction replaces the generic per-term full-command synchronization.
+        command = commands.get(self.cfg.command_name)
+        if command is None:
+            raise KeyError(f"Command term '{self.cfg.command_name}' is not configured")
+        if not bool(torch.isfinite(command).all()):
+            raise ValueError(
+                f"Motion reset owner command '{self.cfg.command_name}' returned NaN or Inf."
+            )
         return cast(dict[str, float], extras)
 
     def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:

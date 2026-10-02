@@ -372,6 +372,7 @@ class CommandManager(ManagerBase):
         env_ids: torch.Tensor | slice | None,
         *,
         publish_metrics: bool = True,
+        validate_commands: bool = True,
     ) -> tuple[dict[str, float], dict[str, torch.Tensor]]:
         """Reset command state once and return its public command carrier.
 
@@ -379,6 +380,11 @@ class CommandManager(ManagerBase):
         reset pass. Generic ``reset`` delegates the same term lifecycle and
         validation to it, avoiding a private owner copy of timer, metric, or
         finite-validation behavior.
+
+        Device-resident owners may set ``validate_commands=False`` only after
+        validating their fused carrier once at reset/commit boundaries; this
+        removes redundant full-command finite synchronization without weakening
+        the generic API default.
         """
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self._device)
@@ -393,6 +399,8 @@ class CommandManager(ManagerBase):
             self._last_term_reset_timing_ms.update(term.last_reset_timing_ms)
             for metric_name, metric_value in metrics.items():
                 extras[f"Metrics/{name}/{metric_name}"] = metric_value
+        if not validate_commands:
+            return extras, dict(reset_commands)
         validation_started = time.perf_counter()
         commands: list[torch.Tensor] = []
         labels: list[str] = []
