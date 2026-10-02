@@ -99,12 +99,12 @@ def test_torch_owner_fingerprint_fails_closed(mutate, monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(module, "create_backend", fail)
     with pytest.raises(ValueError, match="canonical owner contract"):
-        module.make_torch_g1_motion_tracking_flashsac_env(cfg, num_envs=2, backend_type="mujoco")
+        module._make_torch_g1_motion_tracking_flashsac_env(cfg, num_envs=2, backend_type="mujoco")
 
 
 def test_torch_terminations_do_not_inject_reward_contact_policy() -> None:
     """Only declared termination terms may terminate a G1 episode."""
-    env = module.TorchG1MotionTrackingFlashSACEnv.__new__(module.TorchG1MotionTrackingFlashSACEnv)
+    env = module._TorchG1MotionTrackingFlashSACEnv.__new__(module._TorchG1MotionTrackingFlashSACEnv)
     env._anchor_idx = 0
     env._ee_ids = torch.tensor([1], dtype=torch.int64)
     env._terminations = {
@@ -138,11 +138,11 @@ def test_torch_owner_rejects_fixed_model_variants_before_backend_creation(
 
     monkeypatch.setattr(module, "create_backend", fail)
     with pytest.raises(ValueError, match="does not support fixed model variants"):
-        module.make_torch_g1_motion_tracking_flashsac_env(cfg, num_envs=2, backend_type="mujoco")
+        module._make_torch_g1_motion_tracking_flashsac_env(cfg, num_envs=2, backend_type="mujoco")
 
 
 def test_torch_observation_noise_uses_configured_bounds_and_keeps_critic_clean() -> None:
-    env = module.TorchG1MotionTrackingFlashSACEnv.__new__(module.TorchG1MotionTrackingFlashSACEnv)
+    env = module._TorchG1MotionTrackingFlashSACEnv.__new__(module._TorchG1MotionTrackingFlashSACEnv)
     num_envs, num_joints, num_bodies = 2, 29, 2
     device = torch.device("cpu")
     env._torch = torch  # pyright: ignore[reportAttributeAccessIssue]
@@ -198,7 +198,7 @@ def test_torch_observation_noise_uses_configured_bounds_and_keeps_critic_clean()
 
 
 def test_second_g1_owner_keeps_actor_encoder_bias_out_of_critic() -> None:
-    env = module.TorchG1MotionTrackingFlashSACEnv.__new__(module.TorchG1MotionTrackingFlashSACEnv)
+    env = module._TorchG1MotionTrackingFlashSACEnv.__new__(module._TorchG1MotionTrackingFlashSACEnv)
     env._torch = torch
     env._device = torch.device("cpu")
     env._actor_joint_pos_biased = True
@@ -241,7 +241,7 @@ def test_second_g1_owner_keeps_actor_encoder_bias_out_of_critic() -> None:
 def test_manual_torch_reset_clears_only_selected_done_flags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    env = module.TorchG1MotionTrackingFlashSACEnv.__new__(module.TorchG1MotionTrackingFlashSACEnv)
+    env = module._TorchG1MotionTrackingFlashSACEnv.__new__(module._TorchG1MotionTrackingFlashSACEnv)
     env._num_envs = 3
     env._device = torch.device("cpu")
     env._state = TorchEnvState(
@@ -293,7 +293,7 @@ def test_torch_device_state_store_renegotiates_and_preserves_policy_sensor_bound
             shape = (2, 4) if "quat" in prefix else (2, 3)
             return torch.full(shape, 2.0, device=device)
 
-    env = module.TorchG1MotionTrackingFlashSACEnv.__new__(module.TorchG1MotionTrackingFlashSACEnv)
+    env = module._TorchG1MotionTrackingFlashSACEnv.__new__(module._TorchG1MotionTrackingFlashSACEnv)
     env._device = torch.device("cpu")
     env._state_store = module.TensorDeviceStateStore(
         backend=Backend(),  # pyright: ignore[reportArgumentType]
@@ -315,7 +315,7 @@ def test_torch_device_state_store_renegotiates_and_preserves_policy_sensor_bound
 def test_torch_owner_close_drops_backend_view_aliases_before_backend_cleanup() -> None:
     """Owner teardown must relinquish CUDA IPC views before backend close."""
     backend = SimpleNamespace(cleanup_scene_assets=lambda: None)
-    env = module.TorchG1MotionTrackingFlashSACEnv.__new__(module.TorchG1MotionTrackingFlashSACEnv)
+    env = module._TorchG1MotionTrackingFlashSACEnv.__new__(module._TorchG1MotionTrackingFlashSACEnv)
     env._backend = backend
     env._state_store = SimpleNamespace()
     env._qpos = torch.zeros(1)
@@ -398,7 +398,7 @@ def test_torch_backend_validation_is_capability_driven(
         def get_body_ids(self, names):
             return np.arange(len(names), dtype=np.intp)
 
-    env = module.TorchG1MotionTrackingFlashSACEnv.__new__(module.TorchG1MotionTrackingFlashSACEnv)
+    env = module._TorchG1MotionTrackingFlashSACEnv.__new__(module._TorchG1MotionTrackingFlashSACEnv)
     env._cfg = _materialize_task("g1_motion_tracking/mujoco")
     env._device = torch.device("cpu")
     env._backend = Backend()
@@ -446,7 +446,7 @@ def test_g1_backend_validation_accepts_cuda_family_and_current_exact_device(exac
         def get_body_ids(self, names):
             return np.arange(len(names), dtype=np.intp)
 
-    env = module.TorchG1MotionTrackingFlashSACEnv.__new__(module.TorchG1MotionTrackingFlashSACEnv)
+    env = module._TorchG1MotionTrackingFlashSACEnv.__new__(module._TorchG1MotionTrackingFlashSACEnv)
     env._cfg = _materialize_task("g1_motion_tracking/mujoco")
     env._device = torch.device("cuda", index=torch.cuda.current_device())
     env._backend = Backend()
@@ -472,7 +472,7 @@ def test_g1_backend_validation_rejects_wrong_exact_cuda_device() -> None:
                 torch_devices=(f"cuda:{wrong_index}",),
             )
 
-    env = module.TorchG1MotionTrackingFlashSACEnv.__new__(module.TorchG1MotionTrackingFlashSACEnv)
+    env = module._TorchG1MotionTrackingFlashSACEnv.__new__(module._TorchG1MotionTrackingFlashSACEnv)
     env._device = torch.device("cuda", index=torch.cuda.current_device())
     env._backend = Backend()
 
@@ -500,11 +500,11 @@ def test_torch_factory_delegates_noncanonical_backends_to_capability_validation(
     monkeypatch.setattr(module, "create_backend", fake_create_backend)
     monkeypatch.setattr(
         module,
-        "TorchG1MotionTrackingFlashSACEnv",
+        "_TorchG1MotionTrackingFlashSACEnv",
         lambda cfg, backend, num_envs, device: (sentinel, backend),
     )
 
-    result = module.make_torch_g1_motion_tracking_flashsac_env(
+    result = module._make_torch_g1_motion_tracking_flashsac_env(
         cfg,
         num_envs=2,
         backend_type="fake-device",
@@ -527,7 +527,7 @@ def test_device_resident_cold_contract_proxy_skips_generic_tensor_reads() -> Non
 def test_torch_g1_runtime_rng_is_torch_native_and_reseedable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    env = module.TorchG1MotionTrackingFlashSACEnv.__new__(module.TorchG1MotionTrackingFlashSACEnv)
+    env = module._TorchG1MotionTrackingFlashSACEnv.__new__(module._TorchG1MotionTrackingFlashSACEnv)
     env._torch = torch
     env._device = torch.device("cpu")
     env._num_envs = 2

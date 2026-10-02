@@ -366,7 +366,7 @@ class _DeviceResidentColdContractProxy(ManagerBasedRlEnv):
         object.__setattr__(self.scene, "bind_sensor_data", lambda _names: view)
 
 
-class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
+class _TorchG1MotionTrackingFlashSACEnv(TorchEnv):
     """GPU runtime for the exact canonical G1 FlashSAC owner contract."""
 
     is_vector_env = True
@@ -424,7 +424,7 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
 
         self._torch = torch
         if self._device.type != "cuda" or not torch.cuda.is_available():
-            raise RuntimeError("TorchG1MotionTrackingFlashSACEnv requires CUDA")
+            raise RuntimeError("Torch G1 FlashSAC runtime requires CUDA")
         if backend.num_envs != self._num_envs:
             raise ValueError("backend num_envs does not match the environment")
         # External-worker backends publish their runtime-dependent tensor
@@ -828,11 +828,11 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
 
     def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:
         """Direct runtime actions are fused into :meth:`step`; not reusable."""
-        raise NotImplementedError("TorchG1MotionTrackingFlashSACEnv fuses apply_action into step")
+        raise NotImplementedError("Torch G1 FlashSAC runtime fuses apply_action into step")
 
     def update_state(self, state: TorchEnvState) -> TorchEnvState:
         """Direct runtime state updates are fused into :meth:`step`; not reusable."""
-        raise NotImplementedError("TorchG1MotionTrackingFlashSACEnv fuses update_state into step")
+        raise NotImplementedError("Torch G1 FlashSAC runtime fuses update_state into step")
 
     def init_state(self) -> TorchEnvState:
         if self._state is not None:
@@ -1501,7 +1501,7 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
     cleanup = close
 
 
-def make_torch_g1_motion_tracking_flashsac_env(
+def _make_torch_g1_motion_tracking_flashsac_env(
     cfg: ManagerBasedRlEnvCfg,
     num_envs: int = 1,
     backend_type: str = "mujoco",
@@ -1529,13 +1529,13 @@ def make_torch_g1_motion_tracking_flashsac_env(
         **kwargs,
     )
     try:
-        return TorchG1MotionTrackingFlashSACEnv(cfg, backend, num_envs, device="cuda")
+        return _TorchG1MotionTrackingFlashSACEnv(cfg, backend, num_envs, device="cuda")
     except BaseException:
         backend.cleanup_scene_assets()
         raise
 
 
 __all__ = [
-    "TorchG1MotionTrackingFlashSACEnv",
-    "make_torch_g1_motion_tracking_flashsac_env",
+    "_TorchG1MotionTrackingFlashSACEnv",
+    "_make_torch_g1_motion_tracking_flashsac_env",
 ]
