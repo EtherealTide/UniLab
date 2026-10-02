@@ -1195,11 +1195,10 @@ class ManagerBasedRlEnv(TorchEnv):
             # Queue drain and the same boundary inside termination are excluded:
             # they drain pre-update GPU work already timed by step_core_ms.
             drain_ns = int(float(timing["update_state_queue_drain_ms"]) * 1.0e6)
+            child_sum_ms = sum(float(value) for value in update_children)
+            timing["update_state_child_sum_ms"] = child_sum_ms
             timing["update_state_nonattributed_ms"] = (
-                time.perf_counter_ns()
-                - update_started_ns
-                - sum(int(float(value) * 1.0e6) for value in update_children)
-                + drain_ns
+                time.perf_counter_ns() - update_started_ns - child_sum_ms * 1.0e6 + drain_ns
             ) / 1.0e6
             timing["update_state_timing_epilogue_ms"] = (
                 time.perf_counter_ns() - epilogue_started_ns
