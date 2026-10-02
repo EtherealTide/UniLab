@@ -137,7 +137,6 @@ class MetricsManager(ManagerBase):
             if reduce == "max":
                 values = self._episode_max[key][mask]
                 extras["Episode_Metrics/" + key] = self._log_mean(values)
-                self._episode_max[key].masked_fill_(mask, float("-inf"))
 
             elif reduce == "last":
                 extras["Episode_Metrics/" + key] = self._log_mean(self._step_values[mask, idx])
@@ -149,16 +148,28 @@ class MetricsManager(ManagerBase):
                 values = self._episode_sums[key][mask] / safe_counts
                 extras["Episode_Metrics/" + key] = self._log_mean(values)
 
-            self._episode_sums[key].masked_fill_(mask, 0.0)
-        self._step_count.masked_fill_(mask, 0)
+        self.clear_episode_state(env_ids)
+        return extras
 
+    def clear_episode_state(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        """Clear selected episode accumulators without publishing summaries.
+
+        Reset owners consume this boundary when they own metric reset. Generic
+        reset behavior remains publication followed by this same selected-row
+        state clear.
+        """
+        if env_ids is None:
+            env_ids = slice(None)
+        mask = self._reset_mask(env_ids)
+        for key in self._episode_sums:
+            self._episode_sums[key].masked_fill_(mask, 0.0)
+            if key in self._episode_max:
+                self._episode_max[key].masked_fill_(mask, float("-inf"))
+        self._step_count.masked_fill_(mask, 0)
         for buf in self._substep_accum:
             buf.masked_fill_(mask, 0.0)
-
         for term_cfg in self._class_term_cfgs:
             term_cfg.func.reset(env_ids=env_ids)
-
-        return extras
 
     def compute_substep(self) -> None:
         """Accumulate per-substep metric values inside the decimation loop.
