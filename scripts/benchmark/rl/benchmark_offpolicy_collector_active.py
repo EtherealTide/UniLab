@@ -88,6 +88,8 @@ ENV_STEP_TIMING_KEYS = (
     "update_state_queue_drain_ms",
     "update_state_termination_ms",
     "update_state_termination_host_ms",
+    "update_state_termination_term_dispatch_ms",
+    "update_state_termination_aggregation_ms",
     "update_state_reward_ms",
     "update_state_reset_flags_ms",
     "update_state_metrics_ms",

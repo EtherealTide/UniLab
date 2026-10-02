@@ -1076,6 +1076,7 @@ class ManagerBasedRlEnv(TorchEnv):
         termination_compute_started = time.perf_counter()
         self.termination_manager.compute()
         termination_compute_ms = (time.perf_counter() - termination_compute_started) * 1000.0
+        timing.update(getattr(self.termination_manager, "last_step_timing_ms", {}))
         # Termination is normally the first update-state reduction after the
         # backend step. Its wall time can therefore drain pre-update GPU work;
         # keep that synchronization attribution separate from Manager work.
