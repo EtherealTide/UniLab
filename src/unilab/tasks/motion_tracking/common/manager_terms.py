@@ -1427,19 +1427,19 @@ class TensorMotionCommand(MotionCommand):
         self._tensor_resample_ingested = None
         terminated = cast(torch.Tensor, self._env.termination_manager.terminated)
         self.tensor_sampler.update_failure_stats(terminated)
-        timing["reset_done_motion_failure_stats_ms"] = (
+        timing["update_state_motion_failure_stats_ms"] = (
             time.perf_counter() - failure_started
         ) * 1000.0
         sampler_started = time.perf_counter()
         wrap_rows = self._step_tensor_sampler()
-        timing["reset_done_motion_step_sampler_ms"] = (
+        timing["update_state_motion_step_sampler_ms"] = (
             time.perf_counter() - sampler_started
         ) * 1000.0
         if wrap_rows.numel() and not self.cfg.params.truncate_on_clip_end:
             self._resample_command(wrap_rows)
         refresh_started = time.perf_counter()
         self._refresh_motion_torch()
-        timing["reset_done_motion_refresh_current_ms"] = (
+        timing["update_state_motion_refresh_current_ms"] = (
             time.perf_counter() - refresh_started
         ) * 1000.0
 

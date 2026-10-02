@@ -1141,6 +1141,7 @@ class ManagerBasedRlEnv(TorchEnv):
         with step_reset_context:
             self.command_manager.compute(dt=self._command_dt)
             step_timing = getattr(self.command_manager, "last_step_timing_ms", {})
+            state.info["update_state_timing"] = dict(step_timing)
             timing.update(step_timing)
         timing["update_state_command_compute_ms"] = (time.perf_counter() - command_started) * 1000.0
         command_epilogue_started = time.perf_counter()

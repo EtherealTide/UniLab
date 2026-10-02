@@ -82,9 +82,9 @@ RESET_DONE_DETAIL_TIMING_KEYS = (
 )
 
 UPDATE_STATE_DETAIL_TIMING_KEYS = (
-    "reset_done_motion_failure_stats_ms",
-    "reset_done_motion_step_sampler_ms",
-    "reset_done_motion_refresh_current_ms",
+    "update_state_motion_failure_stats_ms",
+    "update_state_motion_step_sampler_ms",
+    "update_state_motion_refresh_current_ms",
 )
 
 BACKEND_SET_STATE_DETAIL_TIMING_KEYS = (
