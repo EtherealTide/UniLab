@@ -1067,9 +1067,13 @@ class TensorMotionCommand(MotionCommand):
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         host_rows = env_ids.detach().cpu().numpy()
+        sampler_started = time.perf_counter()
         frames = self.sampler.sample_frames(host_rows)
+        sampler_ms = (time.perf_counter() - sampler_started) * 1000.0
         rows = env_ids.to(dtype=torch.int64)
+        packet_started = time.perf_counter()
         packet = self._motion_packet(frames)
+        packet_ms = (time.perf_counter() - packet_started) * 1000.0
         offsets = self._motion_feature_offsets
         tails = self._motion_feature_tail_shapes
         if self._env.torch_rng is None:
@@ -1088,6 +1092,8 @@ class TensorMotionCommand(MotionCommand):
             (rows.numel(), 6),
             dtype=torch.float32,
         )
+        rng_ms = (time.perf_counter() - sampler_started) * 1000.0 - sampler_ms - packet_ms
+        construction_started = time.perf_counter()
         joint_start, joint_end = offsets["joint_pos"]
         joint_pos = packet[:, joint_start:joint_end].clone()
         joint_pos += self._env.torch_rng.uniform(
@@ -1125,9 +1131,21 @@ class TensorMotionCommand(MotionCommand):
             dim=-1,
         )
         self.robot.write_root_state_tensor_to_sim(root_state, env_ids=rows)
+        construction_ms = (time.perf_counter() - construction_started) * 1000.0
+        publish_started = time.perf_counter()
         self._ingest_motion_packet(rows, packet)
+        publish_ms = (time.perf_counter() - publish_started) * 1000.0
         self._resample_ingested_ids = host_rows
         self._resample_motion = None
+        self.last_reset_timing_ms.update(
+            {
+                "reset_done_motion_sampler_ms": sampler_ms,
+                "reset_done_motion_packet_ms": packet_ms,
+                "reset_done_motion_reset_rng_ms": rng_ms,
+                "reset_done_motion_reset_construction_ms": construction_ms,
+                "reset_done_motion_reset_publish_ms": publish_ms,
+            }
+        )
         self._sync_tensor_sampler_state()
 
     def _update_command(self, env_ids: torch.Tensor | None) -> None:
