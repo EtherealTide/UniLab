@@ -47,7 +47,7 @@ jobs:
         run: uv run --no-project python scripts/tools/sync_tensor_workspace.py --sync
       - name: Install CPU runtime
         run: |
-          uv sync --extra mujoco --extra motrix \
+          uv sync --extra mujoco \
             --no-install-package torch \
             --no-install-package nvidia-cublas-cu12 \
             --no-install-package nvidia-cuda-cupti-cu12 \
