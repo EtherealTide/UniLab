@@ -26,6 +26,7 @@ RESET_DONE_DETAIL_TIMING_KEYS = (
     "reset_done_motion_reset_write_ms",
     "reset_done_motion_reset_publish_ms",
     "reset_done_reset_commit_ms",
+    "reset_done_reset_validation_ms",
     "reset_done_command_refresh_ms",
     "reset_done_command_post_compute_ms",
     "reset_done_motion_robot_refresh_ms",
