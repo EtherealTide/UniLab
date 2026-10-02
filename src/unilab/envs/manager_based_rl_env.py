@@ -1101,6 +1101,7 @@ class ManagerBasedRlEnv(TorchEnv):
         timing["update_state_metrics_ms"] = (time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
 
+        events_started = time.perf_counter()
         applied_runtime_event = False
         if "step" in self.event_manager.available_modes:
             self.event_manager.apply(mode="step", dt=self.step_dt)
@@ -1114,6 +1115,7 @@ class ManagerBasedRlEnv(TorchEnv):
             # particular interval fired, so this boundary stays fail-closed.
             self.scene._invalidate_state_reads()
             self._refresh_tensor_reads_after_mutation()
+        timing["update_state_events_ms"] = (time.perf_counter() - events_started) * 1000.0
 
         command_preflight_started = time.perf_counter()
         self._command_dt.fill_(self.step_dt)
