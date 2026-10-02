@@ -22,7 +22,7 @@ def test_discover_preserves_standard_task_layout() -> None:
 
     discovered = audit._discover("ppo")
 
-    assert {"mujoco", "motrix", "genesis", "newton"}.issubset(discovered["g1_walk_flat"])
+    assert {"mujoco", "mjwarp", "genesis"}.issubset(discovered["g1_walk_flat"])
 
 
 def test_discover_offpolicy_trees_group_by_task() -> None:
@@ -32,26 +32,17 @@ def test_discover_offpolicy_trees_group_by_task() -> None:
     flashsac = audit._discover("flashsac")
     warpsac = audit._discover("warpsac")
 
-    assert {
-        "mujoco",
-        "motrix",
-        "mjwarp",
-        "isaacgym",
-        "genesis",
-        "isaacsim",
-    }.issubset(sac["g1_walk_flat"])
-    assert {"mujoco", "motrix", "mjwarp"}.issubset(flashsac["g1_walk_flat"])
+    assert {"mujoco", "mjwarp", "genesis"}.issubset(sac["g1_walk_flat"])
+    assert {"mujoco", "mjwarp"}.issubset(flashsac["g1_walk_flat"])
     assert {"mujoco", "mjwarp"}.issubset(warpsac["g1_walk_flat"])
 
 
-def test_go2_superdex_pair_is_audited_and_transferable(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_g1_genesis_pair_is_audited_and_transferable(monkeypatch: pytest.MonkeyPatch) -> None:
     audit = _load_audit_module()
-    monkeypatch.setattr(
-        audit, "_discover", lambda tree: {"go2_joystick_flat": ["mujoco", "superdex"]}
-    )
+    monkeypatch.setattr(audit, "_discover", lambda tree: {"g1_walk_flat": ["mujoco", "genesis"]})
     rows = audit.audit_tree("ppo")
     assert rows[0]["errors"] == {}
-    assert rows[0]["pairs"][0]["pair"] == "mujoco<->superdex"
+    assert rows[0]["pairs"][0]["pair"] == "mujoco<->genesis"
     assert rows[0]["pairs"][0]["verdict"] == "TRANSFERABLE"
     assert rows[0]["pairs"][0]["warn_diffs"] == []
 
@@ -79,14 +70,14 @@ def test_audit_tree_compares_one_offpolicy_backend_pair(
     monkeypatch.setattr(
         audit,
         "_discover",
-        lambda tree: {"g1_walk_flat": ["motrix", "mujoco"]},
+        lambda tree: {"g1_walk_flat": ["mjwarp", "mujoco"]},
     )
 
     rows = audit.audit_tree("flashsac")
 
     assert len(rows) == 1
     assert rows[0]["task"] == "g1_walk_flat"
-    assert rows[0]["backends"] == ["motrix", "mujoco"]
+    assert rows[0]["backends"] == ["mjwarp", "mujoco"]
     assert rows[0]["errors"] == {}
 
 
