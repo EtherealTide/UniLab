@@ -268,6 +268,15 @@ class CommandTerm(ManagerTermBase):
     def post_compute(self) -> None:
         """Refresh state that depends on committed command-side simulation writes."""
 
+    def bind_read_phase(self) -> None:
+        """Bind command state that requires the scene's tensor read phase.
+
+        The default command owns no scene reads. Device-resident terms may
+        override this hook to obtain stable public views after the Manager has
+        compiled its packed read plan, avoiding construction-order coupling to
+        ``EntityScene._tensor_read_plan``.
+        """
+
 
 class CommandManager(ManagerBase):
     """Manages command generation for the environment.
@@ -334,6 +343,10 @@ class CommandManager(ManagerBase):
     def post_compute(self) -> None:
         for term in self._terms.values():
             term.post_compute()
+
+    def bind_read_phase(self) -> None:
+        for term in self._terms.values():
+            term.bind_read_phase()
 
     def get_command(self, name: str) -> torch.Tensor:
         return self._validate_command(name, self._terms[name].command)
@@ -410,6 +423,9 @@ class NullCommandManager:
         pass
 
     def post_compute(self) -> None:
+        pass
+
+    def bind_read_phase(self) -> None:
         pass
 
     def get_command(self, name: str) -> None:

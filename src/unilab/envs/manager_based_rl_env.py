@@ -433,6 +433,7 @@ class ManagerBasedRlEnv(TorchEnv):
             self.event_manager.apply(mode="startup")
         self._materialize_backend()
         self._compile_tensor_read_plan()
+        self.command_manager.bind_read_phase()
         self._validate_manager_tensor_runtime()
 
     def _compile_tensor_read_plan(self) -> None:
