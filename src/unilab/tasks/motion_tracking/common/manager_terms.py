@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, cast
 
 import numpy as np
 import torch
@@ -851,6 +851,30 @@ class _NumbaBodyTerm(_BodyTerm):
     def _kernel_std(self, scale: float) -> float:
         return cast(float, self._kernel_result.dtype.type(scale))
 
+    def _body_reduce(
+        self,
+        command: MotionCommand,
+        reference_attr: str,
+        actual_attr: str,
+        kernel: Callable[[np.ndarray, np.ndarray, np.ndarray, float, np.ndarray], None],
+        scale: float,
+    ) -> np.ndarray | torch.Tensor:
+        """Dispatch one fixed body-error reduction on the command's carrier."""
+        reference = getattr(command, reference_attr)
+        actual = getattr(command, actual_attr)
+        if self._tensor_carrier:
+            assert isinstance(reference, torch.Tensor)
+            assert isinstance(actual, torch.Tensor)
+            return self._tensor_body_reduce(reference, actual, scale)
+        kernel(
+            reference,
+            actual,
+            self._kernel_body_ids,
+            self._kernel_std(scale),
+            self._kernel_result,
+        )
+        return self._kernel_result
+
     def _tensor_body_reduce(
         self,
         reference: torch.Tensor,
@@ -865,19 +889,20 @@ class _NumbaBodyTerm(_BodyTerm):
             error = angle.square().sum(dim=-1)
         else:
             error = (reference - actual).square().sum(dim=(-1, -2))
-        return torch.exp(-error / (scale * scale))
+        body_count = reference.shape[-2]
+        return torch.exp(-error / (body_count * scale * scale))
 
 
 class motion_relative_body_position_error_exp(_NumbaBodyTerm):
     def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
         command = _command(env, self._command_name)
-        reward_motion_body_pos_kernel(
-            command.body_pos_relative_w,
-            command.robot_body_pos_w,
-            self._kernel_body_ids,
-            self._kernel_std(1.0),
-            self._kernel_result,
+        self._body_reduce(
+            command,
+            "body_pos_relative_w",
+            "robot_body_pos_w",
+            reward_motion_body_pos_kernel,
+            1.0,
         )
 
     def __call__(
@@ -886,29 +911,28 @@ class motion_relative_body_position_error_exp(_NumbaBodyTerm):
         command_name: str,
         std: float,
         body_names: tuple[str, ...] | None = None,
-    ) -> np.ndarray:
+    ) -> np.ndarray | torch.Tensor:
         del env, body_names
         command, scale = self._validate(command_name, std)
-        reward_motion_body_pos_kernel(
-            command.body_pos_relative_w,
-            command.robot_body_pos_w,
-            self._kernel_body_ids,
-            self._kernel_std(scale),
-            self._kernel_result,
+        return self._body_reduce(
+            command,
+            "body_pos_relative_w",
+            "robot_body_pos_w",
+            reward_motion_body_pos_kernel,
+            scale,
         )
-        return self._kernel_result
 
 
 class motion_relative_body_orientation_error_exp(_NumbaBodyTerm):
     def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
         command = _command(env, self._command_name)
-        reward_motion_body_ori_kernel(
-            command.body_quat_relative_w,
-            command.robot_body_quat_w,
-            self._kernel_body_ids,
-            self._kernel_std(1.0),
-            self._kernel_result,
+        self._body_reduce(
+            command,
+            "body_quat_relative_w",
+            "robot_body_quat_w",
+            reward_motion_body_ori_kernel,
+            1.0,
         )
 
     def __call__(
@@ -917,29 +941,28 @@ class motion_relative_body_orientation_error_exp(_NumbaBodyTerm):
         command_name: str,
         std: float,
         body_names: tuple[str, ...] | None = None,
-    ) -> np.ndarray:
+    ) -> np.ndarray | torch.Tensor:
         del env, body_names
         command, scale = self._validate(command_name, std)
-        reward_motion_body_ori_kernel(
-            command.body_quat_relative_w,
-            command.robot_body_quat_w,
-            self._kernel_body_ids,
-            self._kernel_std(scale),
-            self._kernel_result,
+        return self._body_reduce(
+            command,
+            "body_quat_relative_w",
+            "robot_body_quat_w",
+            reward_motion_body_ori_kernel,
+            scale,
         )
-        return self._kernel_result
 
 
 class motion_global_body_linear_velocity_error_exp(_NumbaBodyTerm):
     def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
         command = _command(env, self._command_name)
-        reward_motion_body_lin_vel_kernel(
-            command.body_lin_vel_w,
-            command.robot_body_lin_vel_w,
-            self._kernel_body_ids,
-            self._kernel_std(1.0),
-            self._kernel_result,
+        self._body_reduce(
+            command,
+            "body_lin_vel_w",
+            "robot_body_lin_vel_w",
+            reward_motion_body_lin_vel_kernel,
+            1.0,
         )
 
     def __call__(
@@ -948,29 +971,28 @@ class motion_global_body_linear_velocity_error_exp(_NumbaBodyTerm):
         command_name: str,
         std: float,
         body_names: tuple[str, ...] | None = None,
-    ) -> np.ndarray:
+    ) -> np.ndarray | torch.Tensor:
         del env, body_names
         command, scale = self._validate(command_name, std)
-        reward_motion_body_lin_vel_kernel(
-            command.body_lin_vel_w,
-            command.robot_body_lin_vel_w,
-            self._kernel_body_ids,
-            self._kernel_std(scale),
-            self._kernel_result,
+        return self._body_reduce(
+            command,
+            "body_lin_vel_w",
+            "robot_body_lin_vel_w",
+            reward_motion_body_lin_vel_kernel,
+            scale,
         )
-        return self._kernel_result
 
 
 class motion_global_body_angular_velocity_error_exp(_NumbaBodyTerm):
     def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
         command = _command(env, self._command_name)
-        reward_motion_body_ang_vel_kernel(
-            command.body_ang_vel_w,
-            command.robot_body_ang_vel_w,
-            self._kernel_body_ids,
-            self._kernel_std(1.0),
-            self._kernel_result,
+        self._body_reduce(
+            command,
+            "body_ang_vel_w",
+            "robot_body_ang_vel_w",
+            reward_motion_body_ang_vel_kernel,
+            1.0,
         )
 
     def __call__(
@@ -979,17 +1001,16 @@ class motion_global_body_angular_velocity_error_exp(_NumbaBodyTerm):
         command_name: str,
         std: float,
         body_names: tuple[str, ...] | None = None,
-    ) -> np.ndarray:
+    ) -> np.ndarray | torch.Tensor:
         del env, body_names
         command, scale = self._validate(command_name, std)
-        reward_motion_body_ang_vel_kernel(
-            command.body_ang_vel_w,
-            command.robot_body_ang_vel_w,
-            self._kernel_body_ids,
-            self._kernel_std(scale),
-            self._kernel_result,
+        return self._body_reduce(
+            command,
+            "body_ang_vel_w",
+            "robot_body_ang_vel_w",
+            reward_motion_body_ang_vel_kernel,
+            scale,
         )
-        return self._kernel_result
 
 
 class motion_relative_body_position_z_error_exp(_BodyTerm):
