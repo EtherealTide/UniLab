@@ -2587,6 +2587,38 @@ class Entity:
             term_name=f"{self.name}.write_joint_state_tensor_to_sim",
         )
 
+    def write_motion_state_tensor_to_sim(
+        self,
+        root_state: torch.Tensor,
+        position: torch.Tensor,
+        velocity: torch.Tensor,
+        env_ids: torch.Tensor,
+    ) -> None:
+        """Stage one device-resident motion root and selected joint state."""
+        if self._physical_entity is not None:
+            raise NotImplementedError(
+                "mapped entity tensor motion-state reset requires a public entity transaction"
+            )
+        reset_state, layout = self._require_root_state_write()
+        if self._joint_names is None:
+            raise self._capability_error(
+                "tensor reset motion-state write",
+                "joint_names were not declared in EntityCfg",
+            )
+        self._materialize_reset_joint_indices()
+        assert self._reset_joint_qpos_ids is not None
+        assert self._reset_joint_qvel_ids is not None
+        reset_state.write_motion_state_tensor(
+            env_ids,
+            layout,
+            self._reset_joint_qpos_ids,
+            self._reset_joint_qvel_ids,
+            root_state,
+            position,
+            velocity,
+            term_name=f"{self.name}.write_motion_state_tensor_to_sim",
+        )
+
     def bind_actuator_gain_write(
         self,
         actuator_ids: np.ndarray | Sequence[int] | slice | None = None,

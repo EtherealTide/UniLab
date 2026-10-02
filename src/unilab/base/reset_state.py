@@ -1182,6 +1182,80 @@ class ResetStateTransaction:
         qvel[rows[:, None], qvel_columns_t[None, :]] = root_state[:, 7:13]
         self._tensor_has_writes = True
 
+    def write_motion_state_tensor(
+        self,
+        env_ids: torch.Tensor,
+        layout: BackendRootStateLayout,
+        qpos_indices: np.ndarray,
+        qvel_indices: np.ndarray,
+        root_state: torch.Tensor,
+        joint_position: torch.Tensor,
+        joint_velocity: torch.Tensor,
+        *,
+        term_name: str,
+    ) -> None:
+        """Stage one owner-built motion root and joint state in one transaction.
+
+        Unlike the two ordinary tensor writes, this boundary performs one
+        combined finite validation. Quaternion validity remains checked only on
+        the root segment that owns a quaternion; joint payloads are validated as
+        finite values but intentionally have no orientation semantics.
+        """
+        rows = self._prepare_tensor_state_write(
+            env_ids, capability="write_motion_state_tensor", term_name=term_name
+        )
+        qpos_columns, qvel_columns = self._tensor_joint_columns_for_indices(
+            qpos_indices, qvel_indices, term_name=term_name
+        )
+        width = qpos_columns.numel()
+        if qvel_columns.numel() != width:
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor motion-state qpos/qvel index "
+                f"counts differ: {width} != {qvel_columns.numel()}"
+            )
+        if root_state.ndim != 2 or tuple(root_state.shape) != (rows.numel(), 13):
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor motion root state must have shape "
+                f"{(rows.numel(), 13)}; got {tuple(root_state.shape)}"
+            )
+        expected_joint_shape = (rows.numel(), width)
+        if tuple(joint_position.shape) != expected_joint_shape:
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor motion joint position must have "
+                f"shape {expected_joint_shape}; got {tuple(joint_position.shape)}"
+            )
+        if joint_velocity.shape != joint_position.shape:
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor motion joint velocity must have "
+                f"shape {tuple(joint_position.shape)}; got {tuple(joint_velocity.shape)}"
+            )
+        for name, values in (
+            ("root state", root_state),
+            ("joint position", joint_position),
+            ("joint velocity", joint_velocity),
+        ):
+            if values.dtype != torch.float32 or not values.is_contiguous():
+                raise TypeError(
+                    f"EventManager term '{term_name}' tensor motion {name} must be "
+                    "contiguous float32"
+                )
+            if not bool(torch.isfinite(values).all()):
+                raise ValueError(
+                    f"EventManager term '{term_name}' tensor motion {name} contains NaN or Inf"
+                )
+        self._validate_tensor_root_quaternions(root_state[:, 3:7], term_name=term_name)
+        qpos = self._tensor_qpos
+        qvel = self._tensor_qvel
+        assert qpos is not None and qvel is not None
+        root_qpos_columns, root_qvel_columns = self._tensor_root_columns_for_layout(
+            layout, term_name=term_name
+        )
+        qpos[rows[:, None], root_qpos_columns[None, :]] = root_state[:, :7]
+        qvel[rows[:, None], root_qvel_columns[None, :]] = root_state[:, 7:13]
+        qpos[rows[:, None], qpos_columns[None, :]] = joint_position
+        qvel[rows[:, None], qvel_columns[None, :]] = joint_velocity
+        self._tensor_has_writes = True
+
     def write_joint_state_tensor(
         self,
         env_ids: torch.Tensor,
