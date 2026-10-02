@@ -627,6 +627,11 @@ class MotionCommand(CommandTerm):
         self._refresh_robot_state(force=True, env_ids=env_ids)
         self._refresh_relative_state(env_ids)
 
+    @property
+    def tensor_carrier(self) -> bool:
+        """Whether this command's public state buffers are Torch tensors."""
+        return False
+
 
 @dataclass(kw_only=True)
 class MotionJointPositionActionCfg(JointPositionActionCfg):
@@ -836,10 +841,31 @@ class _NumbaBodyTerm(_BodyTerm):
             body_ids = self._body_ids
         body_ids.setflags(write=False)
         self._kernel_body_ids = body_ids
-        self._kernel_result = np.empty(self.num_envs, dtype=command.body_pos_relative_w.dtype)
+        tensor_carrier = bool(getattr(command, "tensor_carrier", False))
+        dtype: np.dtype[Any] = (
+            np.dtype(np.float32) if tensor_carrier else np.dtype(command.body_pos_relative_w.dtype)
+        )
+        self._kernel_result = np.empty(self.num_envs, dtype=dtype)
+        self._tensor_carrier = tensor_carrier
 
     def _kernel_std(self, scale: float) -> float:
         return cast(float, self._kernel_result.dtype.type(scale))
+
+    def _tensor_body_reduce(
+        self,
+        reference: torch.Tensor,
+        actual: torch.Tensor,
+        scale: float,
+    ) -> torch.Tensor:
+        """Tensor peer of the four fixed Numba squared-error reductions."""
+        if reference.ndim == 3 and reference.shape[-1] == 4:
+            rel = quat_mul(quat_conjugate(reference), actual)
+            xyz = torch.linalg.vector_norm(rel[..., 1:4], dim=-1)
+            angle = 2.0 * torch.atan2(xyz, rel[..., 0].abs().clamp(max=1.0))
+            error = angle.square().sum(dim=-1)
+        else:
+            error = (reference - actual).square().sum(dim=(-1, -2))
+        return torch.exp(-error / (scale * scale))
 
 
 class motion_relative_body_position_error_exp(_NumbaBodyTerm):
