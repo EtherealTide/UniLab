@@ -126,12 +126,13 @@ class CommandTerm(ManagerTermBase):
                 metric_value[env_ids] = 0.0
         metrics_ms = (time.perf_counter() - metrics_started) * 1000.0
         self.command_counter[env_ids] = 0
+        self.last_reset_timing_ms.clear()
         resample_started = time.perf_counter()
         self._resample(env_ids)
-        self.last_reset_timing_ms = {
-            "reset_done_command_metrics_ms": metrics_ms,
-            "reset_done_command_resample_ms": (time.perf_counter() - resample_started) * 1000.0,
-        }
+        self.last_reset_timing_ms["reset_done_command_metrics_ms"] = metrics_ms
+        self.last_reset_timing_ms["reset_done_command_resample_ms"] = (
+            time.perf_counter() - resample_started
+        ) * 1000.0
         return extras
 
     def compute(
