@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Literal, cast
 
@@ -1059,8 +1060,16 @@ class TensorMotionCommand(MotionCommand):
 
     def post_compute(self) -> None:
         rows = self._tensor_post_compute_env_ids
+        robot_started = time.perf_counter()
         self._refresh_robot_state_torch(force=True, rows=rows)
+        self._last_post_compute_timing_ms = {
+            "reset_done_motion_robot_refresh_ms": (time.perf_counter() - robot_started) * 1000.0
+        }
+        relative_started = time.perf_counter()
         self._refresh_relative_state_torch(rows)
+        self._last_post_compute_timing_ms["reset_done_motion_relative_refresh_ms"] = (
+            time.perf_counter() - relative_started
+        ) * 1000.0
 
     def _sync_tensor_sampler_state(self) -> None:
         cast(torch.Tensor, self.time_steps).copy_(

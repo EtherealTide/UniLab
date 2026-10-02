@@ -1318,6 +1318,7 @@ class ManagerBasedRlEnv(TorchEnv):
             reset_timing["reset_done_command_post_compute_ms"] = (
                 time.perf_counter() - command_post_compute_started
             ) * 1000.0
+            reset_timing.update(getattr(self.command_manager, "last_post_compute_timing_ms", {}))
             observation_started = time.perf_counter()
             # Row-scoped reset rebuild (issue #1259 R2): the observation manager
             # returns only the reset rows, so no full-batch slice is needed here.
