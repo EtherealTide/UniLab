@@ -47,6 +47,7 @@ from .tensor_rotation import (
     quat_mul,
     quat_to_rot6,
 )
+from .tensor_sampler import TensorMotionSampler
 
 
 def _quat_error_squared_torch(reference: torch.Tensor, actual: torch.Tensor) -> torch.Tensor:
@@ -438,13 +439,13 @@ class MotionCommand(CommandTerm):
         self.anchor_body_idx = cfg.body_names.index(cfg.anchor_body_name)
         self.sampler = MotionSampler(
             self.motion,
-            mode=cfg.params.sampling_mode,
+            mode=self.cfg.params.sampling_mode,
             num_envs=self.num_envs,
-            adaptive_lambda=cfg.params.adaptive_lambda,
-            adaptive_kernel_size=cfg.params.adaptive_kernel_size,
-            adaptive_uniform_ratio=cfg.params.adaptive_uniform_ratio,
-            adaptive_alpha=cfg.params.adaptive_alpha,
-            start_ratio=cfg.params.sampling_start_ratio,
+            adaptive_lambda=self.cfg.params.adaptive_lambda,
+            adaptive_kernel_size=self.cfg.params.adaptive_kernel_size,
+            adaptive_uniform_ratio=self.cfg.params.adaptive_uniform_ratio,
+            adaptive_alpha=self.cfg.params.adaptive_alpha,
+            start_ratio=self.cfg.params.sampling_start_ratio,
             rng=env.rng,
         )
         self._pose_range = _range_matrix(cfg.params.pose_range, name="MotionCommand pose_range")
@@ -497,7 +498,7 @@ class MotionCommand(CommandTerm):
         self._robot_body_ang_vel_w = np.empty_like(self._body_pos_w)
         self._bind_read_phase = False
         self._tensor_all_rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._device)
-        self._sampler_host_transfers = 0
+        self._tensor_resample_ingested: torch.Tensor | None = None
 
         for name in (
             "error_anchor_pos",
@@ -947,6 +948,26 @@ class TensorMotionCommand(MotionCommand):
         self._joint_position_range_torch = torch.as_tensor(
             self._joint_position_range, device=device
         )
+        if self.cfg.params.sampling_mode not in ("adaptive", "mixed"):
+            raise NotImplementedError(
+                "TensorMotionCommand tensor sampler requires adaptive or mixed sampling"
+            )
+        self.tensor_sampler = TensorMotionSampler(
+            mode=self.cfg.params.sampling_mode,
+            num_envs=self.num_envs,
+            num_frames=self.motion.num_frames,
+            clip_offsets=self.motion.clip_offsets,
+            clip_end_frames=self.motion.clip_end_frames,
+            bin_count=self.sampler.bin_count,
+            adaptive_lambda=self.cfg.params.adaptive_lambda,
+            adaptive_kernel_size=self.cfg.params.adaptive_kernel_size,
+            adaptive_uniform_ratio=self.cfg.params.adaptive_uniform_ratio,
+            adaptive_alpha=self.cfg.params.adaptive_alpha,
+            start_ratio=self.cfg.params.sampling_start_ratio,
+            initial_frames=self.sampler.current_frames,
+            initial_clip_end_frames=self.sampler.current_clip_end_frames,
+            device=device,
+        )
         for name in self.metrics:
             self.metrics[name] = torch.zeros(self.num_envs, dtype=torch.float32, device=device)
         self._refresh_motion()
@@ -1041,11 +1062,14 @@ class TensorMotionCommand(MotionCommand):
             (rows.numel(), self.motion.num_joints),
             dtype=torch.float32,
         )
-        self._sampler_host_transfers = 0
         return CommandTerm.reset(self, rows)
 
     def sampler_reset_diagnostics(self) -> dict[str, float]:
-        return {"reset_done_sampler_host_transfer_count": float(self._sampler_host_transfers)}
+        return {
+            "reset_done_sampler_host_transfer_count": float(
+                self.tensor_sampler.diagnostics.reset_host_row_transfers
+            )
+        }
 
     def _refresh_motion(self, env_ids: np.ndarray | None = None) -> None:
         del env_ids
@@ -1071,12 +1095,12 @@ class TensorMotionCommand(MotionCommand):
         return True
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
-        host_rows = env_ids.detach().cpu().numpy()
-        self._sampler_host_transfers = getattr(self, "_sampler_host_transfers", 0) + 1
+        rows = env_ids.to(dtype=torch.int64, device=self._device)
         sampler_started = time.perf_counter()
-        frames = self.sampler.sample_frames(host_rows)
+        if self._env.torch_rng is None:
+            raise NotImplementedError("TensorMotionCommand reset requires the Manager Torch RNG")
+        frames = self.tensor_sampler.sample_frames(rows, self._env.torch_rng.generator)
         sampler_ms = (time.perf_counter() - sampler_started) * 1000.0
-        rows = env_ids.to(dtype=torch.int64)
         packet_started = time.perf_counter()
         packet = self._motion_packet(frames)
         packet_ms = (time.perf_counter() - packet_started) * 1000.0
@@ -1148,8 +1172,9 @@ class TensorMotionCommand(MotionCommand):
         publish_started = time.perf_counter()
         self._ingest_motion_packet(rows, packet)
         publish_ms = (time.perf_counter() - publish_started) * 1000.0
-        self._resample_ingested_ids = host_rows
+        self._resample_ingested_ids = None
         self._resample_motion = None
+        self._tensor_resample_ingested = rows
         self.last_reset_timing_ms.update(
             {
                 "reset_done_motion_sampler_ms": sampler_ms,
@@ -1166,18 +1191,20 @@ class TensorMotionCommand(MotionCommand):
     def _update_command(self, env_ids: torch.Tensor | None) -> None:
         self._tensor_post_compute_env_ids = env_ids
         if env_ids is not None:
-            ingested = self._resample_ingested_ids
+            ingested = self._tensor_resample_ingested
             self._resample_ingested_ids = None
+            self._tensor_resample_ingested = None
             if (
                 ingested is None
                 or ingested.shape != env_ids.shape
-                or bool((torch.as_tensor(ingested, device=env_ids.device) != env_ids).any())
+                or not bool(torch.equal(ingested, env_ids))
             ):
                 self._refresh_motion_torch(env_ids)
             return
         self._resample_ingested_ids = None
-        terminated = self._env.termination_manager.terminated.detach().cpu().numpy()
-        self.sampler.update_failure_stats(terminated)
+        self._tensor_resample_ingested = None
+        terminated = cast(torch.Tensor, self._env.termination_manager.terminated)
+        self.tensor_sampler.update_failure_stats(terminated)
         wrap_rows = self._step_tensor_sampler()
         if wrap_rows.numel() and not self.cfg.params.truncate_on_clip_end:
             self._resample_command(wrap_rows)
@@ -1185,26 +1212,13 @@ class TensorMotionCommand(MotionCommand):
 
     def _step_tensor_sampler(self) -> torch.Tensor:
         """Advance the device frame carrier once without a host row transfer."""
-        time_steps = cast(torch.Tensor, self.time_steps)
-        current_clip_ends = cast(torch.Tensor, self.current_clip_end_frames)
         active = ~cast(torch.Tensor, self._env.reset_buf)
-        time_steps.add_(active.to(dtype=torch.int32))
-        frames = time_steps.to(dtype=torch.int64)
-        clip_indices = (
-            torch.searchsorted(self._clip_offsets_torch, frames, right=True).sub_(1).clamp_(min=0)
+        done = self.tensor_sampler.step(active)
+        cast(torch.Tensor, self.time_steps).copy_(self.tensor_sampler.current_frames)
+        cast(torch.Tensor, self.current_clip_end_frames).copy_(
+            self.tensor_sampler.current_clip_end_frames
         )
-        clip_ends = self._clip_end_frames_torch.index_select(0, clip_indices)
-        current_clip_ends.copy_(clip_ends.to(dtype=torch.int32))
-        done = frames > current_clip_ends
-        done.logical_and_(active)
-        host_frames = frames.detach().cpu().numpy()
-        host_clip_indices = clip_indices.detach().cpu().numpy()
-        host_clip_ends = clip_ends.detach().cpu().numpy()
-        self._sampler_host_transfers = getattr(self, "_sampler_host_transfers", 0) + 3
-        self.sampler.current_frames[...] = host_frames
-        self.sampler.current_clip_indices[...] = host_clip_indices
-        self.sampler.current_clip_end_frames[...] = host_clip_ends
-        return done.nonzero(as_tuple=False).flatten()
+        return done
 
     def post_compute(self) -> None:
         rows = self._tensor_post_compute_env_ids
@@ -1220,21 +1234,19 @@ class TensorMotionCommand(MotionCommand):
         ) * 1000.0
 
     def _sync_tensor_sampler_state(self) -> None:
-        cast(torch.Tensor, self.time_steps).copy_(
-            torch.as_tensor(self.sampler.current_frames, device=self._device)
-        )
+        cast(torch.Tensor, self.time_steps).copy_(self.tensor_sampler.current_frames)
         cast(torch.Tensor, self.current_clip_end_frames).copy_(
-            torch.as_tensor(self.sampler.current_clip_end_frames, device=self._device)
+            self.tensor_sampler.current_clip_end_frames
         )
 
     @property
     def sampler_host_transfers(self) -> int:
         """Count explicit sampler device-to-host transfers since the last read."""
-        return self._sampler_host_transfers
+        return self.tensor_sampler.diagnostics.total
 
     @sampler_host_transfers.setter
     def sampler_host_transfers(self, value: int) -> None:
-        self._sampler_host_transfers = int(value)
+        del value
 
     @staticmethod
     def _validate_cfg(cfg: MotionCommandCfg) -> None:
@@ -1409,15 +1421,15 @@ class TensorMotionCommand(MotionCommand):
 
     def _update_torch_sampling_metrics(self) -> None:
         values = (
-            ("sampling_entropy", self.sampler.sampling_entropy),
-            ("sampling_top1_prob", self.sampler.sampling_top1_prob),
-            ("sampling_top1_bin", self.sampler.sampling_top1_bin),
+            ("sampling_entropy", self.tensor_sampler.sampling_entropy),
+            ("sampling_top1_prob", self.tensor_sampler.sampling_top1_prob),
+            ("sampling_top1_bin", self.tensor_sampler.sampling_top1_bin),
         )
         for name, value in values:
             metric = self.metrics[name]
             if not isinstance(metric, torch.Tensor):
                 raise TypeError("TensorMotionCommand sampler metrics must remain Torch tensors")
-            metric.fill_(float(value))
+            metric.copy_(value.expand_as(metric))
 
 
 @dataclass(kw_only=True)
