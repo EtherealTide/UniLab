@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Sequence, cast
@@ -432,17 +433,30 @@ class ObservationManager(ManagerBase):
         )
         # Reset path (issue #1259 R2): when no term in this group uses delay or
         # history buffers, everything downstream of the term call is row
-        # independent, so only the reset rows are processed. Term calls stay
-        # full-batch (term funcs are contracted to return (num_envs, ...)), but
-        # noise is drawn for the reset rows only — issue #1349 removed the
-        # full-batch RNG-stream parity requirement.
+        # independent, so only the reset rows are processed. Terms that declare
+        # a public ``compute_reset_rows`` method execute row-scoped; all other
+        # terms stay full-batch and are sliced here. Noise is drawn for the
+        # reset rows only — issue #1349 removed the full-batch RNG-stream
+        # parity requirement.
         row_scoped = env_ids is not None and not self._group_obs_temporal[group_name]
+        selected_env_ids = env_ids if row_scoped else None
         for term_name, term_cfg in obs_terms:
             share_key = share_map.get(term_name)
+            row_executor = self._reset_row_executor(term_cfg) if row_scoped else None
+            share_key = (
+                (*share_key, "reset_rows", int(selected_env_ids.numel()))
+                if share_key is not None
+                and selected_env_ids is not None
+                and row_executor is not None
+                else share_key
+            )
             if share_key is not None and share_key in share_cache:
                 obs = share_cache[share_key]
             else:
-                obs = term_cfg.func(self._env, **term_cfg.params)
+                if selected_env_ids is not None and row_executor is not None:
+                    obs = row_executor(self._env, selected_env_ids, **term_cfg.params)
+                else:
+                    obs = term_cfg.func(self._env, **term_cfg.params)
                 if share_key is not None:
                     share_cache[share_key] = obs
             tensor_obs = isinstance(obs, torch.Tensor)
@@ -463,13 +477,19 @@ class ObservationManager(ManagerBase):
                         f"ObservationManager term '{group_name}/{term_name}' must return "
                         f"observations on {self._device}; got {tensor.device}."
                     )
-            if obs.ndim < 2 or obs.shape[0] != self.num_envs:
+            expected_rows = (
+                int(selected_env_ids.numel())
+                if selected_env_ids is not None and row_executor is not None
+                else self.num_envs
+            )
+            if obs.ndim < 2 or obs.shape[0] != expected_rows:
                 raise ValueError(
                     f"ObservationManager term '{group_name}/{term_name}' returned shape "
-                    f"{obs.shape}, expected (num_envs, ...) with num_envs={self.num_envs}."
+                    f"{obs.shape}, expected ({expected_rows}, ...) with "
+                    f"num_envs={self.num_envs}."
                 )
             fresh = False
-            if row_scoped:
+            if row_scoped and row_executor is None:
                 # Slice before noise: reset-path noise is drawn for the reset
                 # rows only (issue #1349 removed the full-batch RNG-stream
                 # parity requirement). Fancy indexing already returns a fresh
@@ -684,6 +704,24 @@ class ObservationManager(ManagerBase):
                     result = result[env_ids.detach().cpu().numpy()]
 
         return self._observations_to_tensor_boundary(result)
+
+    @staticmethod
+    def _reset_row_executor(
+        term_cfg: ObservationTermCfg,
+    ) -> Callable[[ManagerBasedRlEnv, torch.Tensor], np.ndarray | torch.Tensor] | None:
+        """Return a term's opt-in reset-row executor, or ``None``.
+
+        Class-based observation terms may expose ``compute_reset_rows(env,
+        env_ids, **params)``. The row method must return exactly the reset-row
+        leading dimension; ordinary ``__call__`` remains full-batch.
+        """
+        executor = getattr(term_cfg.func, "compute_reset_rows", None)
+        if executor is None or not callable(executor):
+            return None
+        return cast(
+            "Callable[[ManagerBasedRlEnv, torch.Tensor], np.ndarray | torch.Tensor]",
+            executor,
+        )
 
     def _observations_to_tensor_boundary(
         self, values: np.ndarray | torch.Tensor | dict[str, np.ndarray | torch.Tensor]
