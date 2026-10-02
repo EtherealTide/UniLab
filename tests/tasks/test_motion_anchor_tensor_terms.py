@@ -406,6 +406,65 @@ def test_motion_observation_pack_matches_legacy_term_concatenation() -> None:
     torch.testing.assert_close(rows, expected.index_select(0, ids))
 
 
+def test_motion_critic_observation_pack_matches_legacy_term_concatenation() -> None:
+    body_pos_w, body_quat_w = _reference_state()
+    command = _MotionCommand(
+        tensor_carrier=True,
+        _command=torch.tensor([[0.2, -0.4], [0.6, -0.8]], dtype=torch.float32),
+        motion_anchor_pos_b=torch.tensor([[0.1, 0.2, 0.3], [-0.1, -0.2, -0.3]]),
+        motion_anchor_ori_b=torch.tensor(
+            [[1.0, 0.0, 2.0, 0.0, 0.0, 3.0], [-1.0, -0.2, -2.0, -0.4, -0.6, -3.0]]
+        ),
+        device_robot_joint_pos=torch.linspace(-1.0, 1.0, 58).reshape(2, 29),
+        device_robot_joint_vel=torch.linspace(1.0, -1.0, 58).reshape(2, 29),
+        joint_default_bias=torch.linspace(0.0, 0.1, 58).reshape(2, 29),
+        robot_body_pos_b=torch.linspace(-2.0, 2.0, 84).reshape(2, 14, 3),
+        robot_body_ori_b=torch.linspace(-3.0, 3.0, 168).reshape(2, 14, 6),
+    )
+    robot = SimpleNamespace(
+        data=SimpleNamespace(
+            default_joint_pos_torch=lambda device: torch.full((2, 29), 0.05),
+            default_joint_vel_torch=lambda device: torch.full((2, 29), -0.02),
+        )
+    )
+    action = torch.linspace(-0.5, 0.5, 58).reshape(2, 29)
+    env = _env(command, _view())
+    env.scene["robot"] = robot
+    env.action_manager = SimpleNamespace(action=action)
+    cfg = mt.MotionCriticObservationPackCfg(func=mt.MotionCriticObservationPack)
+    term = mt.MotionCriticObservationPack(cfg, cast(ManagerBasedRlEnv, env))
+    linvel, gyro = (
+        env.scene._tensor_read_plan.sensor_tensor_views(None, ()).values[name]
+        for name in term.cfg.sensor_names
+    )
+
+    value = term(cast(ManagerBasedRlEnv, env))
+
+    expected = torch.cat(
+        (
+            command.command,
+            command.motion_anchor_pos_b,
+            command.motion_anchor_ori_b,
+            linvel,
+            gyro,
+            command.device_robot_joint_pos - 0.05 - command.joint_default_bias,
+            command.device_robot_joint_vel + 0.02,
+            action,
+            command.robot_body_pos_b.reshape(2, -1),
+            command.robot_body_ori_b.reshape(2, -1),
+            linvel,
+        ),
+        dim=-1,
+    )
+    assert value.shape == (2, 233)
+    torch.testing.assert_close(value, expected)
+
+    ids = torch.tensor([1], dtype=torch.int64)
+    rows = term.compute_reset_rows(cast(ManagerBasedRlEnv, env), ids)
+    assert rows.shape == (1, 233)
+    torch.testing.assert_close(rows, expected.index_select(0, ids))
+
+
 def test_motion_observation_pack_returns_cold_shape_without_read_plan() -> None:
     command = _MotionCommand(
         tensor_carrier=True,
