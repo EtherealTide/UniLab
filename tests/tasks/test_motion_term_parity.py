@@ -250,6 +250,138 @@ def test_tensor_anchor_orientation_reward_matches_numpy(
     torch.testing.assert_close(out, expected, rtol=2e-6, atol=2e-7)
 
 
+def _tensor_command_from_snapshots(command, snapshots):
+    return SimpleNamespace(
+        num_envs=command.num_envs,
+        cfg=command.cfg,
+        anchor_body_idx=command.anchor_body_idx,
+        tensor_carrier=True,
+        **{
+            name: torch.from_numpy(value.copy())
+            for name, value in snapshots.items()
+            if isinstance(value, np.ndarray)
+        },
+    )
+
+
+def test_tensor_anchor_position_termination_matches_numpy(
+    monkeypatch: pytest.MonkeyPatch, body_setup
+) -> None:
+    command, env, snapshots = body_setup
+    tensor_command = _tensor_command_from_snapshots(command, snapshots)
+    monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
+    cfg = TerminationTermCfg(
+        func=mt.bad_anchor_pos_z_only,
+        params={"command_name": "motion", "threshold": 0.15},
+    )
+    term = mt.bad_anchor_pos_z_only(cfg, env)
+
+    out = term(env, "motion", threshold=0.15)
+    expected = (
+        np.abs(
+            snapshots["body_pos_w"][:, command.anchor_body_idx, 2]
+            - snapshots["robot_anchor_pos_w"][:, 2]
+        )
+        > 0.15
+    )
+    assert isinstance(out, torch.Tensor)
+    torch.testing.assert_close(out, torch.from_numpy(expected))
+
+
+def test_tensor_anchor_orientation_termination_matches_numpy(
+    monkeypatch: pytest.MonkeyPatch, body_setup
+) -> None:
+    command, env, snapshots = body_setup
+    motion_quat = _unit_quat(
+        np.random.default_rng(21).standard_normal((command.num_envs, 4), dtype=np.float32)
+    )
+    robot_quat = _unit_quat(
+        motion_quat
+        + 0.1 * np.random.default_rng(23).standard_normal(motion_quat.shape, dtype=np.float32)
+    )
+    gravity = np.tile(np.array([0.0, 0.0, -1.0], dtype=np.float32), (command.num_envs, 1))
+    tensor_command = SimpleNamespace(
+        num_envs=command.num_envs,
+        cfg=command.cfg,
+        tensor_carrier=True,
+        anchor_quat_w=torch.from_numpy(motion_quat.copy()),
+        robot_anchor_quat_w=torch.from_numpy(robot_quat.copy()),
+    )
+    monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
+
+    out = mt.bad_anchor_ori(env, "motion", threshold=0.8)
+    expected = (
+        np.abs(
+            np_quat_apply_inverse_batched(motion_quat, gravity)[:, 2]
+            - np_quat_apply_inverse_batched(robot_quat, gravity)[:, 2]
+        )
+        > 0.8
+    )
+    assert isinstance(out, torch.Tensor)
+    torch.testing.assert_close(out, torch.from_numpy(expected))
+
+
+@pytest.mark.parametrize(
+    ("term_type", "reference_name", "actual_name", "threshold"),
+    [
+        (mt.bad_motion_body_pos_z_only, "body_pos_relative_w", "robot_body_pos_w", 0.5),
+        (mt.bad_undesired_body_contacts, None, "robot_body_pos_w", 0.05),
+    ],
+)
+def test_tensor_body_terminations_match_numpy(
+    monkeypatch: pytest.MonkeyPatch,
+    body_setup,
+    term_type,
+    reference_name: str | None,
+    actual_name: str,
+    threshold: float,
+) -> None:
+    command, env, snapshots = body_setup
+    tensor_command = _tensor_command_from_snapshots(command, snapshots)
+    monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
+    body_names = ("b0", "b3", "b11")
+    term = term_type(
+        TerminationTermCfg(
+            func=term_type,
+            params={
+                "command_name": "motion",
+                "threshold": threshold,
+                "body_names": body_names,
+            },
+        ),
+        env,
+    )
+
+    out = term(env, "motion", threshold=threshold, body_names=body_names)
+    actual = snapshots[actual_name][:, [0, 3, 11], 2]
+    if reference_name is None:
+        expected = np.any(actual < threshold, axis=-1)
+    else:
+        reference = snapshots[reference_name][:, [0, 3, 11], 2]
+        expected = np.any(np.abs(reference - actual) > threshold, axis=-1)
+    assert isinstance(out, torch.Tensor)
+    torch.testing.assert_close(out, torch.from_numpy(expected))
+
+
+def test_tensor_motion_clip_end_uses_current_rows(monkeypatch, body_setup) -> None:
+    command, env, snapshots = body_setup
+    frames = np.array([1, 5, 10, 15], dtype=np.int64)
+    clip_ends = np.array([2, 4, 10, 20], dtype=np.int64)
+    tensor_command = SimpleNamespace(
+        num_envs=command.num_envs,
+        cfg=command.cfg,
+        tensor_carrier=True,
+        time_steps=torch.from_numpy(frames),
+        current_clip_end_frames=torch.from_numpy(clip_ends),
+    )
+    monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
+
+    out = mt.motion_clip_end(env, "motion")
+
+    assert isinstance(out, torch.Tensor)
+    torch.testing.assert_close(out, torch.from_numpy(frames >= clip_ends))
+
+
 def test_anchor_pos_termination_numba_parity_and_output_reuse(body_setup) -> None:
     command, env, snapshots = body_setup
     cfg = TerminationTermCfg(
