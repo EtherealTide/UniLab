@@ -1,7 +1,7 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681), src/mjlab/envs/mdp/curriculums.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy and UniLab contracts; licensed under Apache-2.0.
-"""Generic stage-based curriculum terms for the NumPy manager runtime.
+# Modified by UniLab for the tensor-only Manager runtime; licensed under Apache-2.0.
+"""Generic stage-based curriculum terms for the Manager runtime.
 
 These terms let owner YAMLs ramp any reward/termination term's ``weight``
 and/or ``params`` by training step (``env.common_step_counter``) through a
@@ -16,6 +16,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, TypedDict
 
 import numpy as np
+import torch
 
 if TYPE_CHECKING:
     from unilab.managers._types import ManagerBasedRlEnv
@@ -180,7 +181,7 @@ class reward_curriculum:
     def __call__(
         self,
         env: ManagerBasedRlEnv,
-        env_ids: np.ndarray | slice,
+        env_ids: torch.Tensor | slice,
         reward_name: str,
         stages: list[RewardCurriculumStage],
     ) -> dict[str, Any]:
@@ -217,7 +218,7 @@ class termination_curriculum:
     def __call__(
         self,
         env: ManagerBasedRlEnv,
-        env_ids: np.ndarray | slice,
+        env_ids: torch.Tensor | slice,
         termination_name: str,
         stages: list[TerminationCurriculumStage],
     ) -> dict[str, Any]:
@@ -258,7 +259,7 @@ class command_curriculum:
     def __call__(
         self,
         env: ManagerBasedRlEnv,
-        env_ids: np.ndarray | slice,
+        env_ids: torch.Tensor | slice,
         command_name: str,
         stages: list[CommandCurriculumStage],
     ) -> dict[str, Any]:
@@ -297,7 +298,7 @@ class event_curriculum:
     def __call__(
         self,
         env: ManagerBasedRlEnv,
-        env_ids: np.ndarray | slice,
+        env_ids: torch.Tensor | slice,
         event_name: str,
         stages: list[EventCurriculumStage],
     ) -> dict[str, Any]:

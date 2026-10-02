@@ -1062,40 +1062,39 @@ class G1PenaltyCurriculum(ManagerTermBase):
     def __call__(
         self,
         env: _G1Env,
-        env_ids: np.ndarray | slice | None,
+        env_ids: torch.Tensor | slice | None,
         **params: Any,
     ) -> dict[str, float]:
         del params
-        ids = (
-            np.arange(env.num_envs, dtype=np.intp)
-            if env_ids is None
-            else np.arange(env.num_envs, dtype=np.intp)[env_ids]
-            if isinstance(env_ids, slice)
-            else (
-                env_ids.detach().cpu().numpy().astype(np.intp, copy=False).reshape(-1)
-                if isinstance(env_ids, torch.Tensor)
-                else np.asarray(env_ids, dtype=np.intp).reshape(-1)
+        device = env.device
+        if env_ids is None:
+            ids = torch.arange(env.num_envs, dtype=torch.int64, device=device)
+        elif isinstance(env_ids, slice):
+            ids = torch.arange(env.num_envs, dtype=torch.int64, device=device)[env_ids]
+        elif isinstance(env_ids, torch.Tensor):
+            ids = env_ids.to(device=device, dtype=torch.int64).reshape(-1)
+        else:
+            raise TypeError(
+                f"{self.name} env_ids must be Torch tensor, slice, or None; "
+                f"got {type(env_ids).__name__}"
             )
-        )
         reset_buf = env.reset_buf
-        if isinstance(reset_buf, torch.Tensor):
-            reset_buf = reset_buf.detach().cpu().numpy()
-        done_ids = ids[reset_buf[ids]]
+        if not isinstance(reset_buf, torch.Tensor):
+            raise TypeError(f"{self.name} requires reset_buf to be a Torch tensor")
+        done_ids = ids[reset_buf.index_select(0, ids)]
         if isinstance(env.episode_length_buf, torch.Tensor):
-            if len(done_ids) > 0:
-                episode_lengths = (
-                    env.episode_length_buf[torch.as_tensor(done_ids, device=env.device)]
-                    .detach()
-                    .cpu()
-                    .numpy()
+            if done_ids.numel() > 0:
+                self._tracker.update(
+                    env.episode_length_buf.index_select(0, done_ids).to(dtype=torch.float64)
                 )
-                self._tracker.update(episode_lengths.astype(np.float64))
             return {
                 "average_episode_length": float(self._tracker.average_length),
                 "penalty_scale": float(self._current_scale),
             }
-        if len(done_ids) > 0:
-            self._tracker.update(env.episode_length_buf[done_ids].astype(np.float64))
+        if done_ids.numel() > 0:
+            self._tracker.update(
+                torch.as_tensor(env.episode_length_buf[done_ids.numpy()], dtype=torch.float64)
+            )
             average = self._tracker.average_length
             if average < self._level_down_threshold:
                 self._current_scale *= 1.0 - self._degree

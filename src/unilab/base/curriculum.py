@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import numpy as np
+import torch
 
 
 class EpisodeLengthTracker:
@@ -13,10 +13,10 @@ class EpisodeLengthTracker:
         self.window_size = max(1, int(window_size * num_envs / 4096))
         self.average_length = 0.0
 
-    def update(self, episode_lengths: np.ndarray) -> None:
+    def update(self, episode_lengths: torch.Tensor) -> None:
         """Update average with new episode lengths."""
-        if len(episode_lengths) == 0:
+        if episode_lengths.numel() == 0:
             return
-        current_avg = float(np.mean(episode_lengths))
-        weight = min(len(episode_lengths) / self.window_size, 1.0)
-        self.average_length = self.average_length * (1 - weight) + current_avg * weight
+        current_avg = float(episode_lengths.to(dtype=torch.float64).mean().item())
+        weight = min(episode_lengths.numel() / self.window_size, 1.0)
+        self.average_length = self.average_length * (1.0 - weight) + current_avg * weight
