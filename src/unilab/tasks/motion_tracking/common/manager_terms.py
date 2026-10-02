@@ -815,7 +815,6 @@ class TensorMotionCommand(MotionCommand):
         self._robot_joint_vel = torch.empty(
             (self.num_envs, num_joints), dtype=torch.float32, device=device
         )
-        self._root_state_scratch = torch.empty((self.num_envs, 13), device=device)
         self._env_origins = torch.as_tensor(
             np.array(self._env.scene.env_origins, dtype=np.float32, copy=True), device=device
         )
@@ -831,17 +830,6 @@ class TensorMotionCommand(MotionCommand):
         )
         self._joint_position_range_torch = torch.as_tensor(
             self._joint_position_range, device=device
-        )
-        self._adaptive_uniform_ratio_torch = torch.tensor(
-            float(self.sampler.adaptive_uniform_ratio),
-            dtype=torch.float32,
-            device=device,
-        )
-        self._bin_count_torch = torch.tensor(
-            int(self.sampler.bin_count), dtype=torch.float32, device=device
-        )
-        self._num_frames_torch = torch.tensor(
-            int(self.motion.num_frames), dtype=torch.float32, device=device
         )
         for name in self.metrics:
             self.metrics[name] = torch.zeros(self.num_envs, dtype=torch.float32, device=device)
@@ -863,15 +851,9 @@ class TensorMotionCommand(MotionCommand):
         )
         return torch.from_numpy(np.ascontiguousarray(host)).to(device=device)
 
-    def _motion_packet(self, frames: np.ndarray | torch.Tensor) -> torch.Tensor:
+    def _motion_packet(self, frames: np.ndarray) -> torch.Tensor:
         """Gather motion rows from the device-resident feature table."""
-        rows = (
-            frames
-            if isinstance(frames, torch.Tensor)
-            else torch.as_tensor(frames, dtype=torch.int64, device=self._device)
-        )
-        if rows.device != self._device or rows.dtype != torch.int64:
-            rows = rows.to(device=self._device, dtype=torch.int64)
+        rows = torch.as_tensor(frames, dtype=torch.int64, device=self._device)
         return self._motion_features.index_select(0, rows)
 
     def _defer_read_phase_binding(self) -> None:
@@ -963,8 +945,9 @@ class TensorMotionCommand(MotionCommand):
         return True
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
+        host_rows = env_ids.detach().cpu().numpy()
+        frames = self.sampler.sample_frames(host_rows)
         rows = env_ids.to(dtype=torch.int64)
-        frames = self._sample_tensor_frames(rows)
         packet = self._motion_packet(frames)
         offsets = self._motion_feature_offsets
         tails = self._motion_feature_tail_shapes
@@ -1005,21 +988,24 @@ class TensorMotionCommand(MotionCommand):
         motion_body_quat = packet[:, quat_start:quat_end].view(count, *tails["body_quat_w"])
         motion_body_lin_vel = packet[:, lin_start:lin_end].view(count, *tails["body_lin_vel_w"])
         motion_body_ang_vel = packet[:, ang_start:ang_end].view(count, *tails["body_ang_vel_w"])
-        root_state = self._root_state_scratch.index_select(0, rows)
-        root_state[:, 0:3] = motion_body_pos[:, 0]
-        root_state[:, 0:3] += self._env_origins.index_select(0, rows)
-        root_state[:, 0:3] += pose[:, :3]
-        root_state[:, 3:7] = quat_mul(
+        root_pos = motion_body_pos[:, 0] + self._env_origins.index_select(0, rows)
+        root_pos += pose[:, :3]
+        root_quat = quat_mul(
             quat_from_euler_xyz(pose[:, 3], pose[:, 4], pose[:, 5]),
             motion_body_quat[:, 0],
         )
-        root_state[:, 7:10] = motion_body_lin_vel[:, 0]
-        root_state[:, 7:10] += velocity[:, :3]
-        root_state[:, 10:13] = motion_body_ang_vel[:, 0]
-        root_state[:, 10:13] += velocity[:, 3:]
+        root_state = torch.cat(
+            (
+                root_pos,
+                root_quat,
+                motion_body_lin_vel[:, 0] + velocity[:, :3],
+                motion_body_ang_vel[:, 0] + velocity[:, 3:],
+            ),
+            dim=-1,
+        )
         self.robot.write_root_state_tensor_to_sim(root_state, env_ids=rows)
         self._ingest_motion_packet(rows, packet)
-        self._resample_ingested_ids = rows.detach().cpu().numpy()
+        self._resample_ingested_ids = host_rows
         self._resample_motion = None
         self._sync_tensor_sampler_state()
 
@@ -1064,66 +1050,6 @@ class TensorMotionCommand(MotionCommand):
         self.sampler.current_clip_indices[...] = host_clip_indices
         self.sampler.current_clip_end_frames[...] = host_clip_ends
         return done.nonzero(as_tuple=False).flatten()
-
-    def _sample_tensor_frames(self, rows: torch.Tensor) -> torch.Tensor:
-        """Sample reset frames on device for the canonical adaptive owner."""
-        if self.sampler.mode != "adaptive" or self._env.torch_rng is None:
-            return torch.as_tensor(
-                self.sampler.sample_frames(rows.detach().cpu().numpy()),
-                dtype=torch.int64,
-                device=self._device,
-            )
-        if self.sampler.adaptive_kernel_size > 1:
-            return torch.as_tensor(
-                self.sampler.sample_frames(rows.detach().cpu().numpy()),
-                dtype=torch.int64,
-                device=self._device,
-            )
-        rng = self._env.torch_rng
-        count = rows.numel()
-        probabilities = torch.as_tensor(
-            self.sampler.bin_failed_count, dtype=torch.float32, device=self._device
-        )
-        probabilities = probabilities + self._adaptive_uniform_ratio_torch / self._bin_count_torch
-        probabilities = probabilities / probabilities.sum()
-        sampled_bins = rng.choice(
-            int(self.sampler.bin_count), count, p=probabilities, replacement=True
-        )
-        bin_offsets = rng.random(count)
-        frames = (
-            (sampled_bins.to(dtype=torch.float32) + bin_offsets)
-            / self._bin_count_torch
-            * (self._num_frames_torch - 1.0)
-        ).to(dtype=torch.int32)
-        self._publish_tensor_sampler_sample(rows, frames, probabilities)
-        return frames.to(dtype=torch.int64)
-
-    def _publish_tensor_sampler_sample(
-        self, rows: torch.Tensor, frames: torch.Tensor, probabilities: torch.Tensor
-    ) -> None:
-        clip_indices = (
-            torch.searchsorted(self._clip_offsets_torch, frames.to(dtype=torch.int64), right=True)
-            .sub_(1)
-            .clamp_(min=0)
-        )
-        clip_ends = self._clip_end_frames_torch.index_select(0, clip_indices)
-        cast(torch.Tensor, self.time_steps).index_copy_(0, rows, frames)
-        cast(torch.Tensor, self.current_clip_end_frames).index_copy_(
-            0, rows, clip_ends.to(dtype=torch.int32)
-        )
-        entropy = -(probabilities * torch.log(probabilities + 1.0e-12)).sum() / torch.log(
-            self._bin_count_torch
-        )
-        top1_prob, top1_bin = torch.max(probabilities, dim=0)
-        host_rows = rows.detach().cpu().numpy()
-        host_clip_indices = clip_indices.detach().cpu().numpy()
-        host_clip_ends = clip_ends.detach().cpu().numpy()
-        self.sampler.current_frames[...] = cast(torch.Tensor, self.time_steps).cpu().numpy()
-        self.sampler.current_clip_indices[host_rows] = host_clip_indices
-        self.sampler.current_clip_end_frames[host_rows] = host_clip_ends
-        self.sampler.sampling_entropy = float(entropy.item())
-        self.sampler.sampling_top1_prob = float(top1_prob.item())
-        self.sampler.sampling_top1_bin = float(top1_bin.item()) / float(self.sampler.bin_count)
 
     def post_compute(self) -> None:
         rows = self._tensor_post_compute_env_ids
