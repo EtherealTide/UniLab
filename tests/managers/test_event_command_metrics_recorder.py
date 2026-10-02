@@ -14,6 +14,9 @@ import torch
 import unilab.managers as managers
 from unilab.envs.mdp.recorders import LifecycleCounterRecorder
 from unilab.managers import (
+    ActionManager,
+    ActionTerm,
+    ActionTermCfg,
     CommandManager,
     CommandTerm,
     CommandTermCfg,
@@ -30,6 +33,39 @@ from unilab.managers import (
 )
 
 from .conftest import FakeEnv
+
+
+class DummyAction(ActionTerm):
+    def __init__(self, cfg: DummyActionCfg, env: FakeEnv):
+        super().__init__(cfg, env)
+        self._raw = torch.zeros((env.num_envs, cfg.dim), dtype=torch.float32)
+        self.reset_ids: torch.Tensor | slice | None = None
+
+    @property
+    def action_dim(self) -> int:
+        return self._raw.shape[1]
+
+    @property
+    def raw_action(self) -> torch.Tensor:
+        return self._raw
+
+    def process_actions(self, actions: torch.Tensor) -> None:
+        self._raw.copy_(actions)
+
+    def apply_actions(self) -> None:
+        return None
+
+    def reset(self, env_ids: torch.Tensor | slice | None) -> None:
+        self.reset_ids = env_ids
+        self._raw[env_ids] = 0.0
+
+
+@dataclass(kw_only=True)
+class DummyActionCfg(ActionTermCfg):
+    dim: int
+
+    def build(self, env: FakeEnv) -> DummyAction:
+        return DummyAction(self, env)
 
 
 def _record(env: FakeEnv, env_ids: np.ndarray | None, *, label: str) -> None:
@@ -304,3 +340,48 @@ def test_public_exports_and_repository_import_boundary() -> None:
             for name in imports
             for prefix in forbidden_unilab
         ), path
+
+
+def test_command_reset_state_boundary_can_skip_metric_publication(fake_env: FakeEnv) -> None:
+    manager = CommandManager({"goal": DummyCommandCfg(resampling_time_range=(1.0, 1.0))}, fake_env)
+    term = manager.get_term("goal")
+    term.metrics["error"].fill(2.0)
+    rows = torch.tensor([1, 3], dtype=torch.int64)
+
+    extras, commands = manager.reset_command_state(rows, publish_metrics=False)
+
+    assert extras == {}
+    np.testing.assert_array_equal(term.metrics["error"], [2.0, 0.0, 2.0, 0.0])
+    np.testing.assert_array_equal(commands["goal"][[1, 3]], 0.0)
+    assert manager.last_reset_timing_ms["reset_done_reset_validation_ms"] >= 0.0
+
+
+def test_action_and_metric_state_clear_boundaries_match_selected_rows(fake_env: FakeEnv) -> None:
+    action = ActionManager({"joint": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
+    action.prev_action.fill_(1.0)
+    action.prev_prev_action.fill_(2.0)
+    action.action.fill_(3.0)
+    action.clear_action_state(torch.tensor([0, 2], dtype=torch.int64))
+
+    torch.testing.assert_close(action.action, torch.tensor([[0.0], [3.0], [0.0], [3.0]]))
+    torch.testing.assert_close(action.prev_action, torch.tensor([[0.0], [1.0], [0.0], [1.0]]))
+    torch.testing.assert_close(action.prev_prev_action, torch.tensor([[0.0], [2.0], [0.0], [2.0]]))
+
+    metrics = MetricsManager(
+        {
+            "sum": MetricsTermCfg(func=lambda env: env.value.copy(), reduce="sum"),
+            "max": MetricsTermCfg(func=lambda env: env.value.copy(), reduce="max"),
+        },
+        fake_env,
+    )
+    metrics._episode_sums["sum"].fill_(4.0)
+    metrics._episode_max["max"].fill_(5.0)
+    metrics._step_count.fill_(2)
+    metrics.clear_episode_state(torch.tensor([1, 3], dtype=torch.int64))
+
+    torch.testing.assert_close(metrics._episode_sums["sum"], torch.tensor([4.0, 0.0, 4.0, 0.0]))
+    torch.testing.assert_close(
+        metrics._episode_max["max"],
+        torch.tensor([5.0, float("-inf"), 5.0, float("-inf")]),
+    )
+    torch.testing.assert_close(metrics._step_count, torch.tensor([2, 0, 2, 0], dtype=torch.int64))

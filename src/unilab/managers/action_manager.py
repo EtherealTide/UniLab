@@ -171,6 +171,18 @@ class ActionManager(ManagerBase):
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
         if env_ids is None:
             env_ids = slice(None)
+        self.clear_action_state(env_ids)
+        return {}
+
+    def clear_action_state(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        """Clear selected manager and term action state without logging.
+
+        Reset owners consume this boundary when they own the action reset pass.
+        It preserves the exact generic reset state mutation while leaving the
+        ordinary reset extras contract to the caller.
+        """
+        if env_ids is None:
+            env_ids = slice(None)
         # Reset action history.
         selector = self._reset_selector(env_ids)
         self._prev_action[selector] = 0.0
@@ -179,7 +191,6 @@ class ActionManager(ManagerBase):
         # Reset action terms.
         for term in self._terms.values():
             term.reset(env_ids=env_ids)
-        return {}
 
     def process_action(self, action: torch.Tensor) -> None:
         """Store the raw policy output and route slices to each action term.
