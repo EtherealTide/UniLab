@@ -77,15 +77,11 @@ def test_flashsac_g1_motion_tracking_uses_comparable_dr_free_owner() -> None:
     assert mjwarp_cfg.training.sim_backend == "mjwarp"
     assert (
         mjwarp_cfg.env.observations.actor.terms.motion_anchor_pack.func
-        == "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorObservationPack"
-    )
-    assert (
-        mjwarp_cfg.env.observations.critic.terms.motion_anchor_pack.func
-        == "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorObservationPack"
+        == "unilab.tasks.motion_tracking.common.manager_terms.MotionObservationPack"
     )
     assert (
         mjwarp_cfg.env.observations.actor.terms.motion_anchor_pack._target_
-        == "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorObservationPackCfg"
+        == "unilab.tasks.motion_tracking.common.manager_terms.MotionObservationPackCfg"
     )
     assert mjwarp_cfg.env.reset_owners.motion._target_ == (
         "unilab.tasks.motion_tracking.common.manager_terms.MotionResetOwnerCfg"

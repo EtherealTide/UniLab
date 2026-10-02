@@ -138,6 +138,12 @@ _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V9 = (
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V10 = (
     "ea611d71bdc07c58c022e9048b2d91d59587dc71d2de442aba881fef02e36e84"
 )
+# V12 applies only to MJWarp: the actor carrier's command, anchor, sensor,
+# joint, and action segments are fused into one Manager-owned observation term.
+# Ordering, equations, noise bounds, and the critic declaration are unchanged.
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V12 = (
+    "28e89481d8093084c249ea0605af193c528f677e42ecd6308758cd812a8abd88"
+)
 # The reset-owner field is now part of every owner identity. Non-MJWarp
 # canonical owners explicitly declare no reset owner, preserving their generic
 # reset semantics.
@@ -188,6 +194,7 @@ def _validate_torch_g1_flashsac_owner_contract(cfg: ManagerBasedRlEnvCfg) -> Non
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V9,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V10,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V11,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V12,
         _TORCH_G1_SAC_OWNER_IDENTITY_V1,
         _TORCH_G1_SAC_OWNER_IDENTITY_V2,
         _TORCH_G1_FLIP_SAC_OWNER_IDENTITY_V1,
@@ -711,6 +718,10 @@ class _TorchG1MotionTrackingFlashSACEnv(TorchEnv):
             "joint_vel",
             "actions",
         )
+        packed_expected_actor = (
+            "command",
+            "motion_anchor_pack",
+        )
         expected_critic = (*expected_actor, "body_pos", "body_ori", "sac_base_lin_vel")
         expected_sac_critic = (
             "command",
@@ -728,6 +739,13 @@ class _TorchG1MotionTrackingFlashSACEnv(TorchEnv):
         expected_actor_options = {expected_actor}
         if "motion_anchor_pack" in actor_terms:
             expected_actor_options.add(fused_expected_actor)  # type: ignore[arg-type]
+        if (
+            "motion_anchor_pack" in actor_terms
+            and actor_group.terms["motion_anchor_pack"] is not None
+            and actor_group.terms["motion_anchor_pack"].func.__name__  # type: ignore[union-attr]
+            == "MotionObservationPack"
+        ):
+            expected_actor_options.add(packed_expected_actor)  # type: ignore[arg-type]
         if actor_terms not in expected_actor_options or critic_terms not in {
             expected_critic,
             expected_sac_critic,

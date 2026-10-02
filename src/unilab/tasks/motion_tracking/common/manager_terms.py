@@ -1989,6 +1989,148 @@ class MotionAnchorObservationPackCfg(ObservationTermCfg):
 
 
 @dataclass(kw_only=True)
+class MotionObservationPackCfg(ObservationTermCfg):
+    """Fused motion-owner observation pack over one authoritative read."""
+
+    command_name: str = "motion"
+    entity_name: str = "robot"
+    sensor_names: tuple[str, ...] = ("pelvis_local_linvel", "torso_gyro")
+    # Immutable segment widths for the canonical G1 motion carrier.  They are
+    # explicit because Manager probes terms before the backend scene exposes the
+    # motion/entity widths.
+    command_width: int = 58
+    joint_width: int = 29
+    action_width: int = 29
+
+
+class MotionObservationPack(ManagerTermBase):
+    """Evaluate the canonical motion observation carrier in one fused term.
+
+    The actor group still applies its configured corruption after this term;
+    term output order matches the legacy declaration exactly.
+    """
+
+    cfg: MotionObservationPackCfg
+
+    def __init__(self, cfg: MotionObservationPackCfg, env: ManagerBasedRlEnv):
+        super().__init__(env)
+        if not isinstance(cfg, MotionObservationPackCfg):
+            raise TypeError("MotionObservationPack requires MotionObservationPackCfg")
+        self.cfg = cfg
+        self._device = torch.device(env.device)
+        self._command = _command(env, cfg.command_name)
+        if not bool(getattr(self._command, "tensor_carrier", False)):
+            raise TypeError("MotionObservationPack requires TensorMotionCommand")
+        self._entity = cast("Entity", env.scene[cfg.entity_name])
+        self._num_joints = int(cfg.joint_width)
+        self._num_command = int(cfg.command_width)
+        self._num_actions = int(cfg.action_width)
+        self._default_joint_pos = self._entity.data.default_joint_pos_torch(env.device)
+        self._default_joint_vel = self._entity.data.default_joint_vel_torch(env.device)
+
+    @property
+    def tensor_sensor_names(self) -> tuple[str, ...]:
+        return self.cfg.sensor_names
+
+    def __call__(self, env: ManagerBasedRlEnv) -> torch.Tensor:
+        if env is not self._env:
+            raise ValueError("Motion observation pack was called with an unbound environment")
+        command = self._command
+        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        tensor_command = cast(TensorMotionCommand, command)
+        command_tensor = cast(torch.Tensor, command.command)
+        anchor = cast(torch.Tensor, command.motion_anchor_pos_b)
+        anchor_ori = cast(torch.Tensor, command.motion_anchor_ori_b)
+        joint_pos = cast(torch.Tensor, tensor_command.device_robot_joint_pos)
+        joint_vel = cast(torch.Tensor, tensor_command.device_robot_joint_vel)
+        actions = cast(Any, env.action_manager).action
+        if read_plan is None:
+            joint_pos = joint_pos.new_zeros((joint_pos.shape[0], self._num_joints))
+            joint_vel = joint_vel.new_zeros((joint_vel.shape[0], self._num_joints))
+            command_tensor = command_tensor.new_zeros((command_tensor.shape[0], self._num_command))
+            actions = actions.new_zeros((actions.shape[0], self._num_actions))
+            lin_vel = joint_pos.new_zeros((joint_pos.shape[0], 3))
+            ang_vel = lin_vel.new_empty((lin_vel.shape[0], 3))
+            return torch.cat(
+                (
+                    command_tensor,
+                    anchor,
+                    anchor_ori,
+                    lin_vel,
+                    ang_vel,
+                    joint_pos,
+                    joint_vel,
+                    actions,
+                ),
+                dim=-1,
+            )
+        views = read_plan.sensor_tensor_views(self._entity, self.cfg.sensor_names).values
+        return torch.cat(
+            (
+                command_tensor,
+                anchor,
+                anchor_ori,
+                views[self.cfg.sensor_names[0]],
+                views[self.cfg.sensor_names[1]],
+                joint_pos
+                - self._default_joint_pos
+                - cast(torch.Tensor, command.joint_default_bias),
+                joint_vel - self._default_joint_vel,
+                actions,
+            ),
+            dim=-1,
+        )
+
+    def compute_reset_rows(self, env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> torch.Tensor:
+        rows = env_ids.to(self._device, dtype=torch.int64)
+        command = self._command
+        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        tensor_command = cast(TensorMotionCommand, command)
+        command_tensor = cast(torch.Tensor, command.command).index_select(0, rows)
+        anchor = cast(torch.Tensor, command.motion_anchor_pos_b).index_select(0, rows)
+        anchor_ori = cast(torch.Tensor, command.motion_anchor_ori_b).index_select(0, rows)
+        joint_pos = cast(torch.Tensor, tensor_command.device_robot_joint_pos).index_select(0, rows)
+        joint_vel = cast(torch.Tensor, tensor_command.device_robot_joint_vel).index_select(0, rows)
+        actions = cast(Any, env.action_manager).action.index_select(0, rows)
+        if read_plan is None:
+            joint_pos = joint_pos.new_zeros((rows.numel(), self._num_joints))
+            joint_vel = joint_vel.new_zeros((rows.numel(), self._num_joints))
+            command_tensor = command_tensor.new_zeros((rows.numel(), self._num_command))
+            actions = actions.new_zeros((rows.numel(), self._num_actions))
+            lin_vel = joint_pos.new_zeros((rows.numel(), 3))
+            ang_vel = lin_vel.new_empty((rows.numel(), 3))
+            return torch.cat(
+                (
+                    command_tensor,
+                    anchor,
+                    anchor_ori,
+                    lin_vel,
+                    ang_vel,
+                    joint_pos,
+                    joint_vel,
+                    actions,
+                ),
+                dim=-1,
+            )
+        views = read_plan.sensor_tensor_views(self._entity, self.cfg.sensor_names).values
+        return torch.cat(
+            (
+                command_tensor,
+                anchor,
+                anchor_ori,
+                views[self.cfg.sensor_names[0]].index_select(0, rows),
+                views[self.cfg.sensor_names[1]].index_select(0, rows),
+                joint_pos
+                - self._default_joint_pos.index_select(0, rows)
+                - cast(torch.Tensor, command.joint_default_bias).index_select(0, rows),
+                joint_vel - self._default_joint_vel.index_select(0, rows),
+                actions,
+            ),
+            dim=-1,
+        )
+
+
+@dataclass(kw_only=True)
 class MotionRewardPackCfg(RewardTermCfg):
     """Fused motion reward pack owned by the tensor motion command."""
 
@@ -2467,6 +2609,8 @@ __all__ = [
     "MotionAnchorObservation",
     "MotionAnchorObservationPack",
     "MotionAnchorObservationPackCfg",
+    "MotionObservationPack",
+    "MotionObservationPackCfg",
     "MotionAnchorOrientationObservation",
     "MotionAnchorPositionObservation",
     "bad_anchor_ori",

@@ -47,7 +47,23 @@ class _MissingCommandManager:
 
 
 def _env(command: Any, view: EntityTensorBodyStateView) -> Any:
-    scene = SimpleNamespace(_tensor_read_plan=SimpleNamespace(body_tensor_view=lambda *_: view))
+    class _Scene(dict):
+        pass
+
+    scene = _Scene()
+    scene._tensor_read_plan = SimpleNamespace(
+        body_tensor_view=lambda *_: view,
+        sensor_tensor_views=lambda *_: SimpleNamespace(
+            values={
+                "pelvis_local_linvel": torch.tensor(
+                    [[0.2, -0.3, 0.4], [-0.2, 0.3, -0.4]], dtype=torch.float32
+                ),
+                "torso_gyro": torch.tensor(
+                    [[1.0, -2.0, 3.0], [-1.0, 2.0, -3.0]], dtype=torch.float32
+                ),
+            }
+        ),
+    )
     return SimpleNamespace(
         num_envs=2,
         device=torch.device("cpu"),
@@ -334,3 +350,100 @@ def test_anchor_observation_pack_reset_rows_reject_wrong_command() -> None:
             torch.tensor([0], dtype=torch.int64),
             command_name="other",
         )
+
+
+def test_motion_observation_pack_matches_legacy_term_concatenation() -> None:
+    body_pos_w, body_quat_w = _reference_state()
+    command = _MotionCommand(
+        tensor_carrier=True,
+        _command=torch.tensor([[0.2, -0.4], [0.6, -0.8]], dtype=torch.float32),
+        motion_anchor_pos_b=torch.tensor([[0.1, 0.2, 0.3], [-0.1, -0.2, -0.3]]),
+        motion_anchor_ori_b=torch.tensor(
+            [[1.0, 0.0, 2.0, 0.0, 0.0, 3.0], [-1.0, -0.2, -2.0, -0.4, -0.6, -3.0]]
+        ),
+        device_robot_joint_pos=torch.linspace(-1.0, 1.0, 58).reshape(2, 29),
+        device_robot_joint_vel=torch.linspace(1.0, -1.0, 58).reshape(2, 29),
+        joint_default_bias=torch.linspace(0.0, 0.1, 58).reshape(2, 29),
+    )
+    robot = SimpleNamespace(
+        data=SimpleNamespace(
+            default_joint_pos_torch=lambda device: torch.full((2, 29), 0.05),
+            default_joint_vel_torch=lambda device: torch.full((2, 29), -0.02),
+        )
+    )
+    action = torch.linspace(-0.5, 0.5, 58).reshape(2, 29)
+    env = _env(command, _view())
+    env.scene["robot"] = robot
+    env.action_manager = SimpleNamespace(action=action)
+    cfg = mt.MotionObservationPackCfg(func=mt.MotionObservationPack)
+    term = mt.MotionObservationPack(cfg, cast(ManagerBasedRlEnv, env))
+    linvel, gyro = (
+        env.scene._tensor_read_plan.sensor_tensor_views(None, ()).values[name]
+        for name in term.cfg.sensor_names
+    )
+
+    value = term(cast(ManagerBasedRlEnv, env))
+
+    expected = torch.cat(
+        (
+            command.command,
+            command.motion_anchor_pos_b,
+            command.motion_anchor_ori_b,
+            linvel,
+            gyro,
+            command.device_robot_joint_pos - 0.05 - command.joint_default_bias,
+            command.device_robot_joint_vel + 0.02,
+            action,
+        ),
+        dim=-1,
+    )
+    assert value.shape == (2, 104)
+    torch.testing.assert_close(value, expected)
+
+    ids = torch.tensor([1], dtype=torch.int64)
+    rows = term.compute_reset_rows(cast(ManagerBasedRlEnv, env), ids)
+    assert rows.shape == (1, 104)
+    torch.testing.assert_close(rows, expected.index_select(0, ids))
+
+
+def test_motion_observation_pack_returns_cold_shape_without_read_plan() -> None:
+    command = _MotionCommand(
+        tensor_carrier=True,
+        _command=torch.zeros((2, 58)),
+        motion_anchor_pos_b=torch.zeros((2, 3)),
+        motion_anchor_ori_b=torch.zeros((2, 6)),
+        device_robot_joint_pos=torch.zeros((2, 29)),
+        device_robot_joint_vel=torch.zeros((2, 29)),
+    )
+    env = _env(command, _view())
+    env.scene["robot"] = SimpleNamespace(
+        data=SimpleNamespace(
+            default_joint_pos_torch=lambda device: torch.zeros((2, 29)),
+            default_joint_vel_torch=lambda device: torch.zeros((2, 29)),
+        )
+    )
+    env.action_manager = SimpleNamespace(action=torch.zeros((2, 29)))
+    env.scene._tensor_read_plan = None
+    cfg = mt.MotionObservationPackCfg(func=mt.MotionObservationPack)
+    term = mt.MotionObservationPack(cfg, cast(ManagerBasedRlEnv, env))
+
+    value = term(cast(ManagerBasedRlEnv, env))
+
+    assert value.shape == (2, 160)
+    assert bool((value[:, :7] == 0).all())
+
+
+def test_motion_observation_pack_rejects_non_tensor_command_and_config() -> None:
+    command = _MotionCommand(tensor_carrier=False)
+    env = _env(command, _view())
+    env.scene["robot"] = SimpleNamespace(
+        data=SimpleNamespace(
+            default_joint_pos_torch=lambda device: torch.zeros((2, 29)),
+            default_joint_vel_torch=lambda device: torch.zeros((2, 29)),
+        )
+    )
+    cfg = mt.MotionObservationPackCfg(func=mt.MotionObservationPack)
+    with pytest.raises(TypeError, match="requires TensorMotionCommand"):
+        mt.MotionObservationPack(cfg, cast(ManagerBasedRlEnv, env))
+    with pytest.raises(TypeError, match="requires MotionObservationPackCfg"):
+        mt.MotionObservationPack(_cfg(mt.MotionObservationPack), cast(ManagerBasedRlEnv, env))
