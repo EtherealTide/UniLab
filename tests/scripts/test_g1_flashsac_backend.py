@@ -8,11 +8,9 @@ import pytest
 import torch
 from scripts.benchmark.torch_env import g1_flashsac_backend as g1_backend
 from scripts.benchmark.torch_env.g1_flashsac_backend import (
-    _backend_base_name,
     _build_backend,
     _build_cfg,
     _clear_workload_state_aliases,
-    _host_bridge_sensor_names,
     _materialize_and_negotiate,
     _parse_args,
     _release_cuda_view_aliases,
@@ -22,23 +20,6 @@ from scripts.benchmark.torch_env.motion_tracking import MotionTrackingWorkload
 from scripts.benchmark.torch_env.xp import TorchBackend, TorchRng
 
 from unilab.base import backend_factory
-
-
-@pytest.mark.parametrize(
-    "backend",
-    (
-        "isaacgym",
-        "isaacsim",
-    ),
-)
-def test_isaac_flashsac_candidate_owners_compose_for_tensor_benchmark(backend: str) -> None:
-    cfg = _build_cfg(backend, num_envs=2)
-    if backend == "isaacsim":
-        assert cfg.isaacsim_tensor_cuda_ipc is True
-        assert cfg.scene.entity_assets
-        assert cfg.scene.entities["robot"].root_body_name == "robot/pelvis"
-    assert cfg.scene is not None
-    assert cfg.scene.entities["robot"].body_names
 
 
 def test_isaacsim_fixture_loader_is_rejected_after_productionization() -> None:
@@ -55,57 +36,6 @@ def test_isaacsim_fixture_cli_flag_is_obsolete(capsys: pytest.CaptureFixture[str
         _parse_args(["--backends", "isaacsim", "--isaacsim-test-fixture"])
 
     assert "--isaacsim-test-fixture is obsolete" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize(
-    ("backend", "expected"),
-    (
-        ("isaacsim", "robot/pelvis"),
-        ("isaacgym", "pelvis"),
-    ),
-)
-def test_backend_base_name_keeps_mapped_isaacsim_and_raw_isaacgym_roots(
-    backend: str, expected: str
-) -> None:
-    cfg = _build_cfg(backend, num_envs=2)
-
-    assert _backend_base_name(backend, cfg.scene.entities["robot"], cfg.scene) == expected
-
-
-@pytest.mark.parametrize(
-    ("backend", "expected"),
-    (
-        ("isaacsim", "robot/pelvis"),
-        ("isaacgym", "pelvis"),
-    ),
-)
-def test_build_backend_routes_owner_specific_base_names(
-    backend: str, expected: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    captured: dict[str, object] = {}
-
-    def fake_create_backend(
-        backend_type: str, scene: object, num_envs: int, sim_dt: float, **kwargs: object
-    ) -> object:
-        captured.update(
-            {
-                "backend_type": backend_type,
-                "scene": scene,
-                "num_envs": num_envs,
-                "sim_dt": sim_dt,
-                **kwargs,
-            }
-        )
-        return object()
-
-    monkeypatch.setattr(backend_factory, "create_backend", fake_create_backend)
-
-    _build_backend(backend, num_envs=2)
-
-    assert captured["backend_type"] == backend
-    assert captured["base_name"] == expected
-    if backend == "isaacsim":
-        assert captured["share_friction_materials"] is True
 
 
 def test_build_backend_binds_newton_process_device_before_construction(
@@ -155,17 +85,6 @@ def test_tensor_runtime_diagnostics_are_serialized_for_backend_provenance() -> N
             "disable_reason": "forced ineligibility",
         }
     }
-
-
-def test_mapped_sensor_names_use_cuda_canonical_scalars_and_entity_bodies() -> None:
-    cfg = _build_cfg("isaacsim", num_envs=2)
-    body_names = tuple(cfg.scene.entities["robot"].body_names)
-
-    names = _host_bridge_sensor_names(body_names)
-
-    assert names[:2] == ("pelvis_local_linvel", "torso_gyro")
-    assert names[2] == "track_pos_w_robot/pelvis"
-    assert f"track_quat_w_{body_names[0]}" in names
 
 
 @pytest.mark.parametrize(
@@ -437,7 +356,7 @@ def test_tensor_benchmark_negotiates_after_subprocess_materialization() -> None:
             calls.append("capabilities")
             return object()
 
-    mode, capabilities = _materialize_and_negotiate("isaacgym", Backend())
+    mode, capabilities = _materialize_and_negotiate("mjwarp", Backend())
 
     assert mode == "device_resident"
     assert capabilities is not None
@@ -479,6 +398,6 @@ def test_tensor_benchmark_closes_backend_when_lifecycle_setup_fails(
     monkeypatch.setattr(g1_backend, "_run_with_backend", fail_setup)
 
     with pytest.raises(RuntimeError, match="sensor view negotiation failed"):
-        g1_backend._run("isaacsim", 2, warmup=0, iters=1)
+        g1_backend._run("mjwarp", 2, warmup=0, iters=1)
 
     assert backend.closed is True
