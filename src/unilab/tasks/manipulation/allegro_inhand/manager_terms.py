@@ -78,11 +78,15 @@ def _pair(term: str, name: str, value: Any) -> tuple[float, float]:
     return lower, upper
 
 
-def _env_ids(env: ManagerBasedRlEnv, env_ids: np.ndarray | slice | None) -> np.ndarray:
+def _env_ids(
+    env: ManagerBasedRlEnv, env_ids: torch.Tensor | np.ndarray | slice | None
+) -> np.ndarray:
     if env_ids is None:
         return np.arange(env.num_envs, dtype=np.int32)
     if isinstance(env_ids, slice):
         return np.arange(env.num_envs, dtype=np.int32)[env_ids]
+    if isinstance(env_ids, torch.Tensor):
+        return env_ids.detach().cpu().numpy().astype(np.int32, copy=False)
     return env_ids
 
 
@@ -217,7 +221,7 @@ class AllegroIncrementalPositionAction(ActionTerm):
             self._entity_values(self._target), joint_ids=self._joint_ids_array
         )
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | np.ndarray | slice | None = None) -> None:
         selector = self._reset_selector(slice(None) if env_ids is None else env_ids)
         self._raw_action[selector] = 0.0
         self._clipped_action[selector] = 0.0
@@ -230,7 +234,7 @@ class AllegroIncrementalPositionAction(ActionTerm):
         else:
             self._target[selector] = current_target[selector]
 
-    def _reset_selector(self, env_ids: np.ndarray | slice) -> torch.Tensor | slice:
+    def _reset_selector(self, env_ids: torch.Tensor | np.ndarray | slice) -> torch.Tensor | slice:
         if isinstance(env_ids, slice):
             return env_ids
         rows = torch.as_tensor(np.asarray(env_ids), device=self._device)
@@ -310,7 +314,7 @@ class AllegroRotationObservation(ManagerTermBase):
     def last_counter(self) -> int:
         return self._last_counter
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | np.ndarray | slice | None = None) -> None:
         ids = _env_ids(self._env, env_ids)
         dof_pos = np.asarray(
             self._entity.data.joint_pos[:, self._action.joint_ids], dtype=get_global_dtype()
@@ -416,7 +420,7 @@ class AllegroDropTermination(ManagerTermBase):
     def last_counter(self) -> int:
         return self._last_counter
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | np.ndarray | slice | None = None) -> None:
         self.dropped[_env_ids(self._env, env_ids)] = False
         self._last_counter = int(cast("_AllegroEnv", self._env).common_step_counter)
 

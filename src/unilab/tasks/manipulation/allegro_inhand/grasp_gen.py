@@ -178,7 +178,7 @@ class AllegroGraspQualityTermination(ManagerTermBase):
     def last_counter(self) -> int:
         return self._last_counter
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | np.ndarray | slice | None = None) -> None:
         ids = slice(None) if env_ids is None else env_ids
         self.fingertips_close[ids] = False
         self.enough_contacts[ids] = False

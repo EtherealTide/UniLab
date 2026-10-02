@@ -100,12 +100,16 @@ def _pair(term: str, name: str, value: Any) -> tuple[float, float]:
     return lower, upper
 
 
-def _env_ids(env: ManagerBasedRlEnv, env_ids: torch.Tensor | slice | None) -> np.ndarray:
+def _env_ids(
+    env: ManagerBasedRlEnv, env_ids: torch.Tensor | np.ndarray | slice | None
+) -> np.ndarray:
     if env_ids is None:
         return np.arange(env.num_envs, dtype=np.int32)
     if isinstance(env_ids, slice):
         return np.arange(env.num_envs, dtype=np.int32)[env_ids]
-    return env_ids.detach().cpu().numpy().astype(np.int32, copy=False)
+    if isinstance(env_ids, torch.Tensor):
+        return env_ids.detach().cpu().numpy().astype(np.int32, copy=False)
+    return np.asarray(env_ids, dtype=np.int32)
 
 
 def _body_id(entity: Entity, name: str, *, term: str) -> int:
@@ -377,7 +381,7 @@ class StewartTiltAction(ActionTerm):
     def apply_actions(self) -> None:
         self._entity.data.write_ctrl(self._control, actuator_ids=self._actuator_ids)
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | np.ndarray | slice | None = None) -> None:
         ids = slice(None) if env_ids is None else env_ids
         for value in (
             self._raw_action,
@@ -503,7 +507,7 @@ class StewartObservation(ManagerTermBase):
             self._obs[ids, 11:13] = self._action.target_tilt_deg[ids] / self._tilt_limit_deg
             self._obs[ids, 13:15] = self._action.executed_action[ids]
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | np.ndarray | slice | None = None) -> None:
         ids = _env_ids(self._env, env_ids)
         read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
         if read_plan is not None and not read_plan.ready:
@@ -679,7 +683,7 @@ class StewartBalanceState(ManagerTermBase):
     def last_counter(self) -> int:
         return self._last_counter
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | np.ndarray | slice | None = None) -> None:
         ids = _env_ids(self._env, env_ids)
         self.fallen[ids] = False
         self.success[ids] = False

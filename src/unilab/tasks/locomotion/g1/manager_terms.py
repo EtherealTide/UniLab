@@ -627,7 +627,7 @@ class feet_air_time(_FootContactTerm):
         super().__init__(cfg, env)
         self._air_time = np.zeros((env.num_envs, 2), dtype=get_global_dtype())
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | np.ndarray | slice | None = None) -> None:
         self._air_time[env_ids if env_ids is not None else slice(None)] = 0.0
 
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray | torch.Tensor:

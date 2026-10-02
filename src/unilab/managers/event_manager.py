@@ -143,7 +143,9 @@ class EventManager(ManagerBase):
         ids: torch.Tensor | slice = (
             env_ids
             if isinstance(env_ids, torch.Tensor)
-            else torch.arange(self.num_envs, device=self._device)[env_ids or slice(None)]
+            else torch.arange(self.num_envs, device=self._device)[
+                env_ids if env_ids is not None else slice(None)
+            ]
         )
         num_envs = ids.numel() if isinstance(ids, torch.Tensor) else self.num_envs
         # Iterate the full interval term list: _interval_term_time_left is parallel
