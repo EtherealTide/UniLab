@@ -1233,7 +1233,7 @@ def test_flashsac_motion_reset_publishes_call_graph_counts() -> None:
         assert timing["reset_done_event_term_count"] == 0.0
         assert timing["reset_done_command_term_count"] == 1.0
         assert timing["reset_done_manager_reset_count"] == 4.0
-        assert timing["reset_done_observation_term_count"] == 11.0
+        assert timing["reset_done_observation_term_count"] == 2.0
         assert timing["reset_done_sampler_host_transfer_count"] == 0.0
     finally:
         env.close()

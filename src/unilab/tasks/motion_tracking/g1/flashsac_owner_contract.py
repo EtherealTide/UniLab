@@ -61,6 +61,12 @@ _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V11 = (
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V12 = (
     "28e89481d8093084c249ea0605af193c528f677e42ecd6308758cd812a8abd88"
 )
+# V13 applies only to MJWarp: the privileged critic carrier is fused into one
+# Manager-owned observation term. Ordering, equations, dimensions, actor noise,
+# and the clean critic corruption policy are unchanged.
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V13 = (
+    "73fa809d1acaddab43fbf3b99d67e4b0f9464ddf8ab6ff33fe6cb1e23e8c043b"
+)
 _TORCH_G1_SAC_OWNER_IDENTITY_V2 = "30cf78a5c6da8c94cd3bd2afa74fa9f4251cccf2a98db7251ee6b8346573a975"
 
 
@@ -70,6 +76,7 @@ def _validate_torch_g1_flashsac_owner_contract(cfg: ManagerBasedRlEnvCfg) -> Non
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V10,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V11,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V12,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V13,
         _TORCH_G1_SAC_OWNER_IDENTITY_V2,
     }:
         raise ValueError(
@@ -82,6 +89,7 @@ __all__ = [
     "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V10",
     "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V11",
     "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V12",
+    "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V13",
     "_TORCH_G1_SAC_OWNER_IDENTITY_V2",
     "_qualified_name",
     "_torch_g1_flashsac_owner_identity",

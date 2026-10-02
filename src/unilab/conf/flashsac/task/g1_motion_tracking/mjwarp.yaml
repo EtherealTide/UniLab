@@ -205,8 +205,18 @@ env:
               - [-0.0, 0.0]
     critic:
       terms:
+        command: null
+        base_lin_vel: null
+        base_ang_vel: null
+        joint_pos: null
+        joint_vel: null
+        actions: null
+        body_pos: null
+        body_ori: null
+        sac_base_lin_vel: null
         motion_anchor_pos_b: null
         motion_anchor_ori_b: null
-        motion_anchor_pack:
-          _target_: unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorObservationPackCfg
-          func: unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorObservationPack
+        motion_anchor_pack: null
+        motion_critic_pack:
+          _target_: unilab.tasks.motion_tracking.common.manager_terms.MotionCriticObservationPackCfg
+          func: unilab.tasks.motion_tracking.common.manager_terms.MotionCriticObservationPack

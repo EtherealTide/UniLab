@@ -2102,6 +2102,22 @@ class MotionObservationPackCfg(ObservationTermCfg):
     action_width: int = 29
 
 
+@dataclass(kw_only=True)
+class MotionCriticObservationPackCfg(ObservationTermCfg):
+    """Fused privileged motion critic carrier over one authoritative read."""
+
+    command_name: str = "motion"
+    entity_name: str = "robot"
+    sensor_names: tuple[str, ...] = ("pelvis_local_linvel", "torso_gyro")
+    # Immutable segment widths for the canonical G1 motion critic carrier.
+    # They are explicit because Manager probes terms before backend scene
+    # dimensions are available.
+    command_width: int = 58
+    joint_width: int = 29
+    action_width: int = 29
+    body_width: int = 14
+
+
 class MotionObservationPack(ManagerTermBase):
     """Evaluate the canonical motion observation carrier in one fused term.
 
@@ -2224,6 +2240,94 @@ class MotionObservationPack(ManagerTermBase):
                 - cast(torch.Tensor, command.joint_default_bias).index_select(0, rows),
                 joint_vel - self._default_joint_vel.index_select(0, rows),
                 actions,
+            ),
+            dim=-1,
+        )
+
+
+class MotionCriticObservationPack(ManagerTermBase):
+    """Evaluate the canonical privileged critic carrier in one fused term."""
+
+    cfg: MotionCriticObservationPackCfg
+
+    def __init__(self, cfg: MotionCriticObservationPackCfg, env: ManagerBasedRlEnv):
+        super().__init__(env)
+        if not isinstance(cfg, MotionCriticObservationPackCfg):
+            raise TypeError("MotionCriticObservationPack requires MotionCriticObservationPackCfg")
+        self.cfg = cfg
+        self._device = torch.device(env.device)
+        self._command = _command(env, cfg.command_name)
+        if not bool(getattr(self._command, "tensor_carrier", False)):
+            raise TypeError("MotionCriticObservationPack requires TensorMotionCommand")
+        self._entity = cast("Entity", env.scene[cfg.entity_name])
+        self._num_joints = int(cfg.joint_width)
+        self._num_command = int(cfg.command_width)
+        self._num_actions = int(cfg.action_width)
+        self._num_bodies = int(cfg.body_width)
+        self._default_joint_pos = self._entity.data.default_joint_pos_torch(env.device)
+        self._default_joint_vel = self._entity.data.default_joint_vel_torch(env.device)
+
+    @property
+    def tensor_sensor_names(self) -> tuple[str, ...]:
+        return self.cfg.sensor_names
+
+    def __call__(self, env: ManagerBasedRlEnv) -> torch.Tensor:
+        if env is not self._env:
+            raise ValueError(
+                "Motion critic observation pack was called with an unbound environment"
+            )
+        return self._carrier(env, None)
+
+    def compute_reset_rows(self, env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> torch.Tensor:
+        return self._carrier(env, env_ids.to(self._device, dtype=torch.int64))
+
+    def _carrier(self, env: ManagerBasedRlEnv, rows: torch.Tensor | None) -> torch.Tensor:
+        command = cast(TensorMotionCommand, self._command)
+        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        count = self.num_envs if rows is None else rows.numel()
+        select = (
+            (lambda values: values)
+            if rows is None
+            else (lambda values: values.index_select(0, rows))
+        )
+        command_tensor = select(cast(torch.Tensor, command.command))
+        anchor = select(cast(torch.Tensor, command.motion_anchor_pos_b))
+        anchor_ori = select(cast(torch.Tensor, command.motion_anchor_ori_b))
+        joint_pos = select(cast(torch.Tensor, command.device_robot_joint_pos))
+        joint_vel = select(cast(torch.Tensor, command.device_robot_joint_vel))
+        actions = select(cast(Any, env.action_manager).action)
+        body_pos = select(cast(torch.Tensor, command.robot_body_pos_b))
+        body_ori = select(cast(torch.Tensor, command.robot_body_ori_b))
+        if read_plan is None:
+            command_tensor = command_tensor.new_zeros((count, self._num_command))
+            joint_pos = joint_pos.new_zeros((count, self._num_joints))
+            joint_vel = joint_vel.new_zeros((count, self._num_joints))
+            actions = actions.new_zeros((count, self._num_actions))
+            body_pos = body_pos.new_zeros((count, self._num_bodies, 3))
+            body_ori = body_ori.new_zeros((count, self._num_bodies, 6))
+            lin_vel = command_tensor.new_zeros((count, 3))
+            ang_vel = command_tensor.new_zeros((count, 3))
+            privileged_lin_vel = lin_vel
+        else:
+            views = read_plan.sensor_tensor_views(self._entity, self.cfg.sensor_names).values
+            lin_vel = select(views[self.cfg.sensor_names[0]])
+            ang_vel = select(views[self.cfg.sensor_names[1]])
+            privileged_lin_vel = lin_vel
+        return torch.cat(
+            (
+                command_tensor,
+                anchor,
+                anchor_ori,
+                lin_vel,
+                ang_vel,
+                joint_pos
+                - select(self._default_joint_pos)
+                - select(cast(torch.Tensor, command.joint_default_bias)),
+                joint_vel - select(self._default_joint_vel),
+                actions,
+                body_pos.reshape(count, -1),
+                body_ori.reshape(count, -1),
+                privileged_lin_vel,
             ),
             dim=-1,
         )
@@ -2724,6 +2828,8 @@ __all__ = [
     "MotionAnchorObservationPackCfg",
     "MotionObservationPack",
     "MotionObservationPackCfg",
+    "MotionCriticObservationPack",
+    "MotionCriticObservationPackCfg",
     "MotionAnchorOrientationObservation",
     "MotionAnchorPositionObservation",
     "bad_anchor_ori",
