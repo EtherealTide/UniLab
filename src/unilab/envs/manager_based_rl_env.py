@@ -1170,7 +1170,7 @@ class ManagerBasedRlEnv(TorchEnv):
         if all(value is not None for value in update_children):
             # Queue drain and the same boundary inside termination are excluded:
             # they drain pre-update GPU work already timed by step_core_ms.
-            drain = cast(float, timing["update_state_queue_drain_ms"])
+            drain = cast(float, timing["update_state_queue_drain_ms"]) / 1000.0
             timing["update_state_nonattributed_ms"] = (
                 time.perf_counter()
                 - update_started
