@@ -29,7 +29,10 @@ from unisim.backend.base import (
     tensor_device_matches,
 )
 
-from unilab.base.backend_timing import RESET_DONE_DETAIL_TIMING_KEYS
+from unilab.base.backend_timing import (
+    RESET_DONE_DETAIL_TIMING_KEYS,
+    UPDATE_STATE_DETAIL_TIMING_KEYS,
+)
 from unilab.base.base import ABEnv, EnvCfg, EnvPlayCapabilities
 from unilab.base.cpu_runtime import apply_env_cpu_runtime
 from unilab.base.scene import SceneCfg
@@ -466,6 +469,8 @@ class TorchEnv(ABEnv):
         done = self._state.terminated | self._state.truncated
         if not bool(done.any()):
             self._clear_reset_done_detail_timing(self._state.info.setdefault("timing", {}))
+            for key in UPDATE_STATE_DETAIL_TIMING_KEYS:
+                self._state.info["timing"][key] = 0.0
             return
 
         rows = done.nonzero(as_tuple=False).flatten().to(torch.int64)
@@ -514,6 +519,8 @@ class TorchEnv(ABEnv):
 
         timing = self._state.info.setdefault("timing", {})
         self._clear_reset_done_detail_timing(timing)
+        for key in UPDATE_STATE_DETAIL_TIMING_KEYS:
+            timing[key] = 0.0
         timing.update(detail_timing)
 
     def _ensure_final_observation_scratch(self) -> dict[str, torch.Tensor]:
