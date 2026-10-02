@@ -78,6 +78,7 @@ class CommandTerm(ManagerTermBase):
         self.time_left = torch.zeros(self.num_envs, dtype=torch.float32, device=self._device)
         self.command_counter = torch.zeros(self.num_envs, dtype=torch.int64, device=self._device)
         self.last_reset_timing_ms: dict[str, float] = {}
+        self.last_post_compute_timing_ms: dict[str, float] = {}
 
     @property
     @abc.abstractmethod
@@ -308,6 +309,7 @@ class CommandManager(ManagerBase):
         self.cfg = cfg
         self._device = torch.device(getattr(env, "device", torch.device("cpu")))
         self._last_term_reset_timing_ms: dict[str, float] = {}
+        self.last_post_compute_timing_ms: dict[str, float] = {}
         super().__init__(env)
 
     def __str__(self) -> str:
@@ -385,8 +387,12 @@ class CommandManager(ManagerBase):
             self._validate_command(name, term.command)
 
     def post_compute(self) -> None:
+        self.last_post_compute_timing_ms.clear()
         for term in self._terms.values():
             term.post_compute()
+            self.last_post_compute_timing_ms.update(
+                getattr(term, "last_post_compute_timing_ms", {})
+            )
 
     def bind_read_phase(self) -> None:
         for term in self._terms.values():
