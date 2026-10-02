@@ -240,11 +240,7 @@ def _ingest_motion_packet_kernel(
         rows,
         packet[:, body_start:quat_start].view(count, num_bodies, 3) + origins[:, None, :],
     )
-    command.index_copy_(
-        0,
-        rows,
-        torch.cat((packet[:, :joint_width], packet[:, vel_start:vel_end]), dim=1),
-    )
+    command.index_copy_(0, rows, packet[:, : joint_width * 2])
 
 
 def _bind_compiled_motion_packet_ingest() -> Callable[..., None]:
@@ -951,6 +947,7 @@ class TensorMotionCommand(MotionCommand):
         self._motion_feature_layout: (
             tuple[dict[str, tuple[int, ...]], dict[str, tuple[int, int]]] | None
         ) = None
+        self._last_reset_payload_validated = False
         num_bodies = len(self.cfg.body_names)
         num_joints = self.motion.num_joints
         self.time_steps = torch.as_tensor(
@@ -1140,6 +1137,7 @@ class TensorMotionCommand(MotionCommand):
             (rows.numel(), self.motion.num_joints),
             dtype=torch.float32,
         )
+        self._last_reset_payload_validated = False
         return CommandTerm.reset(self, rows, publish_metrics=publish_metrics)
 
     def sampler_reset_diagnostics(self) -> dict[str, float]:
@@ -1171,6 +1169,11 @@ class TensorMotionCommand(MotionCommand):
     @property
     def uses_tensor_reset_rows(self) -> bool:
         return True
+
+    @property
+    def last_reset_payload_validated(self) -> bool:
+        """Whether the current reset payload already passed owner validation."""
+        return bool(self._last_reset_payload_validated)
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         rows = env_ids.to(dtype=torch.int64, device=self._device)
@@ -1223,7 +1226,10 @@ class TensorMotionCommand(MotionCommand):
         motion_body_quat = packet[:, quat_start:quat_end].view(count, *tails["body_quat_w"])
         motion_body_lin_vel = packet[:, lin_start:lin_end].view(count, *tails["body_lin_vel_w"])
         motion_body_ang_vel = packet[:, ang_start:ang_end].view(count, *tails["body_ang_vel_w"])
-        root_pos = motion_body_pos[:, 0] + self._env_origins.index_select(0, rows)
+        origins = (
+            self._env_origins if count == self.num_envs else self._env_origins.index_select(0, rows)
+        )
+        root_pos = motion_body_pos[:, 0] + origins
         root_pos += pose[:, :3]
         root_quat = quat_mul(
             quat_from_euler_xyz(pose[:, 3], pose[:, 4], pose[:, 5]),
@@ -1249,11 +1255,12 @@ class TensorMotionCommand(MotionCommand):
         root_write_ms = (time.perf_counter() - root_write_started) * 1000.0
         construction_ms = values_ms + root_values_ms + root_write_ms
         publish_started = time.perf_counter()
-        self._ingest_motion_packet(rows, packet)
+        self._ingest_motion_packet(rows, packet, origins=origins)
         publish_ms = (time.perf_counter() - publish_started) * 1000.0
         self._resample_ingested_ids = None
         self._resample_motion = None
         self._tensor_resample_ingested = env_ids
+        self._last_reset_payload_validated = True
         self.last_reset_timing_ms.update(
             {
                 "reset_done_motion_sampler_ms": sampler_ms,
@@ -1451,12 +1458,20 @@ class TensorMotionCommand(MotionCommand):
         self._motion_feature_layout = cached
         return cached
 
-    def _ingest_motion_packet(self, rows: torch.Tensor, packet: torch.Tensor) -> None:
+    def _ingest_motion_packet(
+        self,
+        rows: torch.Tensor,
+        packet: torch.Tensor,
+        *,
+        origins: torch.Tensor | None = None,
+    ) -> None:
         """Scatter one device motion packet into the command carriers."""
         count = rows.numel()
-        origins = (
+        selected_origins = (
             self._env_origins if count == self.num_envs else self._env_origins.index_select(0, rows)
         )
+        if origins is None:
+            origins = selected_origins
         _bind_compiled_motion_packet_ingest()(
             rows,
             packet,
@@ -2394,12 +2409,15 @@ class MotionResetOwner(ResetOwner):
             publish_metrics=False,
             validate_commands=False,
         )
-        # Validation stays at this owner boundary, but the fused command
-        # carrier is already one contiguous device tensor. A single finite
-        # reduction replaces the generic per-term full-command synchronization.
+        # Generic command validation remains here, but the fused motion payload
+        # was already validated as one public reset transaction: root state,
+        # quaternion, and joint values cover the packet segments copied into
+        # the contiguous command carrier.
         command = commands.get(self.cfg.command_name)
         if command is None:
             raise KeyError(f"Command term '{self.cfg.command_name}' is not configured")
+        if bool(getattr(self._command, "last_reset_payload_validated", False)):
+            return cast(dict[str, float], extras)
         if not bool(torch.isfinite(command).all()):
             raise ValueError(
                 f"Motion reset owner command '{self.cfg.command_name}' returned NaN or Inf."
