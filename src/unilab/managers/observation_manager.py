@@ -482,7 +482,7 @@ class ObservationManager(ManagerBase):
                 fresh = True
             if isinstance(term_cfg.noise, noise_cfg.NoiseCfg):
                 # Noise accepts either carrier and returns a fresh allocation.
-                obs = self._apply_uniform_noise(term_cfg.noise, obs)
+                obs = term_cfg.noise.apply(obs, rng=self._env.rng, torch_rng=self._torch_generator)
                 fresh = True
             elif isinstance(term_cfg.noise, noise_cfg.NoiseModelCfg):
                 # Noise models likewise return a fresh carrier allocation.
@@ -703,32 +703,6 @@ class ObservationManager(ManagerBase):
         host = np.array(values, order="C", copy=True)
         return torch.from_numpy(host).to(device=self._device, dtype=torch.float32)
 
-    def _apply_uniform_noise(
-        self,
-        noise: noise_cfg.NoiseCfg,
-        obs: np.ndarray | torch.Tensor,
-    ) -> np.ndarray | torch.Tensor:
-        """Apply scalar additive Torch uniform noise through a reusable scratch."""
-        if (
-            not isinstance(noise, noise_cfg.UniformNoiseCfg)
-            or noise.operation != "add"
-            or not isinstance(noise.n_min, float)
-            or not isinstance(noise.n_max, float)
-            or self._torch_generator is None
-            or not isinstance(obs, torch.Tensor)
-        ):
-            return noise.apply(obs, rng=self._env.rng, torch_rng=self._torch_generator)
-        shape = tuple(obs.shape)
-        scratch = self._uniform_noise_scratch.get(shape)
-        if scratch is None or scratch.device != obs.device or scratch.dtype != obs.dtype:
-            scratch = torch.empty(shape, dtype=obs.dtype, device=obs.device)
-            self._uniform_noise_scratch[shape] = scratch
-        # Keep multiplication/addition order aligned with UniformNoiseCfg.
-        with torch.device(obs.device):
-            torch.rand(shape, generator=self._torch_generator, out=scratch)
-        scratch.mul_(noise.n_max - noise.n_min).add_(noise.n_min).add_(obs)
-        return scratch
-
     def _prepare_terms(self) -> None:
         self._group_obs_term_names: dict[str, list[str]] = dict()
         self._group_obs_term_dim: dict[str, list[tuple[int, ...]]] = dict()
@@ -740,7 +714,6 @@ class ObservationManager(ManagerBase):
         self._group_obs_class_instances: dict[str, dict[str, noise_model.NoiseModel]] = {}
         self._group_obs_term_delay_buffer: dict[str, dict[str, DelayBuffer]] = dict()
         self._group_obs_term_history_buffer: dict[str, dict[str, CircularBuffer]] = dict()
-        self._uniform_noise_scratch: dict[tuple[int, ...], torch.Tensor] = {}
         # Whether any term in the group uses delay/history buffers. Groups
         # without temporal terms can be row-scoped on the reset path.
         self._group_obs_temporal: dict[str, bool] = dict()
