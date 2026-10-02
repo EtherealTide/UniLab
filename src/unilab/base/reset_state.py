@@ -1239,11 +1239,12 @@ class ResetStateTransaction:
                     f"EventManager term '{term_name}' tensor motion {name} must be "
                     "contiguous float32"
                 )
-            if not bool(torch.isfinite(values).all()):
-                raise ValueError(
-                    f"EventManager term '{term_name}' tensor motion {name} contains NaN or Inf"
-                )
-        self._validate_tensor_root_quaternions(root_state[:, 3:7], term_name=term_name)
+        self._validate_motion_tensor_payload(
+            root_state=root_state,
+            joint_position=joint_position,
+            joint_velocity=joint_velocity,
+            term_name=term_name,
+        )
         qpos = self._tensor_qpos
         qvel = self._tensor_qvel
         assert qpos is not None and qvel is not None
@@ -1255,6 +1256,42 @@ class ResetStateTransaction:
         qpos[rows[:, None], qpos_columns[None, :]] = joint_position
         qvel[rows[:, None], qvel_columns[None, :]] = joint_velocity
         self._tensor_has_writes = True
+
+    def _validate_motion_tensor_payload(
+        self,
+        *,
+        root_state: torch.Tensor,
+        joint_position: torch.Tensor,
+        joint_velocity: torch.Tensor,
+        term_name: str,
+    ) -> None:
+        """Validate the fused motion payload through one device synchronization."""
+        quat_norm = torch.linalg.vector_norm(root_state[:, 3:7], dim=-1)
+        valid_quat = torch.isclose(
+            quat_norm,
+            torch.ones_like(quat_norm),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        valid = (
+            torch.isfinite(root_state).all()
+            & torch.isfinite(joint_position).all()
+            & torch.isfinite(joint_velocity).all()
+            & valid_quat.all()
+        )
+        if bool(valid):
+            return
+        payloads = (
+            ("root state", root_state),
+            ("joint position", joint_position),
+            ("joint velocity", joint_velocity),
+        )
+        for name, values in payloads:
+            if not bool(torch.isfinite(values).all()):
+                raise ValueError(
+                    f"EventManager term '{term_name}' tensor motion {name} contains NaN or Inf"
+                )
+        self._validate_tensor_root_quaternions(root_state[:, 3:7], term_name=term_name)
 
     def write_joint_state_tensor(
         self,

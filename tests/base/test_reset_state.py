@@ -877,6 +877,53 @@ def test_tensor_motion_state_write_fails_closed() -> None:
                 term_name="motion_owner",
             )
 
+    nonfinite_root = root_state.clone()
+    nonfinite_root[0, 0] = float("inf")
+    with pytest.raises(ValueError, match="root state contains NaN or Inf"):
+        with transaction.scoped_device_event_tensor(rows):
+            transaction.write_motion_state_tensor(
+                rows,
+                layout,
+                np.array([7], dtype=np.int32),
+                np.array([6], dtype=np.int32),
+                nonfinite_root,
+                position,
+                velocity,
+                term_name="motion_owner",
+            )
+
+
+def test_tensor_motion_state_diagnostic_uses_one_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    transaction = _transaction(_TensorResetBackend())
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    rows = torch.tensor([1], dtype=torch.int64)
+    layout = BackendRootStateLayout(tuple(range(7)), tuple(range(6)))
+    root_state = torch.tensor([[0.0, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0]])
+    position = torch.tensor([[0.1]], dtype=torch.float32)
+    velocity = torch.tensor([[0.2]], dtype=torch.float32)
+    scalar_conversions = 0
+    original_bool = torch.Tensor.__bool__
+
+    def counted_bool(self: torch.Tensor) -> bool:
+        nonlocal scalar_conversions
+        scalar_conversions += 1
+        return original_bool(self)
+
+    monkeypatch.setattr(torch.Tensor, "__bool__", counted_bool)
+    with transaction.scoped_device_event_tensor(rows):
+        transaction.write_motion_state_tensor(
+            rows,
+            layout,
+            np.array([7], dtype=np.int32),
+            np.array([6], dtype=np.int32),
+            root_state,
+            position,
+            velocity,
+            term_name="motion_owner",
+        )
+
+    assert scalar_conversions == 1
+
 
 def test_tensor_reset_commit_carries_randomization_payload() -> None:
     backend = _TensorResetBackend()
