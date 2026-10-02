@@ -5,11 +5,11 @@ Usage:
     uv run scripts/benchmark/env/benchmark_env_step.py
 
     # Single task + backend:
-    uv run scripts/benchmark/env/benchmark_env_step.py task=g1_walk_flat/motrix
+    uv run scripts/benchmark/env/benchmark_env_step.py task=g1_walk_flat/mujoco
 
-    # mjwarp backend (Phase 1: g1_walk_flat only) requires extra deps:
-    uv run --with mujoco-warp --with warp-lang \\
-        scripts/benchmark/env/benchmark_env_step.py task=g1_walk_flat/mjwarp
+    # CUDA tensor backends require their extras:
+    uv run --extra mjwarp scripts/benchmark/env/benchmark_env_step.py task=g1_walk_flat/mjwarp
+    uv run --extra genesis scripts/benchmark/env/benchmark_env_step.py task=g1_walk_flat/genesis
 
     # Override bench params:
     uv run scripts/benchmark/env/benchmark_env_step.py task=go2_joystick_flat/mujoco num_envs=4096 num_steps=500
@@ -93,7 +93,7 @@ def _uninstall_mjwarp_patch() -> None:
 
 MJWARP_AVAILABLE = _install_mjwarp_patch()
 
-BACKENDS = ["mujoco", "motrix", "mjwarp"]
+BACKENDS = ["mujoco", "mjwarp", "genesis"]
 
 
 @dataclass(frozen=True)
@@ -102,7 +102,7 @@ class TaskConfig:
     env_name: str
     cfg_factory: Callable[[str, list[str]], Any]
     env_cls_factory: Callable[[], Callable[..., Any]]
-    backends: tuple[str, ...] = ("mujoco", "motrix")
+    backends: tuple[str, ...] = ("mujoco", "mjwarp", "genesis")
     aliases: tuple[str, ...] = ()
     cfg_finalizer: Callable[[Any, str], None] | None = None
     include_in_matrix: bool = True
@@ -226,21 +226,21 @@ TASK_CONFIGS: dict[str, TaskConfig] = {
         env_name="Go2JoystickFlat",
         cfg_factory=_go2_cfg,
         env_cls_factory=_manager_env_cls,
-        backends=("mujoco", "motrix", "mjwarp"),
+        backends=("mujoco",),
     ),
     "g1": TaskConfig(
         task_id="g1_walk_flat",
         env_name="G1WalkFlat",
         cfg_factory=_g1_flat_cfg,
         env_cls_factory=_g1_walk_env_cls,
-        backends=("mujoco", "motrix", "mjwarp"),
+        backends=("mujoco", "mjwarp", "genesis"),
     ),
     "g1_mt": TaskConfig(
         task_id="g1_motion_tracking",
         env_name="G1MotionTracking",
         cfg_factory=_g1_motion_tracking_cfg,
         env_cls_factory=_manager_env_cls,
-        backends=("mujoco", "motrix"),
+        backends=("mujoco",),
     ),
 }
 
@@ -256,13 +256,13 @@ TASK_COLORS = {
 }
 BACKEND_STYLES = {
     "mujoco": {"marker": "o", "linestyle": "-", "hatch": "//"},
-    "motrix": {"marker": "s", "linestyle": "--", "hatch": "xx"},
     "mjwarp": {"marker": "^", "linestyle": ":", "hatch": ".."},
+    "genesis": {"marker": "D", "linestyle": "-.", "hatch": "oo"},
 }
 BACKEND_TICK_LABELS = {
     "mujoco": "mj",
-    "motrix": "mx",
     "mjwarp": "wp",
+    "genesis": "gs",
 }
 BREAKDOWN_SEGMENTS = [
     ("apply_action_ms", "apply_action", "#4C78A8"),
@@ -1171,17 +1171,22 @@ def _tail_text(text: str, *, max_lines: int = 24) -> str:
 
 
 def _run_single_isolated(label: str, args: list[str]) -> dict[str, Any]:
-    # mjwarp cases need their optional deps re-declared in the subprocess
-    # because the case is launched via a fresh `uv run` (the parent's
-    # ephemeral --with environment doesn't propagate).
+    # CUDA tensor cases need their extras re-declared in the subprocess because
+    # the case is launched via a fresh `uv run`; parent environment options do
+    # not propagate.
     needs_mjwarp = any(
         arg.endswith("/mjwarp") or arg == "training.sim_backend=mjwarp" for arg in args
+    )
+    needs_genesis = any(
+        arg.endswith("/genesis") or arg == "training.sim_backend=genesis" for arg in args
     )
     with tempfile.TemporaryDirectory(prefix="unilab_env_step_case_") as tmpdir:
         result_json = Path(tmpdir) / "result.json"
         uv_extra: list[str] = []
         if needs_mjwarp:
-            uv_extra = ["--with", "mujoco-warp", "--with", "warp-lang"]
+            uv_extra = ["--extra", "mjwarp"]
+        elif needs_genesis:
+            uv_extra = ["--extra", "genesis"]
         cmd = [
             "uv",
             "run",
@@ -1216,20 +1221,21 @@ def _run_matrix(
     extra_args: list[str], *, out_json: Path, plot_dir: Path | None, skip_plots: bool
 ) -> None:
     """Run all task x backend combinations and print comparison."""
-    from unisim.backend.motrix.backend import MOTRIX_AVAILABLE
-
     backends = ["mujoco"]
-    if MOTRIX_AVAILABLE:
-        backends.append("motrix")
-    else:
-        print("Note: motrixsim not available; skipping motrix column\n")
     if MJWARP_AVAILABLE:
         backends.append("mjwarp")
     else:
-        print(
-            "Note: mujoco_warp not available; skipping mjwarp column "
-            "(install via `uv run --with mujoco-warp --with warp-lang`)\n"
-        )
+        print("Note: mujoco_warp not available; skipping mjwarp column\n")
+    try:
+        from unisim.backend.genesis.dependencies import genesis_dependencies_available
+    except ImportError:
+        genesis_available = False
+    else:
+        genesis_available = genesis_dependencies_available()
+    if genesis_available:
+        backends.append("genesis")
+    else:
+        print("Note: genesis-world not available; skipping genesis column\n")
 
     results: list[dict] = []
     failures: list[dict[str, str]] = []
