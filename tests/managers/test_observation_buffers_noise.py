@@ -58,7 +58,7 @@ def test_delay_buffer_constant_delay_and_partial_backfill() -> None:
 
 
 def test_delay_rng_is_reproducible_and_required() -> None:
-    def draw(seed: int) -> list[np.ndarray]:
+    def draw(seed: int) -> list[torch.Tensor]:
         buffer = DelayBuffer(
             min_lag=0,
             max_lag=3,
@@ -69,7 +69,7 @@ def test_delay_rng_is_reproducible_and_required() -> None:
         for step in range(5):
             buffer.append(np.full((8, 1), step, dtype=np.float32))
             buffer.compute()
-            values.append(buffer.current_lags.copy())
+            values.append(buffer.current_lags.clone())
         return values
 
     for left, right in zip(draw(123), draw(123), strict=True):

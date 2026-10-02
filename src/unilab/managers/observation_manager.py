@@ -834,6 +834,8 @@ class ObservationManager(ManagerBase):
                         update_period=term_cfg.delay_update_period,
                         per_env_phase=term_cfg.delay_per_env_phase,
                         generator=self._env.rng,
+                        torch_generator=self._torch_generator,
+                        device=self._device,
                     )
 
                 if term_cfg.history_length > 0:
