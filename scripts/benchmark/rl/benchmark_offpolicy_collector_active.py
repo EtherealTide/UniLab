@@ -51,6 +51,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
 from scripts.benchmark.core.device_info import get_device_info_dict, get_device_info_line
+from unilab.base.backend_timing import UPDATE_STATE_DETAIL_TIMING_KEYS
 
 DEFAULT_OUTPUT_JSON = (
     ROOT_DIR / "scripts" / "benchmark" / "outputs" / "offpolicy_collector_active" / "results.json"
@@ -129,9 +130,9 @@ ENV_STEP_TIMING_KEYS = (
     "reset_done_command_post_compute_ms",
     "reset_done_motion_robot_refresh_ms",
     "reset_done_motion_relative_refresh_ms",
-    "reset_done_motion_failure_stats_ms",
-    "reset_done_motion_step_sampler_ms",
-    "reset_done_motion_refresh_current_ms",
+    "update_state_motion_failure_stats_ms",
+    "update_state_motion_step_sampler_ms",
+    "update_state_motion_refresh_current_ms",
     "reset_done_motion_post_compute_view_ms",
     "reset_done_motion_post_compute_kernel_ms",
     "reset_done_motion_post_compute_rebind_ms",
@@ -817,9 +818,14 @@ def _run_active_window_case(
             # MuJoCo (via backend.step timing); absent for backends that don't
             # report it -> NaN, rendered as "n/a".
             _timing = state.info.get("timing", {}) if isinstance(state.info, dict) else {}
+            _update_state_timing = (
+                state.info.get("update_state_timing", {}) if isinstance(state.info, dict) else {}
+            )
             physics_ms = _optional_timing_ms(_timing, "backend_physics_ms")
             env_step_timing_values = {
-                key: _optional_timing_ms(_timing, key)
+                key: _optional_timing_ms(_update_state_timing, key)
+                if key in UPDATE_STATE_DETAIL_TIMING_KEYS
+                else _optional_timing_ms(_timing, key)
                 for key in ENV_STEP_SAMPLE_KEYS
                 if key != "env_step_internal_gap_ms"
             }
