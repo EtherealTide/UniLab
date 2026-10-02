@@ -328,6 +328,10 @@ class CommandManager(ManagerBase):
     def active_terms(self) -> list[str]:
         return list(self._terms.keys())
 
+    @property
+    def last_reset_timing_ms(self) -> dict[str, float]:
+        return dict(self._last_term_reset_timing_ms)
+
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:
         terms = []
         for name, term in self._terms.items():
@@ -342,6 +346,7 @@ class CommandManager(ManagerBase):
             env_ids = torch.arange(self.num_envs, device=self._device)[env_ids]
         extras = {}
         reset_commands: list[tuple[str, torch.Tensor]] = []
+        self._last_term_reset_timing_ms.clear()
         validation_started = time.perf_counter()
         for name, term in self._terms.items():
             metrics = term.reset(env_ids=env_ids)
