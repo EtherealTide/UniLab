@@ -7,7 +7,15 @@ from typing import Any, cast
 import numpy as np
 import pytest
 import torch
-from unisim.backend.base import BackendMocapPoseBinding, BackendRootStateLayout, SimBackend
+from unisim.backend.base import (
+    BackendMocapPoseBinding,
+    BackendRootStateLayout,
+    SimBackend,
+    TensorDataPlane,
+    TensorExecution,
+    TensorLifecycleCapabilities,
+    TensorProcessTopology,
+)
 from unisim.dr.types import (
     RESET_TERM_BODY_MASS,
     RESET_TERM_KD,
@@ -76,6 +84,40 @@ class _Backend:
         self.set_state_calls.append((env_ids.copy(), qpos.copy(), qvel.copy()))
         self.randomization_calls.append(randomization)
         return {"timing": {"set_state_ms": 1.0}}
+
+
+class _TensorResetBackend(_Backend):
+    """CPU fake exposing the public selected tensor-reset boundary."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            qpos=np.array([0.0, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0, 0.1, -0.2]),
+            qvel=np.zeros(8),
+        )
+        self.tensor_reset_calls: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
+
+    def tensor_execution(self):
+        return TensorExecution.DEVICE_RESIDENT
+
+    def get_tensor_capabilities(self):
+        return TensorLifecycleCapabilities(
+            execution=TensorExecution.DEVICE_RESIDENT,
+            state_views=True,
+            state_fields=frozenset({"qpos", "qvel"}),
+            sensor_views=False,
+            stepping=True,
+            selected_reset=True,
+            process_topology=TensorProcessTopology.IN_PROCESS,
+            data_plane=TensorDataPlane.DIRECT,
+            stream_event_ownership="fake synchronous stream",
+            torch_devices=("cpu",),
+        )
+
+    def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> dict:
+        assert randomization is None
+        rows = torch.as_tensor(env_indices, dtype=torch.int64)
+        self.tensor_reset_calls.append((rows.clone(), qpos.clone(), qvel.clone()))
+        return {"ok": True}
 
 
 def _transaction(backend: _Backend) -> ResetStateTransaction:
@@ -736,3 +778,97 @@ def test_missing_default_and_set_state_capabilities_name_term_and_backend() -> N
                 term_name="reset_scene_to_default",
             )
     assert not transaction.active
+
+
+def test_tensor_motion_state_write_combines_root_and_joint_boundaries() -> None:
+    transaction = _transaction(_TensorResetBackend())
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    rows = torch.tensor([1, 3], dtype=torch.int64)
+    layout = BackendRootStateLayout(tuple(range(7)), tuple(range(6)))
+    root_state = torch.tensor(
+        (
+            (0.1, 0.2, 0.31, 1.0, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.01, 0.0, 0.0),
+            (0.3, -0.2, 0.32, 0.0, 1.0, 0.0, 0.0, -0.05, 0.0, 0.0, -0.01, 0.0, 0.0),
+        ),
+        dtype=torch.float32,
+    )
+    position = torch.tensor(((0.2, -0.3), (0.4, 0.5)), dtype=torch.float32)
+    velocity = torch.tensor(((0.6, -0.7), (-0.8, 0.9)), dtype=torch.float32)
+
+    with transaction.scoped_device_event_tensor(rows):
+        transaction.write_motion_state_tensor(
+            rows,
+            layout,
+            np.array([7, 8], dtype=np.int32),
+            np.array([6, 7], dtype=np.int32),
+            root_state,
+            position,
+            velocity,
+            term_name="motion_owner",
+        )
+
+    backend = transaction._backend  # noqa: SLF001 - scoped test owns the fake
+    assert len(backend.tensor_reset_calls) == 1
+    committed_rows, qpos, qvel = backend.tensor_reset_calls[0]
+    torch.testing.assert_close(committed_rows, rows)
+    expected_qpos = torch.zeros((2, 9), dtype=torch.float32)
+    expected_qpos[:, :7] = root_state[:, :7]
+    expected_qpos[:, 7:] = position
+    expected_qvel = torch.zeros((2, 8), dtype=torch.float32)
+    expected_qvel[:, :6] = root_state[:, 7:]
+    expected_qvel[:, 6:] = velocity
+    torch.testing.assert_close(qpos, expected_qpos)
+    torch.testing.assert_close(qvel, expected_qvel)
+
+
+def test_tensor_motion_state_write_fails_closed() -> None:
+    transaction = _transaction(_TensorResetBackend())
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    rows = torch.tensor([1], dtype=torch.int64)
+    layout = BackendRootStateLayout(tuple(range(7)), tuple(range(6)))
+    root_state = torch.tensor([[0.0, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0]])
+    position = torch.tensor([[0.1]], dtype=torch.float32)
+    velocity = torch.tensor([[0.2]], dtype=torch.float32)
+
+    with pytest.raises(ValueError, match="outside the active tensor reset"):
+        with transaction.scoped_device_event_tensor(torch.tensor([2], dtype=torch.int64)):
+            transaction.write_motion_state_tensor(
+                rows,
+                layout,
+                np.array([7], dtype=np.int32),
+                np.array([6], dtype=np.int32),
+                root_state,
+                position,
+                velocity,
+                term_name="motion_owner",
+            )
+
+    bad_root = root_state.clone()
+    bad_root[0, 3] = 0.5
+    with pytest.raises(ValueError, match="quaternion"):
+        with transaction.scoped_device_event_tensor(rows):
+            transaction.write_motion_state_tensor(
+                rows,
+                layout,
+                np.array([7], dtype=np.int32),
+                np.array([6], dtype=np.int32),
+                bad_root,
+                position,
+                velocity,
+                term_name="motion_owner",
+            )
+
+    nonfinite_position = position.clone()
+    nonfinite_position[0, 0] = float("nan")
+    with pytest.raises(ValueError, match="NaN or Inf"):
+        with transaction.scoped_device_event_tensor(rows):
+            transaction.write_motion_state_tensor(
+                rows,
+                layout,
+                np.array([7], dtype=np.int32),
+                np.array([6], dtype=np.int32),
+                root_state,
+                nonfinite_position,
+                velocity,
+                term_name="motion_owner",
+            )
