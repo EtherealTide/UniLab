@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import abc
 import inspect
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Sequence, cast
 
@@ -76,6 +77,7 @@ class CommandTerm(ManagerTermBase):
         self.metrics: dict[str, np.ndarray | torch.Tensor] = {}
         self.time_left = torch.zeros(self.num_envs, dtype=torch.float32, device=self._device)
         self.command_counter = torch.zeros(self.num_envs, dtype=torch.int64, device=self._device)
+        self.last_reset_timing_ms: dict[str, float] = {}
 
     @property
     @abc.abstractmethod
@@ -85,6 +87,7 @@ class CommandTerm(ManagerTermBase):
     def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         assert isinstance(env_ids, torch.Tensor)
         extras = {}
+        metrics_started = time.perf_counter()
         metric_values = list(self.metrics.items())
         tensor_metrics = [
             (name, value) for name, value in metric_values if isinstance(value, torch.Tensor)
@@ -120,8 +123,14 @@ class CommandTerm(ManagerTermBase):
                     )
                 extras[metric_name] = float(_mean(metric_slice))
                 metric_value[env_ids] = 0.0
+        metrics_ms = (time.perf_counter() - metrics_started) * 1000.0
         self.command_counter[env_ids] = 0
+        resample_started = time.perf_counter()
         self._resample(env_ids)
+        self.last_reset_timing_ms = {
+            "reset_done_command_metrics_ms": metrics_ms,
+            "reset_done_command_resample_ms": (time.perf_counter() - resample_started) * 1000.0,
+        }
         return extras
 
     def compute(
@@ -298,6 +307,7 @@ class CommandManager(ManagerBase):
 
         self.cfg = cfg
         self._device = torch.device(getattr(env, "device", torch.device("cpu")))
+        self._last_term_reset_timing_ms: dict[str, float] = {}
         super().__init__(env)
 
     def __str__(self) -> str:
@@ -332,9 +342,11 @@ class CommandManager(ManagerBase):
             env_ids = torch.arange(self.num_envs, device=self._device)[env_ids]
         extras = {}
         reset_commands: list[tuple[str, torch.Tensor]] = []
+        validation_started = time.perf_counter()
         for name, term in self._terms.items():
             metrics = term.reset(env_ids=env_ids)
             reset_commands.append((name, term.command))
+            self._last_term_reset_timing_ms.update(term.last_reset_timing_ms)
             for metric_name, metric_value in metrics.items():
                 extras[f"Metrics/{name}/{metric_name}"] = metric_value
         commands: list[torch.Tensor] = []
@@ -355,6 +367,9 @@ class CommandManager(ManagerBase):
             for name, command in zip(labels, commands, strict=True):
                 if not bool(torch.isfinite(command).all()):
                     raise ValueError(f"CommandManager term '{name}' returned NaN or Inf.")
+        self._last_term_reset_timing_ms["reset_done_reset_validation_ms"] = (
+            time.perf_counter() - validation_started
+        ) * 1000.0
         return extras
 
     def compute(

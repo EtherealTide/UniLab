@@ -1246,6 +1246,11 @@ class ManagerBasedRlEnv(TorchEnv):
                     global_env_step_count=self.step_counter,
                 )
             log.update(self.command_manager.reset(rows))
+            reset_timing.update(getattr(self.command_manager, "last_reset_timing_ms", {}))
+            reset_commit_started = time.perf_counter()
+        reset_timing["reset_done_reset_commit_ms"] = (
+            time.perf_counter() - reset_commit_started
+        ) * 1000.0
         reset_timing["reset_done_command_event_ms"] = (
             time.perf_counter() - command_event_started
         ) * 1000.0
