@@ -13,8 +13,8 @@ def _make_result(
     *,
     algo: str = "sac",
     task: str = "g1_walk_flat",
-    sim: str = "motrix",
-    runtime_sim_backend: str = "motrix",
+    sim: str = "mujoco",
+    runtime_sim_backend: str = "mujoco",
     num_envs: int = 8192,
     throughput: float = 123456.7,
     cpu_util_pct: float = 42.5,
@@ -70,19 +70,18 @@ def test_parse_case_requires_algo_task_sim() -> None:
         bench._parse_case("g1_walk_flat/mujoco")
 
 
-def test_default_cases_cover_motrix_only() -> None:
+def test_default_cases_cover_scoped_host_bridge() -> None:
     specs = bench._resolve_case_specs(
         "default",
         algos_arg="sac,flashsac",
-        backends=("motrix",),
+        backends=("mujoco",),
     )
 
-    assert "sac/g1_motion_tracking/motrix" in specs
-    assert "flashsac/g1_walk_flat/motrix" in specs
-    assert "sac/g1_motion_tracking/mujoco" not in specs
+    assert "sac/g1_motion_tracking/mujoco" in specs
+    assert "flashsac/g1_walk_flat/mujoco" in specs
 
 
-def test_all_backend_selection_expands_default_cases() -> None:
+def test_all_backend_selection_stays_on_scoped_default_backends() -> None:
     backends = bench._resolve_backend_selection(backend="mujoco", all_backends=True)
     specs = bench._resolve_case_specs(
         "default",
@@ -90,16 +89,16 @@ def test_all_backend_selection_expands_default_cases() -> None:
         backends=backends,
     )
 
-    assert backends == ("mujoco", "motrix")
+    assert backends == ("mujoco",)
     assert "sac/g1_motion_tracking/mujoco" in specs
-    assert "sac/g1_motion_tracking/motrix" in specs
     assert "flashsac/g1_walk_flat/mujoco" in specs
-    assert "flashsac/g1_walk_flat/motrix" in specs
 
 
-def test_mjwarp_backend_is_opt_in_and_never_part_of_all() -> None:
-    # --all stays on the default backends; mjwarp must be requested explicitly.
+def test_cuda_tensor_backends_are_opt_in() -> None:
+    assert bench.OPTIONAL_BACKENDS == ("mjwarp", "genesis")
+    assert set(bench.OPTIONAL_BACKENDS).isdisjoint(bench.BENCHMARK_BACKENDS)
     assert "mjwarp" not in bench._resolve_backend_selection(backend="mujoco", all_backends=True)
+    assert "genesis" not in bench._resolve_backend_selection(backend="mujoco", all_backends=True)
     if bench.find_spec("mujoco_warp") is None or bench.find_spec("warp") is None:
         with pytest.raises(SystemExit, match="mjwarp extra"):
             bench._resolve_backend_selection(backend="mjwarp", all_backends=False)
@@ -115,31 +114,6 @@ def test_resolve_case_specs_deduplicates_explicit_specs() -> None:
     )
 
     assert specs == ["sac/g1_walk_flat/mujoco", "flashsac/g1_walk_flat/mujoco"]
-
-
-def test_motrixsim_case_alias_uses_motrix_owner_config() -> None:
-    assert bench._owner_config_path("sac", "g1_walk_flat", "motrixsim").name == "motrix.yaml"
-
-    cfg = bench._compose_offpolicy_cfg(
-        "sac",
-        "g1_walk_flat",
-        "motrixsim",
-        num_envs=2,
-    )
-
-    assert cfg.training.sim_backend == "motrix"
-    assert cfg.algo.num_envs == 2
-
-
-def test_auto_discovery_supports_motrixsim_alias() -> None:
-    specs = bench._resolve_case_specs(
-        "auto",
-        algos_arg="sac,flashsac",
-        backends=("motrix",),
-    )
-
-    assert "sac/g1_walk_flat/motrix" in specs
-    assert "flashsac/g1_walk_flat/motrix" in specs
 
 
 def test_noise_seed_override_composes_for_target_g1_profiles() -> None:
@@ -169,20 +143,17 @@ def test_parse_args_defaults_to_large_env_count_and_longer_measure_window() -> N
 
     assert args.num_envs == 8192
     assert args.measure_steps == 100
-    assert args.backend == "motrix"
+    assert args.backend == "mujoco"
     assert not args.all_backends
 
 
 def test_parse_args_accepts_backend_and_all_backend_modes() -> None:
-    motrix_args = bench.parse_args(["--backend", "motrix"])
+    backend_args = bench.parse_args(["--backend", "mujoco"])
     all_args = bench.parse_args(["--all"])
-    legacy_sim_args = bench.parse_args(["--sim", "motrixsim"])
 
-    assert motrix_args.backend == "motrix"
-    assert not motrix_args.all_backends
-    assert all_args.backend == "motrix"
+    assert not backend_args.all_backends
+    assert all_args.backend == "mujoco"
     assert all_args.all_backends
-    assert legacy_sim_args.backend == "motrix"
 
 
 def test_hardware_table_includes_cpu_and_memory_details() -> None:
@@ -208,7 +179,7 @@ def test_throughput_table_includes_case_throughput_and_num_env() -> None:
 
     assert "AMD Ryzen" not in table
     assert "g1_walk_flat" in table
-    assert "motrix" in table
+    assert "mujoco" in table
     assert "8,192" in table
     assert "123,457" in table
     assert "42.5" in table

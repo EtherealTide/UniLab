@@ -8,15 +8,15 @@ pre-generated because policy inference is learner-owned.
 
 Usage:
     uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py
-    uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --backend motrix
+    uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --backend mujoco
     uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --all
     uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --cases auto --backend mujoco
-    uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --cases auto --backend motrix
     uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --cases sac/g1_walk_flat/mujoco
-    uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --cases sac/g1_walk_flat/motrixsim
-    # mjwarp (GPU) is opt-in and requires the optional mjwarp extra:
+    # CUDA tensor backends are opt-in and require their extras:
     uv run --extra mjwarp scripts/benchmark/rl/benchmark_offpolicy_collector_active.py \
-        --cases sac/g1_motion_tracking/mjwarp
+        --cases flashsac/g1_motion_tracking/mjwarp
+    uv run --extra genesis scripts/benchmark/rl/benchmark_offpolicy_collector_active.py \
+        --cases flashsac/g1_motion_tracking/genesis
     uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --num-envs 1024 --measure-steps 100
 """
 
@@ -63,19 +63,13 @@ DEFAULT_CASE_TEMPLATES = (
     "flashsac/g1_walk_flat",
 )
 DEFAULT_ALGOS = ("sac", "flashsac")
-DEFAULT_BACKEND = "motrix"
-BENCHMARK_BACKENDS = ("mujoco", "motrix")
-# mjwarp (GPU) is opt-in only: it requires the optional ``mjwarp`` extra
-# (mujoco-warp + warp-lang) and is never part of --all. Request it explicitly
-# via --backend mjwarp or an explicit <algo>/<task>/mjwarp case.
-OPTIONAL_BACKENDS = ("mjwarp",)
+DEFAULT_BACKEND = "mujoco"
+# CPU and CUDA tensor profiles have different dependency footprints. CPU host
+# bridge is default-safe; CUDA tensor backends are explicitly requested.
+BENCHMARK_BACKENDS = ("mujoco",)
+OPTIONAL_BACKENDS = ("mjwarp", "genesis")
 DEFAULT_COLLECTOR_CPU_THREADS = 8
 COLLECTOR_CPU_THREADS_ENV = "UNILAB_COLLECTOR_TORCH_THREADS"
-BACKEND_ALIASES = {
-    # UniLab's registry/backend contract uses "motrix"; "motrixsim" is the package
-    # and benchmark-facing backend family name.
-    "motrixsim": "motrix",
-}
 COLLECTOR_PHASES = (
     "env_step_ms",
     "replay_ms",
@@ -291,7 +285,7 @@ class CollectorResult:
     # Fine-grained timings reported by `TorchEnv.step()` inside env_step_ms.
     env_step_timing_ms_per_vector_step: dict[str, TimingStats] = field(default_factory=dict)
     # Backend-internal physics time per vector step (sub-part of env_step_ms).
-    # None when the backend does not report it (e.g. motrix).
+    # None when the backend does not report it.
     physics_ms_per_vector_step: TimingStats | None = None
     # Non-physics env.step time per vector step: env_step_ms - physics_ms.
     # None when backend-internal physics timing is unavailable.
@@ -532,7 +526,7 @@ def _backend_runtime_diagnostics(env: Any) -> dict[str, dict[str, bool | str | N
 
 
 def _runtime_sim_backend(sim: str) -> str:
-    return BACKEND_ALIASES.get(sim, sim)
+    return sim
 
 
 def _compose_offpolicy_cfg(
@@ -608,6 +602,15 @@ def _check_optional_backend_deps(backend: str) -> None:
             "backend=mjwarp requires the mjwarp extra. Install it with `uv sync --extra mjwarp` "
             "or run this benchmark with `uv run --extra mjwarp ...`."
         )
+    if backend == "genesis":
+        from unisim.backend.genesis.dependencies import genesis_dependencies_available
+
+        if not genesis_dependencies_available():
+            raise SystemExit(
+                "backend=genesis requires the genesis extra. Install it with "
+                "`uv sync --extra genesis` or run this benchmark with "
+                "`uv run --extra genesis ...`."
+            )
 
 
 def _default_case_specs(backends: Sequence[str]) -> list[str]:
@@ -1551,12 +1554,12 @@ _SET_STATE_MJWARP_KEYS = (
 
 
 def _format_set_state_detail_table(results: list[CollectorResult]) -> str:
-    """Backend set_state sub-timing table (motrix keyset).
+    """Backend set-state sub-timing table for adapter-defined keys.
 
-    Renders the 14 motrix-oriented sub-keys next to the outer
+    Renders adapter-defined sub-keys next to the outer
     ``dr_reset_set_state_ms``. Backends that don't populate a key emit 0.0 so
     columns stay stable across backends. MuJoCo runs will show 0.0 for the
-    motrix-only sub-keys; use :func:`_format_set_state_mujoco_table` for the
+    keys; use :func:`_format_set_state_mujoco_table` for the MuJoCo
     MuJoCo-oriented view instead.
     """
     headers = (
@@ -1878,19 +1881,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=(*BENCHMARK_BACKENDS, *OPTIONAL_BACKENDS),
         default=DEFAULT_BACKEND,
         help=(
-            "Backend to benchmark for --cases default/auto. Default: motrix. "
-            "mjwarp is opt-in and requires the mjwarp extra."
+            "Backend to benchmark for --cases default/auto. Default: mujoco. "
+            "mjwarp and genesis are opt-in CUDA tensor backends."
         ),
     )
     parser.add_argument(
         "--all",
         action="store_true",
         dest="all_backends",
-        help="Benchmark all default backends (mujoco and motrix).",
+        help="Benchmark all default backends.",
     )
     parser.add_argument(
         "--sim",
-        choices=(*BENCHMARK_BACKENDS, *OPTIONAL_BACKENDS, *BACKEND_ALIASES.keys()),
+        choices=(*BENCHMARK_BACKENDS, *OPTIONAL_BACKENDS),
         default=None,
         help=argparse.SUPPRESS,
     )
@@ -2089,7 +2092,7 @@ def main() -> int:
         )
         print(_format_dr_reset_timing_table(results))
         print(
-            "\nBackend set_state detail — motrix keyset "
+            "\nBackend set_state detail — adapter keyset "
             "(sub-timings sum to dr_reset_set_state_ms; % is share of that outer wall-clock):"
         )
         print(_format_set_state_detail_table(results))
