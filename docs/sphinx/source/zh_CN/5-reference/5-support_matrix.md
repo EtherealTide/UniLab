@@ -10,20 +10,21 @@
 
 ## Backend 选择规则
 
+- 当前 tensor-only Manager runtime 只支持 `mujoco`、`mjwarp`、`genesis`。
 - 默认后端是 `mujoco`
-- 切到 Motrix 用统一 CLI 的 `--sim motrix`
 - `--sim mjwarp` 使用前需安装 `mjwarp` extra；已完成验证的组合以下方生成矩阵为准，其他入口也按矩阵查证
+- `--sim genesis` 使用前需安装 `genesis` extra；真实 CUDA 依赖和平台约束见生成矩阵
 - `--algo`、`--task`、`--sim` 共同选择 owner YAML
 - 不要把 `training.sim_backend` 当独立 backend switch
+- `motrix`、`drake`、`isaacgym`、`isaacsim`、`newton`、`superdex` 暂时不在本 runtime 支持范围内。adapter 保留在 UniSim，但不构成 UniLab 生产支持声明；重新启用需要 capability、parity 和支持矩阵证据（#1811）
 
 ## Playback Differences
 
 - `mujoco`: `--render-mode auto` 会导出 `play_video.mp4`；`--render-mode viser`
   通过基于浏览器的 viser viewer 展示回放
-- `motrix`: `--render-mode auto` 会打开交互式 renderer 窗口，不录制视频，不受 `play_steps` 限制；`--render-mode viser` 路由到浏览器 viser viewer（物理快照驱动按 env 的 MuJoCo playback model）
 - `mjwarp`: 默认仅支持显式、有限步数的 `record`，通过 task owner 的 MuJoCo visual model 离线录制；`--render-mode interactive` 路由到 MuJoCo 交互 viewer（mjwarp 跑物理、MuJoCo 渲染 env[0]，强制单 env）；`--render-mode viser` 路由到浏览器 viser viewer（按 env 使用 MuJoCo playback model）；不支持 `auto` 或 native renderer
-- `isaacsim`: `auto` 在有 display 时选择 Kit viewer，否则选择 headless RGB camera；当前真实主机仍有 RTX renderer 初始化 blocker，支持等级保持 `Configured`
-- `--render-mode record`: MuJoCo、mjwarp、Motrix 都只录制视频；IsaacSim 路由到离屏 RGB 协议，真实主机 playback 支持仍保持 `Configured`
+- `genesis`: 当前不支持 `viser`，也不支持这里的 MuJoCo 交互/离线 playback 契约
+- `--render-mode record`: MuJoCo 与 mjwarp 只录制视频
 - `--render-mode none`: 不回放
 
 ## Support Matrix
@@ -110,11 +111,6 @@ CUDA-only 矩阵要求 `torch.version.hip` 为 `None`。若 CUDA 不可用，先
 NVIDIA 驱动与容器运行时不匹配，再调整任务配置。设置了
 `CUDA_VISIBLE_DEVICES` 时，后端序号指向重映射后的命名空间，而不是宿主机
 全局物理索引。
-
-IsaacGym 与 IsaacSim 分别使用专用 Python 3.8 和 Python 3.11 worker。worker
-继承 CUDA 可见性命名空间，但不继承宿主 `PYTHONPATH` 或 `PYTHONHOME`。若
-learner 当前 Torch CUDA 序号与 Isaac payload 整数序号不一致，构造前会失败；
-同物理 GPU 的 CUDA IPC 还会在 worker 握手阶段再次校验。
 
 在 macOS 与 ROCm 上请使用 CPU-authoritative host-bridge 后端。host-bridge
 后端使用 CUDA Torch buffer 不代表 CUDA physics，也不代表 device-resident

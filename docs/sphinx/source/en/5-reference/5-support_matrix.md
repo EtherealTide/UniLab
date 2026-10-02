@@ -7,37 +7,34 @@ support beyond the evidence grade shown below.
 
 ## Backend Selection Rules
 
+- The tensor-only Manager runtime currently supports `mujoco`, `mjwarp`, and
+  `genesis`.
 - The default backend is `mujoco`.
-- Switch to Motrix with `--sim motrix` on the unified CLI.
-- Switch to IsaacSim with `--sim isaacsim` on the unified CLI. IsaacSim uses
-  an external Python 3.11 worker; its owner scope is currently limited to the
-  configured G1 walk-flat PPO/SAC paths.
 - `--sim mjwarp` requires the `mjwarp` extra. Validated combinations are shown
   in the generated matrix below; all other entrypoints retain their matrix
   evidence grade.
+- `--sim genesis` requires the `genesis` extra; real CUDA/platform requirements
+  are shown in the generated matrix.
 - `--algo`, `--task`, and `--sim` jointly select the owner YAML.
 - Do not treat `training.sim_backend` as a standalone backend switch.
+- `motrix`, `drake`, `isaacgym`, `isaacsim`, `newton`, and `superdex` are
+  temporarily outside this runtime scope. Their adapters remain in UniSim, but
+  they are not UniLab production support claims; re-enabling requires
+  capability, parity, and support-matrix evidence (#1811).
 
 ## Playback Differences
 
 - `mujoco`: `--render-mode auto` exports `play_video.mp4`; `--render-mode
   viser` serves the rollout in a browser-based viser viewer.
-- `motrix`: `--render-mode auto` opens an interactive renderer window; it does
-  not record a video and is not bound by `play_steps`. `--render-mode viser`
-  routes to the browser-based viser viewer with per-env MuJoCo playback
-  models driven by physics-state snapshots.
 - `mjwarp`: supports explicit, finite-step `record` by default, rendered offline
   through the task owner's MuJoCo visual model; `--render-mode interactive`
   routes to the MuJoCo interactive viewer (mjwarp runs the physics while
   MuJoCo renders env[0], forced to a single env); `--render-mode viser`
   routes to the browser-based viser viewer with per-env MuJoCo playback
   models; `auto` and native renderers are not supported.
-- `isaacsim`: `auto` selects the Kit viewer when a display is available and
-  otherwise selects headless RGB capture. The current real host still has an
-  RTX renderer initialization blocker, so owner support remains `Configured`.
-- `--render-mode record`: MuJoCo, mjwarp, and Motrix record a video only.
-  IsaacSim routes to its offline RGB protocol, whose real-host playback claim
-  remains `Configured`.
+- `genesis`: `viser` is unsupported, as is the MuJoCo interactive/offline
+  playback contract described here.
+- `--render-mode record`: MuJoCo and mjwarp record a video only.
 - `--render-mode none`: no playback.
 
 ## Support Matrix
@@ -126,12 +123,6 @@ uv run python -c "import torch; print(torch.__version__, torch.version.cuda, tor
 unavailable, check the NVIDIA driver/container mismatch before changing task
 configuration. If `CUDA_VISIBLE_DEVICES` is set, backend ordinals address that
 remapped namespace, not host-global physical indices.
-
-IsaacGym and IsaacSim use their dedicated Python 3.8 and Python 3.11 workers.
-They inherit the CUDA visibility namespace but not host `PYTHONPATH` or
-`PYTHONHOME`. A mismatch between the learner's current Torch CUDA ordinal and
-the integer Isaac payload ordinal fails before construction; same-physical-GPU
-CUDA IPC is checked again by the worker handshake.
 
 On macOS and ROCm, use a CPU-authoritative host-bridge backend. A CUDA Torch
 buffer on a host-bridge backend is not a CUDA physics or device-resident

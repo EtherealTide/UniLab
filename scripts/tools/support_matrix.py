@@ -23,6 +23,7 @@ _ALL_BACKENDS: tuple[str, ...] = tuple(get_tensor_platform_profiles())
 BACKENDS: tuple[str, ...] = tuple(
     backend for backend in _ALL_BACKENDS if backend in {"mujoco", "mjwarp", "genesis"}
 )
+SHELVED_BACKENDS = frozenset(_ALL_BACKENDS) - frozenset(BACKENDS)
 
 # Issue-gated M9 candidate owners (#1674) are benchmark/test fixtures,
 # not support claims.  Exclude them from the generated matrix until those

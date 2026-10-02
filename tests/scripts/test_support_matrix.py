@@ -7,6 +7,7 @@ from scripts.tools.support_matrix import (
     BACKENDS,
     BEGIN_MARKER,
     END_MARKER,
+    SHELVED_BACKENDS,
     EntrypointSpec,
     EvidenceLevel,
     _configured_entries,
@@ -20,11 +21,14 @@ from unisim.support import get_tensor_platform_profiles
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_superdex_fr3_is_configured_without_full_training_claim() -> None:
-    row = _row("PPO (torch)", "fr3_joint_target")
-    assert row.cells["superdex"].level == EvidenceLevel.CONFIGURED
-    go2_row = _row("PPO (torch)", "go2_joystick_flat")
-    assert go2_row.cells["superdex"].level == EvidenceLevel.CONFIGURED
+def test_shelved_adapters_have_no_support_cells() -> None:
+    """During #1811, shelved adapters are not production support claims."""
+    assert SHELVED_BACKENDS == frozenset(
+        {"motrix", "drake", "isaacgym", "isaacsim", "newton", "superdex"}
+    )
+    for row in build_support_rows(ROOT):
+        assert set(row.cells) == set(BACKENDS)
+        assert set(row.cells).isdisjoint(SHELVED_BACKENDS)
 
 
 # CPU-bound on the single-core CI runner; kept in the slow lane (make test-slow).
@@ -84,7 +88,7 @@ def test_support_matrix_marks_go2_ppo_backends_as_tested():
 
     assert row.cells["mujoco"].level == EvidenceLevel.TESTED
     assert row.cells["mjwarp"].level == EvidenceLevel.MISSING
-    assert row.cells["motrix"].level == EvidenceLevel.TESTED
+    assert "motrix" not in row.cells
 
 
 def test_support_matrix_marks_validated_g1_mjwarp_entrypoints_as_tested():
@@ -100,9 +104,10 @@ def test_backend_order_and_identity_follow_authoritative_unisim_profiles():
     declared = tuple(spec.name for spec in ADAPTER_SPECS)
     profiles = get_tensor_platform_profiles()
 
-    assert BACKENDS == declared == tuple(profiles)
-    assert len(BACKENDS) == len(set(BACKENDS))
-    assert all(profiles[backend].adapter == backend for backend in BACKENDS)
+    assert declared == tuple(profiles)
+    assert BACKENDS == tuple(backend for backend in declared if backend not in SHELVED_BACKENDS)
+    assert len(declared) == len(set(declared))
+    assert all(profiles[backend].adapter == backend for backend in declared)
     assert all(
         isinstance(
             getattr(profiles[backend], field),
@@ -242,78 +247,12 @@ def test_doc_checks_validate_current_generated_blocks_for_both_languages():
         assert check_generated_support_matrix(path.read_text(encoding="utf-8"), path, ROOT) == []
 
 
-def test_support_matrix_marks_g1_isaacgym_owners_by_validation():
-    """SAC isaacgym is maintainer-validated on hardware; PPO stays CONFIGURED."""
-    sac_row = _row("SAC (torch)", "g1_walk_flat")
-    assert sac_row.cells["isaacgym"].level == EvidenceLevel.TESTED
-    ppo_row = _row("PPO (torch)", "g1_walk_flat")
-    assert ppo_row.cells["isaacgym"].level == EvidenceLevel.CONFIGURED
-    for entrypoint_label in (
-        "APPO (torch)",
-        "FlashSAC (torch)",
-    ):
-        row = _row(entrypoint_label, "g1_walk_flat")
-        # Registration is per task+backend, not per algo tree: without an
-        # owner YAML these stay at REGISTERED instead of CONFIGURED.
-        assert row.cells["isaacgym"].level == EvidenceLevel.REGISTERED
-
-
-def test_support_matrix_marks_g1_isaacsim_owners_by_checked_in_scope():
-    """IsaacSim has owner YAMLs for PPO/SAC but no maintainer training claim."""
-    ppo_row = _row("PPO (torch)", "g1_walk_flat")
-    sac_row = _row("SAC (torch)", "g1_walk_flat")
-    assert ppo_row.cells["isaacsim"].level == EvidenceLevel.CONFIGURED
-    assert sac_row.cells["isaacsim"].level == EvidenceLevel.CONFIGURED
-    for entrypoint_label in ("APPO (torch)", "FlashSAC (torch)"):
-        row = _row(entrypoint_label, "g1_walk_flat")
-        assert row.cells["isaacsim"].level == EvidenceLevel.REGISTERED
-
-
-def test_support_matrix_marks_g1_newton_owner_sac_tested_ppo_configured():
-    """SAC newton is training-validated (Tested); PPO stays Configured."""
-    row = _row("SAC (torch)", "g1_walk_flat")
-    assert row.cells["newton"].level == EvidenceLevel.TESTED
-    row = _row("PPO (torch)", "g1_walk_flat")
-    assert row.cells["newton"].level == EvidenceLevel.CONFIGURED
-    for entrypoint_label in ("APPO (torch)", "FlashSAC (torch)"):
-        row = _row(entrypoint_label, "g1_walk_flat")
-        # Registration is per task+backend, not per algo tree: without an
-        # owner YAML these stay at REGISTERED instead of CONFIGURED.
-        assert row.cells["newton"].level == EvidenceLevel.REGISTERED
-
-
-def test_support_matrix_does_not_promote_unvalidated_newton_entries():
-    rows = build_support_rows(Path(__file__).resolve().parents[2])
-
-    tested = {
-        (row.entrypoint_label, row.task_slug)
-        for row in rows
-        if row.cells["newton"].level >= EvidenceLevel.TESTED
-    }
-    assert tested == {("SAC (torch)", "g1_walk_flat")}
-    go2_row = _row("PPO (torch)", "go2_joystick_flat")
-    assert go2_row.cells["newton"].level == EvidenceLevel.MISSING
-
-
-def test_support_matrix_does_not_promote_unvalidated_isaacgym_entries():
-    rows = build_support_rows(Path(__file__).resolve().parents[2])
-
-    tested = {
-        (row.entrypoint_label, row.task_slug)
-        for row in rows
-        if row.cells["isaacgym"].level >= EvidenceLevel.TESTED
-    }
-    assert tested == {("SAC (torch)", "g1_walk_flat")}
-    go2_row = _row("PPO (torch)", "go2_joystick_flat")
-    assert go2_row.cells["isaacgym"].level == EvidenceLevel.MISSING
-
-
 def test_issue_gated_motion_tracking_owners_do_not_promote_support_cells():
     """M9 candidate benchmark owners remain outside the public support matrix."""
     row = _row("FlashSAC (torch)", "g1_motion_tracking")
 
-    assert row.cells["isaacgym"].level == EvidenceLevel.REGISTERED
-    assert row.cells["isaacsim"].level == EvidenceLevel.REGISTERED
+    assert "isaacgym" not in row.cells
+    assert "isaacsim" not in row.cells
 
 
 def test_support_matrix_marks_g1_genesis_owner_configured_only():
@@ -367,7 +306,7 @@ def test_support_matrix_marks_allegro_appo_backends_as_tested():
     allegro_appo_row = _row("APPO (torch)", "allegro_inhand")
 
     assert allegro_appo_row.cells["mujoco"].level == EvidenceLevel.TESTED
-    assert allegro_appo_row.cells["motrix"].level == EvidenceLevel.TESTED
+    assert "motrix" not in allegro_appo_row.cells
 
 
 def test_generated_support_matrix_exposes_only_tensor_manager_backends() -> None:
