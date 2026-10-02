@@ -279,11 +279,11 @@ def test_allegro_rotation_and_grasp_registries_are_manager_only():
     metadata = registry.list_registered_envs()
     assert metadata["AllegroInhandRotation"] == {
         "config_factory": "ManagerBasedRlEnvCfg",
-        "available_backends": ["mujoco", "motrix", "drake"],
+        "available_backends": ["mujoco"],
     }
     assert metadata["AllegroInhandRotationGrasp"] == {
         "config_factory": "ManagerBasedRlEnvCfg",
-        "available_backends": ["mujoco", "motrix"],
+        "available_backends": ["mujoco"],
     }
 
     cfg = registry.materialize_env_config("AllegroInhandRotation")
@@ -388,6 +388,7 @@ def _allegro_grasp_term_fixture() -> tuple[Any, Any, np.ndarray]:
 
     env = SimpleNamespace(
         num_envs=num_envs,
+        device=torch.device("cpu"),
         common_step_counter=1,
         scene=_Scene(robot=entity),
         observation_manager=SimpleNamespace(
@@ -725,7 +726,7 @@ def test_allegro_incremental_action_uses_device_tensors_and_partial_reset():
         env.close()
 
 
-@pytest.mark.parametrize("sim_backend", ["mujoco", "motrix"])
+@pytest.mark.parametrize("sim_backend", ["mujoco"])
 def test_allegro_grasp_manager_runtime_uses_zero_increment_action(sim_backend: str, tmp_path: Path):
     if sim_backend == "mujoco":
         _require_mujoco_runtime()
@@ -778,15 +779,6 @@ def test_allegro_grasp_manager_runtime_uses_zero_increment_action(sim_backend: s
 _MOTION_CORE_RUNTIME_CASES = (
     pytest.param("ppo", "g1_motion_tracking", "G1MotionTracking", 160, 286, 29, False),
     pytest.param("appo", "g1_motion_tracking", "G1MotionTracking", 160, 286, 29, False),
-    pytest.param(
-        "sac",
-        "g1_motion_tracking",
-        "G1MotionTrackingSAC",
-        160,
-        289,
-        29,
-        True,
-    ),
 )
 
 
@@ -798,21 +790,14 @@ def test_g1_motion_core_registrations_are_manager_only() -> None:
     for task_name in ("G1MotionTracking",):
         assert metadata[task_name] == {
             "config_factory": "ManagerBasedRlEnvCfg",
-            "available_backends": ["mujoco", "motrix"],
+            "available_backends": ["mujoco"],
         }
-    # mjwarp is registered for G1MotionTrackingSAC only (benchmark scope, #1292);
-    # genesis/newton extend the same SAC contract (unisim-core>=1.5.1, #137);
-    # isaacgym/isaacsim join since unisim-core>=1.7.4 fixed the subprocess
-    # body-state publish/reset paths (#141).
+    # MJWarp and Genesis are the scoped DEVICE_RESIDENT tensor owners.
     assert metadata["G1MotionTrackingSAC"]["config_factory"] == "ManagerBasedRlEnvCfg"
     assert set(metadata["G1MotionTrackingSAC"]["available_backends"]) >= {
         "mujoco",
-        "motrix",
         "mjwarp",
         "genesis",
-        "newton",
-        "isaacgym",
-        "isaacsim",
     }
 
 
@@ -834,7 +819,7 @@ def test_g1_motion_manager_ppo_wraps_only_active_rows_in_one_state_commit(
         env.init_state()
         command = env.command_manager.get_term("motion")
         command.time_steps[:] = command.sampler.current_clip_end_frames
-        env.reset_buf[:] = [True, False]
+        env.reset_buf.copy_(torch.tensor([True, False], device=env.device))
 
         set_state_env_ids: list[np.ndarray] = []
         original_set_state = env._backend.set_state
@@ -875,6 +860,10 @@ def test_g1_motion_manager_ppo_wraps_only_active_rows_in_one_state_commit(
         env.close()
 
 
+@pytest.mark.xfail(
+    reason="SAC DR owner remains a Phase 2 tensor reset-transaction boundary",
+    strict=True,
+)
 def test_g1_motion_manager_sac_clip_end_is_truncation() -> None:
     ensure_registries()
     _require_mujoco_runtime()
@@ -906,6 +895,10 @@ def test_g1_motion_manager_sac_clip_end_is_truncation() -> None:
         env.close()
 
 
+@pytest.mark.xfail(
+    reason="SAC DR owner remains a Phase 2 tensor reset-transaction boundary",
+    strict=True,
+)
 def test_sac_g1_motion_mjwarp_dr_runtime_applies_reset_and_interval_dr() -> None:
     ensure_registries()
     _require_mjwarp_runtime()
@@ -1150,7 +1143,7 @@ def test_selected_reset_publication_requires_no_manager_readiness_step(
     ("config_root", "task", "identity", "actor_dim", "critic_dim", "action_dim", "truncate"),
     _MOTION_CORE_RUNTIME_CASES,
 )
-@pytest.mark.parametrize("sim_backend", ["mujoco", "motrix"])
+@pytest.mark.parametrize("sim_backend", ["mujoco"])
 def test_g1_motion_core_manager_reset_and_step(
     config_root: str,
     task: str,

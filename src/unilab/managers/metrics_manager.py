@@ -1,6 +1,6 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681), src/mjlab/managers/metrics_manager.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy and UniLab contracts; licensed under Apache-2.0.
+# Modified by UniLab for the tensor-only Manager runtime; licensed under Apache-2.0.
 """Metrics manager for logging custom per-step metrics during training."""
 
 from __future__ import annotations
@@ -9,7 +9,6 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Sequence
 
-import numpy as np
 import torch
 from prettytable import PrettyTable
 
@@ -241,8 +240,10 @@ class MetricsManager(ManagerBase):
                 )
             result = value.clone()
         else:
-            host = np.array(value, dtype=np.float32, order="C", copy=True)
-            result = torch.from_numpy(host).to(device=self._device)
+            raise TypeError(
+                f"MetricsManager term '{name}' returned {type(value).__name__}, expected "
+                "torch.Tensor."
+            )
         if result.shape != (self.num_envs,):
             raise ValueError(
                 f"MetricsManager term '{name}' returned shape {tuple(result.shape)}; "
