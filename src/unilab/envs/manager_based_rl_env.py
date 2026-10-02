@@ -1250,6 +1250,8 @@ class ManagerBasedRlEnv(TorchEnv):
         command_event_started = time.perf_counter()
         event_term_count = len(self.event_manager.active_terms.get("reset", ()))
         command_term_count = len(self.command_manager.active_terms)
+        reset_owner = self.reset_owner_manager.owner
+        owns_command_reset = bool(reset_owner is not None and reset_owner.cfg.owns_command_reset)
         with reset_context:
             if "reset" in self.event_manager.available_modes:
                 self.event_manager.apply(
@@ -1257,7 +1259,11 @@ class ManagerBasedRlEnv(TorchEnv):
                     env_ids=rows,
                     global_env_step_count=self.step_counter,
                 )
-            log.update(self.command_manager.reset(rows))
+            if owns_command_reset:
+                assert reset_owner is not None
+                reset_owner.reset_transaction(rows)
+            else:
+                log.update(self.command_manager.reset(rows))
             reset_timing.update(getattr(self.command_manager, "last_reset_timing_ms", {}))
             reset_timing.update(self.command_manager.reset_diagnostics())
             reset_commit_started = time.perf_counter()
@@ -1269,17 +1275,27 @@ class ManagerBasedRlEnv(TorchEnv):
         ) * 1000.0
 
         manager_state_started = time.perf_counter()
-        reset_managers = (
+        reset_managers: tuple[Any, ...] = (
             self.observation_manager,
-            self.action_manager,
+            *(
+                ()
+                if reset_owner is not None and reset_owner.cfg.owns_action_reset
+                else (self.action_manager,)
+            ),
             self.reward_manager,
-            self.metrics_manager,
+            *(
+                ()
+                if reset_owner is not None and reset_owner.cfg.owns_metric_reset
+                else (self.metrics_manager,)
+            ),
             self.curriculum_manager,
             self.event_manager,
             self.termination_manager,
         )
         for manager in reset_managers:
             log.update(manager.reset(rows))
+        if reset_owner is not None:
+            reset_owner.reset_committed(rows)
         observation_term_count = sum(
             len(terms) for terms in self.observation_manager.active_terms.values()
         )
