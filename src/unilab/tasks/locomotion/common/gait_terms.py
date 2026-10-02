@@ -311,7 +311,7 @@ class feet_swing_height(_FootContactTerm):
         self._peak_heights[rows] = 0.0
         self._was_in_air[rows] = False
 
-    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray:
+    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray | torch.Tensor:
         del params
         contact = self._contact(env)
         positions, _ = _feet_pos_vel(self.name, env, self._asset_cfg, self.num_feet)
@@ -359,7 +359,7 @@ class feet_slip(_FootContactTerm):
             )
         self._asset_cfg = asset_cfg
 
-    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray:
+    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray | torch.Tensor:
         del params
         contact = self._contact(env)
         _, velocities = _feet_pos_vel(self.name, env, self._asset_cfg, self.num_feet)
@@ -415,7 +415,7 @@ class self_collision_cost(_FootContactTerm):
     does not enable, so it is not ported.
     """
 
-    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray:
+    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray | torch.Tensor:
         del params
         return np.asarray(np.sum(self._contact(env), axis=1), dtype=get_global_dtype())
 
@@ -438,7 +438,7 @@ class angular_momentum_penalty(SensorTermBase):
                 f"{self._sensor.dimensions} on backend '{self._sensor.backend_type}'"
             )
 
-    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray:
+    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray | torch.Tensor:
         del params
         angmom = _state(
             self.name,
@@ -497,7 +497,7 @@ class foot_air_time(_FootContactTerm):
             rows = torch.from_numpy(rows).to(device=self._air_time.device)
         self._air_time[rows] = 0.0
 
-    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray:
+    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray | torch.Tensor:
         del params
         contact = self._contact_feet(env)
         step_dt = _real(self.name, "step_dt", env.step_dt, minimum=0.0, strict_minimum=True)

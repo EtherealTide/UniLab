@@ -607,12 +607,20 @@ class feet_double_stance(_FootContactTerm):
         command = _command(env, self.name, self._command_name)
         left_contact, right_contact = self._contact_pair(env)
         if isinstance(command, torch.Tensor):
-            if not isinstance(left_contact, torch.Tensor):
-                left_contact = torch.as_tensor(left_contact, device=command.device)
-                right_contact = torch.as_tensor(right_contact, device=command.device)
-            double_stance = (left_contact & right_contact).to(dtype=torch.float32)
+            left = (
+                left_contact
+                if isinstance(left_contact, torch.Tensor)
+                else torch.as_tensor(left_contact, device=command.device)
+            )
+            right = (
+                right_contact
+                if isinstance(right_contact, torch.Tensor)
+                else torch.as_tensor(right_contact, device=command.device)
+            )
+            double_stance = (left & right).to(dtype=torch.float32)
             forward_mask = (torch.clamp(command[:, 0], min=0.0) > 1.0e-6).to(dtype=torch.float32)
             return double_stance * forward_mask
+        assert isinstance(command, np.ndarray)
         double_stance = np.asarray(
             np.logical_and(left_contact, right_contact), dtype=get_global_dtype()
         )
@@ -1062,7 +1070,11 @@ class G1PenaltyCurriculum(ManagerTermBase):
             if env_ids is None
             else np.arange(env.num_envs, dtype=np.intp)[env_ids]
             if isinstance(env_ids, slice)
-            else env_ids.detach().cpu().numpy().astype(np.intp, copy=False).reshape(-1)
+            else (
+                env_ids.detach().cpu().numpy().astype(np.intp, copy=False).reshape(-1)
+                if isinstance(env_ids, torch.Tensor)
+                else np.asarray(env_ids, dtype=np.intp).reshape(-1)
+            )
         )
         reset_buf = env.reset_buf
         if isinstance(reset_buf, torch.Tensor):

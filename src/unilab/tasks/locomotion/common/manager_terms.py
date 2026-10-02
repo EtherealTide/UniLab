@@ -153,7 +153,7 @@ def track_lin_vel_xy_exp(
     std: float,
     command_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
+) -> np.ndarray | torch.Tensor:
     """Track commanded planar velocity with the legacy independent exponential kernel."""
     scale = _real("track_lin_vel_xy_exp", "std", std, minimum=0.0, strict_minimum=True)
     actual = _state(
@@ -164,9 +164,14 @@ def track_lin_vel_xy_exp(
     )
     command = _command(env, "track_lin_vel_xy_exp", command_name)
     if isinstance(command, torch.Tensor):
-        if not isinstance(actual, torch.Tensor):
-            actual = torch.as_tensor(actual, device=command.device, dtype=command.dtype)
-        error = torch.sum(torch.square(command[:, :2] - actual[:, :2]), dim=1)
+        actual_t = (
+            actual
+            if isinstance(actual, torch.Tensor)
+            else torch.as_tensor(actual, device=command.device, dtype=command.dtype)
+        )
+        actual_tensor = cast(torch.Tensor, actual_t)
+        delta_t = command[:, :2] - actual_tensor[:, :2]
+        error = torch.sum(delta_t.square(), dim=1)
     else:
         error = np.sum(np.square(command[:, :2] - actual[:, :2]), axis=1)
     return _exp_scaled(error, scale)
@@ -177,7 +182,7 @@ def track_ang_vel_z_exp(
     std: float,
     command_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
+) -> np.ndarray | torch.Tensor:
     """Track commanded yaw velocity without folding roll/pitch into the kernel."""
     scale = _real("track_ang_vel_z_exp", "std", std, minimum=0.0, strict_minimum=True)
     actual = _state(
@@ -188,9 +193,13 @@ def track_ang_vel_z_exp(
     )
     command = _command(env, "track_ang_vel_z_exp", command_name)
     if isinstance(command, torch.Tensor):
-        if not isinstance(actual, torch.Tensor):
-            actual = torch.as_tensor(actual, device=command.device, dtype=command.dtype)
-        error = torch.square(command[:, 2] - actual[:, 2])
+        actual_t = (
+            actual
+            if isinstance(actual, torch.Tensor)
+            else torch.as_tensor(actual, device=command.device, dtype=command.dtype)
+        )
+        actual_tensor = cast(torch.Tensor, actual_t)
+        error = (command[:, 2] - actual_tensor[:, 2]).square()
     else:
         error = np.square(command[:, 2] - actual[:, 2])
     return _exp_scaled(error, scale)
