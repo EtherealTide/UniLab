@@ -30,7 +30,7 @@ class NoiseModel:
         if not hasattr(noise_model_cfg, "noise_cfg") or noise_model_cfg.noise_cfg is None:
             raise ValueError("NoiseModelCfg must have a valid noise_cfg")
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: np.ndarray | torch.Tensor | slice | None = None) -> None:
         """Reset noise model state. Override in subclasses if needed."""
 
     def __call__(self, data: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
@@ -64,7 +64,7 @@ class NoiseModelWithAdditiveBias(NoiseModel):
         self._bias_initialized = False
 
     @override
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: np.ndarray | torch.Tensor | slice | None = None) -> None:
         """Reset bias values for specified environments."""
         indices = slice(None) if env_ids is None else env_ids
         # Sample new bias values.

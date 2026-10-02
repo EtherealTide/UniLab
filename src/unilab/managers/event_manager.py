@@ -134,16 +134,18 @@ class EventManager(ManagerBase):
                 return self._mode_term_cfgs[mode][index]
         raise ValueError(f"Event term '{term_name}' not found in active terms.")
 
-    def reset(self, env_ids: torch.Tensor | None = None):
+    def reset(self, env_ids: torch.Tensor | slice | None = None):
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self._device)
         for mode_cfg in self._mode_class_term_cfgs.values():
             for term_cfg in mode_cfg:
                 term_cfg.func.reset(env_ids=env_ids)
-        if env_ids is None:
-            num_envs = self._env.num_envs
-            ids: torch.Tensor | slice = torch.arange(num_envs, device=self._device)
-        else:
-            num_envs = env_ids.numel()
-            ids = env_ids
+        ids: torch.Tensor | slice = (
+            env_ids
+            if isinstance(env_ids, torch.Tensor)
+            else torch.arange(self.num_envs, device=self._device)[env_ids or slice(None)]
+        )
+        num_envs = ids.numel() if isinstance(ids, torch.Tensor) else self.num_envs
         # Iterate the full interval term list: _interval_term_time_left is parallel
         # to _mode_term_cfgs["interval"], not the class-only subset.
         if "interval" in self._mode_term_cfgs:

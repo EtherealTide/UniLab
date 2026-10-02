@@ -172,7 +172,9 @@ class CircularBuffer:
         idx = (torch.arange(self._max_len, device=self._buffer.device) + start) % self._max_len
         return self._buffer[idx].transpose(0, 1)
 
-    def reset(self, batch_ids: Sequence[int] | np.ndarray | slice | None = None) -> None:
+    def reset(
+        self, batch_ids: Sequence[int] | np.ndarray | torch.Tensor | slice | None = None
+    ) -> None:
         """Zero out values and counters for specified batch rows.
 
         Args:
@@ -187,7 +189,9 @@ class CircularBuffer:
         if self._buffer is not None:
             self._buffer[:, ids] = 0.0
 
-    def backfill(self, data: np.ndarray | torch.Tensor, batch_ids: np.ndarray) -> None:
+    def backfill(
+        self, data: np.ndarray | torch.Tensor, batch_ids: np.ndarray | torch.Tensor
+    ) -> None:
         """Fill the given rows' entire history with one frame, without advancing time.
 
         Unlike append, the global pointer does not move and other rows are
