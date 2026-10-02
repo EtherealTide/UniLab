@@ -368,3 +368,9 @@ def test_support_matrix_marks_allegro_appo_backends_as_tested():
 
     assert allegro_appo_row.cells["mujoco"].level == EvidenceLevel.TESTED
     assert allegro_appo_row.cells["motrix"].level == EvidenceLevel.TESTED
+
+
+def test_generated_support_matrix_exposes_only_tensor_manager_backends() -> None:
+    from scripts.tools import support_matrix
+
+    assert support_matrix.BACKENDS == ("mujoco", "mjwarp", "genesis")

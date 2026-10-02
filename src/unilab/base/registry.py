@@ -41,18 +41,27 @@ class EnvFactory(Protocol):
 
 TEnvFactory = TypeVar("TEnvFactory", bound=EnvFactory)
 RewardOverrideField = Literal["reward_config", "rewards"]
-_SUPPORTED_SIM_BACKENDS = (
+_TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS = (
     "mujoco",
     "mjwarp",
+    "genesis",
+)
+_SHELVED_SIM_BACKENDS = (
     "motrix",
     "drake",
     "isaacgym",
-    "genesis",
     "isaacsim",
     "newton",
     "superdex",
 )
-_DEFAULT_SIM_BACKEND_ORDER: tuple[str, ...] = ("mujoco", "motrix")
+_SUPPORTED_SIM_BACKENDS = _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS + _SHELVED_SIM_BACKENDS
+_DEFAULT_SIM_BACKEND_ORDER: tuple[str, ...] = _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS
+_TENSOR_MANAGER_BACKEND_SCOPE_ERROR = (
+    "Simulation backend '{backend}' is temporarily out of the tensor-only "
+    "Manager runtime scope. Active backends: "
+    f"{', '.join(_TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS)}. Re-enabling it requires "
+    "capability, parity, and support-matrix evidence (issue #1811)."
+)
 _REGISTRY_MODULES_ATTR = "__unilab_registry_modules__"
 _DEFAULT_REGISTRY_PACKAGES = ("unilab.tasks",)
 # Environment variable used to extend ensure_registries() with extra packages.
@@ -153,6 +162,8 @@ def materialize_env_config(name: str) -> EnvCfg:
 
 def register_env(name: str, env_factory: TEnvFactory, sim_backend: str) -> TEnvFactory:
     """Register and return an environment class or function factory."""
+    if sim_backend in _SHELVED_SIM_BACKENDS:
+        raise ValueError(_TENSOR_MANAGER_BACKEND_SCOPE_ERROR.format(backend=sim_backend))
     if sim_backend not in _SUPPORTED_SIM_BACKENDS:
         raise ValueError(
             f"Unsupported simulation backend: {sim_backend}. "
@@ -260,7 +271,7 @@ def make(
     Args:
         name: Environment name
         sim_backend: Simulation backend. If None, uses the
-            explicit default backend order: "mujoco", then "motrix".
+            explicit tensor-manager backend order: "mujoco", "mjwarp", "genesis".
         num_envs: Number of environments to create
 
     Returns:
