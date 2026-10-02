@@ -294,6 +294,68 @@ def _bind_compiled_motion_robot_refresh() -> Callable[..., None]:
     return _refresh_motion_robot_state_compiled
 
 
+_MotionPostComputeFn = Callable[..., None]
+_motion_post_compute_compiled: _MotionPostComputeFn | None = None
+
+
+def _motion_post_compute_kernel(
+    rows: torch.Tensor,
+    anchor_body_idx: int,
+    view_pos: torch.Tensor,
+    view_quat: torch.Tensor,
+    view_lin_vel: torch.Tensor,
+    view_ang_vel: torch.Tensor,
+    robot_body_pos: torch.Tensor,
+    robot_body_quat: torch.Tensor,
+    robot_body_lin_vel: torch.Tensor,
+    robot_body_ang_vel: torch.Tensor,
+    motion_body_pos_local_w: torch.Tensor,
+    motion_body_pos_w: torch.Tensor,
+    motion_body_quat_w: torch.Tensor,
+    body_pos_relative_w: torch.Tensor,
+    body_quat_relative_w: torch.Tensor,
+    motion_anchor_pos_b: torch.Tensor,
+    motion_anchor_ori_b: torch.Tensor,
+    robot_body_pos_b: torch.Tensor,
+    robot_body_ori_b: torch.Tensor,
+) -> None:
+    """Refresh selected robot state and relative motion state in one graph."""
+    target = slice(None) if rows.numel() == robot_body_pos.shape[0] else rows
+    robot_body_pos[target] = view_pos[target]
+    robot_body_quat[target] = view_quat[target]
+    robot_body_lin_vel[target] = view_lin_vel[target]
+    robot_body_ang_vel[target] = view_ang_vel[target]
+    _update_motion_relative_state_torch(
+        rows,
+        anchor_body_idx,
+        motion_body_pos_local_w,
+        motion_body_pos_w,
+        motion_body_quat_w,
+        robot_body_pos,
+        robot_body_quat,
+        body_pos_relative_w,
+        body_quat_relative_w,
+        motion_anchor_pos_b,
+        motion_anchor_ori_b,
+        robot_body_pos_b,
+        robot_body_ori_b,
+    )
+
+
+def _bind_compiled_motion_post_compute() -> _MotionPostComputeFn:
+    """Compile the owner post-compute refresh once on the declared device."""
+    global _motion_post_compute_compiled
+    if _motion_post_compute_compiled is not None:
+        return _motion_post_compute_compiled
+    if not _compiled_motion_relative_state_available():
+        return _motion_post_compute_kernel
+    _motion_post_compute_compiled = torch.compile(
+        _motion_post_compute_kernel,
+        dynamic=True,
+    )
+    return _motion_post_compute_compiled
+
+
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
     from unilab.managers._types import ManagerBasedRlEnv
@@ -1236,16 +1298,42 @@ class TensorMotionCommand(MotionCommand):
 
     def post_compute(self) -> None:
         rows = self._tensor_post_compute_env_ids
+        read_plan = self._env.scene._tensor_read_plan
+        if read_plan is None or not read_plan.ready:
+            if not self._bind_read_phase:
+                return
+            raise RuntimeError("TensorMotionCommand requires a refreshed scene tensor read phase")
+        view = read_plan.body_tensor_view(self.robot, self.cfg.body_names)
         robot_started = time.perf_counter()
-        self._refresh_robot_state_torch(force=True, rows=rows)
+        _bind_compiled_motion_post_compute()(
+            self._tensor_all_rows if rows is None else rows,
+            self.anchor_body_idx,
+            view.pos_w,
+            view.quat_w,
+            view.lin_vel_w,
+            view.ang_vel_w,
+            self._robot_body_pos_w,
+            self._robot_body_quat_w,
+            self._robot_body_lin_vel_w,
+            self._robot_body_ang_vel_w,
+            cast("torch.Tensor", self._motion_data.body_pos_w),
+            self._body_pos_w,
+            cast("torch.Tensor", self._motion_data.body_quat_w),
+            self.body_pos_relative_w,
+            self.body_quat_relative_w,
+            self.motion_anchor_pos_b,
+            self.motion_anchor_ori_b,
+            self.robot_body_pos_b,
+            self.robot_body_ori_b,
+        )
+        joint_view = read_plan.joint_tensor_view(self.robot)
+        self._robot_joint_pos = joint_view.joint_pos
+        self._robot_joint_vel = joint_view.joint_vel
+        self._robot_cache_step = self._env.common_step_counter
         self.last_post_compute_timing_ms = {
             "reset_done_motion_robot_refresh_ms": (time.perf_counter() - robot_started) * 1000.0
         }
-        relative_started = time.perf_counter()
-        self._refresh_relative_state_torch(rows)
-        self.last_post_compute_timing_ms["reset_done_motion_relative_refresh_ms"] = (
-            time.perf_counter() - relative_started
-        ) * 1000.0
+        self.last_post_compute_timing_ms["reset_done_motion_relative_refresh_ms"] = 0.0
 
     def _sync_tensor_sampler_state(self) -> None:
         cast(torch.Tensor, self.time_steps).copy_(self.tensor_sampler.current_frames)
