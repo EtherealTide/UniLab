@@ -59,11 +59,14 @@ from unilab.managers import (
     NullCurriculumManager,
     NullMetricsManager,
     NullRecorderManager,
+    NullResetOwnerManager,
     ObservationGroupCfg,
     ObservationManager,
     ObservationTermCfg,
     RecorderManager,
     RecorderTermCfg,
+    ResetOwnerCfg,
+    ResetOwnerManager,
     RewardManager,
     RewardTermCfg,
     TerminationManager,
@@ -115,6 +118,7 @@ class ManagerBasedRlEnvCfg(EnvCfg):
     curriculum: dict[str, CurriculumTermCfg | None] = _manager_terms_field()
     metrics: dict[str, MetricsTermCfg | None] = _manager_terms_field()
     recorders: dict[str, RecorderTermCfg | None] = _manager_terms_field()
+    reset_owners: dict[str, ResetOwnerCfg | None] = _manager_terms_field()
 
     seed: int | None = None
     is_finite_horizon: bool = False
@@ -162,6 +166,7 @@ class ManagerBasedRlEnvCfg(EnvCfg):
             "curriculum",
             "metrics",
             "recorders",
+            "reset_owners",
         ):
             if not isinstance(getattr(self, name), dict):
                 raise TypeError(f"ManagerBasedRlEnvCfg {name} must be a dict")
@@ -904,6 +909,11 @@ class ManagerBasedRlEnv(TorchEnv):
             RecorderManager(self._cfg.recorders, self)
             if self._cfg.recorders
             else NullRecorderManager()
+        )
+        self.reset_owner_manager = (
+            ResetOwnerManager(self._cfg.reset_owners, self)
+            if self._cfg.reset_owners
+            else NullResetOwnerManager()
         )
 
     def _validate_observation_mapping(self) -> dict[str, int]:
