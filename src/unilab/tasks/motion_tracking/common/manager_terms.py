@@ -1066,6 +1066,7 @@ class TensorMotionCommand(MotionCommand):
         return True
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
+        self.last_reset_timing_ms.clear()
         host_rows = env_ids.detach().cpu().numpy()
         sampler_started = time.perf_counter()
         frames = self.sampler.sample_frames(host_rows)
