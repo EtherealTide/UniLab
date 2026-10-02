@@ -1887,8 +1887,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--out-json", type=Path, default=DEFAULT_OUTPUT_JSON)
     parser.add_argument("--out-csv", type=Path, default=None)
+    parser.add_argument(
+        "--repeat-variant-blocks",
+        type=int,
+        default=1,
+        help=(
+            "Build and run each --variants label this many times in alternating label "
+            "order. More than one block is an in-process paired A/B protocol that "
+            "avoids process-placement bimodality without extending warmup/measure steps."
+        ),
+    )
     parser.add_argument("--continue-on-error", action="store_true")
     args = parser.parse_args(argv)
+    if args.repeat_variant_blocks < 1:
+        raise ValueError("--repeat-variant-blocks must be at least 1")
     if args.sim is not None:
         args.backend = _runtime_sim_backend(args.sim)
     return args
@@ -1925,23 +1937,24 @@ def main() -> int:
         )
     for spec in specs:
         try:
-            for variant in variants:
-                variant_extra_overrides = variant_overrides.get(variant, [])
-                case_results = [
-                    _build_and_run_case(
-                        spec,
-                        warmup_steps=int(args.warmup_steps),
-                        measure_steps=int(args.measure_steps),
-                        replay_capacity_steps=int(args.replay_capacity_steps),
-                        num_envs=args.num_envs,
-                        extra_overrides=[*args.override, *variant_extra_overrides],
-                        variant=variant,
-                        profile_numpy_random=bool(args.profile_numpy_random),
-                    )
-                ]
-                results.extend(case_results)
-                for result in case_results:
-                    _print_result(result)
+            for _ in range(int(args.repeat_variant_blocks)):
+                for variant in variants:
+                    variant_extra_overrides = variant_overrides.get(variant, [])
+                    case_results = [
+                        _build_and_run_case(
+                            spec,
+                            warmup_steps=int(args.warmup_steps),
+                            measure_steps=int(args.measure_steps),
+                            replay_capacity_steps=int(args.replay_capacity_steps),
+                            num_envs=args.num_envs,
+                            extra_overrides=[*args.override, *variant_extra_overrides],
+                            variant=variant,
+                            profile_numpy_random=bool(args.profile_numpy_random),
+                        )
+                    ]
+                    results.extend(case_results)
+                    for result in case_results:
+                        _print_result(result)
         except Exception as exc:
             error = {"case": spec, "type": type(exc).__name__, "message": str(exc)}
             errors.append(error)
@@ -1970,6 +1983,7 @@ def main() -> int:
             "override": args.override,
             "variants": list(variants),
             "variant_override": args.variant_override,
+            "repeat_variant_blocks": args.repeat_variant_blocks,
             "profile_numpy_random": args.profile_numpy_random,
         },
         "results": [_result_to_dict(result) for result in results],
