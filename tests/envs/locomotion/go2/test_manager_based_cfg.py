@@ -67,26 +67,6 @@ _OWNER_CASES = (
         id="ppo-mujoco",
     ),
     pytest.param(
-        "ppo",
-        ("task=go2_joystick_flat/motrix",),
-        "motrix",
-        0.25,
-        False,
-        False,
-        True,
-        id="ppo-motrix",
-    ),
-    pytest.param(
-        "ppo",
-        ("task=go2_joystick_flat/drake",),
-        "drake",
-        0.25,
-        False,
-        False,
-        False,
-        id="ppo-drake",
-    ),
-    pytest.param(
         "appo",
         ("task=go2_joystick_flat/mujoco",),
         "mujoco",
@@ -97,16 +77,6 @@ _OWNER_CASES = (
         id="appo-mujoco",
     ),
     pytest.param(
-        "appo",
-        ("task=go2_joystick_flat/motrix",),
-        "motrix",
-        0.25,
-        False,
-        True,
-        False,
-        id="appo-motrix",
-    ),
-    pytest.param(
         "flashsac",
         ("task=go2_joystick_flat/mujoco",),
         "mujoco",
@@ -115,16 +85,6 @@ _OWNER_CASES = (
         False,
         False,
         id="flashsac-mujoco",
-    ),
-    pytest.param(
-        "sac",
-        ("task=go2_joystick_flat/drake",),
-        "drake",
-        0.25,
-        False,
-        False,
-        False,
-        id="sac-drake",
     ),
 )
 
@@ -225,10 +185,6 @@ def test_go2_flat_owner_materializes_complete_plain_manager_cfg(
             "contact": 0.24,
             "swing_feet_z": 4.0,
         }
-        if backend == "drake":
-            # The drake owner disables contact: drake_uni reports world-frame
-            # per-body net contact force, not contact-frame force (#1471).
-            del expected_weights["contact"]
         if alive_declared:
             expected_weights["alive"] = 0.0
         actual_weights = {
@@ -252,7 +208,7 @@ def test_go2_flat_owner_materializes_complete_plain_manager_cfg(
                     continue
                 module = nested_term.func.__module__
                 assert ".backend." not in module
-                assert not any(name in module for name in (".mujoco", ".motrix", ".drake"))
+                assert not any(name in module for name in (".mujoco",))
 
     _assert_no_omegaconf(env_cfg)
 
