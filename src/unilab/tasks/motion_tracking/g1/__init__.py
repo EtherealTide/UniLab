@@ -47,11 +47,10 @@ registry.register_env(
     make_manager_based_rl_env,
     sim_backend="mjwarp",
 )
-# G1 flip tracking is the second scoped tensor task owner. It intentionally
-# registers only the validated MJWarp tensor path; MuJoCo/Motrix remain NumPy.
+# G1 flip tracking is the second scoped Manager tensor task owner.
 registry.register_env(
     "G1FlipTrackingSAC",
-    make_torch_g1_motion_tracking_flashsac_env,
+    make_manager_based_rl_env,
     sim_backend="mjwarp",
 )
 # Genesis is the second scoped DEVICE_RESIDENT motion owner. The Manager tensor
