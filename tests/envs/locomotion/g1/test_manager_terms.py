@@ -343,9 +343,10 @@ def test_velocity_command_dead_zone_zeroes_small_planar_commands():
     term = cfg.build(cast(Any, env))
     term._resample_command(torch.arange(64, dtype=torch.int64))
 
-    planar_norm = np.linalg.norm(term.vel_command_b[:, :2], axis=1)
-    assert np.all((planar_norm == 0.0) | (planar_norm > 0.2))
-    assert np.any(planar_norm == 0.0)
+    planar_norm = torch.linalg.vector_norm(term.command[:, :2], dim=1)
+    assert bool(torch.all((planar_norm == 0.0) | (planar_norm > 0.2)))
+    assert bool(torch.any(planar_norm == 0.0))
+    assert term.command.dtype == torch.float32
 
 
 def test_velocity_command_fails_closed_on_heading_command():
