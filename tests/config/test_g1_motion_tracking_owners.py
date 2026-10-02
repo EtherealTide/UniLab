@@ -169,3 +169,29 @@ def test_warpsac_g1_motion_tracking_owners_share_policy_contract() -> None:
         assert OmegaConf.to_container(mjwarp_cfg[section]) == OmegaConf.to_container(
             mujoco_cfg[section]
         )
+
+
+def test_sac_g1_motion_tracking_mjwarp_uses_tensor_motion_owner() -> None:
+    cfg = _compose_sac("g1_motion_tracking/mjwarp")
+
+    assert cfg.env.commands.motion._target_ == (
+        "unilab.tasks.motion_tracking.common.manager_terms.TensorMotionCommandCfg"
+    )
+    assert (
+        cfg.env.observations.actor.terms.motion_anchor_pack.func
+        == "unilab.tasks.motion_tracking.common.manager_terms.MotionObservationPack"
+    )
+    assert cfg.env.observations.actor.terms.motion_anchor_pack._target_ == (
+        "unilab.tasks.motion_tracking.common.manager_terms.MotionObservationPackCfg"
+    )
+    assert cfg.env.observations.critic.terms.motion_anchor_pack.func == (
+        "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorObservationPack"
+    )
+    noise = cfg.env.observations.actor.terms.motion_anchor_pack.noise
+    assert len(noise.ranges) == 160
+    assert noise.ranges[58] == pytest.approx((-0.0, 0.0))
+    assert noise.ranges[67] == pytest.approx((-0.1, 0.1))
+    assert noise.ranges[70] == pytest.approx((-0.2, 0.2))
+    assert noise.ranges[73] == pytest.approx((-0.01, 0.01))
+    assert noise.ranges[102] == pytest.approx((-1.5, 1.5))
+    assert noise.ranges[131] == pytest.approx((-0.0, 0.0))
