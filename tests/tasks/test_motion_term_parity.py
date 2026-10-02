@@ -1264,3 +1264,68 @@ def test_motion_penalty_pack_matches_individual_tensor_penalties(
     )
     expected = -0.1 * action_rate - 2.0 * joint_limit - 0.1 * contacts
     torch.testing.assert_close(value, expected)
+
+
+def test_motion_termination_pack_matches_individual_tensor_failures(
+    monkeypatch: pytest.MonkeyPatch, body_setup
+) -> None:
+    command, env, _snapshots = body_setup
+    num_envs, num_bodies = command.num_envs, len(command.cfg.body_names)
+    rng = np.random.default_rng(1811)
+    tensor_command = SimpleNamespace(
+        cfg=command.cfg,
+        tensor_carrier=True,
+        anchor_body_idx=command.anchor_body_idx,
+        body_pos_w=torch.asarray(rng.normal(size=(num_envs, num_bodies, 3)).astype(np.float32)),
+        robot_body_pos_w=torch.asarray(
+            rng.normal(size=(num_envs, num_bodies, 3)).astype(np.float32)
+        ),
+        anchor_quat_w=torch.asarray(_unit_quat(rng.normal(size=(num_envs, 4)).astype(np.float32))),
+        robot_anchor_quat_w=torch.asarray(
+            _unit_quat(rng.normal(size=(num_envs, 4)).astype(np.float32))
+        ),
+        body_pos_relative_w=torch.asarray(
+            rng.normal(size=(num_envs, num_bodies, 3)).astype(np.float32)
+        ),
+    )
+    monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
+    cfg = mt.MotionTerminationPackCfg(
+        func=mt.MotionTerminationPack,
+        anchor_pos_threshold=0.5,
+        anchor_ori_threshold=0.8,
+        ee_body_pos_threshold=0.4,
+        ee_body_names=command.cfg.body_names[:3],
+    )
+    term = mt.MotionTerminationPack(cfg, env)
+    anchor_idx = command.anchor_body_idx
+    ee_ids = [command.cfg.body_names.index(name) for name in cfg.ee_body_names]
+
+    value = term(env)
+
+    anchor_failed = (
+        tensor_command.body_pos_w[:, anchor_idx, 2]
+        - tensor_command.robot_body_pos_w[:, anchor_idx, 2]
+    ).abs() > cfg.anchor_pos_threshold
+    motion_z = (
+        2.0 * (tensor_command.anchor_quat_w[:, 1] ** 2 + tensor_command.anchor_quat_w[:, 2] ** 2)
+        - 1.0
+    )
+    robot_z = (
+        2.0
+        * (
+            tensor_command.robot_anchor_quat_w[:, 1] ** 2
+            + tensor_command.robot_anchor_quat_w[:, 2] ** 2
+        )
+        - 1.0
+    )
+    ori_failed = (motion_z - robot_z).abs() > cfg.anchor_ori_threshold
+    ee_failed = torch.any(
+        (
+            tensor_command.body_pos_relative_w[:, ee_ids, 2]
+            - tensor_command.robot_body_pos_w[:, ee_ids, 2]
+        ).abs()
+        > cfg.ee_body_pos_threshold,
+        dim=-1,
+    )
+    expected = anchor_failed | ori_failed | ee_failed
+    torch.testing.assert_close(value, expected)

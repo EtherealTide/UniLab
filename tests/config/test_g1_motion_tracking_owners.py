@@ -111,6 +111,8 @@ def test_flashsac_g1_motion_tracking_uses_comparable_dr_free_owner() -> None:
     del mjwarp_env["commands"]
     del mujoco_env["commands"]
     del mjwarp_env["reset_owners"]
+    del mjwarp_env["terminations"]
+    del mujoco_env["terminations"]
     assert mjwarp_env == mujoco_env
     mjwarp_reward = OmegaConf.to_container(mjwarp_cfg.reward)
     mujoco_reward = OmegaConf.to_container(mujoco_cfg.reward)

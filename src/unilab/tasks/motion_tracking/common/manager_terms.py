@@ -19,6 +19,7 @@ from unilab.managers import (
     ManagerTermBaseCfg,
     ObservationTermCfg,
     RewardTermCfg,
+    TerminationTermCfg,
 )
 from unilab.managers.reset_owner import ResetOwner, ResetOwnerCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
@@ -2528,6 +2529,22 @@ class MotionPenaltyRewardPackCfg(RewardTermCfg):
 
 
 @dataclass(kw_only=True)
+class MotionTerminationPackCfg(TerminationTermCfg):
+    """Fused canonical FlashSAC anchor/end-effector failure termination."""
+
+    command_name: str = "motion"
+    anchor_pos_threshold: float = 0.5
+    anchor_ori_threshold: float = 0.8
+    ee_body_pos_threshold: float = 0.5
+    ee_body_names: tuple[str, ...] = (
+        "left_ankle_roll_link",
+        "right_ankle_roll_link",
+        "left_wrist_yaw_link",
+        "right_wrist_yaw_link",
+    )
+
+
+@dataclass(kw_only=True)
 class MotionResetOwnerCfg(ResetOwnerCfg):
     """Fused selected-reset ownership for the canonical motion owner."""
 
@@ -2703,6 +2720,58 @@ class MotionPenaltyRewardPack(ManagerTermBase):
             self._output,
         )
         return self._output
+
+
+class MotionTerminationPack(ManagerTermBase):
+    """Evaluate canonical anchor and end-effector failure terminations."""
+
+    cfg: MotionTerminationPackCfg
+
+    def __init__(self, cfg: MotionTerminationPackCfg, env: ManagerBasedRlEnv):
+        super().__init__(env)
+        if not isinstance(cfg, MotionTerminationPackCfg):
+            raise TypeError("MotionTerminationPack requires MotionTerminationPackCfg")
+        self.cfg = cfg
+        self._command = _command(env, cfg.command_name)
+        if not bool(getattr(self._command, "tensor_carrier", False)):
+            raise TypeError("MotionTerminationPack requires TensorMotionCommand")
+        tracked_bodies = tuple(self._command.cfg.body_names)
+        missing = [name for name in cfg.ee_body_names if name not in tracked_bodies]
+        if missing:
+            raise ValueError(
+                f"MotionTerminationPack end-effector bodies {missing} are not tracked by "
+                f"command '{cfg.command_name}'"
+            )
+        self._ee_body_ids = torch.as_tensor(
+            [tracked_bodies.index(name) for name in cfg.ee_body_names],
+            dtype=torch.int64,
+            device=torch.device(env.device),
+        )
+
+    def __call__(self, env: ManagerBasedRlEnv) -> torch.Tensor:
+        command = cast(TensorMotionCommand, self._command)
+        anchor_idx = command.anchor_body_idx
+        anchor_pos_failed = (
+            cast(torch.Tensor, command.body_pos_w)[:, anchor_idx, 2]
+            - cast(torch.Tensor, command.robot_body_pos_w)[:, anchor_idx, 2]
+        ).abs() > self.cfg.anchor_pos_threshold
+
+        motion_anchor_quat = cast(torch.Tensor, command.anchor_quat_w)
+        robot_anchor_quat = cast(torch.Tensor, command.robot_anchor_quat_w)
+        motion_z = 2.0 * (motion_anchor_quat[:, 1] ** 2 + motion_anchor_quat[:, 2] ** 2) - 1.0
+        robot_z = 2.0 * (robot_anchor_quat[:, 1] ** 2 + robot_anchor_quat[:, 2] ** 2) - 1.0
+        anchor_ori_failed = (motion_z - robot_z).abs() > self.cfg.anchor_ori_threshold
+
+        ee_error = (
+            cast(torch.Tensor, command.body_pos_relative_w).index_select(1, self._ee_body_ids)[
+                ..., 2
+            ]
+            - cast(torch.Tensor, command.robot_body_pos_w).index_select(1, self._ee_body_ids)[
+                ..., 2
+            ]
+        ).abs()
+        ee_failed = torch.any(ee_error > self.cfg.ee_body_pos_threshold, dim=-1)
+        return anchor_pos_failed | anchor_ori_failed | ee_failed
 
 
 class bad_anchor_pos_z_only(ManagerTermBase):
@@ -3015,6 +3084,8 @@ __all__ = [
     "MotionRewardPackCfg",
     "MotionPenaltyRewardPack",
     "MotionPenaltyRewardPackCfg",
+    "MotionTerminationPack",
+    "MotionTerminationPackCfg",
     "MotionResetOwner",
     "MotionResetOwnerCfg",
     "MotionAnchorObservation",
