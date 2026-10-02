@@ -94,6 +94,7 @@ ENV_STEP_TIMING_KEYS = (
     "update_state_events_ms",
     "update_state_command_ms",
     "update_state_command_compute_ms",
+    "update_state_command_dt_validation_ms",
     "update_state_command_metrics_update_ms",
     "update_state_command_timer_ms",
     "update_state_command_update_dispatch_ms",
