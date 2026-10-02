@@ -1509,11 +1509,19 @@ class ResetStateTransaction:
                 return None
             assert self._qpos is not None
             assert self._qvel is not None
-            if self._randomization_dirty_masks or mocap_dirty:
+            if mocap_dirty:
                 raise NotImplementedError(
-                    "tensor reset commit supports scalar qpos/qvel rows only; "
-                    "randomization and mocap writes remain explicit migration boundaries"
+                    "tensor reset commit supports scalar qpos/qvel and reset-randomization "
+                    "rows only; mocap writes remain an explicit migration boundary"
                 )
+            randomization = None
+            if self._randomization_dirty_masks:
+                if not self._backend.get_tensor_capabilities().reset_randomization:
+                    raise NotImplementedError(
+                        "tensor reset commit does not support reset randomization on backend "
+                        f"'{self._backend.backend_type}'"
+                    )
+                randomization = self._build_randomization_payload(dirty_ids)
             rows = torch.from_numpy(dirty_ids.astype(np.int64, copy=True))
             staged_qpos = self._qpos[dirty_ids]
             staged_qvel = self._qvel[dirty_ids]
@@ -1542,7 +1550,7 @@ class ResetStateTransaction:
                 qvel = qvel.to(device=packed_reset_device, non_blocking=False)
             try:
                 set_state_t0 = time.perf_counter()
-                result = host_plan.apply_reset(rows, qpos, qvel, randomization=None)
+                result = host_plan.apply_reset(rows, qpos, qvel, randomization=randomization)
                 self._commit_mocap_poses()
                 timing: dict[str, float] = {
                     "dr_reset_set_state_ms": (time.perf_counter() - set_state_t0) * 1000.0
@@ -1570,8 +1578,9 @@ class ResetStateTransaction:
         scalar layouts.  The commit is the explicit selected-row device boundary:
         rows and the two validated contiguous state arrays move once through
         ``SimBackend.set_state_tensor``.  This is not a hidden hot-path copy or
-        transport switch; randomization, mapped entities, and mocap writes remain
-        unsupported migration boundaries and fail closed.
+        transport switch; mapped entities and mocap writes remain unsupported
+        migration boundaries and fail closed. Reset randomization uses the same
+        public payload contract as the scalar reset commit.
         """
         self._require_active()
         if self._tensor_active:
@@ -1655,10 +1664,10 @@ class ResetStateTransaction:
         try:
             if not self._tensor_has_writes:
                 return None
-            if self.scene_layout is not None or self._randomization_dirty_masks:
+            if self.scene_layout is not None:
                 raise NotImplementedError(
                     "tensor reset event commit supports scalar qpos/qvel rows only; mapped "
-                    "entity and randomization writes remain explicit migration boundaries"
+                    "entity writes remain an explicit migration boundary"
                 )
             capabilities = self._backend.get_tensor_capabilities()
             if capabilities.execution is not TensorExecution.DEVICE_RESIDENT:
@@ -1671,6 +1680,14 @@ class ResetStateTransaction:
                     "device-resident reset commit requires the backend's declared "
                     "selected_reset tensor capability"
                 )
+            randomization: ResetRandomizationPayload | None = None
+            if self._randomization_dirty_masks:
+                if not capabilities.reset_randomization:
+                    raise NotImplementedError(
+                        "device-resident reset commit does not support reset "
+                        "randomization on this backend"
+                    )
+                randomization = self._tensor_randomization_payload()
             assert self._tensor_rows is not None
             assert self._tensor_qpos is not None
             assert self._tensor_qvel is not None
@@ -1679,7 +1696,9 @@ class ResetStateTransaction:
             qvel = self._tensor_qvel.index_select(0, rows)
             try:
                 set_state_t0 = time.perf_counter()
-                result = self._backend.set_state_tensor(rows, qpos, qvel, randomization=None)
+                result = self._backend.set_state_tensor(
+                    rows, qpos, qvel, randomization=randomization
+                )
                 timing: dict[str, float] = {
                     "dr_reset_set_state_ms": (time.perf_counter() - set_state_t0) * 1000.0
                 }
@@ -1704,6 +1723,15 @@ class ResetStateTransaction:
                 ) from exc
         finally:
             self._finish()
+
+    def _tensor_randomization_payload(self) -> ResetRandomizationPayload | None:
+        """Build the selected-row public DR payload from tensor reset rows."""
+        assert self._tensor_rows is not None
+        rows_host = self._tensor_rows.detach().cpu().numpy()
+        payload = self._build_randomization_payload(rows_host)
+        if payload is not None:
+            self._record_committed_payload(rows_host, payload)
+        return payload
 
     def _packed_reset_widths_match(self) -> bool:
         try:
@@ -2180,6 +2208,10 @@ class ResetStateTransaction:
         term_name: str,
     ) -> np.ndarray:
         self._require_active()
+        if self._tensor_active:
+            return self._prepare_tensor_randomization_write(
+                env_ids, capability=capability, term_name=term_name
+            )
         ids = self._validate_ids(env_ids, capability=f"write_{capability}")
         outside = ids[~self._active_mask[ids]]
         if outside.size:
@@ -2197,6 +2229,28 @@ class ResetStateTransaction:
         if uninitialized.size:
             self._qpos[uninitialized] = self._default_qpos
             self._qvel[uninitialized] = self._default_qvel
+        return ids
+
+    def _prepare_tensor_randomization_write(
+        self,
+        env_ids: np.ndarray,
+        *,
+        capability: str,
+        term_name: str,
+    ) -> np.ndarray:
+        """Validate a public DR write against the active tensor row selector."""
+        rows = self._tensor_rows
+        assert rows is not None
+        ids = self._validate_ids(env_ids, capability=f"write_{capability}")
+        if ids.size != rows.numel() or not np.array_equal(
+            ids, rows.detach().cpu().numpy().astype(ids.dtype, copy=False)
+        ):
+            raise ValueError(
+                f"EventManager term '{term_name}' attempted {capability} mutation outside "
+                "the active tensor reset"
+            )
+        self._requesting_terms.add(term_name)
+        self._tensor_has_writes = True
         return ids
 
     def _prepare_tensor_state_write(

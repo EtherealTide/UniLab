@@ -860,10 +860,6 @@ def test_g1_motion_manager_ppo_wraps_only_active_rows_in_one_state_commit(
         env.close()
 
 
-@pytest.mark.xfail(
-    reason="SAC DR owner remains a Phase 2 tensor reset-transaction boundary",
-    strict=True,
-)
 def test_g1_motion_manager_sac_clip_end_is_truncation() -> None:
     ensure_registries()
     _require_mujoco_runtime()
@@ -896,7 +892,7 @@ def test_g1_motion_manager_sac_clip_end_is_truncation() -> None:
 
 
 @pytest.mark.xfail(
-    reason="SAC DR owner remains a Phase 2 tensor reset-transaction boundary",
+    reason="SAC MJWarp DR still needs a tensor command/observation owner",
     strict=True,
 )
 def test_sac_g1_motion_mjwarp_dr_runtime_applies_reset_and_interval_dr() -> None:

@@ -137,7 +137,10 @@ class CommandTerm(ManagerTermBase):
                             f"CommandTerm '{self.name}' metric '{metric_name}' contains NaN or Inf."
                         )
                     extras[metric_name] = float(_mean(metric_slice))
-                    metric_value[env_ids] = 0.0
+                    if isinstance(metric_value, torch.Tensor):
+                        metric_value[env_ids] = 0.0
+                    else:
+                        metric_value[env_ids.detach().cpu().numpy()] = 0.0
         else:
             self.clear_episode_metrics(env_ids)
         metrics_ms = (time.perf_counter() - metrics_started) * 1000.0
