@@ -13,4 +13,3 @@ env:
   commands:
     motion:
       _target_: unilab.tasks.motion_tracking.common.manager_terms.TensorMotionCommandCfg
-  tensor_runtime: true

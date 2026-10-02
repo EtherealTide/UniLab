@@ -16,7 +16,6 @@ training:
   # CLI-overridable, matching the MJWarp owner's measurement policy.
   collector_metrics_interval: 100
 env:
-  tensor_runtime: true
   isaacsim_device_id: 0
   isaacsim_worker_timeout_s: 300.0
   isaacsim_tensor_cuda_ipc: true

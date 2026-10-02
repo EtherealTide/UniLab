@@ -229,7 +229,6 @@ def test_sac_g1_motion_tracking_isaacsim_disables_unsupported_dr() -> None:
 def test_flashsac_g1_motion_tracking_isaacsim_uses_production_mapped_cuda_ipc_owner() -> None:
     cfg = _compose_isaacsim_tensor_owner()
     assert cfg.training.sim_backend == "isaacsim"
-    assert cfg.env.tensor_runtime is True
     assert cfg.env.isaacsim_tensor_cuda_ipc is True
     assert cfg.env.isaacsim_share_friction_materials is True
 
@@ -293,22 +292,13 @@ def test_isaacsim_mapped_owner_materializes_into_manager_config() -> None:
     cfg.validate()
     assert cfg.isaacsim_tensor_cuda_ipc is True
     assert cfg.isaacsim_share_friction_materials is True
-    assert cfg.tensor_runtime is True
     assert cfg.scene is not None
     assert cfg.scene.entity_assets
-
-
-def test_isaacsim_cuda_ipc_requires_manager_tensor_runtime() -> None:
-    cfg = ManagerBasedRlEnvCfg(isaacsim_tensor_cuda_ipc=True)
-
-    with pytest.raises(ValueError, match="isaacsim_tensor_cuda_ipc requires tensor_runtime"):
-        cfg.validate()
 
 
 def test_flashsac_g1_motion_tracking_isaacgym_uses_gpu_tensor_candidate() -> None:
     cfg = _compose_flashsac("g1_motion_tracking/isaacgym")
     assert cfg.training.sim_backend == "isaacgym"
-    assert cfg.env.tensor_runtime is True
     assert cfg.env.isaacgym_device_id == 0
     assert cfg.env.scene.model_file.endswith("robots/g1/scene_flat.xml")
     assert cfg.env.scene.default_keyframe_name == "stand"
@@ -321,7 +311,6 @@ def test_flashsac_g1_motion_tracking_isaacgym_uses_gpu_tensor_candidate() -> Non
 def test_flashsac_g1_motion_tracking_host_bridge_candidates_opt_in(backend: str) -> None:
     cfg = _compose_flashsac(f"g1_motion_tracking/{backend}")
     assert cfg.training.sim_backend == backend
-    assert cfg.env.tensor_runtime is True
     assert cfg.env.scene.model_file.endswith("robots/g1/scene_flat.xml")
     assert cfg.env.scene.default_keyframe_name == "stand"
 

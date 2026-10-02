@@ -10,7 +10,7 @@
 | Owner | 职责 |
 | --- | --- |
 | UniSim | 公共 `SimBackend` tensor lifecycle、execution/data-plane/process profile、packed host-bridge 契约、平台支持 inventory 与 backend adapter。 |
-| UniLab task owner | Hydra owner 身份、`training.sim_backend`、`env.tensor_runtime`、task 语义、parity fixture、进程设备绑定与训练入口集成。 |
+| UniLab task owner | Hydra owner 身份、`training.sim_backend`、task 语义、parity fixture、进程设备绑定与训练入口集成。 |
 | `uni_rl` | off-policy collector/learner 进程拓扑、CUDA inference ring、replay ingress、IPC 同步、runner metric 与 metric/runtime-manifest producer schema。 |
 | UniLab training runtime | soak 监控、schema 消费、安全默认值与边界、process-affinity 集成、run artifact 与 fail-closed 构造检查。 |
 | UniLab 文档 | 复现、运维、schema 兼容、support-matrix 解读与 release-transition 指南。 |

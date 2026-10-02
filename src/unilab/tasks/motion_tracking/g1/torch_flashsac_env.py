@@ -451,17 +451,9 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
                 )
             )
         self._validate_backend()
-        # Cold-path contract extraction only. Keep the Manager proxy on CPU so
-        # its temporary observation computation does not require every generic
-        # term to be CUDA-tensor-native; the direct runtime owns all hot tensors
-        # on ``self.device``.
-        saved_tensor_runtime = (cfg.tensor_runtime, cfg.tensor_runtime_device)
-        # Temporarily clear every tensor opt-in that ManagerBasedRlEnvCfg
-        # validates as a coherent CUDA request. The proxy extracts only cold
-        # contracts; DEVICE_RESIDENT backends compile no tensor read plan.
+        # Cold-path contract extraction only. The proxy does not execute a hot
+        # step; the direct runtime owns all hot tensors on ``self.device``.
         saved_isaacsim_cuda_ipc = cfg.isaacsim_tensor_cuda_ipc
-        cfg.tensor_runtime = False
-        cfg.tensor_runtime_device = "cpu"
         cfg.isaacsim_tensor_cuda_ipc = False
         self._cpu_env: ManagerBasedRlEnv | None = None
         proxy_type = (
@@ -503,7 +495,6 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
         except BaseException:
             if self._cpu_env is not None:
                 self._cpu_env.close()
-            cfg.tensor_runtime, cfg.tensor_runtime_device = saved_tensor_runtime
             cfg.isaacsim_tensor_cuda_ipc = saved_isaacsim_cuda_ipc
             raise
         # The proxy compiled no packed reads, so this drop is enough to detach
@@ -516,7 +507,6 @@ class TorchG1MotionTrackingFlashSACEnv(TorchEnv):
             if backend.tensor_execution() is TensorExecution.HOST_BRIDGE:
                 self._cpu_env.reset(seed=self._initial_seed)
         finally:
-            cfg.tensor_runtime, cfg.tensor_runtime_device = saved_tensor_runtime
             cfg.isaacsim_tensor_cuda_ipc = saved_isaacsim_cuda_ipc
         del self._cpu_env
         self._episode_metrics = TensorEpisodeMetrics.create(self._num_envs, self.device)
@@ -1521,9 +1511,6 @@ def make_torch_g1_motion_tracking_flashsac_env(
 
     if not isinstance(cfg, ManagerBasedRlEnvCfg):
         raise TypeError("Torch G1 FlashSAC factory expected ManagerBasedRlEnvCfg")
-    if not cfg.tensor_runtime:
-        env = make_manager_based_rl_env(cfg, num_envs=num_envs, backend_type=backend_type)
-        return env
     _validate_torch_g1_flashsac_owner_contract(cfg)
     cfg.validate()
     assert cfg.scene is not None

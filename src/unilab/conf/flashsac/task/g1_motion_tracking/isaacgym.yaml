@@ -12,7 +12,6 @@ training:
   sim_backend: isaacgym
   play_render_mode: auto
 env:
-  tensor_runtime: true
   isaacgym_device_id: 0
   render_spacing: 2.0
   scene:
