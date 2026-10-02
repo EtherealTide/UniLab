@@ -14,7 +14,7 @@ from numba import config, get_num_threads, threading_layer
 from unilab.managers import RewardTermCfg, TerminationTermCfg
 from unilab.tasks.motion_tracking.common import kernels
 from unilab.tasks.motion_tracking.common import manager_terms as mt
-from unilab.tasks.motion_tracking.g1.torch_flashsac_env import (
+from unilab.tasks.motion_tracking.common.motion_math import (
     _adaptive_failure_alpha,
     _adaptive_failure_counts,
     _gravity_z_in_body,

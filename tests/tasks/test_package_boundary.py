@@ -78,9 +78,9 @@ def test_tensor_runtime_switch_is_absent_from_source_and_owner_configs() -> None
     assert offenders == [], f"tensor-runtime switch references remain: {offenders}"
 
 
-def test_motion_direct_runtime_is_internal() -> None:
-    import unilab.tasks.motion_tracking.g1.torch_flashsac_env as module
+def test_motion_direct_runtime_is_removed() -> None:
+    import unilab.tasks.motion_tracking.g1.flashsac_owner_contract as module
 
     assert not hasattr(module, "TorchG1MotionTrackingFlashSACEnv")
     assert not hasattr(module, "make_torch_g1_motion_tracking_flashsac_env")
-    assert hasattr(module, "_TorchG1MotionTrackingFlashSACEnv")
+    assert not hasattr(module, "_TorchG1MotionTrackingFlashSACEnv")

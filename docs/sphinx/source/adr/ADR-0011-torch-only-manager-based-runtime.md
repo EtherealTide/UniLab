@@ -220,7 +220,7 @@ superseded ADR-0006 may remain.
 
 ## Evidence In Repo
 
-- Scoped tensor runtime: `src/unilab/tasks/motion_tracking/g1/torch_flashsac_env.py`
+- FlashSAC owner fingerprint: `src/unilab/tasks/motion_tracking/g1/flashsac_owner_contract.py`
 - Reusable tensor components: `src/unilab/tasks/motion_tracking/common/tensor_runtime.py`,
   `src/unilab/tasks/motion_tracking/common/tensor_state_store.py`
 - General Manager runtime to migrate: `src/unilab/envs/manager_based_rl_env.py`
