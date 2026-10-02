@@ -53,6 +53,8 @@ from unilab.tasks.motion_tracking.common.tensor_state_store import TensorDeviceS
 
 
 def _to_device(value: np.ndarray, device: torch.device) -> torch.Tensor:
+    if isinstance(value, torch.Tensor):
+        return value.detach().to(device=device, dtype=torch.float32, copy=True)
     return torch.from_numpy(np.array(value, dtype=value.dtype, order="C", copy=True)).to(device)
 
 
@@ -108,6 +110,11 @@ _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V2 = (
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V3 = (
     "a9c1887c8e49cb4eebea298aac95eb6ccac6f1f7de2239367853ca9b33375f82"
 )
+# V4 only changes the MJWARP command implementation class; its semantic
+# parameters and all observations/rewards/terminations remain the owner YAML.
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V4 = (
+    "49f64ca002956bdcd41ae5fe3b32cfca3a3f5d5237c74e4df693566fa3c4b87a"
+)
 _TORCH_G1_SAC_OWNER_IDENTITY_V1 = "90236c9e02e460817208b6a8e14f614ae4d2a797f16d1a5bfd0d306f4059d385"
 # Mapped IsaacSim physical names are namespace-equivalent to the local G1 owner:
 # every local body/joint/sensor name is prefixed by the declared physical
@@ -126,6 +133,7 @@ def _validate_torch_g1_flashsac_owner_contract(cfg: ManagerBasedRlEnvCfg) -> Non
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V1,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V2,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V3,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V4,
         _TORCH_G1_SAC_OWNER_IDENTITY_V1,
         _TORCH_G1_FLIP_SAC_OWNER_IDENTITY_V1,
         _TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V1,

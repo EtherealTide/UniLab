@@ -120,13 +120,15 @@ def test_flashsac_g1_motion_tracking_uses_comparable_dr_free_owner() -> None:
     assert mjwarp_cfg.env.observations.critic.terms.motion_anchor_ori_b.func == (
         "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorOrientationObservation"
     )
-    # Anchor term execution is the only intended cross-backend difference; the
-    # rest remains the DR-free parity owner.
+    # Anchor term execution and the MJWARP-only tensor command implementation are
+    # intended cross-backend differences; the semantic owner remains DR-free.
     mujoco_env = OmegaConf.to_container(mujoco_cfg.env)
     mjwarp_env = OmegaConf.to_container(mjwarp_cfg.env)
     assert isinstance(mujoco_env, dict) and isinstance(mjwarp_env, dict)
     del mjwarp_env["observations"]
     del mujoco_env["observations"]
+    del mjwarp_env["commands"]
+    del mujoco_env["commands"]
     assert mjwarp_env == mujoco_env
     assert OmegaConf.to_container(mjwarp_cfg.reward) == OmegaConf.to_container(mujoco_cfg.reward)
 

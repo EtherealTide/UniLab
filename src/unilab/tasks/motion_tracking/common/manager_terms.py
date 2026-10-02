@@ -31,7 +31,144 @@ from .kernels import (
     update_motion_relative_state_kernel,
 )
 from .motion_loader import MotionData, MotionLoader, MotionSampler
-from .tensor_rotation import quat_apply_inverse, quat_conjugate, quat_mul, quat_to_rot6
+from .tensor_rotation import (
+    quat_apply,
+    quat_apply_inverse,
+    quat_conjugate,
+    quat_from_euler_xyz,
+    quat_mul,
+    quat_to_rot6,
+)
+
+
+def _quat_error_squared_torch(reference: torch.Tensor, actual: torch.Tensor) -> torch.Tensor:
+    """Match the Numba kernel's absolute-dot shortest-path angular error."""
+    rel = quat_mul(quat_conjugate(reference), actual)
+    xyz = torch.linalg.vector_norm(rel[..., 1:4], dim=-1)
+    angle = 2.0 * torch.atan2(xyz, rel[..., 0].abs().clamp(max=1.0))
+    return angle.square()
+
+
+def _update_motion_metrics_torch(
+    rows: torch.Tensor,
+    anchor_body_idx: int,
+    motion_body_pos_w: torch.Tensor,
+    robot_body_pos_w: torch.Tensor,
+    motion_body_quat_w: torch.Tensor,
+    robot_body_quat_w: torch.Tensor,
+    motion_body_lin_vel_w: torch.Tensor,
+    robot_body_lin_vel_w: torch.Tensor,
+    motion_body_ang_vel_w: torch.Tensor,
+    robot_body_ang_vel_w: torch.Tensor,
+    body_pos_relative_w: torch.Tensor,
+    body_quat_relative_w: torch.Tensor,
+    motion_joint_pos: torch.Tensor,
+    robot_joint_pos: torch.Tensor,
+    motion_joint_vel: torch.Tensor,
+    robot_joint_vel: torch.Tensor,
+    outputs: tuple[torch.Tensor, ...],
+) -> None:
+    """Write all row-wise MotionCommand metrics without a host carrier."""
+    if len(outputs) != 10:
+        raise ValueError("motion Torch metrics require ten row-wise outputs")
+    target = slice(None) if rows.numel() == motion_body_pos_w.shape[0] else rows
+    anchor = (slice(None), anchor_body_idx)
+    anchor_position_error = torch.linalg.vector_norm(
+        motion_body_pos_w[target][anchor] - robot_body_pos_w[target][anchor], dim=-1
+    )
+    body_position_error = torch.linalg.vector_norm(
+        body_pos_relative_w[target] - robot_body_pos_w[target], dim=-1
+    ).mean(dim=-1)
+    body_orientation_error = (
+        _quat_error_squared_torch(body_quat_relative_w[target], robot_body_quat_w[target])
+        .sqrt()
+        .mean(dim=-1)
+    )
+    values = (
+        anchor_position_error,
+        _quat_error_squared_torch(
+            motion_body_quat_w[target][anchor], robot_body_quat_w[target][anchor]
+        ).sqrt(),
+        torch.linalg.vector_norm(
+            motion_body_lin_vel_w[target][anchor] - robot_body_lin_vel_w[target][anchor], dim=-1
+        ),
+        torch.linalg.vector_norm(
+            motion_body_ang_vel_w[target][anchor] - robot_body_ang_vel_w[target][anchor], dim=-1
+        ),
+        body_position_error,
+        body_orientation_error,
+        torch.linalg.vector_norm(
+            motion_body_lin_vel_w[target] - robot_body_lin_vel_w[target], dim=-1
+        ).mean(dim=-1),
+        torch.linalg.vector_norm(
+            motion_body_ang_vel_w[target] - robot_body_ang_vel_w[target], dim=-1
+        ).mean(dim=-1),
+        torch.linalg.vector_norm(motion_joint_pos[target] - robot_joint_pos[target], dim=-1),
+        torch.linalg.vector_norm(motion_joint_vel[target] - robot_joint_vel[target], dim=-1),
+    )
+    for output, value in zip(outputs, values, strict=True):
+        output.index_copy_(0, rows, value)
+
+
+def _update_motion_relative_state_torch(
+    rows: torch.Tensor,
+    anchor_body_idx: int,
+    motion_body_pos_local_w: torch.Tensor,
+    motion_body_pos_w: torch.Tensor,
+    motion_body_quat_w: torch.Tensor,
+    robot_body_pos_w: torch.Tensor,
+    robot_body_quat_w: torch.Tensor,
+    body_pos_relative_w: torch.Tensor,
+    body_quat_relative_w: torch.Tensor,
+    motion_anchor_pos_b: torch.Tensor,
+    motion_anchor_ori_b: torch.Tensor,
+    robot_body_pos_b: torch.Tensor,
+    robot_body_ori_b: torch.Tensor,
+) -> None:
+    """Write all row-wise MotionCommand relative transforms on device."""
+    target = slice(None) if rows.numel() == robot_body_pos_w.shape[0] else rows
+    anchor = (slice(None), anchor_body_idx)
+    motion_anchor_pos = motion_body_pos_local_w[target][anchor]
+    motion_anchor_quat = motion_body_quat_w[target][anchor]
+    robot_anchor_pos = robot_body_pos_w[target][anchor]
+    robot_anchor_quat = robot_body_quat_w[target][anchor]
+
+    yaw = quat_mul(robot_anchor_quat, quat_conjugate(motion_anchor_quat))
+    yaw_w, yaw_z = yaw[..., 0], yaw[..., 3]
+    half_yaw = 0.5 * torch.atan2(
+        2.0 * (yaw_w * yaw_z + yaw[..., 1] * yaw[..., 2]),
+        1.0 - 2.0 * (yaw[..., 2].square() + yaw_z.square()),
+    )
+    delta = torch.stack(
+        (
+            torch.cos(half_yaw),
+            torch.zeros_like(half_yaw),
+            torch.zeros_like(half_yaw),
+            torch.sin(half_yaw),
+        ),
+        dim=-1,
+    )
+    delta_body = delta[:, None, :]
+    body_quat_relative_w[target] = quat_mul(delta_body, motion_body_quat_w[target])
+
+    local = motion_body_pos_local_w[target] - motion_anchor_pos[:, None, :]
+    rotated = quat_apply(delta[:, None, :], local)
+    relative = rotated + robot_anchor_pos[:, None, :]
+    relative[..., 2] = motion_body_pos_local_w[target][..., 2]
+    body_pos_relative_w[target] = relative
+
+    anchor_delta = motion_body_pos_w[target][anchor] - robot_anchor_pos
+    motion_anchor_pos_b[target] = quat_apply_inverse(robot_anchor_quat, anchor_delta)
+    motion_anchor_ori_b[target] = quat_to_rot6(
+        quat_mul(quat_conjugate(robot_anchor_quat), motion_anchor_quat)
+    )
+
+    robot_local = robot_body_pos_w[target] - robot_anchor_pos[:, None, :]
+    robot_body_pos_b[target] = quat_apply_inverse(robot_anchor_quat[:, None, :], robot_local)
+    robot_body_ori_b[target] = quat_to_rot6(
+        quat_mul(quat_conjugate(robot_anchor_quat[:, None, :]), robot_body_quat_w[target])
+    )
+
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
@@ -70,6 +207,25 @@ def _pair(value: tuple[float, float], *, name: str) -> tuple[float, float]:
     if lower > upper:
         raise ValueError(f"{name} minimum {lower} exceeds maximum {upper}")
     return lower, upper
+
+
+def _validate_motion_command_cfg(cfg: MotionCommandCfg) -> None:
+    if not isinstance(cfg.entity_name, str) or not cfg.entity_name:
+        raise ValueError("MotionCommandCfg entity_name must be non-empty")
+    if not isinstance(cfg.params, MotionCommandParamsCfg):
+        raise TypeError("MotionCommandCfg params must be MotionCommandParamsCfg")
+    if not cfg.motion_file:
+        raise ValueError("MotionCommandCfg motion_file must be configured")
+    if not cfg.anchor_body_name or cfg.anchor_body_name not in cfg.body_names:
+        raise ValueError("MotionCommandCfg anchor_body_name must occur in body_names")
+    if len(set(cfg.body_names)) != len(cfg.body_names):
+        raise ValueError("MotionCommandCfg body_names must be unique")
+    if cfg.sampling_mode not in ("start", "clip_start", "uniform", "adaptive", "mixed"):
+        raise ValueError(f"MotionCommandCfg has unsupported sampling_mode {cfg.sampling_mode!r}")
+    if not 0.0 <= cfg.params.sampling_start_ratio <= 1.0:
+        raise ValueError("MotionCommandCfg sampling_start_ratio must be within [0, 1]")
+    if not isinstance(cfg.params.truncate_on_clip_end, bool):
+        raise TypeError("MotionCommandCfg truncate_on_clip_end must be bool")
 
 
 @dataclass
@@ -119,13 +275,21 @@ class MotionCommandCfg(CommandTermCfg):
         return self.params.sampling_mode
 
 
+@dataclass(kw_only=True)
+class TensorMotionCommandCfg(MotionCommandCfg):
+    """Device-resident motion command for tensor Manager owners."""
+
+    def build(self, env: ManagerBasedRlEnv) -> MotionCommand:
+        return TensorMotionCommand(self, env)
+
+
 class MotionCommand(CommandTerm):
     """Motion reference command on UniLab's NumPy/entity runtime."""
 
     cfg: MotionCommandCfg
 
     def __init__(self, cfg: MotionCommandCfg, env: ManagerBasedRlEnv):
-        self._validate_cfg(cfg)
+        _validate_motion_command_cfg(cfg)
         super().__init__(cfg, env)
         self.robot = cast("Entity", env.scene[cfg.entity_name])
         body_ids, body_names = self.robot.find_bodies(cfg.body_names, preserve_order=True)
@@ -209,6 +373,7 @@ class MotionCommand(CommandTerm):
         self._robot_body_lin_vel_w = np.empty_like(self._body_pos_w)
         self._robot_body_ang_vel_w = np.empty_like(self._body_pos_w)
         self._bind_read_phase = False
+        self._tensor_all_rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._device)
 
         for name in (
             "error_anchor_pos",
@@ -243,7 +408,9 @@ class MotionCommand(CommandTerm):
         # measured manager step contains no Numba worker/JIT initialization.
         configure_motion_kernel_runtime()
         self._refresh_relative_state()
-        self._update_metrics(torch.from_numpy(self._all_env_ids).to(self._device))
+        self._update_metrics(
+            torch.from_numpy(np.array(self._all_env_ids, copy=True)).to(self._device)
+        )
 
     def bind_read_phase(self) -> None:
         if self._bind_read_phase:
@@ -259,149 +426,8 @@ class MotionCommand(CommandTerm):
         """Materialize the profile-owned motion loader on the cold path."""
         return MotionLoader(motion_file, body_indices=body_indices)
 
-    @staticmethod
-    def _validate_cfg(cfg: MotionCommandCfg) -> None:
-        if not isinstance(cfg.entity_name, str) or not cfg.entity_name:
-            raise ValueError("MotionCommandCfg entity_name must be non-empty")
-        if not isinstance(cfg.params, MotionCommandParamsCfg):
-            raise TypeError("MotionCommandCfg params must be MotionCommandParamsCfg")
-        if not cfg.motion_file:
-            raise ValueError("MotionCommandCfg motion_file must be configured")
-        if not cfg.anchor_body_name or cfg.anchor_body_name not in cfg.body_names:
-            raise ValueError("MotionCommandCfg anchor_body_name must occur in body_names")
-        if len(set(cfg.body_names)) != len(cfg.body_names):
-            raise ValueError("MotionCommandCfg body_names must be unique")
-        if cfg.sampling_mode not in ("start", "clip_start", "uniform", "adaptive", "mixed"):
-            raise ValueError(
-                f"MotionCommandCfg has unsupported sampling_mode {cfg.sampling_mode!r}"
-            )
-        if not 0.0 <= cfg.params.sampling_start_ratio <= 1.0:
-            raise ValueError("MotionCommandCfg sampling_start_ratio must be within [0, 1]")
-        if not isinstance(cfg.params.truncate_on_clip_end, bool):
-            raise TypeError("MotionCommandCfg truncate_on_clip_end must be bool")
-
-    @property
-    def command(self) -> np.ndarray:
-        return self._command
-
-    @property
-    def joint_pos(self) -> np.ndarray:
-        return self._motion_data.joint_pos
-
-    @property
-    def joint_vel(self) -> np.ndarray:
-        return self._motion_data.joint_vel
-
-    @property
-    def body_pos_w(self) -> np.ndarray:
-        return self._body_pos_w
-
-    @property
-    def body_quat_w(self) -> np.ndarray:
-        return self._motion_data.body_quat_w
-
-    @property
-    def body_lin_vel_w(self) -> np.ndarray:
-        return self._motion_data.body_lin_vel_w
-
-    @property
-    def body_ang_vel_w(self) -> np.ndarray:
-        return self._motion_data.body_ang_vel_w
-
-    @property
-    def anchor_pos_w(self) -> np.ndarray:
-        return self._body_pos_w[:, self.anchor_body_idx]
-
-    @property
-    def anchor_quat_w(self) -> np.ndarray:
-        return self._motion_data.body_quat_w[:, self.anchor_body_idx]
-
-    @property
-    def anchor_lin_vel_w(self) -> np.ndarray:
-        return self._motion_data.body_lin_vel_w[:, self.anchor_body_idx]
-
-    @property
-    def anchor_ang_vel_w(self) -> np.ndarray:
-        return self._motion_data.body_ang_vel_w[:, self.anchor_body_idx]
-
-    @property
-    def robot_joint_pos(self) -> np.ndarray:
-        return self.robot.data.joint_pos
-
-    @property
-    def robot_joint_vel(self) -> np.ndarray:
-        return self.robot.data.joint_vel
-
-    @property
-    def robot_body_pos_w(self) -> np.ndarray:
-        self._refresh_robot_state()
-        return self._robot_body_pos_w
-
-    @property
-    def robot_body_quat_w(self) -> np.ndarray:
-        self._refresh_robot_state()
-        return self._robot_body_quat_w
-
-    @property
-    def robot_body_lin_vel_w(self) -> np.ndarray:
-        self._refresh_robot_state()
-        return self._robot_body_lin_vel_w
-
-    @property
-    def robot_body_ang_vel_w(self) -> np.ndarray:
-        self._refresh_robot_state()
-        return self._robot_body_ang_vel_w
-
-    @property
-    def robot_anchor_pos_w(self) -> np.ndarray:
-        return self.robot_body_pos_w[:, self.anchor_body_idx]
-
-    @property
-    def robot_anchor_quat_w(self) -> np.ndarray:
-        return self.robot_body_quat_w[:, self.anchor_body_idx]
-
-    @property
-    def robot_anchor_lin_vel_w(self) -> np.ndarray:
-        return self.robot_body_lin_vel_w[:, self.anchor_body_idx]
-
-    @property
-    def robot_anchor_ang_vel_w(self) -> np.ndarray:
-        return self.robot_body_ang_vel_w[:, self.anchor_body_idx]
-
-    def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
-        if isinstance(env_ids, torch.Tensor):
-            ids = env_ids.detach().cpu().numpy().astype(np.int32, copy=False)
-        else:
-            ids = np.arange(self.num_envs, dtype=np.int32)[env_ids or slice(None)]
-        # Row-wise error metrics are consumed only here (CommandTerm.reset logs
-        # per-episode means from these rows, then zeroes them). The per-step
-        # compute path skips the full-batch metrics kernel (issue #1355), so
-        # refresh exactly the rows being reset from the current post-step
-        # buffers — the same inputs the former per-step refresh used, keeping
-        # the consumed values bit-identical.
-        self._update_error_metrics(ids)
-        lower, upper = self._joint_default_position_range
-        self.joint_default_bias[ids] = self._env.rng.uniform(
-            lower, upper, size=(len(ids), self.motion.num_joints)
-        )
-        return super().reset(
-            env_ids if isinstance(env_ids, torch.Tensor) else torch.from_numpy(ids)
-        )
-
     def _refresh_motion(self, env_ids: np.ndarray | None = None) -> None:
-        """Refresh motion-reference buffers from the current frame indices.
-
-        With env_ids=None all rows are refreshed in place; with env_ids only
-        those rows are gathered and scattered (partial-reset path). Rows outside
-        env_ids keep the values produced by the last per-step refresh, which are
-        still valid because untouched envs did not advance or resample frames.
-
-        Subclass contract (issue #1355): on the reset path the row-scoped
-        refresh may be skipped when `_resample_command` already ingested the
-        same rows through `_ingest_motion_rows`. A subclass that overrides this
-        method to refresh additional buffers must override
-        `_ingest_motion_rows` with the same additions (see BoxMotionCommand).
-        """
+        """Refresh motion-reference buffers from the current frame indices."""
         if env_ids is None:
             self.motion.get_motion_at_frame(self.time_steps, out=self._motion_data)
             np.add(
@@ -416,12 +442,7 @@ class MotionCommand(CommandTerm):
         self._ingest_motion_rows(env_ids, self.motion.get_motion_at_frame(self.time_steps[env_ids]))
 
     def _ingest_motion_rows(self, env_ids: np.ndarray, data: MotionData) -> None:
-        """Scatter one gathered motion frame set into the reference buffers.
-
-        Shared by the row-scoped `_refresh_motion` and by `_resample_command`,
-        so the reset path gathers each reset row's motion frame exactly once
-        (issue #1355).
-        """
+        """Scatter one gathered motion frame set into the reference buffers."""
         for motion_field in dataclasses.fields(data):
             value = getattr(data, motion_field.name)
             target = getattr(self._motion_data, motion_field.name)
@@ -484,6 +505,114 @@ class MotionCommand(CommandTerm):
             self.robot_body_ori_b,
         )
 
+    @property
+    def robot_joint_pos(self) -> np.ndarray:
+        return self.robot.data.joint_pos
+
+    @property
+    def robot_joint_vel(self) -> np.ndarray:
+        return self.robot.data.joint_vel
+
+    @property
+    def robot_body_pos_w(self) -> np.ndarray:
+        self._refresh_robot_state()
+        return self._robot_body_pos_w
+
+    @property
+    def robot_body_quat_w(self) -> np.ndarray:
+        self._refresh_robot_state()
+        return self._robot_body_quat_w
+
+    @property
+    def robot_body_lin_vel_w(self) -> np.ndarray:
+        self._refresh_robot_state()
+        return self._robot_body_lin_vel_w
+
+    @property
+    def robot_body_ang_vel_w(self) -> np.ndarray:
+        self._refresh_robot_state()
+        return self._robot_body_ang_vel_w
+
+    @property
+    def robot_anchor_pos_w(self) -> np.ndarray:
+        return self.robot_body_pos_w[:, self.anchor_body_idx]
+
+    @property
+    def robot_anchor_quat_w(self) -> np.ndarray:
+        return self.robot_body_quat_w[:, self.anchor_body_idx]
+
+    @property
+    def robot_anchor_lin_vel_w(self) -> np.ndarray:
+        return self.robot_body_lin_vel_w[:, self.anchor_body_idx]
+
+    @property
+    def robot_anchor_ang_vel_w(self) -> np.ndarray:
+        return self.robot_body_ang_vel_w[:, self.anchor_body_idx]
+
+    @property
+    def command(self) -> np.ndarray:
+        return self._command
+
+    @property
+    def joint_pos(self) -> np.ndarray:
+        return self._motion_data.joint_pos
+
+    @property
+    def joint_vel(self) -> np.ndarray:
+        return self._motion_data.joint_vel
+
+    @property
+    def body_pos_w(self) -> np.ndarray:
+        return self._body_pos_w
+
+    @property
+    def body_quat_w(self) -> np.ndarray:
+        return self._motion_data.body_quat_w
+
+    @property
+    def body_lin_vel_w(self) -> np.ndarray:
+        return self._motion_data.body_lin_vel_w
+
+    @property
+    def body_ang_vel_w(self) -> np.ndarray:
+        return self._motion_data.body_ang_vel_w
+
+    @property
+    def anchor_pos_w(self) -> np.ndarray:
+        return self._body_pos_w[:, self.anchor_body_idx]
+
+    @property
+    def anchor_quat_w(self) -> np.ndarray:
+        return self._motion_data.body_quat_w[:, self.anchor_body_idx]
+
+    @property
+    def anchor_lin_vel_w(self) -> np.ndarray:
+        return self._motion_data.body_lin_vel_w[:, self.anchor_body_idx]
+
+    @property
+    def anchor_ang_vel_w(self) -> np.ndarray:
+        return self._motion_data.body_ang_vel_w[:, self.anchor_body_idx]
+
+    def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+        if isinstance(env_ids, torch.Tensor):
+            ids = env_ids.detach().cpu().numpy().astype(np.int32, copy=False)
+        else:
+            ids = np.arange(self.num_envs, dtype=np.int32)[env_ids or slice(None)]
+        # Row-wise error metrics are consumed only here (CommandTerm.reset logs
+        # per-episode means from these rows, then zeroes them). The per-step
+        # compute path skips the full-batch metrics kernel (issue #1355), so
+        # refresh exactly the rows being reset from the current post-step
+        # buffers — the same inputs the former per-step refresh used, keeping
+        # the consumed values bit-identical.
+        self._update_error_metrics(ids)
+        lower, upper = self._joint_default_position_range
+        self.joint_default_bias[ids] = self._env.rng.uniform(
+            lower, upper, size=(len(ids), self.motion.num_joints)
+        )
+        return super().reset(
+            env_ids if isinstance(env_ids, torch.Tensor) else torch.from_numpy(ids)
+        )
+
     def _update_metrics(self, env_ids: torch.Tensor | None = None) -> None:
         # The row-wise error metrics are consumed only by `reset()` (episode
         # log extras), which refreshes exactly the rows it reads. The per-step
@@ -504,13 +633,17 @@ class MotionCommand(CommandTerm):
         self._numpy_metric("sampling_top1_prob").fill(self.sampler.sampling_top1_prob)
         self._numpy_metric("sampling_top1_bin").fill(self.sampler.sampling_top1_bin)
 
-    def _update_error_metrics(self, rows: np.ndarray) -> None:
-        """Recompute the row-wise error metrics for the given rows.
+    def _numpy_metric(self, name: str) -> np.ndarray:
+        value = self.metrics[name]
+        if not isinstance(value, np.ndarray):
+            raise TypeError(
+                f"MotionCommand metric '{name}' must remain np.ndarray until its "
+                "Numba kernel migrates to Torch."
+            )
+        return value
 
-        All row-wise metrics are written by one Numba kernel.  Passing an
-        explicit all-row index buffer for normal steps lets the same kernel
-        serve partial-reset rows without retaining a separate full-batch formula.
-        """
+    def _update_error_metrics(self, rows: np.ndarray) -> None:
+        """Recompute the row-wise error metrics for the given rows."""
         update_motion_metrics_kernel(
             rows,
             self.anchor_body_idx,
@@ -540,27 +673,8 @@ class MotionCommand(CommandTerm):
             self._numpy_metric("error_joint_vel"),
         )
 
-    def _numpy_metric(self, name: str) -> np.ndarray:
-        value = self.metrics[name]
-        if not isinstance(value, np.ndarray):
-            raise TypeError(
-                f"MotionCommand metric '{name}' must remain np.ndarray until its "
-                "Numba kernel migrates to Torch."
-            )
-        return value
-
     def _resample_command(self, env_ids: torch.Tensor) -> None:
-        """Resample motion frames and stage the corresponding state writes.
-
-        The base implementation gathers the resampled frames once, ingests them
-        into the motion-reference buffers via `_ingest_motion_rows`, and exposes
-        the gather as `self._resample_motion` (issue #1355). Subclass contract:
-        call ``super()._resample_command(env_ids)`` first and reuse
-        `self._resample_motion` for additional writes instead of re-gathering;
-        a subclass that does not call super() leaves `_resample_ingested_ids`
-        unset, and the reset-path `_update_command` falls back to a fresh
-        `_refresh_motion(env_ids)` gather.
-        """
+        """Resample motion frames and stage the corresponding state writes."""
         ids = env_ids.detach().cpu().numpy()
         frames = self.sampler.sample_frames(ids)
         motion = self.motion.get_motion_at_frame(frames)
@@ -590,10 +704,6 @@ class MotionCommand(CommandTerm):
         self.robot.write_joint_state_to_sim(joint_pos, motion.joint_vel, env_ids=ids)
         root_state = np.concatenate((root_pos, root_quat, root_lin_vel, root_ang_vel), axis=-1)
         self.robot.write_root_state_to_sim(root_state, env_ids=ids)
-        # Keep the motion-reference buffers in sync with the resampled frames so
-        # the reset-path `_update_command` does not gather the same rows again
-        # (issue #1355). Subclasses reuse `self._resample_motion` for their own
-        # reset writes instead of re-gathering the same frames.
         self._ingest_motion_rows(ids, motion)
         self._resample_ingested_ids = ids
         self._resample_motion = motion
@@ -627,10 +737,401 @@ class MotionCommand(CommandTerm):
         self._refresh_robot_state(force=True, env_ids=env_ids)
         self._refresh_relative_state(env_ids)
 
+
+class TensorMotionCommand(MotionCommand):
+    """Motion command whose public carrier and selected reset stay on device."""
+
+    cfg: TensorMotionCommandCfg  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    def __init__(self, cfg: TensorMotionCommandCfg, env: ManagerBasedRlEnv):
+        super().__init__(cfg, env)
+
+    def _defer_read_phase_binding(self) -> None:
+        """Allocate Torch buffers only; robot views bind with the read phase."""
+        device = self._device
+        num_bodies = len(self.cfg.body_names)
+        num_joints = self.motion.num_joints
+        self._motion_data = MotionData(
+            joint_pos=cast("np.ndarray", torch.empty((self.num_envs, num_joints), device=device)),
+            joint_vel=cast("np.ndarray", torch.empty((self.num_envs, num_joints), device=device)),
+            body_pos_w=cast(
+                "np.ndarray", torch.empty((self.num_envs, num_bodies, 3), device=device)
+            ),
+            body_quat_w=cast(
+                "np.ndarray", torch.empty((self.num_envs, num_bodies, 4), device=device)
+            ),
+            body_lin_vel_w=cast(
+                "np.ndarray", torch.empty((self.num_envs, num_bodies, 3), device=device)
+            ),
+            body_ang_vel_w=cast(
+                "np.ndarray", torch.empty((self.num_envs, num_bodies, 3), device=device)
+            ),
+        )
+        self._command = torch.empty((self.num_envs, num_joints * 2), device=device)
+        self._body_pos_w = torch.empty((self.num_envs, num_bodies, 3), device=device)
+        self.body_pos_relative_w = torch.empty_like(self._body_pos_w)
+        self.body_quat_relative_w = torch.empty((self.num_envs, num_bodies, 4), device=device)
+        self.motion_anchor_pos_b = torch.empty((self.num_envs, 3), device=device)
+        self.motion_anchor_ori_b = torch.empty((self.num_envs, 6), device=device)
+        self.robot_body_pos_b = torch.empty_like(self._body_pos_w)
+        self.robot_body_ori_b = torch.empty((self.num_envs, num_bodies, 6), device=device)
+        self.joint_default_bias = torch.zeros(
+            (self.num_envs, num_joints), dtype=torch.float32, device=device
+        )
+        self._robot_body_pos_w = torch.empty_like(self._body_pos_w)
+        self._robot_body_quat_w = torch.empty((self.num_envs, num_bodies, 4), device=device)
+        self._robot_body_lin_vel_w = torch.empty_like(self._body_pos_w)
+        self._robot_body_ang_vel_w = torch.empty_like(self._body_pos_w)
+        self._robot_joint_pos = torch.empty(
+            (self.num_envs, num_joints), dtype=torch.float32, device=device
+        )
+        self._robot_joint_vel = torch.empty(
+            (self.num_envs, num_joints), dtype=torch.float32, device=device
+        )
+        self._env_origins = torch.as_tensor(
+            np.array(self._env.scene.env_origins, dtype=np.float32, copy=True), device=device
+        )
+        self._soft_joint_limits = torch.as_tensor(
+            np.array(self.robot.data.soft_joint_pos_limits, dtype=np.float32, copy=True),
+            device=device,
+        )
+        self._pose_range_torch = torch.as_tensor(
+            np.array(self._pose_range, copy=True), device=device
+        )
+        self._velocity_range_torch = torch.as_tensor(
+            np.array(self._velocity_range, copy=True), device=device
+        )
+        self._joint_position_range_torch = torch.as_tensor(
+            self._joint_position_range, device=device
+        )
+        for name in self.metrics:
+            self.metrics[name] = torch.zeros(self.num_envs, dtype=torch.float32, device=device)
+
+    def bind_read_phase(self) -> None:
+        if self._bind_read_phase:
+            return
+        self._bind_read_phase = True
+        self._refresh_motion()
+        self._refresh_robot_state(force=True)
+        self._refresh_relative_state()
+        self._update_metrics(self._tensor_all_rows)
+
     @property
     def tensor_carrier(self) -> bool:
-        """Whether this command's public state buffers are Torch tensors."""
-        return False
+        return True
+
+    @property
+    def tensor_body_names(self) -> tuple[str, ...]:
+        return tuple(self.cfg.body_names)
+
+    @property
+    def device_robot_joint_pos(self) -> torch.Tensor:
+        read_plan = self._env.scene._tensor_read_plan
+        if read_plan is not None and read_plan.ready:
+            self._robot_joint_pos = read_plan.joint_tensor_view(self.robot).joint_pos
+        return self._robot_joint_pos
+
+    @property
+    def device_robot_joint_vel(self) -> torch.Tensor:
+        read_plan = self._env.scene._tensor_read_plan
+        if read_plan is not None and read_plan.ready:
+            self._robot_joint_vel = read_plan.joint_tensor_view(self.robot).joint_vel
+        return self._robot_joint_vel
+
+    def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+        rows = (
+            env_ids.to(dtype=torch.int64)
+            if isinstance(env_ids, torch.Tensor)
+            else self._tensor_all_rows
+            if env_ids is None
+            else self._tensor_all_rows[env_ids]
+        )
+        self._update_torch_error_metrics(rows)
+        if self._env.torch_rng is None:
+            raise NotImplementedError(
+                "TensorMotionCommand reset requires the Manager-owned CUDA Torch generator"
+            )
+        lower, upper = self._joint_default_position_range
+        self.joint_default_bias[rows] = self._env.torch_rng.uniform(
+            lower,
+            upper,
+            (rows.numel(), self.motion.num_joints),
+            dtype=torch.float32,
+        )
+        return super().reset(rows)
+
+    def _refresh_motion(self, env_ids: np.ndarray | None = None) -> None:
+        del env_ids
+        self._refresh_motion_torch()
+
+    def _refresh_relative_state(self, env_ids: np.ndarray | None = None) -> None:
+        del env_ids
+        self._refresh_relative_state_torch()
+
+    def _refresh_robot_state(
+        self, *, force: bool = False, env_ids: np.ndarray | None = None
+    ) -> None:
+        del env_ids
+        self._refresh_robot_state_torch(force=force, rows=None)
+
+    def _update_metrics(self, env_ids: torch.Tensor | None = None) -> None:
+        if env_ids is not None:
+            self._update_torch_error_metrics(env_ids)
+        self._update_torch_sampling_metrics()
+
+    @property
+    def uses_tensor_reset_rows(self) -> bool:
+        return True
+
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
+        host_rows = env_ids.detach().cpu().numpy()
+        frames = self.sampler.sample_frames(host_rows)
+        motion = self.motion.get_motion_at_frame(frames)
+        rows = env_ids.to(dtype=torch.int64)
+        if self._env.torch_rng is None:
+            raise NotImplementedError(
+                "TensorMotionCommand reset sampling requires the Manager CUDA Torch generator"
+            )
+        pose = self._env.torch_rng.uniform(
+            self._pose_range_torch[:, 0],
+            self._pose_range_torch[:, 1],
+            (rows.numel(), 6),
+            dtype=torch.float32,
+        )
+        velocity = self._env.torch_rng.uniform(
+            self._velocity_range_torch[:, 0],
+            self._velocity_range_torch[:, 1],
+            (rows.numel(), 6),
+            dtype=torch.float32,
+        )
+        joint_pos = torch.as_tensor(np.ascontiguousarray(motion.joint_pos), device=self._device)
+        joint_pos += self._env.torch_rng.uniform(
+            self._joint_position_range_torch[0],
+            self._joint_position_range_torch[1],
+            joint_pos.shape,
+            dtype=torch.float32,
+        )
+        joint_pos.clamp_(self._soft_joint_limits[:, 0], self._soft_joint_limits[:, 1])
+        motion_joint_vel = torch.as_tensor(
+            np.ascontiguousarray(motion.joint_vel), device=self._device
+        )
+        self.robot.write_joint_state_tensor_to_sim(joint_pos, motion_joint_vel, env_ids=rows)
+
+        motion_body_pos = torch.as_tensor(
+            np.ascontiguousarray(motion.body_pos_w), device=self._device
+        )
+        motion_body_quat = torch.as_tensor(
+            np.ascontiguousarray(motion.body_quat_w), device=self._device
+        )
+        motion_body_lin_vel = torch.as_tensor(
+            np.ascontiguousarray(motion.body_lin_vel_w), device=self._device
+        )
+        motion_body_ang_vel = torch.as_tensor(
+            np.ascontiguousarray(motion.body_ang_vel_w), device=self._device
+        )
+        root_pos = motion_body_pos[:, 0] + self._env_origins.index_select(0, rows)
+        root_pos += pose[:, :3]
+        root_quat = quat_mul(
+            quat_from_euler_xyz(pose[:, 3], pose[:, 4], pose[:, 5]),
+            motion_body_quat[:, 0],
+        )
+        root_state = torch.cat(
+            (
+                root_pos,
+                root_quat,
+                motion_body_lin_vel[:, 0] + velocity[:, :3],
+                motion_body_ang_vel[:, 0] + velocity[:, 3:],
+            ),
+            dim=-1,
+        )
+        self.robot.write_root_state_tensor_to_sim(root_state, env_ids=rows)
+        self._ingest_motion_rows_torch(rows, motion)
+        self._resample_ingested_ids = host_rows
+        self._resample_motion = motion
+
+    def _update_command(self, env_ids: torch.Tensor | None) -> None:
+        self._post_compute_env_ids = cast(
+            "np.ndarray | None",
+            env_ids.detach().cpu().numpy() if isinstance(env_ids, torch.Tensor) else env_ids,
+        )
+        if env_ids is not None:
+            ingested = self._resample_ingested_ids
+            self._resample_ingested_ids = None
+            host_rows = env_ids.detach().cpu().numpy()
+            if ingested is None or not np.array_equal(ingested, host_rows):
+                self._refresh_motion_torch(env_ids)
+            return
+        self._resample_ingested_ids = None
+        terminated = self._env.termination_manager.terminated
+        if isinstance(terminated, torch.Tensor):
+            terminated = terminated.detach().cpu().numpy()
+        self.sampler.update_failure_stats(terminated)
+        active_ids = np.flatnonzero(~self._env.reset_buf).astype(np.int32, copy=False)
+        wrap_ids = self.sampler.step(active_ids)
+        if len(wrap_ids) and not self.cfg.params.truncate_on_clip_end:
+            self._resample_command(torch.as_tensor(wrap_ids, device=self._device))
+        self._refresh_motion_torch()
+
+    def post_compute(self) -> None:
+        rows = self._post_compute_env_ids
+        self._refresh_robot_state_torch(
+            force=True,
+            rows=None if rows is None else torch.as_tensor(rows, device=self._device),
+        )
+        self._refresh_relative_state_torch(
+            None if rows is None else torch.as_tensor(rows, device=self._device)
+        )
+
+    @staticmethod
+    def _validate_cfg(cfg: MotionCommandCfg) -> None:
+        _validate_motion_command_cfg(cfg)
+
+    def _refresh_motion_torch(self, rows: torch.Tensor | None = None) -> None:
+        """Gather motion rows and publish the device-resident command carrier."""
+        host_rows = None if rows is None else rows.detach().cpu().numpy()
+        frames = self.time_steps if host_rows is None else self.time_steps[host_rows]
+        data = self.motion.get_motion_at_frame(frames)
+        self._ingest_motion_rows_torch(self._tensor_all_rows if rows is None else rows, data)
+
+    def _refresh_robot_state_torch(
+        self, *, force: bool = False, rows: torch.Tensor | None = None
+    ) -> None:
+        step = self._env.common_step_counter
+        if not force and self._robot_cache_step == step:
+            return
+        read_plan = self._env.scene._tensor_read_plan
+        if read_plan is None or not read_plan.ready:
+            if bool(getattr(self._env, "_suppress_hot_state_refresh", False)):
+                self._seed_robot_state_torch_from_defaults()
+                return
+            raise RuntimeError("TensorMotionCommand requires a refreshed scene tensor read phase")
+        view = read_plan.body_tensor_view(self.robot, self.cfg.body_names)
+        target = slice(None) if rows is None or rows.numel() == self.num_envs else rows
+        self._robot_body_pos_w[target] = view.pos_w[target]
+        self._robot_body_quat_w[target] = view.quat_w[target]
+        self._robot_body_lin_vel_w[target] = view.lin_vel_w[target]
+        self._robot_body_ang_vel_w[target] = view.ang_vel_w[target]
+        joint_view = read_plan.joint_tensor_view(self.robot)
+        self._robot_joint_pos = joint_view.joint_pos
+        self._robot_joint_vel = joint_view.joint_vel
+        self._robot_cache_step = step
+
+    def _seed_robot_state_torch_from_defaults(self) -> None:
+        """Cold proxy path: seed immutable defaults before CUDA view binding."""
+        default_root = self.robot.data.default_root_state
+        if default_root is None:
+            self._robot_body_pos_w.zero_()
+            self._robot_body_quat_w.zero_()
+            self._robot_body_quat_w[..., 0] = 1.0
+        else:
+            root = torch.as_tensor(np.array(default_root, copy=True), device=self._device)
+            self._robot_body_pos_w.copy_(root[:, None, 0:3])
+            self._robot_body_quat_w.copy_(root[:, None, 3:7])
+        self._robot_body_lin_vel_w.zero_()
+        self._robot_body_ang_vel_w.zero_()
+        default_joint_pos = torch.as_tensor(
+            np.array(self.robot.data.default_joint_pos, dtype=np.float32, copy=True),
+            device=self._device,
+        )
+        self._robot_joint_pos.copy_(default_joint_pos.expand(self.num_envs, -1))
+        self._robot_joint_vel.zero_()
+        self._robot_cache_step = self._env.common_step_counter
+
+    def _ingest_motion_rows_torch(self, rows: torch.Tensor, data: MotionData) -> None:
+        """Scatter one host motion gather into device-resident command buffers."""
+        for motion_field in dataclasses.fields(data):
+            source = getattr(data, motion_field.name)
+            target = getattr(self._motion_data, motion_field.name)
+            target.index_copy_(
+                0,
+                rows,
+                torch.as_tensor(
+                    np.ascontiguousarray(source), dtype=torch.float32, device=self._device
+                ),
+            )
+        body_pos = torch.as_tensor(np.ascontiguousarray(data.body_pos_w))
+        origins = (
+            self._env_origins
+            if rows.numel() == self.num_envs
+            else self._env_origins.index_select(0, rows)
+        )
+        self._body_pos_w.index_copy_(0, rows, body_pos + origins[:, None, :])
+        width = self.motion.num_joints
+        self._command[rows, :width] = torch.as_tensor(
+            np.ascontiguousarray(data.joint_pos), device=self._device
+        )
+        self._command[rows, width:] = torch.as_tensor(
+            np.ascontiguousarray(data.joint_vel), device=self._device
+        )
+
+    def _refresh_relative_state_torch(self, rows: torch.Tensor | None = None) -> None:
+        row_selector = self._tensor_all_rows if rows is None else rows
+        _update_motion_relative_state_torch(
+            row_selector,
+            self.anchor_body_idx,
+            cast("torch.Tensor", self._motion_data.body_pos_w),
+            self._body_pos_w,
+            cast("torch.Tensor", self._motion_data.body_quat_w),
+            self._robot_body_pos_w,
+            self._robot_body_quat_w,
+            self.body_pos_relative_w,
+            self.body_quat_relative_w,
+            self.motion_anchor_pos_b,
+            self.motion_anchor_ori_b,
+            self.robot_body_pos_b,
+            self.robot_body_ori_b,
+        )
+
+    def _torch_metrics(self) -> tuple[torch.Tensor, ...]:
+        names = (
+            "error_anchor_pos",
+            "error_anchor_rot",
+            "error_anchor_lin_vel",
+            "error_anchor_ang_vel",
+            "error_body_pos",
+            "error_body_rot",
+            "error_body_lin_vel",
+            "error_body_ang_vel",
+            "error_joint_pos",
+            "error_joint_vel",
+        )
+        values = tuple(self.metrics[name] for name in names)
+        if any(not isinstance(value, torch.Tensor) for value in values):
+            raise TypeError("TensorMotionCommand row metrics must remain Torch tensors")
+        return cast("tuple[torch.Tensor, ...]", values)
+
+    def _update_torch_error_metrics(self, rows: torch.Tensor) -> None:
+        _update_motion_metrics_torch(
+            rows.to(dtype=torch.int64),
+            self.anchor_body_idx,
+            self._body_pos_w,
+            self._robot_body_pos_w,
+            cast("torch.Tensor", self._motion_data.body_quat_w),
+            self._robot_body_quat_w,
+            cast("torch.Tensor", self._motion_data.body_lin_vel_w),
+            self._robot_body_lin_vel_w,
+            cast("torch.Tensor", self._motion_data.body_ang_vel_w),
+            self._robot_body_ang_vel_w,
+            self.body_pos_relative_w,
+            self.body_quat_relative_w,
+            cast("torch.Tensor", self._motion_data.joint_pos),
+            self._robot_joint_pos,
+            cast("torch.Tensor", self._motion_data.joint_vel),
+            self._robot_joint_vel,
+            self._torch_metrics(),
+        )
+
+    def _update_torch_sampling_metrics(self) -> None:
+        values = (
+            ("sampling_entropy", self.sampler.sampling_entropy),
+            ("sampling_top1_prob", self.sampler.sampling_top1_prob),
+            ("sampling_top1_bin", self.sampler.sampling_top1_bin),
+        )
+        for name, value in values:
+            metric = self.metrics[name]
+            if not isinstance(metric, torch.Tensor):
+                raise TypeError("TensorMotionCommand sampler metrics must remain Torch tensors")
+            metric.fill_(float(value))
 
 
 @dataclass(kw_only=True)
