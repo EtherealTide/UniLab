@@ -977,6 +977,8 @@ class ManagerBasedRlEnv(TorchEnv):
     ) -> torch.Tensor:
         """Publish one completed Manager result on the public Torch carrier."""
         if isinstance(values, torch.Tensor):
+            if values.device == self.device and values.dtype == dtype and values.is_contiguous():
+                return values
             return values.to(device=self.device, dtype=dtype, copy=True)
         host = np.array(values, order="C", copy=True)
         return torch.from_numpy(host).to(device=self.device, dtype=dtype, copy=True)
