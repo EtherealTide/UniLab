@@ -1287,10 +1287,22 @@ class ManagerBasedRlEnv(TorchEnv):
                 # zero-control tensor step materializes the post-reset packet
                 # before Manager terms read those stable views.
                 if use_packed_reset:
+                    selected_read_started = time.perf_counter()
                     read_plan.refresh_selected()
+                    reset_timing["reset_done_selected_read_ms"] = (
+                        time.perf_counter() - selected_read_started
+                    ) * 1000.0
                 else:
+                    read_drain_started = time.perf_counter()
                     self._warm_external_cuda_ipc_views()
+                    reset_timing["reset_done_read_drain_ms"] = (
+                        time.perf_counter() - read_drain_started
+                    ) * 1000.0
+                    selected_read_started = time.perf_counter()
                     read_plan.refresh()
+                    reset_timing["reset_done_selected_read_ms"] = (
+                        time.perf_counter() - selected_read_started
+                    ) * 1000.0
             command_refresh_started = time.perf_counter()
             self.command_manager.compute(dt=0.0, env_ids=rows)
             reset_timing["reset_done_command_refresh_ms"] = (
