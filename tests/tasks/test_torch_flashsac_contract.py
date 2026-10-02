@@ -45,10 +45,10 @@ def test_torch_owner_fingerprint_accepts_both_canonical_backends() -> None:
     mujoco = _materialize_task("g1_motion_tracking/mujoco")
     mjwarp = _materialize_task("g1_motion_tracking/mjwarp")
     assert module._torch_g1_flashsac_owner_identity(mujoco) == (
-        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V5
+        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6
     )
     assert module._torch_g1_flashsac_owner_identity(mjwarp) == (
-        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V4
+        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V7
     )
 
 
@@ -64,7 +64,7 @@ def test_torch_owner_fingerprint_accepts_mapped_isaacsim_namespaced_owner() -> N
     assert cfg.scene is not None
     assert cfg.scene.entity_assets
     assert module._torch_g1_flashsac_owner_identity(cfg) == (
-        module._TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V2
+        module._TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V3
     )
 
 
@@ -85,7 +85,7 @@ def test_reusable_tensor_runtime_accepts_second_manager_based_task() -> None:
     "mutate",
     [
         lambda cfg: setattr(cfg.observations["actor"].terms["base_lin_vel"].noise, "n_min", -0.2),
-        lambda cfg: cfg.rewards["motion_global_root_pos"].params.__setitem__("std", 0.4),
+        lambda cfg: setattr(cfg.rewards["motion_reward_pack"], "root_pos_std", 0.4),
         lambda cfg: setattr(cfg.actions["joint_pos"], "clip", {"joint": (0.0, 1.0)}),
         lambda cfg: setattr(cfg.commands["motion"].params, "adaptive_alpha", 0.1),
     ],
@@ -100,6 +100,23 @@ def test_torch_owner_fingerprint_fails_closed(mutate, monkeypatch: pytest.Monkey
     monkeypatch.setattr(module, "create_backend", fail)
     with pytest.raises(ValueError, match="canonical owner contract"):
         module._make_torch_g1_motion_tracking_flashsac_env(cfg, num_envs=2, backend_type="mujoco")
+
+
+def test_fused_motion_reward_pack_owner_identity_is_canonical() -> None:
+    """The fused Manager reward is the canonical FlashSAC semantic owner."""
+    for backend in ("mujoco", "mjwarp", "genesis"):
+        cfg = _materialize_task(f"g1_motion_tracking/{backend}")
+        identity = module._torch_g1_flashsac_owner_identity(cfg)
+        expected = (
+            module._TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V3
+            if backend == "isaacsim"
+            else {
+                "mujoco": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6,
+                "genesis": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6,
+                "mjwarp": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V7,
+            }[backend]
+        )
+        assert identity == expected
 
 
 def test_torch_terminations_do_not_inject_reward_contact_policy() -> None:

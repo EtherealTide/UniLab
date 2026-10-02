@@ -11,7 +11,13 @@ import numpy as np
 import torch
 
 from unilab.envs.mdp.actions import JointPositionAction, JointPositionActionCfg
-from unilab.managers import CommandTerm, CommandTermCfg, ManagerTermBase, ManagerTermBaseCfg
+from unilab.managers import (
+    CommandTerm,
+    CommandTermCfg,
+    ManagerTermBase,
+    ManagerTermBaseCfg,
+    RewardTermCfg,
+)
 from unilab.managers.scene_entity_config import SceneEntityCfg
 from unilab.utils.rotation import (
     np_quat_apply_inverse,
@@ -1139,8 +1145,10 @@ class TensorMotionCommand(MotionCommand):
         )
         joint_start, joint_end = offsets["joint_pos"]
         vel_start, vel_end = offsets["joint_vel"]
-        self._command[rows, : joint_end - joint_start] = packet[:, joint_start:joint_end]
-        self._command[rows, joint_end - joint_start :].copy_(packet[:, vel_start:vel_end])
+        command_packet = torch.cat(
+            (packet[:, joint_start:joint_end], packet[:, vel_start:vel_end]), dim=1
+        )
+        self._command.index_copy_(0, rows, command_packet)
 
     def _refresh_relative_state_torch(self, rows: torch.Tensor | None = None) -> None:
         row_selector = self._tensor_all_rows if rows is None else rows
@@ -1749,6 +1757,115 @@ class undesired_body_contacts(_BodyTerm):
         return np.sum(command.robot_body_pos_w[:, self._body_ids, 2] < threshold, axis=-1)
 
 
+@dataclass(kw_only=True)
+class MotionRewardPackCfg(RewardTermCfg):
+    """Fused motion reward pack owned by the tensor motion command."""
+
+    command_name: str = "motion"
+    root_pos_weight: float = 1.0
+    root_pos_std: float = 0.3
+    root_ori_weight: float = 0.5
+    root_ori_std: float = 0.4
+    body_pos_weight: float = 2.0
+    body_pos_std: float = 0.3
+    body_ori_weight: float = 1.0
+    body_ori_std: float = 0.4
+    body_lin_vel_weight: float = 1.0
+    body_lin_vel_std: float = 1.0
+    body_ang_vel_weight: float = 1.0
+    body_ang_vel_std: float = 3.14
+
+
+class MotionRewardPack(ManagerTermBase):
+    """Evaluate the canonical motion reward family in one carrier read."""
+
+    cfg: MotionRewardPackCfg
+
+    def __init__(self, cfg: MotionRewardPackCfg, env: ManagerBasedRlEnv):
+        super().__init__(env)
+        self.cfg = cfg
+        self._device = torch.device(env.device)
+        self._command = _command(env, cfg.command_name)
+        if not bool(getattr(self._command, "tensor_carrier", False)):
+            raise TypeError("MotionRewardPack requires TensorMotionCommand")
+        self._body_count = len(self._command.cfg.body_names)
+        self._output = torch.empty(self.num_envs, dtype=torch.float32, device=self._device)
+
+    def __call__(self, env: ManagerBasedRlEnv) -> torch.Tensor:
+        del env
+        command = self._command
+        c = self.cfg
+        command_tensors = {
+            name: cast(torch.Tensor, getattr(command, name))
+            for name in (
+                "anchor_pos_w",
+                "robot_anchor_pos_w",
+                "anchor_quat_w",
+                "robot_anchor_quat_w",
+                "body_pos_relative_w",
+                "robot_body_pos_w",
+                "body_quat_relative_w",
+                "robot_body_quat_w",
+                "body_lin_vel_w",
+                "robot_body_lin_vel_w",
+                "body_ang_vel_w",
+                "robot_body_ang_vel_w",
+            )
+        }
+        anchor_delta = command_tensors["anchor_pos_w"] - command_tensors["robot_anchor_pos_w"]
+        root_pos = torch.exp(-(anchor_delta * anchor_delta).sum(dim=-1) / (c.root_pos_std**2))
+
+        rel = quat_mul(
+            quat_conjugate(command_tensors["anchor_quat_w"]),
+            command_tensors["robot_anchor_quat_w"],
+        )
+        xyz = torch.linalg.vector_norm(rel[..., 1:4], dim=-1)
+        angle = 2.0 * torch.atan2(xyz, rel[..., 0].abs().clamp(max=1.0))
+        root_ori = torch.exp(-(angle * angle) / (c.root_ori_std**2))
+
+        body_pos_error = (
+            (command_tensors["body_pos_relative_w"] - command_tensors["robot_body_pos_w"])
+            .square()
+            .sum(dim=(-1, -2))
+        )
+        body_pos = torch.exp(-body_pos_error / (self._body_count * c.body_pos_std**2))
+
+        body_rel = quat_mul(
+            quat_conjugate(command_tensors["body_quat_relative_w"]),
+            command_tensors["robot_body_quat_w"],
+        )
+        body_xyz = torch.linalg.vector_norm(body_rel[..., 1:4], dim=-1)
+        body_angle = 2.0 * torch.atan2(body_xyz, body_rel[..., 0].abs().clamp(max=1.0))
+        body_ori = torch.exp(
+            -(body_angle * body_angle).sum(dim=-1) / (self._body_count * c.body_ori_std**2)
+        )
+
+        lin_error = (
+            (command_tensors["body_lin_vel_w"] - command_tensors["robot_body_lin_vel_w"])
+            .square()
+            .sum(dim=(-1, -2))
+        )
+        body_lin = torch.exp(-lin_error / (self._body_count * c.body_lin_vel_std**2))
+        ang_error = (
+            (command_tensors["body_ang_vel_w"] - command_tensors["robot_body_ang_vel_w"])
+            .square()
+            .sum(dim=(-1, -2))
+        )
+        body_ang = torch.exp(-ang_error / (self._body_count * c.body_ang_vel_std**2))
+
+        torch.mul(
+            root_pos,
+            c.root_pos_weight,
+            out=self._output,
+        )
+        self._output.add_(root_ori * c.root_ori_weight)
+        self._output.add_(body_pos * c.body_pos_weight)
+        self._output.add_(body_ori * c.body_ori_weight)
+        self._output.add_(body_lin * c.body_lin_vel_weight)
+        self._output.add_(body_ang * c.body_ang_vel_weight)
+        return self._output
+
+
 class bad_anchor_pos_z_only(ManagerTermBase):
     """Anchor-height termination backed by a parallel, pre-warmed Numba kernel."""
 
@@ -1883,6 +2000,8 @@ __all__ = [
     "MotionCommandParamsCfg",
     "MotionJointPositionAction",
     "MotionJointPositionActionCfg",
+    "MotionRewardPack",
+    "MotionRewardPackCfg",
     "MotionAnchorObservation",
     "MotionAnchorOrientationObservation",
     "MotionAnchorPositionObservation",
