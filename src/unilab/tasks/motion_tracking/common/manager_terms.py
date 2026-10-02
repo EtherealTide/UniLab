@@ -181,6 +181,7 @@ def _update_motion_relative_state_torch(
 _MotionRelativeStateFn = Callable[..., None]
 _update_motion_relative_state_compiled: _MotionRelativeStateFn | None = None
 _ingest_motion_packet_compiled: Callable[..., None] | None = None
+_refresh_motion_robot_state_compiled: Callable[..., None] | None = None
 
 
 def _compiled_motion_relative_state_available() -> bool:
@@ -256,6 +257,39 @@ def _bind_compiled_motion_packet_ingest() -> Callable[..., None]:
         dynamic=True,
     )
     return _ingest_motion_packet_compiled
+
+
+def _refresh_motion_robot_state_kernel(
+    rows: torch.Tensor,
+    view_pos: torch.Tensor,
+    view_quat: torch.Tensor,
+    view_lin_vel: torch.Tensor,
+    view_ang_vel: torch.Tensor,
+    robot_body_pos: torch.Tensor,
+    robot_body_quat: torch.Tensor,
+    robot_body_lin_vel: torch.Tensor,
+    robot_body_ang_vel: torch.Tensor,
+) -> None:
+    """Copy authoritative selected-row body state into the command carrier."""
+    target = slice(None) if rows.numel() == robot_body_pos.shape[0] else rows
+    robot_body_pos[target] = view_pos[target]
+    robot_body_quat[target] = view_quat[target]
+    robot_body_lin_vel[target] = view_lin_vel[target]
+    robot_body_ang_vel[target] = view_ang_vel[target]
+
+
+def _bind_compiled_motion_robot_refresh() -> Callable[..., None]:
+    """Compile the selected-row robot-state copy once."""
+    global _refresh_motion_robot_state_compiled
+    if _refresh_motion_robot_state_compiled is not None:
+        return _refresh_motion_robot_state_compiled
+    if not _compiled_motion_relative_state_available():
+        return _refresh_motion_robot_state_kernel
+    _refresh_motion_robot_state_compiled = torch.compile(
+        _refresh_motion_robot_state_kernel,
+        dynamic=True,
+    )
+    return _refresh_motion_robot_state_compiled
 
 
 if TYPE_CHECKING:
@@ -1192,11 +1226,18 @@ class TensorMotionCommand(MotionCommand):
                 return
             raise RuntimeError("TensorMotionCommand requires a refreshed scene tensor read phase")
         view = read_plan.body_tensor_view(self.robot, self.cfg.body_names)
-        target = slice(None) if rows is None or rows.numel() == self.num_envs else rows
-        self._robot_body_pos_w[target] = view.pos_w[target]
-        self._robot_body_quat_w[target] = view.quat_w[target]
-        self._robot_body_lin_vel_w[target] = view.lin_vel_w[target]
-        self._robot_body_ang_vel_w[target] = view.ang_vel_w[target]
+        row_selector = self._tensor_all_rows if rows is None else rows
+        _bind_compiled_motion_robot_refresh()(
+            row_selector,
+            view.pos_w,
+            view.quat_w,
+            view.lin_vel_w,
+            view.ang_vel_w,
+            self._robot_body_pos_w,
+            self._robot_body_quat_w,
+            self._robot_body_lin_vel_w,
+            self._robot_body_ang_vel_w,
+        )
         joint_view = read_plan.joint_tensor_view(self.robot)
         self._robot_joint_pos = joint_view.joint_pos
         self._robot_joint_vel = joint_view.joint_vel
