@@ -2011,7 +2011,7 @@ class MotionRewardPackCfg(RewardTermCfg):
 class MotionResetOwnerCfg(ResetOwnerCfg):
     """Fused selected-reset ownership for the canonical motion owner."""
 
-    owns_observation_reset: bool = False
+    owns_observation_reset: bool = True
     action_name: str = "joint_pos"
 
 
@@ -2040,6 +2040,7 @@ class MotionResetOwner(ResetOwner):
         self._command_manager = command_manager
         self._action_manager = action_manager
         self._metrics_manager = metrics_manager
+        self._observation_manager = cast(Any, getattr(env, "observation_manager"))
 
     def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         rows = self._normalize_rows(env_ids)
@@ -2049,6 +2050,8 @@ class MotionResetOwner(ResetOwner):
     def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         rows = self._normalize_rows(env_ids)
         self._action_manager.clear_action_state(rows)
+        if self.cfg.owns_observation_reset:
+            self._observation_manager.reset(rows)
         clear_metrics = getattr(self._metrics_manager, "clear_episode_state", None)
         if callable(clear_metrics):
             clear_metrics(rows)

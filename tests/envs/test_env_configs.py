@@ -1247,7 +1247,7 @@ def test_flashsac_motion_reset_publishes_call_graph_counts() -> None:
         timing = state.info["timing"]
         assert timing["reset_done_event_term_count"] == 0.0
         assert timing["reset_done_command_term_count"] == 1.0
-        assert timing["reset_done_manager_reset_count"] == 5.0
+        assert timing["reset_done_manager_reset_count"] == 4.0
         assert timing["reset_done_observation_term_count"] == 17.0
         assert timing["reset_done_sampler_host_transfer_count"] == 0.0
     finally:
@@ -1339,7 +1339,7 @@ def test_flashsac_motion_reset_owner_matches_generic_command_and_action_state() 
         generic_timing = generic._last_reset_manager_timing_ms
         owned_timing = owned._last_reset_manager_timing_ms
         assert generic_timing["reset_done_manager_reset_count"] == 7.0
-        assert owned_timing["reset_done_manager_reset_count"] == 5.0
+        assert owned_timing["reset_done_manager_reset_count"] == 4.0
         assert owned_timing["reset_done_sampler_host_transfer_count"] == 0.0
     finally:
         generic.close()

@@ -24,7 +24,7 @@ env:
       action_name: joint_pos
       owns_command_reset: true
       owns_action_reset: true
-      owns_observation_reset: false
+      owns_observation_reset: true
       owns_metric_reset: true
   observations:
     actor:
