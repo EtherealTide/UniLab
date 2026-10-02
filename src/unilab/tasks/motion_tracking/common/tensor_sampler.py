@@ -158,16 +158,21 @@ class TensorMotionSampler:
         alpha = terminated.any().to(dtype=self._bin_failed.dtype) * self.adaptive_alpha
         self._bin_failed.mul_(1.0 - alpha).add_(failures * alpha)
 
-    def step(self, active: torch.Tensor) -> torch.Tensor:
+    def step(self, active: torch.Tensor, *, rows: torch.Tensor | None = None) -> torch.Tensor:
         if active.shape != (self.num_envs,) or active.device != self.device:
             raise ValueError("TensorMotionSampler active mask shape/device mismatch")
-        self.current_frames.add_(active.to(dtype=torch.int32))
+        selector = torch.arange(self.num_envs, device=self.device) if rows is None else rows
+        if selector.ndim != 1 or selector.dtype != torch.int64 or selector.device != self.device:
+            raise ValueError("TensorMotionSampler selected rows must be int64 device rows")
+        selected_active = active.index_select(0, selector)
+        self.current_frames.index_add_(0, selector, selected_active.to(dtype=torch.int32))
         frames = self.current_frames.to(dtype=torch.int64)
-        clip_indices = self._clip_indices(frames)
+        selected_frames = frames.index_select(0, selector)
+        clip_indices = self._clip_indices(selected_frames)
         clip_ends = self._clip_end_frames.index_select(0, clip_indices)
-        self.current_clip_end_frames.copy_(clip_ends)
-        done = frames > clip_ends
-        done.logical_and_(active)
+        self.current_clip_end_frames.index_copy_(0, selector, clip_ends)
+        done = selected_frames > clip_ends
+        done.logical_and_(selected_active)
         return done.nonzero(as_tuple=False).flatten()
 
     def _clip_indices(self, frames: torch.Tensor) -> torch.Tensor:
