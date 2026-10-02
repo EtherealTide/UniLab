@@ -88,6 +88,7 @@ ENV_STEP_TIMING_KEYS = (
     "update_state_reward_ms",
     "update_state_reset_flags_ms",
     "update_state_metrics_ms",
+    "update_state_events_ms",
     "update_state_command_ms",
     "update_state_command_preflight_ms",
     "update_state_observation_ms",

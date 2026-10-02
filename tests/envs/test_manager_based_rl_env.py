@@ -1699,6 +1699,7 @@ def test_update_state_publishes_drain_vs_host_termination_attribution() -> None:
         timing["update_state_termination_host_ms"] <= timing["update_state_termination_ms"] + 1.0e-9
     )
     assert timing["update_state_reset_flags_ms"] >= 0.0
+    assert timing["update_state_events_ms"] >= 0.0
     assert timing["update_state_command_preflight_ms"] >= 0.0
     env.close()
 
