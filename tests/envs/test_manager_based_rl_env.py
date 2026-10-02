@@ -615,6 +615,17 @@ class _Command(CommandTerm):
         self._env.command_update_ids.append(ids)
 
 
+class _TensorBodyCommandCfg(_CommandCfg):
+    def build(self, env) -> CommandTerm:
+        return _TensorBodyCommand(self, env)
+
+
+class _TensorBodyCommand(_Command):
+    @property
+    def tensor_body_names(self) -> tuple[str, ...]:
+        return self.body_names
+
+
 class _CommandBodyObservation:
     def __init__(self, cfg: ObservationTermCfg, env: _TestEnv) -> None:
         command = env.command_manager.get_term(cfg.params["command_name"])
@@ -2025,6 +2036,53 @@ def test_scene_read_plan_compiles_class_observation_body_requests() -> None:
         assert term.entity_name == "robot"
         assert term.tensor_body_names == ("platform", "ball")
         assert obs["obs"].shape == (2, 1)
+    finally:
+        if env.scene._tensor_read_plan is not None:
+            env.scene._tensor_read_plan.close()
+            env.scene._tensor_read_plan = None
+        env.close()
+
+
+def test_scene_read_plan_compiles_command_body_requests() -> None:
+    cfg = _make_cfg(include_optional_managers=False)
+    cfg.scene.entities["robot"] = EntityCfg(
+        root_body_name="base",
+        joint_names=("joint",),
+        body_names=("platform", "ball"),
+        actuator_names=("motor",),
+    )
+    cfg.commands = {"target": _TensorBodyCommandCfg(resampling_time_range=(1.0, 1.0))}
+    cfg.observations = {
+        "actor": ObservationGroupCfg(
+            terms={
+                "body": ObservationTermCfg(
+                    func=_CommandBodyObservation, params={"command_name": "target"}
+                )
+            }
+        ),
+        "value": ObservationGroupCfg(
+            terms={"critic": ObservationTermCfg(func=_episode_step_observation)}
+        ),
+    }
+    cfg.critic_observation_group = "value"
+    backend = _ScenePlanBackend(2)
+    env = _TestEnv(cfg, cast(SimBackend, backend), 2)
+    try:
+        plan = env.scene._tensor_read_plan
+        assert plan is not None
+        assert plan.host_plan is not None
+        assert plan.body_names["robot"] == ("platform", "ball")
+        assert set(plan.host_plan.spec.sensor_names) == {
+            f"{prefix}{body}"
+            for prefix in ("track_pos_w_", "track_quat_w_", "track_linvel_w_", "track_angvel_w_")
+            for body in ("ball", "platform")
+        }
+
+        command = env.command_manager.get_term("target")
+        assert command.tensor_body_names == ("platform", "ball")
+        plan.refresh()
+        view = plan.body_tensor_view("robot", command.tensor_body_names)
+        assert view.pos_w.shape == (2, 2, 3)
     finally:
         if env.scene._tensor_read_plan is not None:
             env.scene._tensor_read_plan.close()

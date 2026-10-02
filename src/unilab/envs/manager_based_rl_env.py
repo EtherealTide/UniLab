@@ -609,7 +609,30 @@ class ManagerBasedRlEnv(TorchEnv):
                 raise KeyError(
                     f"Manager command term '{name}' has no ManagerBasedRlEnvCfg declaration"
                 )
-            sensor_names = getattr(self.command_manager.get_term(name), "tensor_sensor_names", None)
+            command_term = self.command_manager.get_term(name)
+            entity_name = getattr(command_cfg, "entity_name", "robot") if command_cfg else "robot"
+            entity_name = entity_name if isinstance(entity_name, str) and entity_name else "robot"
+            body_names = getattr(command_term, "tensor_body_names", None)
+            if body_names is not None:
+                if (
+                    not isinstance(body_names, (tuple, list))
+                    or any(
+                        not isinstance(body_name, str) or not body_name for body_name in body_names
+                    )
+                    or len(set(body_names)) != len(body_names)
+                ):
+                    raise TypeError(
+                        "ManagerBasedRlEnv tensor body declaration for command term "
+                        f"'{name}' must be a unique sequence of body names; got {body_names!r}"
+                    )
+                specs.append(
+                    SceneTensorReadSpec(
+                        entity=entity_name,
+                        body_names=tuple(body_names),
+                    )
+                )
+                continue
+            sensor_names = getattr(command_term, "tensor_sensor_names", None)
             if sensor_names is None:
                 continue
             if not isinstance(sensor_names, (tuple, list)) or any(
@@ -637,10 +660,9 @@ class ManagerBasedRlEnv(TorchEnv):
                 )
             if not names:
                 continue
-            entity_name = getattr(command_cfg, "entity_name", "robot") if command_cfg else "robot"
             specs.append(
                 SceneTensorReadSpec(
-                    entity=entity_name if isinstance(entity_name, str) and entity_name else "robot",
+                    entity=entity_name,
                     sensor_names=names,
                 )
             )
