@@ -95,6 +95,8 @@ ENV_STEP_TIMING_KEYS = (
     "update_state_command_compute_ms",
     "update_state_command_preflight_ms",
     "update_state_command_epilogue_ms",
+    "update_state_command_read_refresh_ms",
+    "update_state_command_post_compute_ms",
     "update_state_observation_ms",
     "update_state_map_ms",
     "update_state_publish_ms",
