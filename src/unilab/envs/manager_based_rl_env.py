@@ -1067,9 +1067,15 @@ class ManagerBasedRlEnv(TorchEnv):
         self.common_step_counter = self.step_counter + 1
         self._sim_step_counter = self.common_step_counter * self._cfg.sim_substeps
 
+        termination_compute_started = time.perf_counter()
         self.termination_manager.compute()
+        termination_compute_ms = (time.perf_counter() - termination_compute_started) * 1000.0
+        # Termination is normally the first update-state reduction after the
+        # backend step. Its wall time can therefore drain pre-update GPU work;
+        # keep that synchronization attribution separate from Manager work.
         timing["update_state_queue_drain_ms"] = (time.perf_counter() - queue_started) * 1000.0
         timing["update_state_termination_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        timing["update_state_termination_host_ms"] = termination_compute_ms
         phase_started = time.perf_counter()
         terminated = self.termination_manager.terminated
         time_outs = self.termination_manager.time_outs
@@ -1080,6 +1086,8 @@ class ManagerBasedRlEnv(TorchEnv):
             self.reset_terminated.copy_(terminated)
             self.reset_time_outs.copy_(time_outs)
         torch.logical_or(self.reset_terminated, self.reset_time_outs, out=self.reset_buf)
+        timing["update_state_reset_flags_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        phase_started = time.perf_counter()
 
         self.reward_buf = self.reward_manager.compute(dt=self.step_dt)
         timing["update_state_reward_ms"] = (time.perf_counter() - phase_started) * 1000.0
@@ -1107,6 +1115,7 @@ class ManagerBasedRlEnv(TorchEnv):
             self.scene._invalidate_state_reads()
             self._refresh_tensor_reads_after_mutation()
 
+        command_preflight_started = time.perf_counter()
         self._command_dt.fill_(self.step_dt)
         self._command_dt.masked_fill_(self.reset_buf, 0.0)
         step_read_plan = self.scene._tensor_read_plan
@@ -1117,6 +1126,9 @@ class ManagerBasedRlEnv(TorchEnv):
             step_reset_context = self._reset_state.scoped_device_tensor(self._all_env_rows)
         else:
             step_reset_context = self._reset_state.scoped(self._all_env_rows)
+        timing["update_state_command_preflight_ms"] = (
+            time.perf_counter() - command_preflight_started
+        ) * 1000.0
         with step_reset_context:
             self.command_manager.compute(dt=self._command_dt)
         if self._reset_state.last_commit_had_writes:

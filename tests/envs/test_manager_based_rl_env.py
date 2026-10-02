@@ -1682,6 +1682,27 @@ def test_torch_env_owns_substeps_autoreset_and_final_observation() -> None:
     assert pre_index < post_reset_index < post_step_index
 
 
+def test_update_state_publishes_drain_vs_host_termination_attribution() -> None:
+    env, _backend = _make_env()
+    env.reset()
+
+    state = env.step(torch.tensor([[0.25], [0.5]], dtype=torch.float32))
+    timing = state.info["timing"]
+
+    assert timing["update_state_termination_ms"] >= 0.0
+    assert timing["update_state_queue_drain_ms"] >= 0.0
+    assert timing["update_state_termination_host_ms"] >= 0.0
+    # The first reduction can drain queued backend work before the measured
+    # termination call, so total wall attribution is never assumed to be host
+    # term work.
+    assert (
+        timing["update_state_termination_host_ms"] <= timing["update_state_termination_ms"] + 1.0e-9
+    )
+    assert timing["update_state_reset_flags_ms"] >= 0.0
+    assert timing["update_state_command_preflight_ms"] >= 0.0
+    env.close()
+
+
 def test_initial_episode_steps_are_seeded_and_staggered() -> None:
     first, _ = _make_env()
     second, _ = _make_env()
