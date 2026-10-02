@@ -2547,6 +2547,46 @@ class Entity:
                 term_name=f"{self.name}.write_root_state_to_sim",
             )
 
+    def write_joint_state_tensor_to_sim(
+        self,
+        position: torch.Tensor,
+        velocity: torch.Tensor,
+        joint_ids: np.ndarray | Sequence[int] | slice | None = None,
+        env_ids: torch.Tensor | None = None,
+    ) -> None:
+        """Stage selected device-resident joint state in the tensor transaction."""
+        if self._reset_state is None:
+            raise self._capability_error(
+                "tensor reset joint-state write",
+                "EntityScene was materialized without an env-owned reset transaction",
+            )
+        if self._joint_names is None:
+            raise self._capability_error(
+                "tensor reset joint-state write",
+                "joint_names were not declared in EntityCfg",
+            )
+        if self._physical_entity is not None:
+            raise NotImplementedError(
+                "mapped entity tensor joint-state reset requires a public entity transaction"
+            )
+        if env_ids is None:
+            raise ValueError("tensor joint-state reset requires explicit device row indices")
+        local_joint_ids = self._normalize_local_joint_ids(
+            joint_ids,
+            capability="tensor reset joint-state write",
+        )
+        self._materialize_reset_joint_indices()
+        assert self._reset_joint_qpos_ids is not None
+        assert self._reset_joint_qvel_ids is not None
+        self._reset_state.write_joint_state_tensor(
+            env_ids,
+            self._reset_joint_qpos_ids[local_joint_ids],
+            self._reset_joint_qvel_ids[local_joint_ids],
+            position,
+            velocity,
+            term_name=f"{self.name}.write_joint_state_tensor_to_sim",
+        )
+
     def bind_actuator_gain_write(
         self,
         actuator_ids: np.ndarray | Sequence[int] | slice | None = None,

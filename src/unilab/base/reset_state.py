@@ -147,6 +147,9 @@ class ResetStateTransaction:
         self._tensor_root_columns: (
             tuple[tuple[int, ...], tuple[int, ...], torch.Tensor, torch.Tensor] | None
         ) = None
+        self._tensor_joint_columns: (
+            tuple[tuple[int, ...], tuple[int, ...], torch.Tensor, torch.Tensor] | None
+        ) = None
 
     @property
     def active(self) -> bool:
@@ -1138,6 +1141,56 @@ class ResetStateTransaction:
         qvel[rows[:, None], qvel_columns_t[None, :]] = root_state[:, 7:13]
         self._tensor_has_writes = True
 
+    def write_joint_state_tensor(
+        self,
+        env_ids: torch.Tensor,
+        qpos_indices: np.ndarray,
+        qvel_indices: np.ndarray,
+        position: torch.Tensor,
+        velocity: torch.Tensor,
+        *,
+        term_name: str,
+    ) -> None:
+        """Stage selected device-resident joint state columns for tensor commit."""
+        rows = self._prepare_tensor_state_write(
+            env_ids, capability="write_joint_state_tensor", term_name=term_name
+        )
+        pos_columns, vel_columns = self._tensor_joint_columns_for_indices(
+            qpos_indices, qvel_indices, term_name=term_name
+        )
+        width = pos_columns.numel()
+        if vel_columns.numel() != width:
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor joint-state qpos/qvel index "
+                f"counts differ: {width} != {vel_columns.numel()}"
+            )
+        if position.ndim != 2 or tuple(position.shape) != (rows.numel(), width):
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor joint position must have shape "
+                f"{(rows.numel(), width)}; got {tuple(position.shape)}"
+            )
+        if velocity.shape != position.shape:
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor joint velocity must have shape "
+                f"{tuple(position.shape)}; got {tuple(velocity.shape)}"
+            )
+        for name, values in (("position", position), ("velocity", velocity)):
+            if values.dtype != torch.float32 or not values.is_contiguous():
+                raise TypeError(
+                    f"EventManager term '{term_name}' tensor joint {name} must be "
+                    "contiguous float32"
+                )
+            if not bool(torch.isfinite(values).all()):
+                raise ValueError(
+                    f"EventManager term '{term_name}' tensor joint {name} contains NaN or Inf"
+                )
+        qpos = self._tensor_qpos
+        qvel = self._tensor_qvel
+        assert qpos is not None and qvel is not None
+        qpos[rows[:, None], pos_columns[None, :]] = position
+        qvel[rows[:, None], vel_columns[None, :]] = velocity
+        self._tensor_has_writes = True
+
     def write_root_pose(
         self,
         env_ids: np.ndarray,
@@ -2090,6 +2143,40 @@ class ResetStateTransaction:
         qpos_tensor = torch.as_tensor(qpos_columns, dtype=torch.int64, device=device)
         qvel_tensor = torch.as_tensor(qvel_columns, dtype=torch.int64, device=device)
         self._tensor_root_columns = (*key, qpos_tensor, qvel_tensor)
+        return qpos_tensor, qvel_tensor
+
+    def _tensor_joint_columns_for_indices(
+        self,
+        qpos_indices: np.ndarray,
+        qvel_indices: np.ndarray,
+        *,
+        term_name: str,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        assert self._default_qpos is not None and self._default_qvel is not None
+        qpos_columns = self._validate_columns(
+            np.asarray(qpos_indices, dtype=np.intp),
+            width=self._default_qpos.size,
+            capability="tensor joint qpos indices",
+            term_name=term_name,
+        )
+        qvel_columns = self._validate_columns(
+            np.asarray(qvel_indices, dtype=np.intp),
+            width=self._default_qvel.size,
+            capability="tensor joint qvel indices",
+            term_name=term_name,
+        )
+        key = (
+            tuple(int(index) for index in qpos_columns),
+            tuple(int(index) for index in qvel_columns),
+        )
+        cached = self._tensor_joint_columns
+        device = self._packed_reset_device
+        assert device is not None
+        if cached is not None and (cached[0], cached[1]) == key:
+            return cached[2], cached[3]
+        qpos_tensor = torch.as_tensor(qpos_columns, dtype=torch.int64, device=device)
+        qvel_tensor = torch.as_tensor(qvel_columns, dtype=torch.int64, device=device)
+        self._tensor_joint_columns = (*key, qpos_tensor, qvel_tensor)
         return qpos_tensor, qvel_tensor
 
     def _validate_quaternions(self, values: np.ndarray, *, term_name: str) -> None:

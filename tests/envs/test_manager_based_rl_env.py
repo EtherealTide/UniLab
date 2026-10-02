@@ -757,6 +757,20 @@ def _tensor_runtime_critic_obs(env: _TestEnv) -> torch.Tensor:
     return env.episode_length_buf[:, None].to(dtype=torch.float32, device=env.device)
 
 
+def _reset_joint_state_tensor(
+    env: _TestEnv, env_ids: torch.Tensor, position: float, velocity: float
+) -> None:
+    count = env_ids.numel()
+    env.scene["robot"].write_joint_state_tensor_to_sim(
+        torch.full((count, 1), position, dtype=torch.float32, device=env.device),
+        torch.full((count, 1), velocity, dtype=torch.float32, device=env.device),
+        env_ids=env_ids,
+    )
+
+
+setattr(_reset_joint_state_tensor, "uses_tensor_rows", True)
+
+
 def _episode_step_observation(env: ManagerBasedRlEnv) -> torch.Tensor:
     return env.episode_length_buf[:, None].to(torch.float32)
 
@@ -2290,6 +2304,92 @@ def test_device_resident_tensor_root_event_commits_selected_rows_once() -> None:
         torch.testing.assert_close(
             qpos[:, 2:8],
             torch.tensor([[0.5, 1.0, 0.0, 0.0, 0.0, 0.25]] * 2, device=env.device),
+        )
+    finally:
+        if env.scene._tensor_read_plan is not None:
+            env.scene._tensor_read_plan.close()
+            env.scene._tensor_read_plan = None
+        env.close()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA device reset test")
+def test_device_resident_tensor_joint_event_commits_selected_columns_once() -> None:
+    cfg = _make_cfg(include_optional_managers=False)
+    cfg.tensor_runtime = True
+    cfg.tensor_runtime_device = "cuda"
+    cfg.observations = {
+        "actor": ObservationGroupCfg(
+            terms={"policy": ObservationTermCfg(func=_tensor_runtime_policy_obs)}
+        ),
+        "value": ObservationGroupCfg(
+            terms={"critic": ObservationTermCfg(func=_tensor_runtime_critic_obs)}
+        ),
+    }
+    cfg.scene.entities["robot"] = EntityCfg(
+        root_body_name="base",
+        joint_names=("joint",),
+        body_names=("platform", "ball"),
+        actuator_names=("motor",),
+    )
+    cfg.actions = {
+        "tilt": _TensorBodyActionCfg(
+            entity_name="robot",
+            top_body_name="platform",
+            ball_body_name="ball",
+        )
+    }
+    cfg.events = {
+        "reset_joint_state": EventTermCfg(
+            func=_reset_joint_state_tensor,
+            mode="reset",
+            params={"position": 0.25, "velocity": -0.5},
+        )
+    }
+
+    class _TensorJointBackend(_DeviceResidentScenePlanBackend):
+        nq = 10
+        nv = 9
+
+        def get_default_qpos(self) -> np.ndarray:
+            return np.array([0.0, 0.0, 0.5, 1.0, 0.0, 0.0, 0.0, 0.25, 0.0, 0.0], dtype=np.float32)
+
+        def get_init_qvel(self) -> np.ndarray:
+            return np.zeros(9, dtype=np.float32)
+
+        def get_joint_state_qpos_indices(self, joint_names):
+            assert joint_names == ("joint",)
+            return np.array([7], dtype=np.int32)
+
+        def get_joint_state_qvel_indices(self, joint_names):
+            assert joint_names == ("joint",)
+            return np.array([6], dtype=np.int32)
+
+        def get_state_views(self, fields, device=None) -> dict[str, torch.Tensor]:
+            target = torch.device(device) if device is not None else torch.device("cuda")
+            return {
+                "qpos": torch.zeros((self.num_envs, self.nq), dtype=torch.float32, device=target),
+                "qvel": torch.zeros((self.num_envs, self.nv), dtype=torch.float32, device=target),
+            }
+
+    backend = _TensorJointBackend(2)
+    env = _TestEnv(cfg, cast(SimBackend, backend), 2)
+    try:
+        assert env.scene._tensor_read_plan is not None
+        assert env.event_manager.uses_tensor_reset_rows
+        env.reset()
+        assert len(backend.tensor_reset_calls) == 1
+        rows, qpos, qvel = backend.tensor_reset_calls[0]
+        torch.testing.assert_close(rows, torch.tensor([0, 1], device=env.device))
+        torch.testing.assert_close(
+            qpos[:, 7], torch.full((2,), 0.25, device=env.device), rtol=0, atol=1e-6
+        )
+        torch.testing.assert_close(
+            qvel[:, 6], torch.full((2,), -0.5, device=env.device), rtol=0, atol=1e-6
+        )
+        # Unselected root/default columns stay at their canonical reset values.
+        torch.testing.assert_close(
+            qpos[:, :7],
+            torch.tensor([[0.0, 0.0, 0.5, 1.0, 0.0, 0.0, 0.0]] * 2, device=env.device),
         )
     finally:
         if env.scene._tensor_read_plan is not None:
