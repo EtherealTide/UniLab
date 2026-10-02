@@ -2394,7 +2394,7 @@ class Entity:
 
     def set_joint_position_target(
         self,
-        target: np.ndarray,
+        target: np.ndarray | torch.Tensor,
         joint_ids: np.ndarray | Sequence[int] | slice | None = None,
         env_ids: np.ndarray | slice | None = None,
     ) -> None:

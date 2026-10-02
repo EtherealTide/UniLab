@@ -651,6 +651,7 @@ class MotionJointPositionAction(JointPositionAction):
         super().__init__(cfg, env)
         self._motion_command = _command(env, cfg.command_name)
         self._previous_raw_actions = torch.zeros_like(self._raw_actions)
+        self._tensor_motion_target = torch.empty_like(self._processed_actions)
 
     @property
     def target(self) -> np.ndarray:
@@ -678,6 +679,28 @@ class MotionJointPositionAction(JointPositionAction):
         self._previous_raw_actions[selector] = 0.0
 
     def apply_actions(self) -> None:
+        if isinstance(self._entity.data.control_buffer, torch.Tensor):
+            encoder_bias = self._entity.data.encoder_bias_tensor.to(
+                device=self._device, non_blocking=True
+            )
+            default_bias = self._motion_command.joint_default_bias
+            if isinstance(default_bias, torch.Tensor):
+                selected_default_bias = default_bias.index_select(1, self._target_index)
+            else:
+                selected_default_bias = torch.as_tensor(
+                    default_bias[:, self._target_ids],
+                    device=self._device,
+                    dtype=torch.float32,
+                )
+            torch.add(
+                self._processed_actions,
+                selected_default_bias - encoder_bias.index_select(1, self._target_index),
+                out=self._tensor_motion_target,
+            )
+            self._entity.set_joint_position_target(
+                self._tensor_motion_target, joint_ids=self._target_ids
+            )
+            return
         processed = self._entity_values(self._processed_actions)
         encoder_bias = self._entity.data.encoder_bias[:, self._target_ids]
         default_bias = self._motion_command.joint_default_bias[:, self._target_ids]
