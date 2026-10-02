@@ -339,6 +339,8 @@ class ManagerBasedRlEnv(TorchEnv):
         self._torch_rng_owner = TorchManagerRng(device=self.device)
         self.torch_rng = self._torch_rng_owner
         self._torch_generator = self._torch_rng_owner.generator if self._torch_rng_owner else None
+        self._reward_log_names: tuple[str, ...] = ()
+        self._reward_log_means = torch.empty(0, dtype=torch.float32, device=self.device)
         self._last_reset_manager_timing_ms = {}
         self._tensor_reset_default_root_state = None
         self._tensor_reset_env_origins = None
@@ -1018,6 +1020,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 "when auto_reset=False"
             )
         state = super().step(actions)
+        state.info["log"].update(self.publish_reward_log())
         if not self._autoreset:
             self._manual_reset_pending.logical_or_(state.terminated | state.truncated)
         self.recorder_manager.record_post_step()
@@ -1079,7 +1082,8 @@ class ManagerBasedRlEnv(TorchEnv):
         self.reward_buf = self.reward_manager.compute(dt=self.step_dt)
         timing["update_state_reward_ms"] = (time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
-        log.update(self.reward_manager.step_reward_extras())
+        self._reward_log_names = self.reward_manager.step_reward_names
+        self._reward_log_means = self.reward_manager.step_reward_means
 
         if self._cfg.sim_substeps == 1:
             self.metrics_manager.compute_substep()
@@ -1160,6 +1164,16 @@ class ManagerBasedRlEnv(TorchEnv):
                 + drain_ns
             ) / 1.0e6
         return replacement
+
+    def publish_reward_log(self) -> dict[str, float]:
+        """Publish latest device reward means through the legacy log contract."""
+        if not self._reward_log_names:
+            return {}
+        means = self._reward_log_means.detach().cpu().tolist()
+        return {
+            f"reward/{name}": float(mean)
+            for name, mean in zip(self._reward_log_names, means, strict=True)
+        }
 
     def _refresh_tensor_reads_after_mutation(self) -> None:
         """Repack scene tensor reads after an in-phase simulation mutation."""
