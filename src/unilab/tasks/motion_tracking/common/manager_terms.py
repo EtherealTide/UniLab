@@ -1062,12 +1062,12 @@ class TensorMotionCommand(MotionCommand):
         rows = self._tensor_post_compute_env_ids
         robot_started = time.perf_counter()
         self._refresh_robot_state_torch(force=True, rows=rows)
-        self._last_post_compute_timing_ms = {
+        self.last_post_compute_timing_ms = {
             "reset_done_motion_robot_refresh_ms": (time.perf_counter() - robot_started) * 1000.0
         }
         relative_started = time.perf_counter()
         self._refresh_relative_state_torch(rows)
-        self._last_post_compute_timing_ms["reset_done_motion_relative_refresh_ms"] = (
+        self.last_post_compute_timing_ms["reset_done_motion_relative_refresh_ms"] = (
             time.perf_counter() - relative_started
         ) * 1000.0
 
