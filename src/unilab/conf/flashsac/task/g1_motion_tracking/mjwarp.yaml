@@ -22,6 +22,13 @@ training:
   # remains CLI-overridable so ring depth can be measured without task forks.
   collector_metrics_interval: 100
 env:
+  terminations:
+    anchor_pos: null
+    anchor_ori: null
+    ee_body_pos: null
+    motion_termination_pack:
+      _target_: unilab.tasks.motion_tracking.common.manager_terms.MotionTerminationPackCfg
+      func: unilab.tasks.motion_tracking.common.manager_terms.MotionTerminationPack
   commands:
     motion:
       _target_: unilab.tasks.motion_tracking.common.manager_terms.TensorMotionCommandCfg

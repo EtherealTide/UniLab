@@ -73,6 +73,12 @@ _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V13 = (
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V14 = (
     "b622c4da96c4e28595ed4900a7bf539c18437d4917c7c529dd3c2850a77f3061"
 )
+# V15 applies only to MJWarp: the canonical anchor-position, anchor-orientation,
+# and end-effector-position failure terms are fused into one Manager-owned
+# termination term. Equations, thresholds, and timeout semantics are unchanged.
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V15 = (
+    "29d3a052d0bb1cdab7eb5811477c32e16a3275236815fca8d6fa109e58b07bca"
+)
 _TORCH_G1_SAC_OWNER_IDENTITY_V2 = "30cf78a5c6da8c94cd3bd2afa74fa9f4251cccf2a98db7251ee6b8346573a975"
 
 
@@ -84,6 +90,7 @@ def _validate_torch_g1_flashsac_owner_contract(cfg: ManagerBasedRlEnvCfg) -> Non
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V12,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V13,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V14,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V15,
         _TORCH_G1_SAC_OWNER_IDENTITY_V2,
     }:
         raise ValueError(
@@ -98,6 +105,7 @@ __all__ = [
     "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V12",
     "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V13",
     "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V14",
+    "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V15",
     "_TORCH_G1_SAC_OWNER_IDENTITY_V2",
     "_qualified_name",
     "_torch_g1_flashsac_owner_identity",
