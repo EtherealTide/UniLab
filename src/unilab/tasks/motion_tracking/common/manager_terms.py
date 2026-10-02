@@ -1080,36 +1080,38 @@ class TensorMotionCommand(MotionCommand):
 
     def _ingest_motion_rows_torch(self, rows: torch.Tensor, data: MotionData) -> None:
         """Scatter one host motion gather into device-resident command buffers."""
+        count = rows.numel()
+        host = np.empty((count, self._motion_packet_width), dtype=np.float32)
+        offsets = {}
+        tail_shapes = {}
+        offset = 0
         for motion_field in dataclasses.fields(data):
-            source = getattr(data, motion_field.name)
-            target = getattr(self._motion_data, motion_field.name)
-            target.index_copy_(
-                0,
-                rows,
-                torch.as_tensor(
-                    np.ascontiguousarray(source), dtype=torch.float32, device=self._device
-                ),
-            )
-        body_pos = torch.as_tensor(
-            np.ascontiguousarray(data.body_pos_w), dtype=torch.float32, device=self._device
-        )
+            source = np.asarray(getattr(data, motion_field.name), dtype=np.float32)
+            tail_shapes[motion_field.name] = source.shape[1:]
+            width = int(np.prod(source.shape[1:], dtype=np.int64)) if source.ndim > 1 else 1
+            offsets[motion_field.name] = (offset, offset + width)
+            host[:, offset : offset + width] = source.reshape(count, width)
+            offset += width
+        packet = torch.from_numpy(host).to(device=self._device, non_blocking=False)
         origins = (
-            self._env_origins
-            if rows.numel() == self.num_envs
-            else self._env_origins.index_select(0, rows)
+            self._env_origins if count == self.num_envs else self._env_origins.index_select(0, rows)
         )
-        self._body_pos_w.index_copy_(0, rows, body_pos + origins[:, None, :])
-        width = self.motion.num_joints
-        self._command[rows, :width] = torch.as_tensor(
-            np.ascontiguousarray(data.joint_pos),
-            dtype=torch.float32,
-            device=self._device,
+        for name, (start, end) in offsets.items():
+            getattr(self._motion_data, name).index_copy_(
+                0, rows, packet[:, start:end].reshape(count, *tail_shapes[name])
+            )
+        body_start, body_end = offsets["body_pos_w"]
+        self._body_pos_w.index_copy_(
+            0, rows, packet[:, body_start:body_end].view(count, -1, 3) + origins[:, None, :]
         )
-        self._command[rows, width:] = torch.as_tensor(
-            np.ascontiguousarray(data.joint_vel),
-            dtype=torch.float32,
-            device=self._device,
-        )
+        joint_start, joint_end = offsets["joint_pos"]
+        vel_start, vel_end = offsets["joint_vel"]
+        self._command[rows, : joint_end - joint_start] = packet[:, joint_start:joint_end]
+        self._command[rows, joint_end - joint_start :].copy_(packet[:, vel_start:vel_end])
+
+    @property
+    def _motion_packet_width(self) -> int:
+        return self.motion.num_joints * 2 + len(self.cfg.body_names) * 13
 
     def _refresh_relative_state_torch(self, rows: torch.Tensor | None = None) -> None:
         row_selector = self._tensor_all_rows if rows is None else rows
