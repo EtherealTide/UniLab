@@ -1010,15 +1010,15 @@ class TensorMotionCommand(MotionCommand):
         self._sync_tensor_sampler_state()
 
     def _update_command(self, env_ids: torch.Tensor | None) -> None:
-        self._post_compute_env_ids = (
-            env_ids.detach().cpu().numpy() if isinstance(env_ids, torch.Tensor) else env_ids
-        )
         self._tensor_post_compute_env_ids = env_ids
         if env_ids is not None:
             ingested = self._resample_ingested_ids
             self._resample_ingested_ids = None
-            host_rows = env_ids.detach().cpu().numpy()
-            if ingested is None or not np.array_equal(ingested, host_rows):
+            if (
+                ingested is None
+                or ingested.shape != env_ids.shape
+                or bool((torch.as_tensor(ingested, device=env_ids.device) != env_ids).any())
+            ):
                 self._refresh_motion_torch(env_ids)
             return
         self._resample_ingested_ids = None
@@ -1054,9 +1054,7 @@ class TensorMotionCommand(MotionCommand):
     def post_compute(self) -> None:
         rows = self._tensor_post_compute_env_ids
         self._refresh_robot_state_torch(force=True, rows=rows)
-        self._refresh_relative_state_torch(
-            None if rows is None else torch.as_tensor(rows, device=self._device)
-        )
+        self._refresh_relative_state_torch(rows)
 
     def _sync_tensor_sampler_state(self) -> None:
         cast(torch.Tensor, self.time_steps).copy_(
