@@ -9,6 +9,11 @@ from __future__ import annotations
 
 RESET_DONE_DETAIL_TIMING_KEYS = (
     "reset_done_count",
+    "reset_done_event_term_count",
+    "reset_done_command_term_count",
+    "reset_done_manager_reset_count",
+    "reset_done_observation_term_count",
+    "reset_done_sampler_host_transfer_count",
     "reset_done_terminal_obs_ms",
     "reset_done_reset_call_ms",
     "reset_done_command_event_ms",

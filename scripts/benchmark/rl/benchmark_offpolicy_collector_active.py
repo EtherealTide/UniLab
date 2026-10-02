@@ -158,7 +158,14 @@ ENV_STEP_TIMING_KEYS = (
     "set_state_host_cache_refresh_ms",
     "set_state_internal_gap_ms",
 )
-ENV_STEP_COUNT_KEYS = ("reset_done_count",)
+ENV_STEP_COUNT_KEYS = (
+    "reset_done_count",
+    "reset_done_event_term_count",
+    "reset_done_command_term_count",
+    "reset_done_manager_reset_count",
+    "reset_done_observation_term_count",
+    "reset_done_sampler_host_transfer_count",
+)
 ENV_STEP_SAMPLE_KEYS = (*ENV_STEP_TIMING_KEYS, *ENV_STEP_COUNT_KEYS)
 NP_RANDOM_PROFILE_FUNCTIONS = (
     "uniform",
