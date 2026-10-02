@@ -1061,6 +1061,7 @@ class ManagerBasedRlEnv(TorchEnv):
     def _update_state_in_read_phase(self, state: TorchEnvState) -> TorchEnvState:
         timing = state.info.setdefault("timing", {})
         update_started_ns = time.perf_counter_ns()
+        prelude_started_ns = time.perf_counter_ns()
         queue_started = time.perf_counter()
         phase_started = time.perf_counter()
         log: dict[str, Any] = {}
@@ -1070,6 +1071,7 @@ class ManagerBasedRlEnv(TorchEnv):
         self.episode_length_buf.copy_(state.info["steps"]).add_(1)
         self.common_step_counter = self.step_counter + 1
         self._sim_step_counter = self.common_step_counter * self._cfg.sim_substeps
+        timing["update_state_prelude_ms"] = (time.perf_counter_ns() - prelude_started_ns) / 1.0e6
 
         termination_compute_started = time.perf_counter()
         self.termination_manager.compute()
@@ -1135,12 +1137,18 @@ class ManagerBasedRlEnv(TorchEnv):
         timing["update_state_command_preflight_ms"] = (
             time.perf_counter() - command_preflight_started
         ) * 1000.0
+        command_started = time.perf_counter()
         with step_reset_context:
             self.command_manager.compute(dt=self._command_dt)
+        timing["update_state_command_compute_ms"] = (time.perf_counter() - command_started) * 1000.0
+        command_epilogue_started = time.perf_counter()
         if self._reset_state.last_commit_had_writes:
             self.scene._invalidate_state_reads()
             self._refresh_tensor_reads_after_mutation()
         self.command_manager.post_compute()
+        timing["update_state_command_epilogue_ms"] = (
+            time.perf_counter() - command_epilogue_started
+        ) * 1000.0
         timing["update_state_command_ms"] = (time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
 
@@ -1154,15 +1162,24 @@ class ManagerBasedRlEnv(TorchEnv):
         timing["update_state_map_ms"] = (time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
 
+        publish_started = time.perf_counter()
+        public_obs = {
+            name: self._manager_tensor(values, dtype=self._dtype)
+            for name, values in mapped_obs.items()
+        }
+        public_reward = self._manager_tensor(self.reward_buf, dtype=self._dtype)
+        public_terminated = self._manager_tensor(self.reset_terminated, dtype=torch.bool)
+        public_truncated = self._manager_tensor(self.reset_time_outs, dtype=torch.bool)
+        timing["update_state_publication_ms"] = (time.perf_counter() - publish_started) * 1000.0
+
+        replace_started = time.perf_counter()
         replacement = state.replace(
-            obs={
-                name: self._manager_tensor(values, dtype=self._dtype)
-                for name, values in mapped_obs.items()
-            },
-            reward=self._manager_tensor(self.reward_buf, dtype=self._dtype),
-            terminated=self._manager_tensor(self.reset_terminated, dtype=torch.bool),
-            truncated=self._manager_tensor(self.reset_time_outs, dtype=torch.bool),
+            obs=public_obs,
+            reward=public_reward,
+            terminated=public_terminated,
+            truncated=public_truncated,
         )
+        timing["update_state_state_replace_ms"] = (time.perf_counter() - replace_started) * 1000.0
         timing["update_state_publish_ms"] = (time.perf_counter() - phase_started) * 1000.0
         update_children = (
             timing.get("update_state_termination_ms"),
