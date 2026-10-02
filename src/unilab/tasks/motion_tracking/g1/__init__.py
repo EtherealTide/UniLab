@@ -39,12 +39,12 @@ registry.register_env(
     sim_backend="motrix",
 )
 
-# mjwarp is registered only for G1MotionTrackingSAC (benchmark scope, issue #1292);
-# mujoco-warp + warp-lang remain optional deps and other motion tasks keep
-# mujoco/motrix until their mjwarp paths are validated.
+# The canonical FlashSAC MJWarp owner now runs the Manager-Based tensor path;
+# the task-owned direct runtime remains scoped to host-bridge/external worker
+# backends while Phase 3 absorption continues.
 registry.register_env(
     "G1MotionTrackingSAC",
-    make_torch_g1_motion_tracking_flashsac_env,
+    make_manager_based_rl_env,
     sim_backend="mjwarp",
 )
 # G1 flip tracking is the second scoped tensor task owner. It intentionally

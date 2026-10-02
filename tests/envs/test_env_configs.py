@@ -939,9 +939,7 @@ def test_flashsac_g1_motion_mjwarp_tensor_anchor_observations_roll_out() -> None
     ensure_registries()
     _require_mjwarp_runtime()
     from unilab.base import registry
-    from unilab.tasks.motion_tracking.g1.torch_flashsac_env import (
-        TorchG1MotionTrackingFlashSACEnv,
-    )
+    from unilab.envs import ManagerBasedRlEnv
 
     _, override = _motion_manager_override(
         "g1_motion_tracking",
@@ -954,7 +952,10 @@ def test_flashsac_g1_motion_mjwarp_tensor_anchor_observations_roll_out() -> None
         sim_backend="mjwarp",
         env_cfg_override=override,
     )
-    assert isinstance(env, TorchG1MotionTrackingFlashSACEnv)
+    assert isinstance(env, ManagerBasedRlEnv)
+    command = env.command_manager.get_term("motion")
+    assert command.tensor_carrier is True
+    assert env.command_manager.uses_tensor_reset_rows()
     try:
         assert env.obs_groups_spec == {"obs": 160, "critic": 289}
 
