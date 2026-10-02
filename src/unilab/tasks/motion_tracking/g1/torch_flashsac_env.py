@@ -93,6 +93,7 @@ def _torch_g1_flashsac_owner_identity(cfg: ManagerBasedRlEnvCfg) -> str:
             cfg.curriculum,
             cfg.metrics,
             cfg.recorders,
+            cfg.reset_owners,
             cfg.auto_reset,
             cfg.is_finite_horizon,
             cfg.scale_rewards_by_dt,
@@ -131,6 +132,19 @@ _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V8 = (
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V9 = (
     "34b78dd9d19532e65e23f97672f658e4670b88281706f39e80e9fbe927f8b46f"
 )
+# V10 applies only to MJWarp: a Manager-owned motion reset owner replaces the
+# command/action/metric reset passes while observation/reward/event/termination
+# reset semantics remain generic.
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V10 = (
+    "446b833a9ece5cc7a28f07c36b09c17b8ef56c62374aad80aa5af25c155822a6"
+)
+# The reset-owner field is now part of every owner identity. Non-MJWarp
+# canonical owners explicitly declare no reset owner, preserving their generic
+# reset semantics.
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V11 = (
+    "2c2dbedc17a52abf19a117e51565719ee802e42f977eb8e10e4755116beeb2fd"
+)
+_TORCH_G1_SAC_OWNER_IDENTITY_V2 = "30cf78a5c6da8c94cd3bd2afa74fa9f4251cccf2a98db7251ee6b8346573a975"
 # V3 applies only to the MJWARP owner: its two anchor observations use the
 # Manager tensor read phase instead of the command-owned NumPy buffers. The
 # equations, ordering, noise, and all other owner terms remain unchanged.
@@ -172,7 +186,10 @@ def _validate_torch_g1_flashsac_owner_contract(cfg: ManagerBasedRlEnvCfg) -> Non
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V7,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V8,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V9,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V10,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V11,
         _TORCH_G1_SAC_OWNER_IDENTITY_V1,
+        _TORCH_G1_SAC_OWNER_IDENTITY_V2,
         _TORCH_G1_FLIP_SAC_OWNER_IDENTITY_V1,
         _TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V1,
         _TORCH_G1_MAPPED_ISAACSIM_OWNER_IDENTITY_V2,

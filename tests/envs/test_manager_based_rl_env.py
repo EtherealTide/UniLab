@@ -2838,21 +2838,23 @@ class _RecordingResetOwner(ResetOwner):
         self.transaction_rows: list[torch.Tensor] = []
         self.committed_rows: list[torch.Tensor] = []
 
-    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> None:
+    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         assert isinstance(env_ids, torch.Tensor)
         self.transaction_rows.append(env_ids.clone())
         extras, _commands = self._env.command_manager.reset_command_state(
             env_ids, publish_metrics=False
         )
         assert extras == {}
+        return {}
 
-    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> None:
+    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         assert isinstance(env_ids, torch.Tensor)
         self.committed_rows.append(env_ids.clone())
         self._env.action_manager.clear_action_state(env_ids)
         clear_metrics = getattr(self._env.metrics_manager, "clear_episode_state", None)
         if callable(clear_metrics):
             clear_metrics(env_ids)
+        return {}
 
 
 @dataclass(kw_only=True)

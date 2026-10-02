@@ -16,6 +16,16 @@ env:
   commands:
     motion:
       _target_: unilab.tasks.motion_tracking.common.manager_terms.TensorMotionCommandCfg
+  reset_owners:
+    motion:
+      _target_: unilab.tasks.motion_tracking.common.manager_terms.MotionResetOwnerCfg
+      func: unilab.tasks.motion_tracking.common.manager_terms.MotionResetOwner
+      command_name: motion
+      action_name: joint_pos
+      owns_command_reset: true
+      owns_action_reset: true
+      owns_observation_reset: false
+      owns_metric_reset: true
   observations:
     actor:
       terms:

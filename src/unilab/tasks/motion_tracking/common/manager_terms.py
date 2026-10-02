@@ -20,6 +20,7 @@ from unilab.managers import (
     ObservationTermCfg,
     RewardTermCfg,
 )
+from unilab.managers.reset_owner import ResetOwner, ResetOwnerCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
 from unilab.utils.rotation import (
     np_quat_apply_inverse,
@@ -2006,6 +2007,60 @@ class MotionRewardPackCfg(RewardTermCfg):
     body_ang_vel_std: float = 3.14
 
 
+@dataclass(kw_only=True)
+class MotionResetOwnerCfg(ResetOwnerCfg):
+    """Fused selected-reset ownership for the canonical motion owner."""
+
+    owns_observation_reset: bool = False
+    action_name: str = "joint_pos"
+
+
+class MotionResetOwner(ResetOwner):
+    """Own command/action/metric reset while Manager rebuilds observations."""
+
+    def __init__(self, cfg: MotionResetOwnerCfg, env: ManagerBasedRlEnv):
+        super().__init__(cfg, env)
+        self._device = torch.device(env.device)
+        command = _command(env, cfg.command_name)
+        if not isinstance(command, TensorMotionCommand):
+            raise TypeError("MotionResetOwner requires TensorMotionCommand")
+        self._command = command
+        if not isinstance(cfg.action_name, str) or not cfg.action_name:
+            raise ValueError("MotionResetOwner action_name must be non-empty")
+        try:
+            action = env.action_manager.get_term(cfg.action_name)
+        except KeyError as exc:
+            raise KeyError(f"MotionResetOwner action term '{cfg.action_name}' not found") from exc
+        if not isinstance(action, MotionJointPositionAction):
+            raise TypeError("MotionResetOwner requires MotionJointPositionAction")
+        self._action = action
+        command_manager = cast(Any, env.command_manager)
+        action_manager = cast(Any, env.action_manager)
+        metrics_manager = cast(Any, env.metrics_manager)
+        self._command_manager = command_manager
+        self._action_manager = action_manager
+        self._metrics_manager = metrics_manager
+
+    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+        rows = self._normalize_rows(env_ids)
+        extras, _commands = self._command_manager.reset_command_state(rows, publish_metrics=False)
+        return cast(dict[str, float], extras)
+
+    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+        rows = self._normalize_rows(env_ids)
+        self._action_manager.clear_action_state(rows)
+        clear_metrics = getattr(self._metrics_manager, "clear_episode_state", None)
+        if callable(clear_metrics):
+            clear_metrics(rows)
+        return {}
+
+    def _normalize_rows(self, env_ids: torch.Tensor | slice | None) -> torch.Tensor:
+        if isinstance(env_ids, torch.Tensor):
+            return env_ids.to(dtype=torch.int64, device=self._device)
+        rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._device)
+        return rows if env_ids is None else rows[env_ids]
+
+
 class MotionRewardPack(ManagerTermBase):
     """Evaluate the canonical motion reward family in one carrier read."""
 
@@ -2365,6 +2420,8 @@ __all__ = [
     "MotionJointPositionActionCfg",
     "MotionRewardPack",
     "MotionRewardPackCfg",
+    "MotionResetOwner",
+    "MotionResetOwnerCfg",
     "MotionAnchorObservation",
     "MotionAnchorObservationPack",
     "MotionAnchorObservationPackCfg",

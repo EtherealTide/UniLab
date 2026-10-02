@@ -295,6 +295,9 @@ class ManagerBasedRlEnv(Protocol):
     def reward_manager(self) -> ManagerRewardManager: ...
 
     @property
+    def metrics_manager(self) -> Any: ...
+
+    @property
     def episode_length_buf(self) -> torch.Tensor: ...
 
     @property

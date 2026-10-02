@@ -45,10 +45,10 @@ def test_torch_owner_fingerprint_accepts_both_canonical_backends() -> None:
     mujoco = _materialize_task("g1_motion_tracking/mujoco")
     mjwarp = _materialize_task("g1_motion_tracking/mjwarp")
     assert module._torch_g1_flashsac_owner_identity(mujoco) == (
-        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6
+        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V11
     )
     assert module._torch_g1_flashsac_owner_identity(mjwarp) == (
-        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V9
+        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V10
     )
 
 
@@ -59,7 +59,7 @@ def test_flashsac_motrix_owner_is_out_of_tensor_manager_scope() -> None:
 
 def test_reusable_tensor_runtime_accepts_second_g1_manager_owner() -> None:
     cfg = _materialize_task("g1_motion_tracking/mjwarp_tensor", algo="sac")
-    assert module._torch_g1_flashsac_owner_identity(cfg) == module._TORCH_G1_SAC_OWNER_IDENTITY_V1
+    assert module._torch_g1_flashsac_owner_identity(cfg) == module._TORCH_G1_SAC_OWNER_IDENTITY_V2
 
 
 def test_reusable_tensor_runtime_accepts_second_manager_based_task() -> None:
@@ -97,9 +97,9 @@ def test_fused_motion_reward_pack_owner_identity_is_canonical() -> None:
         cfg = _materialize_task(f"g1_motion_tracking/{backend}")
         identity = module._torch_g1_flashsac_owner_identity(cfg)
         expected = {
-            "mujoco": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6,
-            "genesis": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V6,
-            "mjwarp": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V9,
+            "mujoco": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V11,
+            "genesis": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V11,
+            "mjwarp": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V10,
         }[backend]
         assert identity == expected
 

@@ -45,11 +45,11 @@ class ResetOwner(ManagerTermBase):
         """Execute the declared selected-reset ownership in Manager lifecycle."""
         raise NotImplementedError(type(self).__name__)
 
-    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> None:
+    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         """Execute reset ownership that must stage writes before commit."""
         raise NotImplementedError(type(self).__name__)
 
-    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> None:
+    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         """Execute reset ownership after the reset transaction commits."""
         raise NotImplementedError(type(self).__name__)
 
@@ -96,13 +96,17 @@ class ResetOwnerManager:
         for term in self._terms.values():
             term.reset(env_ids)
 
-    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> None:
+    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+        extras: dict[str, float] = {}
         for term in self._terms.values():
-            term.reset_transaction(env_ids)
+            extras.update(term.reset_transaction(env_ids))
+        return extras
 
-    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> None:
+    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+        extras: dict[str, float] = {}
         for term in self._terms.values():
-            term.reset_committed(env_ids)
+            extras.update(term.reset_committed(env_ids))
+        return extras
 
     def __str__(self) -> str:
         if not self._terms:
@@ -128,11 +132,13 @@ class NullResetOwnerManager:
     def reset(self, env_ids: torch.Tensor | slice | None) -> None:
         del env_ids
 
-    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> None:
+    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         del env_ids
+        return {}
 
-    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> None:
+    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         del env_ids
+        return {}
 
     def __str__(self) -> str:
         return "<ResetOwnerManager> (inactive)"
