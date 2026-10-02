@@ -101,6 +101,7 @@ ENV_STEP_TIMING_KEYS = (
     "update_state_publication_ms",
     "update_state_state_replace_ms",
     "update_state_timing_epilogue_ms",
+    "update_state_child_sum_ms",
     "update_state_nonattributed_ms",
     "reset_done_ms",
     "env_step_internal_gap_ms",

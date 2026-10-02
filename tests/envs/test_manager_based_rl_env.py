@@ -1707,6 +1707,7 @@ def test_update_state_publishes_drain_vs_host_termination_attribution() -> None:
     assert timing["update_state_command_epilogue_ms"] >= 0.0
     assert timing["update_state_publication_ms"] >= 0.0
     assert timing["update_state_state_replace_ms"] >= 0.0
+    assert timing["update_state_child_sum_ms"] >= 0.0
     assert timing["update_state_command_preflight_ms"] >= 0.0
     env.close()
 
