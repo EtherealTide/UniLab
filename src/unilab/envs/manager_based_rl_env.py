@@ -1276,7 +1276,11 @@ class ManagerBasedRlEnv(TorchEnv):
 
         manager_state_started = time.perf_counter()
         reset_managers: tuple[Any, ...] = (
-            self.observation_manager,
+            *(
+                ()
+                if reset_owner is not None and reset_owner.cfg.owns_observation_reset
+                else (self.observation_manager,)
+            ),
             *(
                 ()
                 if reset_owner is not None and reset_owner.cfg.owns_action_reset

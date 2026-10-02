@@ -133,10 +133,10 @@ _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V9 = (
     "34b78dd9d19532e65e23f97672f658e4670b88281706f39e80e9fbe927f8b46f"
 )
 # V10 applies only to MJWarp: a Manager-owned motion reset owner replaces the
-# command/action/metric reset passes while observation/reward/event/termination
-# reset semantics remain generic.
+# command/action/observation/metric reset state passes while the reset
+# observation rebuild, reward/event/termination reset semantics remain generic.
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V10 = (
-    "446b833a9ece5cc7a28f07c36b09c17b8ef56c62374aad80aa5af25c155822a6"
+    "ea611d71bdc07c58c022e9048b2d91d59587dc71d2de442aba881fef02e36e84"
 )
 # The reset-owner field is now part of every owner identity. Non-MJWarp
 # canonical owners explicitly declare no reset owner, preserving their generic
