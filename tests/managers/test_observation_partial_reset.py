@@ -166,7 +166,7 @@ def test_partial_reset_temporal_group_falls_back_and_preserves_rows() -> None:
 @pytest.mark.parametrize("bad", [np.nan, np.inf])
 def test_partial_reset_nan_error_reports_env_ids(bad: float) -> None:
     def invalid(env: FakeEnv) -> np.ndarray:
-        result = env.obs.copy()
+        result = env.obs.clone()
         result[2, 0] = bad
         return result
 
@@ -181,7 +181,7 @@ def test_partial_reset_nan_error_reports_env_ids(bad: float) -> None:
 
 def test_partial_reset_nan_on_untouched_row_is_not_rechecked() -> None:
     def invalid(env: FakeEnv) -> np.ndarray:
-        result = env.obs.copy()
+        result = env.obs.clone()
         result[1, 0] = np.nan
         return result
 

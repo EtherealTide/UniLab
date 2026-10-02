@@ -42,6 +42,12 @@ class NoiseCfg(abc.ABC):
     ) -> torch.Tensor:
         return torch.as_tensor(value, dtype=dtype, device=device)
 
+    @staticmethod
+    def _require_generator(rng: np.random.Generator | None) -> np.random.Generator:
+        if rng is None:
+            raise ValueError("noise sampling requires an env-owned Torch or NumPy generator")
+        return rng
+
     def _cached_torch(
         self,
         value: NoiseParam,
@@ -110,9 +116,10 @@ class UniformNoiseCfg(NoiseCfg):
         rng: np.random.Generator | None = None,
         torch_rng: torch.Generator | None = None,
     ) -> np.ndarray | torch.Tensor:
-        if rng is None:
-            raise ValueError("UniformNoiseCfg requires an env-owned NumPy generator.")
+        if rng is None and torch_rng is None:
+            raise ValueError("UniformNoiseCfg requires an env-owned Torch or NumPy generator.")
         if not isinstance(data, torch.Tensor):
+            generator = self._require_generator(rng)
             n_min = np.asarray(self.n_min, dtype=data.dtype)
             n_max = np.asarray(self.n_max, dtype=data.dtype)
 
@@ -122,9 +129,9 @@ class UniformNoiseCfg(NoiseCfg):
             # casting; bit-level noise values differ from the float64 path,
             # which the issue #1348 RNG-stream parity removal allows.
             if data.dtype == np.float32:
-                noise = rng.random(data.shape, dtype=np.float32)
+                noise = generator.random(data.shape, dtype=np.float32)
             else:
-                noise = rng.random(data.shape).astype(data.dtype, copy=False)
+                noise = generator.random(data.shape).astype(data.dtype, copy=False)
             np.multiply(noise, n_max - n_min, out=noise)
             np.add(noise, n_min, out=noise)
 
@@ -152,10 +159,11 @@ class UniformNoiseCfg(NoiseCfg):
             )
             noise = unit * (n_max - n_min) + n_min
         else:
+            generator = self._require_generator(rng)
             if data.dtype == torch.float32:
-                unit = rng.random(tuple(data.shape), dtype=np.float32)
+                unit = generator.random(tuple(data.shape), dtype=np.float32)
             else:
-                unit = rng.random(tuple(data.shape)).astype(np.float32, copy=False)
+                unit = generator.random(tuple(data.shape)).astype(np.float32, copy=False)
             # The env-owned NumPy RNG remains authoritative in the default path.
             unit_torch = torch.from_numpy(unit).to(device=data.device, dtype=data.dtype)
             noise = unit_torch * (n_max - n_min) + n_min
@@ -185,18 +193,19 @@ class GaussianNoiseCfg(NoiseCfg):
         rng: np.random.Generator | None = None,
         torch_rng: torch.Generator | None = None,
     ) -> np.ndarray | torch.Tensor:
-        if rng is None:
-            raise ValueError("GaussianNoiseCfg requires an env-owned NumPy generator.")
+        if rng is None and torch_rng is None:
+            raise ValueError("GaussianNoiseCfg requires an env-owned Torch or NumPy generator.")
         if not isinstance(data, torch.Tensor):
+            generator = self._require_generator(rng)
             mean = np.asarray(self.mean, dtype=data.dtype)
             std = np.asarray(self.std, dtype=data.dtype)
 
             # Generate standard normal noise and scale.  Float32 data draws
             # directly in float32 (same fast path as UniformNoiseCfg).
             if data.dtype == np.float32:
-                noise = rng.standard_normal(data.shape, dtype=np.float32)
+                noise = generator.standard_normal(data.shape, dtype=np.float32)
             else:
-                noise = rng.standard_normal(data.shape).astype(data.dtype, copy=False)
+                noise = generator.standard_normal(data.shape).astype(data.dtype, copy=False)
             noise = mean + std * noise
 
             if self.operation == "add":
@@ -209,11 +218,18 @@ class GaussianNoiseCfg(NoiseCfg):
 
         mean = self._as_torch(self.mean, dtype=data.dtype, device=data.device)
         std = self._as_torch(self.std, dtype=data.dtype, device=data.device)
-        if data.dtype == torch.float32:
-            unit = rng.standard_normal(tuple(data.shape), dtype=np.float32)
+        if torch_rng is not None:
+            unit_torch = torch.randn(
+                tuple(data.shape), dtype=data.dtype, device=data.device, generator=torch_rng
+            )
+        elif data.dtype == torch.float32:
+            generator = self._require_generator(rng)
+            unit = generator.standard_normal(tuple(data.shape), dtype=np.float32)
+            unit_torch = torch.from_numpy(unit).to(device=data.device, dtype=data.dtype)
         else:
-            unit = rng.standard_normal(tuple(data.shape)).astype(np.float32, copy=False)
-        unit_torch = torch.from_numpy(unit).to(device=data.device, dtype=data.dtype)
+            generator = self._require_generator(rng)
+            unit = generator.standard_normal(tuple(data.shape)).astype(np.float32, copy=False)
+            unit_torch = torch.from_numpy(unit).to(device=data.device, dtype=data.dtype)
         noise = mean + std * unit_torch
         if self.operation == "add":
             return data + noise
