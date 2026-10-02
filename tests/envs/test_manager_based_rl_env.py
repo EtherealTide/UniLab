@@ -22,6 +22,7 @@ from unisim.backend.base import (
 import unilab.envs.manager_based_rl_env as manager_env_module
 from unilab.assets import ASSETS_ROOT_PATH
 from unilab.base.backend_factory import create_backend, env_backend_kwargs
+from unilab.base.backend_timing import UPDATE_STATE_DETAIL_TIMING_KEYS
 from unilab.base.entity import EntityCfg
 from unilab.base.scene import SceneCfg
 from unilab.base.torch_env import TorchEnv, TorchEnvState
@@ -1711,6 +1712,8 @@ def test_update_state_publishes_drain_vs_host_termination_attribution() -> None:
     assert timing["update_state_state_replace_ms"] >= 0.0
     assert timing["update_state_child_sum_ms"] >= 0.0
     assert timing["update_state_command_preflight_ms"] >= 0.0
+    for key in UPDATE_STATE_DETAIL_TIMING_KEYS:
+        assert timing[key] >= 0.0
     env.close()
 
 
