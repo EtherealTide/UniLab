@@ -974,13 +974,14 @@ class ResetStateTransaction:
         self._gain_dirty_mask[ids] = True
         self._dirty_mask[ids] = True
 
-    def reset_to_default(self, env_ids: np.ndarray, *, term_name: str) -> None:
+    def reset_to_default(self, env_ids: torch.Tensor | np.ndarray, *, term_name: str) -> None:
         """Stage backend default qpos/qvel for a subset of the active reset."""
         self._require_active()
+        ids = self._validate_ids(env_ids, capability="reset_to_default")
         if self.scene_layout is not None:
             self._restore_entity_controls = True
             for entity in self.scene_layout.entities:
-                defaults = self._backend.get_entity_default_state(entity.name, env_ids)
+                defaults = self._backend.get_entity_default_state(entity.name, ids)
                 fields = {}
                 if entity.root_mode != "fixed":
                     fields["root_pose"] = defaults["root_pose"]
@@ -990,9 +991,8 @@ class ResetStateTransaction:
                     fields["joint_positions"] = defaults["joint_positions"]
                     fields["joint_velocities"] = defaults["joint_velocities"]
                 if fields:
-                    self.write_entity_state(entity.name, env_ids, term_name=term_name, **fields)
+                    self.write_entity_state(entity.name, ids, term_name=term_name, **fields)
             return
-        ids = self._validate_ids(env_ids, capability="reset_to_default")
         outside = ids[~self._active_mask[ids]]
         if outside.size:
             raise ValueError(
@@ -2234,7 +2234,7 @@ class ResetStateTransaction:
             )
         return result
 
-    def _validate_ids(self, env_ids: torch.Tensor, *, capability: str) -> np.ndarray:
+    def _validate_ids(self, env_ids: torch.Tensor | np.ndarray, *, capability: str) -> np.ndarray:
         if not isinstance(env_ids, torch.Tensor):
             if not isinstance(env_ids, np.ndarray):
                 raise TypeError(
