@@ -356,6 +356,21 @@ def test_command_reset_state_boundary_can_skip_metric_publication(fake_env: Fake
     assert manager.last_reset_timing_ms["reset_done_reset_validation_ms"] >= 0.0
 
 
+def test_command_reset_state_can_defer_owner_validation(fake_env: FakeEnv) -> None:
+    manager = CommandManager({"goal": DummyCommandCfg(resampling_time_range=(1.0, 1.0))}, fake_env)
+    rows = torch.tensor([1, 3], dtype=torch.int64)
+
+    extras, commands = manager.reset_command_state(
+        rows,
+        publish_metrics=False,
+        validate_commands=False,
+    )
+
+    assert extras == {}
+    assert "reset_done_reset_validation_ms" not in manager.last_reset_timing_ms
+    torch.testing.assert_close(commands["goal"], manager.get_term("goal").command)
+
+
 def test_action_and_metric_state_clear_boundaries_match_selected_rows(fake_env: FakeEnv) -> None:
     action = ActionManager({"joint": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
     action.prev_action.fill_(1.0)
