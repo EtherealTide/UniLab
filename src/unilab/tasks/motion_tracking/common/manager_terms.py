@@ -702,26 +702,37 @@ def _command(env: ManagerBasedRlEnv, command_name: str) -> MotionCommand:
     return command
 
 
-def motion_anchor_pos_b(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray:
+def motion_anchor_pos_b(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray | torch.Tensor:
     return _command(env, command_name).motion_anchor_pos_b
 
 
-def motion_anchor_ori_b(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray:
+def motion_anchor_ori_b(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray | torch.Tensor:
     return _command(env, command_name).motion_anchor_ori_b
 
 
-def robot_body_pos_b(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray:
+def robot_body_pos_b(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray | torch.Tensor:
     command = _command(env, command_name)
     return command.robot_body_pos_b.reshape(env.num_envs, -1)
 
 
-def robot_body_ori_b(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray:
+def robot_body_ori_b(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray | torch.Tensor:
     command = _command(env, command_name)
     return command.robot_body_ori_b.reshape(env.num_envs, -1)
 
 
-def motion_joint_pos_rel(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray:
+def motion_joint_pos_rel(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray | torch.Tensor:
     command = _command(env, command_name)
+    if getattr(command, "tensor_carrier", False):
+        # MotionCommand.robot_joint_pos dispatches through the entity's host
+        # facade; a tensor carrier owns the explicit device joint view.
+        robot_joint_pos = getattr(command, "device_robot_joint_pos", None)
+        if robot_joint_pos is None:
+            robot_joint_pos = command.robot_joint_pos
+        return (
+            cast(torch.Tensor, robot_joint_pos)
+            - command.robot.data.default_joint_pos_torch(env.device)
+            - cast(torch.Tensor, command.joint_default_bias)
+        )
     return (
         command.robot_joint_pos - command.robot.data.default_joint_pos - command.joint_default_bias
     )

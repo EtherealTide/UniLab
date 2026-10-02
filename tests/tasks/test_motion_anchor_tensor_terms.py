@@ -26,6 +26,10 @@ class _MotionCommand(MotionCommand):
     def __init__(self, **values: Any) -> None:
         self.__dict__.update(values)
 
+    @property
+    def tensor_carrier(self) -> bool:
+        return bool(self.__dict__.get("tensor_carrier", False))
+
 
 class _FakeCommandManager:
     def __init__(self, command: Any) -> None:
@@ -200,3 +204,49 @@ def test_anchor_terms_declare_command_body_namespace() -> None:
 
     assert term.tensor_body_names == ("torso", "pelvis")
     assert term.entity_name == "robot"
+
+
+def test_tensor_command_observation_accessors_return_carrier_views() -> None:
+    command = _MotionCommand(tensor_carrier=True)
+    command.motion_anchor_pos_b = torch.zeros((2, 3), dtype=torch.float32)
+    command.motion_anchor_ori_b = torch.zeros((2, 6), dtype=torch.float32)
+    command.robot_body_pos_b = torch.zeros((2, 2, 3), dtype=torch.float32)
+    command.robot_body_ori_b = torch.zeros((2, 2, 6), dtype=torch.float32)
+    env = _env(command, _view())
+
+    torch.testing.assert_close(
+        mt.motion_anchor_pos_b(cast(ManagerBasedRlEnv, env), "motion"),
+        command.motion_anchor_pos_b,
+    )
+    torch.testing.assert_close(
+        mt.motion_anchor_ori_b(cast(ManagerBasedRlEnv, env), "motion"),
+        command.motion_anchor_ori_b,
+    )
+    torch.testing.assert_close(
+        mt.robot_body_pos_b(cast(ManagerBasedRlEnv, env), "motion"),
+        command.robot_body_pos_b.reshape(2, -1),
+    )
+    torch.testing.assert_close(
+        mt.robot_body_ori_b(cast(ManagerBasedRlEnv, env), "motion"),
+        command.robot_body_ori_b.reshape(2, -1),
+    )
+
+
+def test_tensor_command_joint_observation_uses_cached_default() -> None:
+    robot = SimpleNamespace(
+        data=SimpleNamespace(
+            default_joint_pos_torch=lambda device: torch.full((2, 29), 0.25),
+        )
+    )
+    command = _MotionCommand(
+        tensor_carrier=True,
+        robot=robot,
+        device_robot_joint_pos=torch.full((2, 29), 1.0),
+        joint_default_bias=torch.full((2, 29), 0.125),
+    )
+    env = _env(command, _view())
+
+    value = mt.motion_joint_pos_rel(cast(ManagerBasedRlEnv, env), "motion")
+
+    assert isinstance(value, torch.Tensor)
+    torch.testing.assert_close(value, torch.full((2, 29), 0.625))
