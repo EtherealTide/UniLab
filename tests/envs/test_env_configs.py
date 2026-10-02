@@ -1019,6 +1019,67 @@ def test_flashsac_g1_motion_genesis_manager_tensor_command_roll_out() -> None:
 
 
 @pytest.mark.parametrize(
+    ("task", "backend"),
+    [
+        ("g1_motion_tracking", "mjwarp"),
+        ("g1_motion_tracking", "genesis"),
+    ],
+)
+def test_selected_reset_publication_requires_no_manager_readiness_step(
+    task: str, backend: str
+) -> None:
+    """Selected reset publishes authoritative views without a control step."""
+    ensure_registries()
+    if backend == "mjwarp":
+        _require_mjwarp_runtime()
+    else:
+        _require_genesis_runtime()
+    from unisim.backend.base import SelectedResetPublication
+
+    from unilab.base import registry
+
+    _, override = _motion_manager_override(
+        task,
+        backend,
+        config_root="flashsac",
+    )
+    env = registry.make(
+        "G1MotionTrackingSAC",
+        num_envs=2,
+        sim_backend=backend,
+        env_cfg_override=override,
+    )
+    try:
+        capabilities = env.backend.get_tensor_capabilities()
+        assert capabilities.selected_reset
+        assert (
+            capabilities.selected_reset_publication is SelectedResetPublication.AUTHORITATIVE_VIEWS
+        )
+        env.init_state()
+
+        step_calls = 0
+        original_step = env.backend.step_tensor
+
+        def count_step(*args: Any, **kwargs: Any) -> Any:
+            nonlocal step_calls
+            step_calls += 1
+            return original_step(*args, **kwargs)
+
+        env.backend.step_tensor = count_step  # type: ignore[method-assign]
+        env.reset(env_indices=torch.tensor([1], dtype=torch.int64, device=env.device))
+        assert step_calls == 0
+
+        state_views = env.backend.get_state_views(("qpos", "qvel"), device=env.device)
+        assert state_views["qpos"].shape == (2, env.backend.get_public_state_widths().nq)
+        assert state_views["qvel"].shape == (2, env.backend.get_public_state_widths().nv)
+        assert torch.isfinite(state_views["qpos"]).all()
+        assert torch.isfinite(state_views["qvel"]).all()
+    finally:
+        env.close()
+        env._backend.close()
+
+
+@pytest.mark.parametrize(
     ("config_root", "task", "identity", "actor_dim", "critic_dim", "action_dim", "truncate"),
     _MOTION_CORE_RUNTIME_CASES,
 )
