@@ -750,8 +750,6 @@ class TensorMotionCommand(MotionCommand):
     cfg: TensorMotionCommandCfg  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def __init__(self, cfg: TensorMotionCommandCfg, env: ManagerBasedRlEnv):
-        import os
-
         super().__init__(cfg, env)
 
     def _prepare_tensor_carrier(self) -> None:
@@ -766,6 +764,7 @@ class TensorMotionCommand(MotionCommand):
             np.array(self.sampler.current_clip_end_frames, dtype=np.int32, copy=True),
             device=device,
         )
+        self._motion_features = self._make_motion_features(device)
         self._motion_data = MotionData(
             joint_pos=cast("np.ndarray", torch.empty((self.num_envs, num_joints), device=device)),
             joint_vel=cast("np.ndarray", torch.empty((self.num_envs, num_joints), device=device)),
@@ -822,6 +821,27 @@ class TensorMotionCommand(MotionCommand):
         for name in self.metrics:
             self.metrics[name] = torch.zeros(self.num_envs, dtype=torch.float32, device=device)
         self._refresh_motion()
+
+    def _make_motion_features(self, device: torch.device) -> torch.Tensor:
+        """Cache the complete motion dataset as one device-resident table."""
+        arrays = (
+            self.motion.joint_pos,
+            self.motion.joint_vel,
+            self.motion.body_pos_w,
+            self.motion.body_quat_w,
+            self.motion.body_lin_vel_w,
+            self.motion.body_ang_vel_w,
+        )
+        host = np.concatenate(
+            [np.asarray(value, dtype=np.float32).reshape(value.shape[0], -1) for value in arrays],
+            axis=1,
+        )
+        return torch.from_numpy(np.ascontiguousarray(host)).to(device=device)
+
+    def _motion_packet(self, frames: np.ndarray) -> torch.Tensor:
+        """Gather motion rows from the device-resident feature table."""
+        rows = torch.as_tensor(frames, dtype=torch.int64, device=self._device)
+        return self._motion_features.index_select(0, rows)
 
     def _defer_read_phase_binding(self) -> None:
         """Torch carriers were allocated eagerly; defer state-view binding."""
@@ -914,8 +934,10 @@ class TensorMotionCommand(MotionCommand):
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         host_rows = env_ids.detach().cpu().numpy()
         frames = self.sampler.sample_frames(host_rows)
-        motion = self.motion.get_motion_at_frame(frames)
         rows = env_ids.to(dtype=torch.int64)
+        packet = self._motion_packet(frames)
+        offsets = self._motion_feature_offsets
+        tails = self._motion_feature_tail_shapes
         if self._env.torch_rng is None:
             raise NotImplementedError(
                 "TensorMotionCommand reset sampling requires the Manager-owned Torch generator"
@@ -932,7 +954,8 @@ class TensorMotionCommand(MotionCommand):
             (rows.numel(), 6),
             dtype=torch.float32,
         )
-        joint_pos = torch.as_tensor(np.ascontiguousarray(motion.joint_pos), device=self._device)
+        joint_start, joint_end = offsets["joint_pos"]
+        joint_pos = packet[:, joint_start:joint_end].clone()
         joint_pos += self._env.torch_rng.uniform(
             self._joint_position_range_torch[0],
             self._joint_position_range_torch[1],
@@ -940,23 +963,18 @@ class TensorMotionCommand(MotionCommand):
             dtype=torch.float32,
         )
         joint_pos.clamp_(self._soft_joint_limits[:, 0], self._soft_joint_limits[:, 1])
-        motion_joint_vel = torch.as_tensor(
-            np.ascontiguousarray(motion.joint_vel), device=self._device
-        )
+        vel_start, vel_end = offsets["joint_vel"]
+        motion_joint_vel = packet[:, vel_start:vel_end].contiguous()
         self.robot.write_joint_state_tensor_to_sim(joint_pos, motion_joint_vel, env_ids=rows)
-
-        motion_body_pos = torch.as_tensor(
-            np.ascontiguousarray(motion.body_pos_w), device=self._device
-        )
-        motion_body_quat = torch.as_tensor(
-            np.ascontiguousarray(motion.body_quat_w), device=self._device
-        )
-        motion_body_lin_vel = torch.as_tensor(
-            np.ascontiguousarray(motion.body_lin_vel_w), device=self._device
-        )
-        motion_body_ang_vel = torch.as_tensor(
-            np.ascontiguousarray(motion.body_ang_vel_w), device=self._device
-        )
+        count = rows.numel()
+        pos_start, pos_end = offsets["body_pos_w"]
+        quat_start, quat_end = offsets["body_quat_w"]
+        lin_start, lin_end = offsets["body_lin_vel_w"]
+        ang_start, ang_end = offsets["body_ang_vel_w"]
+        motion_body_pos = packet[:, pos_start:pos_end].view(count, *tails["body_pos_w"])
+        motion_body_quat = packet[:, quat_start:quat_end].view(count, *tails["body_quat_w"])
+        motion_body_lin_vel = packet[:, lin_start:lin_end].view(count, *tails["body_lin_vel_w"])
+        motion_body_ang_vel = packet[:, ang_start:ang_end].view(count, *tails["body_ang_vel_w"])
         root_pos = motion_body_pos[:, 0] + self._env_origins.index_select(0, rows)
         root_pos += pose[:, :3]
         root_quat = quat_mul(
@@ -973,12 +991,15 @@ class TensorMotionCommand(MotionCommand):
             dim=-1,
         )
         self.robot.write_root_state_tensor_to_sim(root_state, env_ids=rows)
-        self._ingest_motion_rows_torch(rows, motion)
+        self._ingest_motion_packet(rows, packet)
         self._resample_ingested_ids = host_rows
-        self._resample_motion = motion
+        self._resample_motion = None
         self._sync_tensor_sampler_state()
 
     def _update_command(self, env_ids: torch.Tensor | None) -> None:
+        self._post_compute_env_ids = (
+            env_ids.detach().cpu().numpy() if isinstance(env_ids, torch.Tensor) else env_ids
+        )
         self._tensor_post_compute_env_ids = env_ids
         if env_ids is not None:
             ingested = self._resample_ingested_ids
@@ -1028,8 +1049,9 @@ class TensorMotionCommand(MotionCommand):
             if host_rows is None
             else self.sampler.current_frames[host_rows]
         )
-        data = self.motion.get_motion_at_frame(frames)
-        self._ingest_motion_rows_torch(self._tensor_all_rows if rows is None else rows, data)
+        self._ingest_motion_packet(
+            self._tensor_all_rows if rows is None else rows, self._motion_packet(frames)
+        )
 
     def _refresh_robot_state_torch(
         self, *, force: bool = False, rows: torch.Tensor | None = None
@@ -1078,21 +1100,32 @@ class TensorMotionCommand(MotionCommand):
         self._robot_joint_vel.zero_()
         self._robot_cache_step = self._env.common_step_counter
 
-    def _ingest_motion_rows_torch(self, rows: torch.Tensor, data: MotionData) -> None:
-        """Scatter one host motion gather into device-resident command buffers."""
-        count = rows.numel()
-        host = np.empty((count, self._motion_packet_width), dtype=np.float32)
-        offsets = {}
-        tail_shapes = {}
+    @property
+    def _motion_feature_tail_shapes(self) -> dict[str, tuple[int, ...]]:
+        return {
+            "joint_pos": (self.motion.num_joints,),
+            "joint_vel": (self.motion.num_joints,),
+            "body_pos_w": (len(self.cfg.body_names), 3),
+            "body_quat_w": (len(self.cfg.body_names), 4),
+            "body_lin_vel_w": (len(self.cfg.body_names), 3),
+            "body_ang_vel_w": (len(self.cfg.body_names), 3),
+        }
+
+    @property
+    def _motion_feature_offsets(self) -> dict[str, tuple[int, int]]:
         offset = 0
-        for motion_field in dataclasses.fields(data):
-            source = np.asarray(getattr(data, motion_field.name), dtype=np.float32)
-            tail_shapes[motion_field.name] = source.shape[1:]
-            width = int(np.prod(source.shape[1:], dtype=np.int64)) if source.ndim > 1 else 1
-            offsets[motion_field.name] = (offset, offset + width)
-            host[:, offset : offset + width] = source.reshape(count, width)
+        offsets: dict[str, tuple[int, int]] = {}
+        for name, tail in self._motion_feature_tail_shapes.items():
+            width = int(np.prod(tail, dtype=np.int64))
+            offsets[name] = (offset, offset + width)
             offset += width
-        packet = torch.from_numpy(host).to(device=self._device, non_blocking=False)
+        return offsets
+
+    def _ingest_motion_packet(self, rows: torch.Tensor, packet: torch.Tensor) -> None:
+        """Scatter one device motion packet into the command carriers."""
+        count = rows.numel()
+        offsets = self._motion_feature_offsets
+        tail_shapes = self._motion_feature_tail_shapes
         origins = (
             self._env_origins if count == self.num_envs else self._env_origins.index_select(0, rows)
         )
@@ -1108,10 +1141,6 @@ class TensorMotionCommand(MotionCommand):
         vel_start, vel_end = offsets["joint_vel"]
         self._command[rows, : joint_end - joint_start] = packet[:, joint_start:joint_end]
         self._command[rows, joint_end - joint_start :].copy_(packet[:, vel_start:vel_end])
-
-    @property
-    def _motion_packet_width(self) -> int:
-        return self.motion.num_joints * 2 + len(self.cfg.body_names) * 13
 
     def _refresh_relative_state_torch(self, rows: torch.Tensor | None = None) -> None:
         row_selector = self._tensor_all_rows if rows is None else rows
