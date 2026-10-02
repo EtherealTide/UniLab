@@ -752,8 +752,6 @@ class TensorMotionCommand(MotionCommand):
     def __init__(self, cfg: TensorMotionCommandCfg, env: ManagerBasedRlEnv):
         import os
 
-        if os.environ.get("DEBUG"):
-            print("BUILD TENSOR", cfg)
         super().__init__(cfg, env)
 
     def _prepare_tensor_carrier(self) -> None:
@@ -761,6 +759,13 @@ class TensorMotionCommand(MotionCommand):
         device = self._device
         num_bodies = len(self.cfg.body_names)
         num_joints = self.motion.num_joints
+        self.time_steps = torch.as_tensor(
+            np.array(self.sampler.current_frames, dtype=np.int32, copy=True), device=device
+        )
+        self.current_clip_end_frames = torch.as_tensor(
+            np.array(self.sampler.current_clip_end_frames, dtype=np.int32, copy=True),
+            device=device,
+        )
         self._motion_data = MotionData(
             joint_pos=cast("np.ndarray", torch.empty((self.num_envs, num_joints), device=device)),
             joint_vel=cast("np.ndarray", torch.empty((self.num_envs, num_joints), device=device)),
@@ -842,6 +847,10 @@ class TensorMotionCommand(MotionCommand):
     @property
     def tensor_body_names(self) -> tuple[str, ...]:
         return tuple(self.cfg.body_names)
+
+    @property
+    def tensor_current_clip_end_frames(self) -> torch.Tensor:
+        return cast(torch.Tensor, self.current_clip_end_frames)
 
     @property
     def device_robot_joint_pos(self) -> torch.Tensor:
@@ -967,6 +976,7 @@ class TensorMotionCommand(MotionCommand):
         self._ingest_motion_rows_torch(rows, motion)
         self._resample_ingested_ids = host_rows
         self._resample_motion = motion
+        self._sync_tensor_sampler_state()
 
     def _update_command(self, env_ids: torch.Tensor | None) -> None:
         self._tensor_post_compute_env_ids = env_ids
@@ -986,9 +996,7 @@ class TensorMotionCommand(MotionCommand):
         )
         active_ids = np.flatnonzero(~reset_buf_host).astype(np.int32, copy=False)
         wrap_ids = self.sampler.step(active_ids)
-        cast(torch.Tensor, self.time_steps).copy_(
-            torch.as_tensor(self.sampler.current_frames, device=self._device)
-        )
+        self._sync_tensor_sampler_state()
         if len(wrap_ids) and not self.cfg.params.truncate_on_clip_end:
             self._resample_command(torch.as_tensor(wrap_ids, device=self._device))
         self._refresh_motion_torch()
@@ -1000,6 +1008,14 @@ class TensorMotionCommand(MotionCommand):
             None if rows is None else torch.as_tensor(rows, device=self._device)
         )
 
+    def _sync_tensor_sampler_state(self) -> None:
+        cast(torch.Tensor, self.time_steps).copy_(
+            torch.as_tensor(self.sampler.current_frames, device=self._device)
+        )
+        cast(torch.Tensor, self.current_clip_end_frames).copy_(
+            torch.as_tensor(self.sampler.current_clip_end_frames, device=self._device)
+        )
+
     @staticmethod
     def _validate_cfg(cfg: MotionCommandCfg) -> None:
         _validate_motion_command_cfg(cfg)
@@ -1007,7 +1023,11 @@ class TensorMotionCommand(MotionCommand):
     def _refresh_motion_torch(self, rows: torch.Tensor | None = None) -> None:
         """Gather motion rows and publish the device-resident command carrier."""
         host_rows = None if rows is None else rows.detach().cpu().numpy()
-        frames = self.time_steps if host_rows is None else self.time_steps[host_rows]
+        frames = (
+            self.sampler.current_frames
+            if host_rows is None
+            else self.sampler.current_frames[host_rows]
+        )
         data = self.motion.get_motion_at_frame(frames)
         self._ingest_motion_rows_torch(self._tensor_all_rows if rows is None else rows, data)
 
@@ -1820,7 +1840,7 @@ class bad_undesired_body_contacts(_BodyTerm):
 def motion_clip_end(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray | torch.Tensor:
     command = _command(env, command_name)
     if getattr(command, "tensor_carrier", False):
-        current_clip_ends = getattr(command, "current_clip_end_frames", None)
+        current_clip_ends = getattr(command, "tensor_current_clip_end_frames", None)
         if current_clip_ends is not None:
             return cast(torch.Tensor, command.time_steps) >= cast(torch.Tensor, current_clip_ends)
     return command.time_steps >= command.sampler.current_clip_end_frames
