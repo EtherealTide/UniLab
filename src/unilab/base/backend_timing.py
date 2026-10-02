@@ -14,6 +14,8 @@ RESET_DONE_DETAIL_TIMING_KEYS = (
     "reset_done_command_event_ms",
     "reset_done_manager_state_ms",
     "reset_done_state_publish_ms",
+    "reset_done_selected_read_ms",
+    "reset_done_read_drain_ms",
     "reset_done_command_refresh_ms",
     "reset_done_observation_ms",
     "reset_done_observation_scatter_ms",
