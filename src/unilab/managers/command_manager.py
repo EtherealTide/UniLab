@@ -93,8 +93,13 @@ class CommandTerm(ManagerTermBase):
             # Publish reset means and the finite diagnostic through one device
             # boundary instead of synchronizing twice per metric.
             selected = torch.stack([value[env_ids] for _, value in tensor_metrics], dim=0)
-            means = selected.mean(dim=1).detach().cpu().tolist()
-            finite = bool(torch.isfinite(selected).all())
+            reduced = torch.stack(
+                (selected.mean(dim=1), torch.isfinite(selected).all(dim=1).to(torch.float32)),
+                dim=0,
+            ).detach()
+            host_reduced = reduced.cpu()
+            means = host_reduced[0].tolist()
+            finite = bool(host_reduced[1].min().item() == 1.0)
             if not finite:
                 for metric_name, metric_slice in zip(
                     (name for name, _ in tensor_metrics), selected, strict=True
