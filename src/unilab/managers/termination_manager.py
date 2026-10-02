@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import time
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
@@ -105,15 +106,28 @@ class TerminationManager(ManagerBase):
         return extras
 
     def compute(self) -> torch.Tensor:
+        timing = getattr(self, "last_step_timing_ms", None)
+        if timing is None:
+            timing = {}
+            self.last_step_timing_ms = timing
+        timing.clear()
         self._truncated_buf[:] = False
         self._terminated_buf[:] = False
+        dispatch_ms = 0.0
+        aggregation_ms = 0.0
         for name, term_cfg in zip(self._term_names, self._term_cfgs, strict=False):
+            dispatch_started = time.perf_counter()
             value = self._compute_term(name, term_cfg)
+            dispatch_ms += time.perf_counter() - dispatch_started
+            aggregation_started = time.perf_counter()
             if term_cfg.time_out:
                 self._truncated_buf |= value
             else:
                 self._terminated_buf |= value
             self._term_dones[name][:] = value
+            aggregation_ms += time.perf_counter() - aggregation_started
+        timing["update_state_termination_term_dispatch_ms"] = dispatch_ms * 1000.0
+        timing["update_state_termination_aggregation_ms"] = aggregation_ms * 1000.0
         return self._truncated_buf | self._terminated_buf
 
     def get_term(self, name: str) -> torch.Tensor:
