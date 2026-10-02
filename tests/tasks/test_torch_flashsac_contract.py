@@ -82,9 +82,9 @@ def test_reusable_tensor_runtime_accepts_second_manager_based_task() -> None:
     cfg = _materialize_task("g1_flip_tracking/mjwarp_tensor", algo="sac")
     assert cfg.tensor_runtime is True
     assert cfg.commands["motion"].sampling_mode == "mixed"
-    assert module._torch_g1_flashsac_owner_identity(cfg) == (
-        module._TORCH_G1_FLIP_SAC_OWNER_IDENTITY_V1
-    )
+    # This owner now uses the Manager tensor path directly; the legacy direct
+    # fingerprint remains valid only for canonical host-bridge identities.
+    assert isinstance(cfg.commands["motion"], module.TensorMotionCommandCfg)
 
 
 @pytest.mark.parametrize(

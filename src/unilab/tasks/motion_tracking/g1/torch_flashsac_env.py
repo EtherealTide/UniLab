@@ -42,6 +42,7 @@ from unilab.tasks.motion_tracking.common.manager_terms import (
     MotionCommandCfg,
     MotionJointPositionAction,
     MotionJointPositionActionCfg,
+    TensorMotionCommandCfg,
 )
 from unilab.tasks.motion_tracking.common.tensor_runtime import (
     TensorEpisodeMetrics,

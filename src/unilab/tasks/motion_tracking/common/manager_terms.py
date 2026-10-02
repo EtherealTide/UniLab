@@ -1274,9 +1274,23 @@ def motion_joint_pos_rel(env: ManagerBasedRlEnv, command_name: str) -> np.ndarra
     )
 
 
-def motion_joint_pos_rel_biased(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray:
+def motion_joint_pos_rel_biased(
+    env: ManagerBasedRlEnv, command_name: str
+) -> np.ndarray | torch.Tensor:
     """Joint position relative to the episode default, including encoder bias."""
     command = _command(env, command_name)
+    if getattr(command, "tensor_carrier", False):
+        robot_joint_pos = getattr(command, "device_robot_joint_pos", None)
+        if robot_joint_pos is None:
+            robot_joint_pos = command.robot_joint_pos
+        return (
+            cast(torch.Tensor, robot_joint_pos)
+            + command.robot.data.encoder_bias_tensor.to(
+                device=env.device, dtype=torch.float32, non_blocking=True
+            )
+            - command.robot.data.default_joint_pos_torch(env.device)
+            - cast(torch.Tensor, command.joint_default_bias)
+        )
     return (
         command.robot.data.joint_pos_biased
         - command.robot.data.default_joint_pos
@@ -1578,9 +1592,15 @@ class motion_relative_body_position_z_error_exp(_BodyTerm):
         command_name: str,
         std: float,
         body_names: tuple[str, ...] | None = None,
-    ) -> np.ndarray:
+    ) -> np.ndarray | torch.Tensor:
         del env, body_names
         command, scale = self._validate(command_name, std)
+        if getattr(command, "tensor_carrier", False):
+            delta = (
+                cast(torch.Tensor, command.body_pos_relative_w)[:, self._body_ids, 2]
+                - cast(torch.Tensor, command.robot_body_pos_w)[:, self._body_ids, 2]
+            )
+            return torch.exp(-delta.square().mean(dim=-1) / (scale * scale))
         error = np.square(
             command.body_pos_relative_w[:, self._body_ids, 2]
             - command.robot_body_pos_w[:, self._body_ids, 2]
