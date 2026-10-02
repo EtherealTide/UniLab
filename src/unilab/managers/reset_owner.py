@@ -45,6 +45,14 @@ class ResetOwner(ManagerTermBase):
         """Execute the declared selected-reset ownership in Manager lifecycle."""
         raise NotImplementedError(type(self).__name__)
 
+    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> None:
+        """Execute reset ownership that must stage writes before commit."""
+        raise NotImplementedError(type(self).__name__)
+
+    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> None:
+        """Execute reset ownership after the reset transaction commits."""
+        raise NotImplementedError(type(self).__name__)
+
 
 class ResetOwnerManager:
     """Construct and expose the sole configured reset owner.
@@ -88,6 +96,14 @@ class ResetOwnerManager:
         for term in self._terms.values():
             term.reset(env_ids)
 
+    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> None:
+        for term in self._terms.values():
+            term.reset_transaction(env_ids)
+
+    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> None:
+        for term in self._terms.values():
+            term.reset_committed(env_ids)
+
     def __str__(self) -> str:
         if not self._terms:
             return "<ResetOwnerManager> (inactive)"
@@ -110,6 +126,12 @@ class NullResetOwnerManager:
         raise KeyError(f"Reset owner '{name}' is not configured")
 
     def reset(self, env_ids: torch.Tensor | slice | None) -> None:
+        del env_ids
+
+    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> None:
+        del env_ids
+
+    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> None:
         del env_ids
 
     def __str__(self) -> str:

@@ -46,6 +46,8 @@ from unilab.managers import (
     ObservationTermCfg,
     RecorderTerm,
     RecorderTermCfg,
+    ResetOwner,
+    ResetOwnerCfg,
     RewardTermCfg,
     TerminationTermCfg,
 )
@@ -2828,3 +2830,89 @@ def test_get_playback_debug_overlays_frame_is_none_when_all_terms_return_none() 
 def test_manager_tensor_runtime_switch_is_removed() -> None:
     assert not hasattr(ManagerBasedRlEnvCfg(), "tensor_runtime")
     assert not hasattr(ManagerBasedRlEnvCfg(), "tensor_runtime_device")
+
+
+class _RecordingResetOwner(ResetOwner):
+    def __init__(self, cfg: ResetOwnerCfg, env) -> None:
+        super().__init__(cfg, env)
+        self.transaction_rows: list[torch.Tensor] = []
+        self.committed_rows: list[torch.Tensor] = []
+
+    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> None:
+        assert isinstance(env_ids, torch.Tensor)
+        self.transaction_rows.append(env_ids.clone())
+        extras, _commands = self._env.command_manager.reset_command_state(
+            env_ids, publish_metrics=False
+        )
+        assert extras == {}
+
+    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> None:
+        assert isinstance(env_ids, torch.Tensor)
+        self.committed_rows.append(env_ids.clone())
+        self._env.action_manager.clear_action_state(env_ids)
+        clear_metrics = getattr(self._env.metrics_manager, "clear_episode_state", None)
+        if callable(clear_metrics):
+            clear_metrics(env_ids)
+
+
+@dataclass(kw_only=True)
+class _RecordingResetOwnerCfg(ResetOwnerCfg):
+    def build(self, env) -> _RecordingResetOwner:
+        return _RecordingResetOwner(self, env)
+
+
+def test_reset_owner_replaces_command_and_post_commit_state_passes() -> None:
+    cfg = _make_cfg()
+    cfg.reset_owners = {
+        "motion": _RecordingResetOwnerCfg(
+            func=_RecordingResetOwner,
+            command_name="target",
+            owns_observation_reset=False,
+        )
+    }
+    env, _backend = _make_env(cfg)
+    env.reset()
+    owner = env.reset_owner_manager.owner
+    assert isinstance(owner, _RecordingResetOwner)
+
+    original_command_reset = env.command_manager.reset
+    original_action_reset = env.action_manager.reset
+    original_metric_reset = env.metrics_manager.reset
+    command_resets = 0
+    action_resets = 0
+    metric_resets = 0
+    initial_owner_transactions = len(owner.transaction_rows)
+    initial_owner_commits = len(owner.committed_rows)
+
+    def count_command_reset(env_ids):
+        nonlocal command_resets
+        command_resets += 1
+        return original_command_reset(env_ids)
+
+    def count_action_reset(env_ids=None):
+        nonlocal action_resets
+        action_resets += 1
+        return original_action_reset(env_ids)
+
+    def count_metric_reset(env_ids=None):
+        nonlocal metric_resets
+        metric_resets += 1
+        return original_metric_reset(env_ids)
+
+    env.command_manager.reset = count_command_reset  # type: ignore[method-assign]
+    env.action_manager.reset = count_action_reset  # type: ignore[method-assign]
+    env.metrics_manager.reset = count_metric_reset  # type: ignore[method-assign]
+    rows = torch.tensor([1], dtype=torch.int64)
+    env.reset(env_indices=rows)
+
+    assert command_resets == 0
+    assert action_resets == 0
+    assert metric_resets == 0
+    assert len(owner.transaction_rows) == initial_owner_transactions + 1
+    torch.testing.assert_close(owner.transaction_rows[-1], rows)
+    assert len(owner.committed_rows) == initial_owner_commits + 1
+    torch.testing.assert_close(owner.committed_rows[-1], rows)
+    timing = env.state.info["timing"]
+    assert timing["reset_done_command_term_count"] == 1.0
+    assert timing["reset_done_manager_reset_count"] == 5.0
+    env.close()
