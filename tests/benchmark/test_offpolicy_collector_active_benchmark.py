@@ -454,6 +454,61 @@ def test_parse_args_accepts_variant_labels_and_overrides() -> None:
     assert args.variant_override == ["torch=env.seed=7", "numpy=env.seed=8"]
 
 
+def test_variant_blocks_alternate_labels_without_extending_measurement(monkeypatch) -> None:
+    """A/B blocks alternate labels and retain the same warmup/measure budget."""
+    order: list[str] = []
+
+    def fake_build_and_run_case(
+        spec,
+        *,
+        warmup_steps,
+        measure_steps,
+        replay_capacity_steps,
+        num_envs,
+        extra_overrides,
+        variant,
+        profile_numpy_random,
+    ):
+        order.append(variant)
+        result = _make_result(
+            throughput=1000.0,
+            include_env_step_breakdown=True,
+        )
+        result.case = bench.CollectorCase(**{**vars(result.case), "variant": variant})
+        return result
+
+    monkeypatch.setattr(bench, "_build_and_run_case", fake_build_and_run_case)
+    monkeypatch.setattr(bench, "_print_result", lambda result: None)
+
+    payload = {}
+    monkeypatch.setattr(
+        bench,
+        "_write_json",
+        lambda path, value: payload.update(value),
+    )
+
+    argv = [
+        "--cases",
+        "flashsac/g1_walk_flat/mujoco",
+        "--warmup-steps",
+        "5",
+        "--measure-steps",
+        "20",
+        "--variants",
+        "base,head",
+        "--repeat-variant-blocks",
+        "2",
+    ]
+    monkeypatch.setattr(sys, "argv", ["benchmark", *argv])
+    bench.main()
+
+    assert order == ["base", "head", "base", "head"]
+    assert payload["args"]["warmup_steps"] == 5
+    assert payload["args"]["measure_steps"] == 20
+    assert payload["args"]["repeat_variant_blocks"] == 2
+    assert [result["case"]["variant"] for result in payload["results"]] == order
+
+
 def test_variant_ablation_table_compares_each_variant_to_default() -> None:
     baseline = _make_result(num_envs=2, throughput=1000.0)
     torch_result = _make_result(num_envs=2, throughput=1500.0)
