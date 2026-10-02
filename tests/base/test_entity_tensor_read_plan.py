@@ -323,9 +323,9 @@ def test_device_resident_scene_plan_reuses_stable_sensor_views() -> None:
     second = plan.sensor_tensor_views("robot", ("imu_gyro",)).values["imu_gyro"]
 
     assert first is second
-    # One boundary refreshes adapter-owned projections. The remaining stable
-    # views must not cross a second Python/DLPack boundary per manager term.
-    assert backend.sensor_view_calls == calls_after_first_refresh + 1
+    # The first boundary refreshes adapter-owned projections. Later read phases
+    # republish the same live aliases without another Python/DLPack crossing.
+    assert backend.sensor_view_calls == calls_after_first_refresh
     assert plan.transfer_stats == {}
     assert plan.last_timing == {}
     plan.close()
