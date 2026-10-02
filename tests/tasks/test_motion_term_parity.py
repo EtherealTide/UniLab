@@ -1025,6 +1025,47 @@ def test_tensor_command_publishes_sampler_advance_exactly_once() -> None:
     torch.testing.assert_close(command.time_steps, torch.tensor([5, 1, 10], dtype=torch.int32))
 
 
+def test_motion_reset_owner_skips_redundant_command_sync_after_payload_validation() -> None:
+    command = mt.TensorMotionCommand.__new__(mt.TensorMotionCommand)
+    command._last_reset_payload_validated = True
+    command._command = torch.full((3, 4), torch.nan)
+    manager = SimpleNamespace(
+        reset_command_state=lambda rows, *, publish_metrics, validate_commands: (
+            {},
+            {"motion": command._command},
+        )
+    )
+    env = SimpleNamespace(command_manager=manager)
+    cfg = mt.MotionResetOwnerCfg(
+        func=lambda **kwargs: None,
+        command_name="motion",
+        action_name="joint_pos",
+    )
+    owner = mt.MotionResetOwner.__new__(mt.MotionResetOwner)
+    owner.cfg = cfg
+    owner._command = command
+    owner._command_manager = manager
+    owner._device = torch.device("cpu")
+    del env
+
+    scalar_conversions = 0
+    original_bool = torch.Tensor.__bool__
+
+    def counted_bool(self: torch.Tensor) -> bool:
+        nonlocal scalar_conversions
+        scalar_conversions += 1
+        return original_bool(self)
+
+    torch.Tensor.__bool__ = counted_bool  # type: ignore[method-assign]
+    try:
+        extras = owner.reset_transaction(torch.tensor([1], dtype=torch.int64))
+    finally:
+        torch.Tensor.__bool__ = original_bool  # type: ignore[method-assign]
+
+    assert extras == {}
+    assert scalar_conversions == 0
+
+
 def test_tensor_command_syncs_sampler_mirrors_on_selected_rows_only() -> None:
     command = mt.TensorMotionCommand.__new__(mt.TensorMotionCommand)
     command._device = torch.device("cpu")
