@@ -4,7 +4,6 @@ from unilab.base import registry
 from unilab.envs import ManagerBasedRlEnvCfg, make_manager_based_rl_env
 
 from .motion_box_loader import BoxMotionData, BoxMotionLoader
-from .torch_flashsac_env import make_torch_g1_motion_tracking_flashsac_env
 
 G1_MOTION_TASKS = (
     "G1MotionTracking",
@@ -20,16 +19,12 @@ for _task_name in G1_MOTION_TASKS:
     if _task_name != "G1MotionTrackingSAC":
         registry.register_env(_task_name, make_manager_based_rl_env, sim_backend="mujoco")
 
-# FlashSAC G1 has a task-owned tensor runtime for the scoped MJWarp/MJBatch
-# owners; other G1 tasks retain the general NumPy Manager-Based runtime.
+# The canonical FlashSAC motion owners run the Manager tensor lifecycle.
 registry.register_env(
     "G1MotionTrackingSAC",
-    make_torch_g1_motion_tracking_flashsac_env,
+    make_manager_based_rl_env,
     sim_backend="mujoco",
 )
-# The canonical FlashSAC MJWarp owner now runs the Manager-Based tensor path;
-# the task-owned direct runtime remains scoped to host-bridge/external worker
-# backends while Phase 3 absorption continues.
 registry.register_env(
     "G1MotionTrackingSAC",
     make_manager_based_rl_env,
