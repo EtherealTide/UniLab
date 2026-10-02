@@ -1,4 +1,4 @@
-"""Stable backend-facing reset timing schema.
+"""Stable backend-facing reset and update-state timing schemas.
 
 These keys are consumed by environment runtimes and benchmark tooling. They are
 owned here rather than by a particular NumPy or Torch environment base so the
@@ -36,9 +36,6 @@ RESET_DONE_DETAIL_TIMING_KEYS = (
     "reset_done_command_post_compute_ms",
     "reset_done_motion_robot_refresh_ms",
     "reset_done_motion_relative_refresh_ms",
-    "reset_done_motion_failure_stats_ms",
-    "reset_done_motion_step_sampler_ms",
-    "reset_done_motion_refresh_current_ms",
     "reset_done_motion_post_compute_view_ms",
     "reset_done_motion_post_compute_kernel_ms",
     "reset_done_motion_post_compute_rebind_ms",
@@ -84,6 +81,12 @@ RESET_DONE_DETAIL_TIMING_KEYS = (
     "set_state_internal_gap_ms",
 )
 
+UPDATE_STATE_DETAIL_TIMING_KEYS = (
+    "reset_done_motion_failure_stats_ms",
+    "reset_done_motion_step_sampler_ms",
+    "reset_done_motion_refresh_current_ms",
+)
+
 BACKEND_SET_STATE_DETAIL_TIMING_KEYS = (
     "set_state_mask_ms",
     "set_state_data_slice_ms",
@@ -109,4 +112,5 @@ BACKEND_SET_STATE_DETAIL_TIMING_KEYS = (
 __all__ = [
     "BACKEND_SET_STATE_DETAIL_TIMING_KEYS",
     "RESET_DONE_DETAIL_TIMING_KEYS",
+    "UPDATE_STATE_DETAIL_TIMING_KEYS",
 ]
