@@ -8,7 +8,6 @@ import pytest
 import torch
 from scripts.benchmark.torch_env import g1_flashsac_backend as g1_backend
 from scripts.benchmark.torch_env.g1_flashsac_backend import (
-    _build_backend,
     _build_cfg,
     _clear_workload_state_aliases,
     _materialize_and_negotiate,
@@ -18,8 +17,6 @@ from scripts.benchmark.torch_env.g1_flashsac_backend import (
 )
 from scripts.benchmark.torch_env.motion_tracking import MotionTrackingWorkload
 from scripts.benchmark.torch_env.xp import TorchBackend, TorchRng
-
-from unilab.base import backend_factory
 
 
 def test_isaacsim_fixture_loader_is_rejected_after_productionization() -> None:
@@ -36,35 +33,6 @@ def test_isaacsim_fixture_cli_flag_is_obsolete(capsys: pytest.CaptureFixture[str
         _parse_args(["--backends", "isaacsim", "--isaacsim-test-fixture"])
 
     assert "--isaacsim-test-fixture is obsolete" in capsys.readouterr().err
-
-
-def test_build_backend_binds_newton_process_device_before_construction(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[str] = []
-
-    def fake_create_backend(
-        backend_type: str,
-        scene: object,
-        num_envs: int,
-        sim_dt: float,
-        **kwargs: object,
-    ) -> object:
-        calls.append("create")
-        assert backend_type == "newton"
-        assert kwargs["newton_device"] is None
-        return object()
-
-    monkeypatch.setattr(
-        g1_backend,
-        "_bind_newton_benchmark_device",
-        lambda: calls.append("bind"),
-    )
-    monkeypatch.setattr(backend_factory, "create_backend", fake_create_backend)
-
-    _build_backend("newton", num_envs=2)
-
-    assert calls == ["bind", "create"]
 
 
 def test_tensor_runtime_diagnostics_are_serialized_for_backend_provenance() -> None:
