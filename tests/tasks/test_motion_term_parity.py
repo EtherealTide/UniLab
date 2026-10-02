@@ -981,3 +981,26 @@ def test_joint_pos_limits_bit_parity() -> None:
         axis=-1,
     )
     np.testing.assert_array_equal(out, expected)
+
+
+def test_tensor_command_publishes_sampler_advance_exactly_once() -> None:
+    command = mt.TensorMotionCommand.__new__(mt.TensorMotionCommand)
+    command._device = torch.device("cpu")
+    command.time_steps = torch.tensor([4, 0, 9], dtype=torch.int32)
+    command.sampler = SimpleNamespace(
+        current_frames=np.asarray([5, 0, 10], dtype=np.int32),
+        update_failure_stats=lambda terminated: None,
+        step=lambda rows: np.asarray([], dtype=np.int32),
+    )
+    command.cfg = SimpleNamespace(params=SimpleNamespace(truncate_on_clip_end=True))
+    command._tensor_post_compute_env_ids = None
+    command._resample_ingested_ids = None
+    command._env = SimpleNamespace(
+        termination_manager=SimpleNamespace(terminated=torch.tensor([False, False, False])),
+        reset_buf=torch.tensor([False, False, False]),
+    )
+
+    command._refresh_motion_torch = lambda *args, **kwargs: None
+    command._update_command(None)
+
+    torch.testing.assert_close(command.time_steps, torch.tensor([5, 0, 10], dtype=torch.int32))
