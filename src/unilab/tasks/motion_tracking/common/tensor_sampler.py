@@ -158,6 +158,27 @@ class TensorMotionSampler:
         alpha = terminated.any().to(dtype=self._bin_failed.dtype) * self.adaptive_alpha
         self._bin_failed.mul_(1.0 - alpha).add_(failures * alpha)
 
+    def step_full(self, active: torch.Tensor, time_steps: torch.Tensor) -> torch.Tensor:
+        """Advance and publish full-width frame mirrors without row gathers."""
+        if active.shape != (self.num_envs,) or active.device != self.device:
+            raise ValueError("TensorMotionSampler active mask shape/device mismatch")
+        if (
+            time_steps.shape != (self.num_envs,)
+            or time_steps.dtype != torch.int32
+            or time_steps.device != self.device
+        ):
+            raise ValueError("TensorMotionSampler time_steps must be int32 device frames")
+        increment = active.to(dtype=torch.int32)
+        self.current_frames.add_(increment)
+        time_steps.copy_(self.current_frames)
+        frames = self.current_frames.to(dtype=torch.int64)
+        clip_indices = self._clip_indices(frames)
+        clip_ends = self._clip_end_frames.index_select(0, clip_indices)
+        self.current_clip_end_frames.copy_(clip_ends)
+        done = frames > clip_ends
+        done.logical_and_(active)
+        return done.nonzero(as_tuple=False).flatten()
+
     def step(self, active: torch.Tensor, *, rows: torch.Tensor | None = None) -> torch.Tensor:
         if active.shape != (self.num_envs,) or active.device != self.device:
             raise ValueError("TensorMotionSampler active mask shape/device mismatch")

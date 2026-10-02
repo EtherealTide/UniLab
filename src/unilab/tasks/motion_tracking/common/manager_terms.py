@@ -1426,9 +1426,10 @@ class TensorMotionCommand(MotionCommand):
     def _step_tensor_sampler(self) -> torch.Tensor:
         """Advance the device frame carrier once without a host row transfer."""
         active = ~cast(torch.Tensor, self._env.reset_buf)
-        done = self.tensor_sampler.step(active)
-        self._sync_tensor_sampler_state()
-        return done
+        return self.tensor_sampler.step_full(
+            active,
+            cast(torch.Tensor, self.time_steps),
+        )
 
     def post_compute(self) -> None:
         rows = self._tensor_post_compute_env_ids
