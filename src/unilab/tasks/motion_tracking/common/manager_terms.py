@@ -182,6 +182,7 @@ def _update_motion_relative_state_torch(
 
 _MotionRelativeStateFn = Callable[..., None]
 _update_motion_relative_state_compiled: _MotionRelativeStateFn | None = None
+_update_motion_metrics_compiled: _MotionRelativeStateFn | None = None
 _ingest_motion_packet_compiled: Callable[..., None] | None = None
 _refresh_motion_robot_state_compiled: Callable[..., None] | None = None
 
@@ -203,6 +204,20 @@ def _bind_compiled_motion_relative_state() -> _MotionRelativeStateFn:
         dynamic=True,
     )
     return _update_motion_relative_state_compiled
+
+
+def _bind_compiled_motion_metrics() -> _MotionRelativeStateFn:
+    """Compile the ten-output motion metric kernel once per process."""
+    global _update_motion_metrics_compiled
+    if _update_motion_metrics_compiled is not None:
+        return _update_motion_metrics_compiled
+    if not _compiled_motion_relative_state_available():
+        return _update_motion_metrics_torch
+    _update_motion_metrics_compiled = torch.compile(
+        _update_motion_metrics_torch,
+        dynamic=True,
+    )
+    return _update_motion_metrics_compiled
 
 
 def _ingest_motion_packet_kernel(
@@ -1525,7 +1540,7 @@ class TensorMotionCommand(MotionCommand):
         return cast("tuple[torch.Tensor, ...]", values)
 
     def _update_torch_error_metrics(self, rows: torch.Tensor) -> None:
-        _update_motion_metrics_torch(
+        _bind_compiled_motion_metrics()(
             rows.to(dtype=torch.int64),
             self.anchor_body_idx,
             self._body_pos_w,
