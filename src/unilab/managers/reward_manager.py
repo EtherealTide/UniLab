@@ -146,11 +146,26 @@ class RewardManager(ManagerBase):
         """
         if not self._term_names:
             return {}
-        means = self._step_reward.mean(dim=0).detach().cpu().tolist()
+        means = self.step_reward_means.detach()
+        if means.numel() == 0:
+            return {}
+        host_means = means.cpu().tolist()
         return {
             f"reward/{name}": float(mean)
-            for name, mean in zip(self._term_names, means, strict=True)
+            for name, mean in zip(self._term_names, host_means, strict=True)
         }
+
+    @property
+    def step_reward_names(self) -> tuple[str, ...]:
+        """Active per-term log names in Manager declaration order."""
+        return tuple(self._term_names)
+
+    @property
+    def step_reward_means(self) -> torch.Tensor:
+        """Latest per-term weighted means on the Manager device."""
+        if not self._term_names:
+            return torch.empty(0, dtype=torch.float32, device=self._device)
+        return self._step_reward.mean(dim=0)
 
     def get_active_iterable_terms(self, env_idx: int) -> list[tuple[str, list[float]]]:
         terms = []
