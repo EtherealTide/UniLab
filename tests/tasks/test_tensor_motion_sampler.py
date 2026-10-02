@@ -114,6 +114,27 @@ def test_step_selected_rows_does_not_touch_or_read_inactive_rows() -> None:
     assert sampler.diagnostics.total == 0
 
 
+def test_step_full_publishes_mirrors_without_row_gathers() -> None:
+    sampler = _sampler(initial_frames=np.asarray([0, 1, 2, 3], dtype=np.int32))
+    time_steps = torch.tensor([99, 99, 99, 99], dtype=torch.int32)
+    active = torch.tensor([True, False, True, False])
+
+    done = sampler.step_full(active, time_steps)
+
+    torch.testing.assert_close(
+        sampler.current_frames, torch.tensor([1, 1, 3, 3], dtype=torch.int32)
+    )
+    torch.testing.assert_close(time_steps, torch.tensor([1, 1, 3, 3], dtype=torch.int32))
+    torch.testing.assert_close(
+        sampler.current_clip_end_frames,
+        sampler._clip_end_frames.index_select(
+            0, sampler._clip_indices(sampler.current_frames.to(dtype=torch.int64))
+        ),
+    )
+    assert done.numel() == 0
+    assert sampler.diagnostics.total == 0
+
+
 def test_sampling_metrics_stay_device_scalars() -> None:
     sampler = _sampler()
     sampler.sample_frames(torch.tensor([0], dtype=torch.int64), torch.Generator().manual_seed(1))
