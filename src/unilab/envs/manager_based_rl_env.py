@@ -1069,7 +1069,7 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def _update_state_in_read_phase(self, state: TorchEnvState) -> TorchEnvState:
         timing = state.info.setdefault("timing", {})
-        update_started = time.perf_counter()
+        update_started_ns = time.perf_counter_ns()
         queue_started = time.perf_counter()
         phase_started = time.perf_counter()
         log: dict[str, Any] = {}
@@ -1170,13 +1170,13 @@ class ManagerBasedRlEnv(TorchEnv):
         if all(value is not None for value in update_children):
             # Queue drain and the same boundary inside termination are excluded:
             # they drain pre-update GPU work already timed by step_core_ms.
-            drain = cast(float, timing["update_state_queue_drain_ms"]) / 1000.0
+            drain_ns = int(float(timing["update_state_queue_drain_ms"]) * 1.0e6)
             timing["update_state_nonattributed_ms"] = (
-                time.perf_counter()
-                - update_started
-                - sum(cast(float, value) for value in update_children)
-                + drain
-            ) * 1000.0
+                time.perf_counter_ns()
+                - update_started_ns
+                - sum(int(float(value) * 1.0e6) for value in update_children)
+                + drain_ns
+            ) / 1.0e6
         return replacement
 
     def _refresh_tensor_reads_after_mutation(self) -> None:
