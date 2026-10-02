@@ -2368,6 +2368,30 @@ class MotionRewardPackCfg(RewardTermCfg):
 
 
 @dataclass(kw_only=True)
+class MotionPenaltyRewardPackCfg(RewardTermCfg):
+    """Fused canonical FlashSAC motion penalties in one Manager term."""
+
+    command_name: str = "motion"
+    entity_name: str = "robot"
+    action_rate_weight: float = -0.1
+    joint_limit_weight: float = -2.0
+    undesired_contact_weight: float = -0.1
+    contact_threshold: float = 0.05
+    contact_body_names: tuple[str, ...] = (
+        "pelvis",
+        "left_hip_roll_link",
+        "left_knee_link",
+        "right_hip_roll_link",
+        "right_knee_link",
+        "torso_link",
+        "left_shoulder_roll_link",
+        "left_elbow_link",
+        "right_shoulder_roll_link",
+        "right_elbow_link",
+    )
+
+
+@dataclass(kw_only=True)
 class MotionResetOwnerCfg(ResetOwnerCfg):
     """Fused selected-reset ownership for the canonical motion owner."""
 
@@ -2528,6 +2552,65 @@ class MotionRewardPack(ManagerTermBase):
         self._output.add_(body_ori * c.body_ori_weight)
         self._output.add_(body_lin * c.body_lin_vel_weight)
         self._output.add_(body_ang * c.body_ang_vel_weight)
+        return self._output
+
+
+class MotionPenaltyRewardPack(ManagerTermBase):
+    """Evaluate the canonical action, joint-limit, and contact penalties."""
+
+    cfg: MotionPenaltyRewardPackCfg
+
+    def __init__(self, cfg: MotionPenaltyRewardPackCfg, env: ManagerBasedRlEnv):
+        super().__init__(env)
+        if not isinstance(cfg, MotionPenaltyRewardPackCfg):
+            raise TypeError("MotionPenaltyRewardPack requires MotionPenaltyRewardPackCfg")
+        self.cfg = cfg
+        self._device = torch.device(env.device)
+        self._command = _command(env, cfg.command_name)
+        if not bool(getattr(self._command, "tensor_carrier", False)):
+            raise TypeError("MotionPenaltyRewardPack requires TensorMotionCommand")
+        self._entity = cast("Entity", env.scene[cfg.entity_name])
+        self._output = torch.empty(self.num_envs, dtype=torch.float32, device=self._device)
+        tracked_bodies = tuple(self._command.cfg.body_names)
+        missing = [name for name in cfg.contact_body_names if name not in tracked_bodies]
+        if missing:
+            raise ValueError(
+                f"MotionPenaltyRewardPack contact bodies {missing} are not tracked by "
+                f"command '{cfg.command_name}'"
+            )
+        self._contact_body_ids = torch.as_tensor(
+            [tracked_bodies.index(name) for name in cfg.contact_body_names],
+            dtype=torch.int64,
+            device=self._device,
+        )
+        self._soft_limits = torch.as_tensor(
+            np.array(self._entity.data.soft_joint_pos_limits, copy=True),
+            dtype=torch.float32,
+            device=self._device,
+        )
+
+    def __call__(self, env: ManagerBasedRlEnv) -> torch.Tensor:
+        del env
+        command = cast(TensorMotionCommand, self._command)
+        action = cast(Any, self._env.action_manager)
+        action_delta = action.action - action.prev_action
+        action_rate = action_delta.square().sum(dim=-1)
+
+        joint_pos = command.device_robot_joint_pos
+        lower_error = torch.clamp(self._soft_limits[:, 0] - joint_pos, min=0.0)
+        upper_error = torch.clamp(joint_pos - self._soft_limits[:, 1], min=0.0)
+        joint_limit = (lower_error + upper_error).square().sum(dim=-1)
+
+        contact_heights = cast(torch.Tensor, command.robot_body_pos_w).index_select(
+            1, self._contact_body_ids
+        )[..., 2]
+        contacts = (
+            (contact_heights < self.cfg.contact_threshold).sum(dim=-1).to(dtype=torch.float32)
+        )
+
+        torch.mul(action_rate, self.cfg.action_rate_weight, out=self._output)
+        self._output.add_(joint_limit * self.cfg.joint_limit_weight)
+        self._output.add_(contacts * self.cfg.undesired_contact_weight)
         return self._output
 
 
@@ -2839,6 +2922,8 @@ __all__ = [
     "MotionJointPositionActionCfg",
     "MotionRewardPack",
     "MotionRewardPackCfg",
+    "MotionPenaltyRewardPack",
+    "MotionPenaltyRewardPackCfg",
     "MotionResetOwner",
     "MotionResetOwnerCfg",
     "MotionAnchorObservation",

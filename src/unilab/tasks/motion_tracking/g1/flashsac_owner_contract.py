@@ -67,6 +67,12 @@ _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V12 = (
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V13 = (
     "73fa809d1acaddab43fbf3b99d67e4b0f9464ddf8ab6ff33fe6cb1e23e8c043b"
 )
+# V14 applies only to MJWarp: the canonical action-rate, joint-limit, and
+# undesired-contact penalties are fused into one Manager-owned reward term.
+# Equations, weights, per-term log keys, and reward ordering are unchanged.
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V14 = (
+    "b622c4da96c4e28595ed4900a7bf539c18437d4917c7c529dd3c2850a77f3061"
+)
 _TORCH_G1_SAC_OWNER_IDENTITY_V2 = "30cf78a5c6da8c94cd3bd2afa74fa9f4251cccf2a98db7251ee6b8346573a975"
 
 
@@ -77,6 +83,7 @@ def _validate_torch_g1_flashsac_owner_contract(cfg: ManagerBasedRlEnvCfg) -> Non
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V11,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V12,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V13,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V14,
         _TORCH_G1_SAC_OWNER_IDENTITY_V2,
     }:
         raise ValueError(
@@ -90,6 +97,7 @@ __all__ = [
     "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V11",
     "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V12",
     "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V13",
+    "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V14",
     "_TORCH_G1_SAC_OWNER_IDENTITY_V2",
     "_qualified_name",
     "_torch_g1_flashsac_owner_identity",

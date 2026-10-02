@@ -5,6 +5,15 @@ defaults:
   - /task/g1_motion_tracking/mujoco
   - _self_
 
+reward:
+  action_rate_l2: null
+  joint_limit: null
+  undesired_contacts: null
+  motion_penalty_pack:
+    _target_: unilab.tasks.motion_tracking.common.manager_terms.MotionPenaltyRewardPackCfg
+    func: unilab.tasks.motion_tracking.common.manager_terms.MotionPenaltyRewardPack
+    weight: 1.0
+
 training:
   task_name: G1MotionTrackingSAC
   sim_backend: mjwarp
