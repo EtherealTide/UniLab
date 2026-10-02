@@ -554,7 +554,18 @@ class TorchEnv(ABEnv):
                 )
             if value.device != self.device:
                 raise ValueError(f"TorchEnv reset obs[{name!r}] device must be {self.device}")
-            self._validate_finite_float(value, f"reset obs[{name!r}]")
+            self._require_floating_float(value)
+        if not bool(
+            torch.isfinite(
+                torch.cat(
+                    tuple(value.reshape(value.shape[0], -1) for value in obs.values()),
+                    dim=1,
+                )
+            ).all()
+        ):
+            for name, value in obs.items():
+                if not bool(torch.isfinite(value).all()):
+                    raise ValueError(f"TorchEnv reset obs[{name!r}] contains NaN or Inf")
 
     def _scatter_reset_info(self, reset_info: Mapping[str, Any], rows: torch.Tensor) -> None:
         assert self._state is not None
