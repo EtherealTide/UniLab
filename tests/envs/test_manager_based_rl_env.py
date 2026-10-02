@@ -1643,7 +1643,7 @@ def test_torch_env_owns_substeps_autoreset_and_final_observation() -> None:
     env.set_episode_length_buf(torch.zeros(2, dtype=torch.int64))
 
     state = env.step(torch.tensor([[0.25], [0.5]], dtype=torch.float32))
-    assert env.action_input_types and env.action_input_types[0] is np.ndarray
+    assert env.action_input_types and env.action_input_types[0] is torch.Tensor
     assert isinstance(env.action_manager.action, torch.Tensor)
     assert env.action_manager.action.dtype == torch.float32
     assert all(isinstance(value, torch.Tensor) for value in env.obs_buf.values())

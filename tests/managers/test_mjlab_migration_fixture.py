@@ -132,7 +132,7 @@ def test_mjlab_fixture_missing_actuator_fails_on_cold_path() -> None:
         )
 
 
-def test_mjlab_fixture_is_pinned_test_only_numpy_code() -> None:
+def test_mjlab_fixture_is_pinned_test_only_migration_code() -> None:
     task_source = (FIXTURE_DIR / "task.py").read_text(encoding="utf-8")
     helper_source = (ROOT_DIR / "tests/fixtures/cartpole_manager_adapters.py").read_text(
         encoding="utf-8"
@@ -143,8 +143,6 @@ def test_mjlab_fixture_is_pinned_test_only_numpy_code() -> None:
         if not line.lstrip().startswith("#")
     )
     for forbidden in (
-        "import torch",
-        "from torch",
         "import mjlab",
         "from mjlab",
         "uni_rl",

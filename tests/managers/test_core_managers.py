@@ -42,9 +42,9 @@ class DummyAction(ActionTerm):
     def raw_action(self) -> np.ndarray:
         return self._raw
 
-    def process_actions(self, actions: np.ndarray) -> None:
+    def process_actions(self, actions: torch.Tensor) -> None:
         self.input_types.append(type(actions))
-        self._raw[:] = actions
+        self._raw[:] = actions.detach().cpu().numpy()
 
     def apply_actions(self) -> None:
         self.applied += 1
@@ -66,20 +66,10 @@ class FeedbackDummyAction(DummyAction):
     requires_substep_state_feedback = True
 
 
-class TensorDummyAction(DummyAction):
-    uses_tensor_actions = True
-
-
 @dataclass(kw_only=True)
 class FeedbackDummyActionCfg(DummyActionCfg):
     def build(self, env: FakeEnv) -> FeedbackDummyAction:
         return FeedbackDummyAction(self, env)
-
-
-@dataclass(kw_only=True)
-class TensorDummyActionCfg(DummyActionCfg):
-    def build(self, env: FakeEnv) -> TensorDummyAction:
-        return TensorDummyAction(self, env)
 
 
 def test_action_split_history_apply_and_partial_reset(fake_env: FakeEnv) -> None:
@@ -100,7 +90,7 @@ def test_action_split_history_apply_and_partial_reset(fake_env: FakeEnv) -> None
     assert isinstance(manager.action, torch.Tensor)
     assert manager.action.dtype == torch.float32
     assert all(
-        term.input_types and term.input_types[0] is np.ndarray
+        term.input_types and term.input_types[0] is torch.Tensor
         for term in (manager.get_term("legs"), manager.get_term("arm"))
     )
     torch.testing.assert_close(manager.prev_action, first)
@@ -162,7 +152,7 @@ def test_action_rejects_invalid_input(fake_env: FakeEnv, action: np.ndarray, mat
 
 
 class FailingAction(DummyAction):
-    def process_actions(self, actions: np.ndarray) -> None:
+    def process_actions(self, actions: torch.Tensor) -> None:
         del actions
         raise ValueError("invalid processed target")
 
@@ -187,24 +177,19 @@ def test_action_term_errors_include_manager_and_term_context(fake_env: FakeEnv) 
         manager.apply_action()
 
 
-def test_action_manager_routes_tensor_and_host_terms_by_declaration(
-    fake_env: FakeEnv,
-) -> None:
-    manager = ActionManager(
-        {
-            "tensor": TensorDummyActionCfg(entity_name="robot", dim=1),
-            "legacy": DummyActionCfg(entity_name="robot", dim=1),
-        },
-        fake_env,
-    )
-    manager.process_action(torch.zeros((fake_env.num_envs, 2), dtype=torch.float32))
+def test_action_manager_routes_tensor_terms_only(fake_env: FakeEnv) -> None:
+    manager = ActionManager({"tensor": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
+    manager.process_action(torch.zeros((fake_env.num_envs, 1), dtype=torch.float32))
 
-    tensor_term = manager.get_term("tensor")
-    legacy_term = manager.get_term("legacy")
-    assert isinstance(tensor_term, TensorDummyAction)
-    assert isinstance(legacy_term, DummyAction)
-    assert tensor_term.input_types == [torch.Tensor]
-    assert legacy_term.input_types == [np.ndarray]
+    assert manager.get_term("tensor").input_types == [torch.Tensor]
+
+
+def test_action_manager_rejects_declared_numpy_action_terms(
+    fake_env: FakeEnv, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(DummyAction, "uses_tensor_actions", False)
+    with pytest.raises(TypeError, match="requires tensor action terms"):
+        ActionManager({"legacy": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
 
 
 class StatefulReward:
