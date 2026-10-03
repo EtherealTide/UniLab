@@ -309,6 +309,34 @@ def test_termination_splits_timeouts_and_failures(fake_env: FakeEnv) -> None:
     }
 
 
+def test_transient_tensor_termination_opt_in_preserves_manager_buffers(
+    fake_env: FakeEnv,
+) -> None:
+    class TransientFailure:
+        returns_transient_tensor = True
+
+        def __init__(self, cfg: TerminationTermCfg, env: FakeEnv):
+            del cfg, env
+
+        def __call__(self, env: FakeEnv) -> torch.Tensor:
+            del env
+            return torch.tensor([False, True, False, True])
+
+    manager = TerminationManager(
+        {"failure": TerminationTermCfg(func=TransientFailure)},
+        fake_env,
+    )
+
+    manager.compute()
+    original = manager.get_term("failure").clone()
+    # This marker is an ownership declaration by the term: the term promises
+    # not to mutate this transient expression after returning it. Manager-owned
+    # aggregate/per-term buffers therefore receive a copy during aggregation.
+    manager.get_term("failure").logical_not_()
+
+    torch.testing.assert_close(manager.terminated, original)
+
+
 def test_curriculum_and_null_semantics(fake_env: FakeEnv) -> None:
     def update(env: FakeEnv, env_ids: np.ndarray | slice) -> dict[str, float]:
         return {"difficulty": 3.0}
