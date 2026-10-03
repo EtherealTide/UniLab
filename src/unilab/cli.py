@@ -19,6 +19,7 @@ SUPPORTED_ALGOS = ("ppo", "appo", "sac", "flashsac", "warpsac")
 SUPPORTED_SIMS = (
     "mujoco",
     "mjwarp",
+    "genesis",
 )
 # Adapters retained by UniSim but temporarily outside the tensor-only Manager
 # runtime during issue #1811. They must remain unroutable through public CLI.

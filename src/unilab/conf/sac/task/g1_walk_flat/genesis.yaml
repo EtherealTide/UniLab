@@ -9,9 +9,9 @@
 # fields below. Solver/constraint-cone/iterations stay at Genesis defaults:
 # the MJCF option block does not declare them and MuJoCo's implicit defaults
 # (PGS solver, pyramidal cone) have no Genesis equivalent. Unlike the
-# isaacgym owner (events.pd_gains: null), kp/kd reset randomization stays
-# enabled from base.yaml because the genesis backend declares the measured
-# RESET_TERM_KP/KD DR terms (REPORT §5.7). Playback uses Genesis native
+# isaacgym owner (events.pd_gains: null), the public Genesis tensor selected
+# reset does not support randomization, so unsupported host reset terms are
+# explicitly disabled rather than falling back. Playback uses Genesis native
 # rendering: with a display, play_render_mode=auto opens the interactive
 # viewer; headless hosts fall back to offscreen camera recording.
 defaults:
@@ -31,6 +31,30 @@ algo:
   algo_params:
     alpha_init: 0.001
     target_entropy_ratio: 0.0
+  g1_walk_pack:
+    _target_: unilab.tasks.locomotion.g1.manager_terms.G1WalkRewardPackCfg
+    func: unilab.tasks.locomotion.g1.manager_terms.G1WalkRewardPack
+    weight: 0.0
+    command_name: twist
+    entity_name: robot
+    tracking_lin_sigma: 0.25
+    tracking_ang_sigma: 0.25
+    gait_frequency: 1.5
+    gait_init_mode: offset_phase
+    swing_height: 0.09
+    feet_phase_sigma: 0.04
+    min_forward_speed: 0.0
+    pose_weights: [0.01, 1.0, 5.0, 0.01, 5.0, 5.0, 0.01, 1.0, 5.0, 0.01, 5.0, 5.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
+    reward_pack_names:
+      - tracking_lin_vel
+      - tracking_ang_vel
+      - penalty_ang_vel_xy
+      - penalty_orientation
+      - penalty_action_rate
+      - pose
+      - penalty_feet_ori
+      - feet_phase
+      - alive
 env:
   # GPU device id for the process-wide Genesis session.  Multi-GPU training
   # overrides this cold-path field from the rank topology; zero preserves the
@@ -41,3 +65,26 @@ env:
   # Re-declares the MJCF <option integrator="implicitfast"> that Genesis drops
   # at import; the remaining global options keep the Genesis defaults.
   genesis_integrator: implicitfast
+
+  reset_owners:
+    walk:
+      _target_: unilab.tasks.locomotion.g1.manager_terms.G1WalkResetOwnerCfg
+      func: unilab.tasks.locomotion.g1.manager_terms.G1WalkResetOwner
+      command_name: twist
+  events:
+    reset_scene_to_default:
+      func: unilab.envs.mdp.reset_scene_to_default_tensor
+    reset_root_state_uniform:
+      func: unilab.envs.mdp.reset_root_state_uniform_tensor
+    # Genesis' public tensor selected reset does not support randomization.
+    pd_gains: null
+  terminations:
+    tilt: null
+    base_height: null
+    g1_walk_termination_pack:
+      _target_: unilab.tasks.locomotion.g1.manager_terms.G1WalkTerminationPackCfg
+      func: unilab.tasks.locomotion.g1.manager_terms.G1WalkTerminationPack
+      entity_name: robot
+      root_body_name: pelvis
+      max_tilt_deg: 65.0
+      minimum_height: 0.3
