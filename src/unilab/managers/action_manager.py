@@ -228,6 +228,9 @@ class ActionManager(ManagerBase):
             term_actions = action[:, idx : idx + term.action_dim]
             try:
                 term.process_actions(term_actions)
+                validator = getattr(term, "validate_actions", None)
+                if callable(validator):
+                    validator()
             except (TypeError, ValueError, NotImplementedError) as exc:
                 raise type(exc)(f"ActionManager term '{name}': {exc}") from exc
             idx += term.action_dim

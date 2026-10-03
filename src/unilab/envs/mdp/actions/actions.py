@@ -202,6 +202,11 @@ class BaseAction(ActionTerm):
         self._raw_actions.copy_(actions)
         self._apply_affine(self._raw_actions, self._processed_actions)
 
+    def validate_actions(self) -> None:
+        """Validate the manager-owned raw action, not its affine projection."""
+        if not bool(torch.isfinite(self._raw_actions).all()):
+            raise ValueError(f"{type(self).__name__} received NaN or Inf actions")
+
     def _apply_affine(self, source: torch.Tensor, destination: torch.Tensor) -> None:
         destination.copy_(source)
         destination.mul_(self._scale).add_(self._offset)
