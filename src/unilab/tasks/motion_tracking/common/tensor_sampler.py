@@ -18,20 +18,17 @@ import torch
 def _sampling_dispatch_kernel(
     rows: torch.Tensor,
     frames: torch.Tensor,
-    clip_offsets: torch.Tensor,
-    clip_end_frames: torch.Tensor,
+    frame_clip_ends: torch.Tensor,
     current_frames: torch.Tensor,
     current_clip_end_frames: torch.Tensor,
 ) -> None:
     # Keep this tiny selected-row dispatch eager. An Inductor fusion of
     # searchsorted/index-select measured no wall-time benefit at ~39 reset rows,
     # and synthetic wide-clip tensors triggered a Triton index assertion while
-    # autotuning this graph. The surrounding eager operations are stable and
-    # already device-resident.
+    # autotuning this graph. The frame-indexed clip-end table removes the hot
+    # searchsorted path while keeping construction cold and device-resident.
     current_frames.index_copy_(0, rows, frames)
-    clip_indices = torch.searchsorted(clip_offsets, frames.to(dtype=torch.int64), right=True)
-    clip_indices.sub_(1).clamp_(min=0)
-    current_clip_end_frames.index_copy_(0, rows, clip_end_frames.index_select(0, clip_indices))
+    current_clip_end_frames.index_copy_(0, rows, frame_clip_ends.index_select(0, frames))
 
 
 @dataclass
@@ -105,6 +102,19 @@ class TensorMotionSampler:
         self._clip_end_frames = torch.as_tensor(
             np.asarray(clip_end_frames, dtype=np.int32, copy=True), device=self.device
         )
+        # Expand clip ownership to one int32 entry per frame. This trades a
+        # cold O(num_frames) table for removing searchsorted from every selected
+        # reset and full-width frame advance.
+        expanded_clip_ends = np.empty((self.num_frames,), dtype=np.int32)
+        for clip_index in range(len(clip_end_frames)):
+            start = int(clip_offsets[clip_index])
+            end = (
+                int(clip_offsets[clip_index + 1])
+                if clip_index + 1 < len(clip_offsets)
+                else self.num_frames
+            )
+            expanded_clip_ends[start:end] = np.asarray(clip_end_frames[clip_index], dtype=np.int32)
+        self._frame_clip_ends = torch.as_tensor(expanded_clip_ends, device=self.device)
         self._bin_failed = torch.zeros(self.bin_count, dtype=torch.float32, device=self.device)
         kernel = np.asarray(
             [self.adaptive_lambda**index for index in range(self.adaptive_kernel_size)],
@@ -154,8 +164,7 @@ class TensorMotionSampler:
         _sampling_dispatch_kernel(
             rows,
             frames,
-            self._clip_offsets,
-            self._clip_end_frames,
+            self._frame_clip_ends,
             self.current_frames,
             self.current_clip_end_frames,
         )
@@ -198,10 +207,10 @@ class TensorMotionSampler:
         increment = active.to(dtype=torch.int32)
         self.current_frames.add_(increment)
         time_steps.copy_(self.current_frames)
-        frames = self.current_frames.to(dtype=torch.int64)
-        clip_indices = self._clip_indices(frames)
-        clip_ends = self._clip_end_frames.index_select(0, clip_indices)
+        frames = self.current_frames
+        clip_ends = self._frame_clip_ends.index_select(0, frames)
         self.current_clip_end_frames.copy_(clip_ends)
+        frames = frames.to(dtype=torch.int64)
         done = frames > clip_ends
         done.logical_and_(active)
         return done.nonzero(as_tuple=False).flatten()
@@ -216,18 +225,11 @@ class TensorMotionSampler:
         self.current_frames.index_add_(0, selector, selected_active.to(dtype=torch.int32))
         frames = self.current_frames.to(dtype=torch.int64)
         selected_frames = frames.index_select(0, selector)
-        clip_indices = self._clip_indices(selected_frames)
-        clip_ends = self._clip_end_frames.index_select(0, clip_indices)
+        clip_ends = self._frame_clip_ends.index_select(0, selected_frames)
         self.current_clip_end_frames.index_copy_(0, selector, clip_ends)
         done = selected_frames > clip_ends
         done.logical_and_(selected_active)
         return done.nonzero(as_tuple=False).flatten()
-
-    def _clip_indices(self, frames: torch.Tensor) -> torch.Tensor:
-        indices = torch.searchsorted(
-            self._clip_offsets, frames.to(dtype=torch.int64), right=True
-        ).sub_(1)
-        return indices.clamp_(min=0)
 
     def _adaptive_probabilities(self) -> torch.Tensor:
         probabilities = self._bin_failed + self.adaptive_uniform_ratio / self.bin_count

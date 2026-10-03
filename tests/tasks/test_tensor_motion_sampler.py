@@ -128,9 +128,7 @@ def test_step_full_publishes_mirrors_without_row_gathers() -> None:
     torch.testing.assert_close(time_steps, torch.tensor([1, 1, 3, 3], dtype=torch.int32))
     torch.testing.assert_close(
         sampler.current_clip_end_frames,
-        sampler._clip_end_frames.index_select(
-            0, sampler._clip_indices(sampler.current_frames.to(dtype=torch.int64))
-        ),
+        sampler._frame_clip_ends.index_select(0, sampler.current_frames),
     )
     assert done.numel() == 0
     assert sampler.diagnostics.total == 0
@@ -153,8 +151,7 @@ def test_sampling_dispatch_matches_eager_clip_lookup_and_publishes_timing() -> N
     mt._sampling_dispatch_kernel(
         rows,
         frames,
-        sampler._clip_offsets,
-        sampler._clip_end_frames,
+        sampler._frame_clip_ends,
         sampler.current_frames,
         sampler.current_clip_end_frames,
     )
@@ -162,10 +159,39 @@ def test_sampling_dispatch_matches_eager_clip_lookup_and_publishes_timing() -> N
     torch.testing.assert_close(
         sampler.current_frames, torch.tensor([0, 31, 2, 7], dtype=torch.int32)
     )
-    expected_ends = sampler._clip_end_frames[sampler._clip_indices(frames.to(dtype=torch.int64))]
+    expected_ends = sampler._frame_clip_ends[frames]
     torch.testing.assert_close(sampler.current_clip_end_frames[rows], expected_ends)
 
     sampler.last_reset_dispatch_ms = 0.0
     generator = torch.Generator(device="cpu").manual_seed(11)
     sampler.sample_frames(rows, generator)
     assert sampler.last_reset_dispatch_ms >= 0.0
+
+
+def test_frame_indexed_clip_ends_match_searchsorted_ownership() -> None:
+    offsets = np.asarray([0, 7, 19, 30], dtype=np.int64)
+    ends = np.asarray([6, 18, 29, 31], dtype=np.int32)
+    sampler = TensorMotionSampler(
+        mode="adaptive",
+        num_envs=7,
+        num_frames=32,
+        clip_offsets=offsets,
+        clip_end_frames=ends,
+        bin_count=4,
+        adaptive_lambda=0.8,
+        adaptive_kernel_size=1,
+        adaptive_uniform_ratio=0.1,
+        adaptive_alpha=0.5,
+        start_ratio=0.0,
+        initial_frames=np.arange(7, dtype=np.int32),
+        initial_clip_end_frames=np.full(7, 6, dtype=np.int32),
+        device=torch.device("cpu"),
+    )
+
+    frames = torch.arange(32, dtype=torch.int64)
+    expected_indices = (torch.searchsorted(sampler._clip_offsets, frames, right=True) - 1).clamp_(
+        min=0
+    )
+    expected = sampler._clip_end_frames.index_select(0, expected_indices)
+
+    torch.testing.assert_close(sampler._frame_clip_ends, expected)
