@@ -27,6 +27,11 @@ env:
   mjwarp_nconmax: 128
   mjwarp_njmax: 256
   render_spacing: 2.0
+  reset_owners:
+    walk:
+      _target_: unilab.tasks.locomotion.g1.manager_terms.G1WalkResetOwnerCfg
+      func: unilab.tasks.locomotion.g1.manager_terms.G1WalkResetOwner
+      command_name: twist
   events:
     reset_scene_to_default:
       func: unilab.envs.mdp.reset_scene_to_default_tensor
