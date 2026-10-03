@@ -46,6 +46,16 @@ algo:
       - feet_phase
       - alive
 env:
+  terminations:
+    tilt: null
+    base_height: null
+    g1_walk_termination_pack:
+      _target_: unilab.tasks.locomotion.g1.manager_terms.G1WalkTerminationPackCfg
+      func: unilab.tasks.locomotion.g1.manager_terms.G1WalkTerminationPack
+      entity_name: robot
+      root_body_name: pelvis
+      max_tilt_deg: 65.0
+      minimum_height: 0.3
   # MJWarp is DEVICE_RESIDENT/DIRECT. The owner, not the caller, selects the
   # tensor runtime; collector and learner share the rank-local CUDA device.
   mjwarp_nconmax: 128

@@ -35,6 +35,7 @@ from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
 from unilab.managers.reset_owner import ResetOwner, ResetOwnerCfg
 from unilab.managers.reward_manager import RewardTermCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
+from unilab.managers.termination_manager import TerminationTermCfg
 from unilab.tasks.locomotion.common.manager_terms import SensorTermBase
 
 if TYPE_CHECKING:
@@ -1342,6 +1343,86 @@ class G1WalkRewardPack(ManagerTermBase):
         return result
 
 
+@dataclass(kw_only=True)
+class G1WalkTerminationPackCfg(TerminationTermCfg):
+    """Fused canonical G1 walk timeout, tilt, and height termination."""
+
+    entity_name: str = "robot"
+    root_body_name: str = "pelvis"
+    max_tilt_deg: float = 65.0
+    minimum_height: float = 0.3
+
+
+class G1WalkTerminationPack(ManagerTermBase):
+    """Evaluate the canonical G1 walk failure terms in one carrier read."""
+
+    returns_transient_tensor = True
+
+    def __init__(self, cfg: G1WalkTerminationPackCfg, env: _G1Env):
+        super().__init__(env)
+        if not isinstance(cfg, G1WalkTerminationPackCfg):
+            raise TypeError("G1WalkTerminationPack requires G1WalkTerminationPackCfg")
+        unexpected = set(cfg.params) - {
+            "entity_name",
+            "root_body_name",
+            "max_tilt_deg",
+            "minimum_height",
+        }
+        if unexpected:
+            raise TypeError(
+                f"G1WalkTerminationPack received unsupported parameters: {sorted(unexpected)}"
+            )
+        self.cfg = cfg
+        self._device = torch.device(env.device)
+        self._entity = cast("Entity", env.scene[cfg.entity_name])
+        self._max_tilt_rad = math.radians(
+            _real(
+                "G1WalkTerminationPack",
+                "max_tilt_deg",
+                cfg.max_tilt_deg,
+                minimum=0.0,
+            )
+        )
+        self._minimum_height = _real(
+            "G1WalkTerminationPack",
+            "minimum_height",
+            cfg.minimum_height,
+        )
+        self._tilt_threshold = math.cos(self._max_tilt_rad)
+
+    @property
+    def tensor_sensor_names(self) -> tuple[str, ...]:
+        return ("torso_upvector",)
+
+    @property
+    def tensor_body_names(self) -> tuple[str, ...]:
+        return (self.cfg.root_body_name,)
+
+    @property
+    def entity_name(self) -> str:
+        return self.cfg.entity_name
+
+    def __call__(self, env: _G1Env) -> torch.Tensor:
+        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        if read_plan is None or read_plan.device.type != self._device.type:
+            raise NotImplementedError(
+                "G1WalkTerminationPack requires the declared tensor sensor/body read plan"
+            )
+        owner_sensors = set(read_plan.sensor_names.get(self.cfg.entity_name, ()))
+        if "torso_upvector" not in owner_sensors:
+            raise NotImplementedError(
+                "G1WalkTerminationPack requires device tensor sensor 'torso_upvector'"
+            )
+        entity = env.scene[self.cfg.entity_name]
+        upvector = read_plan.sensor_tensor_views(entity, ("torso_upvector",)).values[
+            "torso_upvector"
+        ]
+        body = read_plan.body_tensor_view(self.cfg.entity_name, (self.cfg.root_body_name,))
+        return (upvector[:, 2] < self._tilt_threshold) | (
+            body.pos_w[:, 0, 2] < self._minimum_height
+        )
+
+
 class G1WalkManagerBasedEnv(_ConcreteManagerBasedRlEnv):
     """Manager-Based G1 walk runtime."""
 
@@ -1395,6 +1476,8 @@ __all__ = [
     "G1WalkResetOwnerCfg",
     "G1WalkManagerBasedEnv",
     "G1WalkRewardPack",
+    "G1WalkTerminationPack",
+    "G1WalkTerminationPackCfg",
     "G1WalkRewardPackCfg",
     "compute_feet_phase_contact_targets",
     "compute_feet_phase_height_targets",
