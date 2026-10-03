@@ -75,6 +75,20 @@ from unilab.managers import (
 )
 from unilab.managers.scene_entity_config import SceneEntityCfg
 
+
+def _supported_device_resident_sensors(backend_type: str) -> frozenset[str]:
+    """Return names a DEVICE_RESIDENT backend must publish.
+
+    The audited default covers an unlisted device-resident adapter. Unsupported
+    declared names must fail closed rather than silently select a host reader.
+    """
+
+    return _DEVICE_RESIDENT_TENSOR_SENSORS.get(
+        backend_type,
+        frozenset({"pelvis_local_linvel", "torso_gyro", "torso_upvector"}),
+    )
+
+
 _DEVICE_RESIDENT_TENSOR_SENSORS: dict[str, frozenset[str]] = {
     "isaacgym": frozenset({"pelvis_local_linvel", "torso_gyro"}),
     "mjwarp": frozenset(
@@ -454,17 +468,19 @@ class ManagerBasedRlEnv(TorchEnv):
                         self._backend.get_tensor_capabilities().execution
                         is TensorExecution.DEVICE_RESIDENT
                     ):
-                        supported = _DEVICE_RESIDENT_TENSOR_SENSORS.get(
-                            self._backend.backend_type,
-                            {"pelvis_local_linvel", "torso_gyro", "torso_upvector"},
+                        supported = _supported_device_resident_sensors(self._backend.backend_type)
+                        missing = tuple(
+                            sensor_name
+                            for sensor_name in sensor_names
+                            if sensor_name not in supported
                         )
-                        sensor_names = tuple(
-                            sensor_name for sensor_name in sensor_names if sensor_name in supported
-                        )
-                        if not sensor_names:
-                            body_names = term_cfg.params.get("tensor_body_names")
-                            if body_names is None:
-                                continue
+                        if missing:
+                            raise NotImplementedError(
+                                "DEVICE_RESIDENT backend "
+                                f"'{self._backend.backend_type}' does not publish tensor "
+                                f"sensors {missing} required by observation term "
+                                f"'{group_name}/{name}'"
+                            )
                     specs.append(
                         SceneTensorReadSpec(
                             entity=self._observation_tensor_entity(term_cfg),
@@ -600,11 +616,14 @@ class ManagerBasedRlEnv(TorchEnv):
                 )
             names = tuple(sensor_names)
             if narrow:
-                allowed = _DEVICE_RESIDENT_TENSOR_SENSORS.get(
-                    self._backend.backend_type,
-                    {"pelvis_local_linvel", "torso_gyro", "torso_upvector"},
-                )
-                names = tuple(sensor_name for sensor_name in names if sensor_name in allowed)
+                allowed = _supported_device_resident_sensors(self._backend.backend_type)
+                missing = tuple(name for name in names if name not in allowed)
+                if missing:
+                    raise NotImplementedError(
+                        "DEVICE_RESIDENT backend "
+                        f"'{self._backend.backend_type}' does not publish tensor "
+                        f"sensors {missing} required by command term '{name}'"
+                    )
             elif capabilities.packed_host_bridge:
                 # Only HOST_BRIDGE packs need backend-local aliases. Device-
                 # resident plans consume the term's canonical semantic names.
@@ -707,17 +726,16 @@ class ManagerBasedRlEnv(TorchEnv):
                 f"{sensor_names!r}"
             )
         if narrow:
-            sensor_names = tuple(
+            missing = tuple(
                 name
                 for name in sensor_names
-                if name
-                in _DEVICE_RESIDENT_TENSOR_SENSORS.get(
-                    backend_type,
-                    {"pelvis_local_linvel", "torso_gyro", "torso_upvector"},
-                )
+                if name not in _supported_device_resident_sensors(backend_type)
             )
-            if not sensor_names:
-                return []
+            if missing:
+                raise NotImplementedError(
+                    f"DEVICE_RESIDENT backend '{backend_type}' does not publish tensor "
+                    f"sensors {missing} required by {manager_name} term '{term_name}'"
+                )
         return [SceneTensorReadSpec(entity="robot", sensor_names=tuple(sensor_names))]
 
     def _warm_external_cuda_ipc_views(self) -> None:
