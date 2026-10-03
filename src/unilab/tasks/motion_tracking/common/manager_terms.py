@@ -186,6 +186,7 @@ _update_motion_relative_state_compiled: _MotionRelativeStateFn | None = None
 _update_motion_metrics_compiled: _MotionRelativeStateFn | None = None
 _motion_reward_pack_compiled: _MotionRelativeStateFn | None = None
 _motion_penalty_reward_pack_compiled: _MotionRelativeStateFn | None = None
+_motion_reset_values_compiled: Callable[..., None] | None = None
 _ingest_motion_packet_compiled: Callable[..., None] | None = None
 _refresh_motion_robot_state_compiled: Callable[..., None] | None = None
 
@@ -317,6 +318,70 @@ def _motion_penalty_reward_pack_kernel(
     torch.mul(action_rate, action_rate_weight, out=output)
     output.add_(joint_limit * joint_limit_weight)
     output.add_(contacts * undesired_contact_weight)
+
+
+def _motion_reset_values_kernel(
+    packet_joint_pos: torch.Tensor,
+    packet_joint_vel: torch.Tensor,
+    packet_body_pos_w: torch.Tensor,
+    packet_body_quat_w: torch.Tensor,
+    packet_body_lin_vel_w: torch.Tensor,
+    packet_body_ang_vel_w: torch.Tensor,
+    origins: torch.Tensor,
+    pose: torch.Tensor,
+    velocity: torch.Tensor,
+    joint_noise: torch.Tensor,
+    soft_limits: torch.Tensor,
+    joint_output: torch.Tensor,
+    root_output: torch.Tensor,
+) -> None:
+    """Construct one fused motion reset value/root carrier without host rows."""
+    joint_output.copy_(packet_joint_pos)
+    joint_output.add_(joint_noise)
+    joint_output.clamp_(soft_limits[:, 0], soft_limits[:, 1])
+
+    half_roll = 0.5 * pose[:, 3]
+    half_pitch = 0.5 * pose[:, 4]
+    half_yaw = 0.5 * pose[:, 5]
+    cos_roll, sin_roll = torch.cos(half_roll), torch.sin(half_roll)
+    cos_pitch, sin_pitch = torch.cos(half_pitch), torch.sin(half_pitch)
+    cos_yaw, sin_yaw = torch.cos(half_yaw), torch.sin(half_yaw)
+    pose_quat = torch.stack(
+        (
+            cos_roll * cos_pitch * cos_yaw + sin_roll * sin_pitch * sin_yaw,
+            sin_roll * cos_pitch * cos_yaw - cos_roll * sin_pitch * sin_yaw,
+            cos_roll * sin_pitch * cos_yaw + sin_roll * cos_pitch * sin_yaw,
+            cos_roll * cos_pitch * sin_yaw - sin_roll * sin_pitch * cos_yaw,
+        ),
+        dim=-1,
+    )
+    motion_quat = packet_body_quat_w[:, 0]
+    left_w, left_xyz = pose_quat[:, 0:1], pose_quat[:, 1:4]
+    right_w, right_xyz = motion_quat[:, 0:1], motion_quat[:, 1:4]
+    cross = torch.linalg.cross(left_xyz, right_xyz, dim=-1)
+    root_quat = torch.cat(
+        (
+            left_w * right_w - (left_xyz * right_xyz).sum(dim=-1, keepdim=True),
+            left_w * right_xyz + right_w * left_xyz + cross,
+        ),
+        dim=-1,
+    )
+
+    root_output[:, :3] = packet_body_pos_w[:, 0] + origins + pose[:, :3]
+    root_output[:, 3:7] = root_quat
+    root_output[:, 7:10] = packet_body_lin_vel_w[:, 0] + velocity[:, :3]
+    root_output[:, 10:13] = packet_body_ang_vel_w[:, 0] + velocity[:, 3:]
+
+
+def _bind_compiled_motion_reset_values() -> Callable[..., None]:
+    """Compile the reset value/root construction once per process."""
+    global _motion_reset_values_compiled
+    if _motion_reset_values_compiled is not None:
+        return _motion_reset_values_compiled
+    if not _compiled_motion_relative_state_available():
+        return _motion_reset_values_kernel
+    _motion_reset_values_compiled = torch.compile(_motion_reset_values_kernel, dynamic=True)
+    return _motion_reset_values_compiled
 
 
 def _bind_compiled_motion_penalty_reward_pack() -> _MotionRelativeStateFn:
@@ -1146,6 +1211,12 @@ class TensorMotionCommand(MotionCommand):
         self._joint_position_range_torch = torch.as_tensor(
             self._joint_position_range, device=device
         )
+        self._reset_joint_values = torch.empty(
+            (self.num_envs, num_joints), dtype=torch.float32, device=device
+        )
+        self._reset_root_state = torch.empty(
+            (self.num_envs, 13), dtype=torch.float32, device=device
+        )
         if self.cfg.params.sampling_mode not in ("adaptive", "mixed"):
             raise NotImplementedError(
                 "TensorMotionCommand tensor sampler requires adaptive or mixed sampling"
@@ -1334,46 +1405,45 @@ class TensorMotionCommand(MotionCommand):
         rng_ms = (time.perf_counter() - sampler_started) * 1000.0 - sampler_ms - packet_ms
         values_started = time.perf_counter()
         joint_start, joint_end = offsets["joint_pos"]
-        joint_pos = packet[:, joint_start:joint_end].clone()
-        joint_pos += self._env.torch_rng.uniform(
+        vel_start, vel_end = offsets["joint_vel"]
+        count = rows.numel()
+        origins = (
+            self._env_origins if count == self.num_envs else self._env_origins.index_select(0, rows)
+        )
+        joint_pos = self._reset_joint_values[:count]
+        root_state = self._reset_root_state[:count]
+        joint_noise = self._env.torch_rng.uniform(
             self._joint_position_range_torch[0],
             self._joint_position_range_torch[1],
             joint_pos.shape,
             dtype=torch.float32,
         )
-        joint_pos.clamp_(self._soft_joint_limits[:, 0], self._soft_joint_limits[:, 1])
-        vel_start, vel_end = offsets["joint_vel"]
+        _bind_compiled_motion_reset_values()(
+            packet[:, joint_start:joint_end],
+            packet[:, vel_start:vel_end],
+            packet[:, offsets["body_pos_w"][0] : offsets["body_pos_w"][1]].view(
+                count, *tails["body_pos_w"]
+            ),
+            packet[:, offsets["body_quat_w"][0] : offsets["body_quat_w"][1]].view(
+                count, *tails["body_quat_w"]
+            ),
+            packet[:, offsets["body_lin_vel_w"][0] : offsets["body_lin_vel_w"][1]].view(
+                count, *tails["body_lin_vel_w"]
+            ),
+            packet[:, offsets["body_ang_vel_w"][0] : offsets["body_ang_vel_w"][1]].view(
+                count, *tails["body_ang_vel_w"]
+            ),
+            origins,
+            pose,
+            velocity,
+            joint_noise,
+            self._soft_joint_limits,
+            joint_pos,
+            root_state,
+        )
         motion_joint_vel = packet[:, vel_start:vel_end].contiguous()
         values_ms = (time.perf_counter() - values_started) * 1000.0
-        root_started = time.perf_counter()
-        count = rows.numel()
-        pos_start, pos_end = offsets["body_pos_w"]
-        quat_start, quat_end = offsets["body_quat_w"]
-        lin_start, lin_end = offsets["body_lin_vel_w"]
-        ang_start, ang_end = offsets["body_ang_vel_w"]
-        motion_body_pos = packet[:, pos_start:pos_end].view(count, *tails["body_pos_w"])
-        motion_body_quat = packet[:, quat_start:quat_end].view(count, *tails["body_quat_w"])
-        motion_body_lin_vel = packet[:, lin_start:lin_end].view(count, *tails["body_lin_vel_w"])
-        motion_body_ang_vel = packet[:, ang_start:ang_end].view(count, *tails["body_ang_vel_w"])
-        origins = (
-            self._env_origins if count == self.num_envs else self._env_origins.index_select(0, rows)
-        )
-        root_pos = motion_body_pos[:, 0] + origins
-        root_pos += pose[:, :3]
-        root_quat = quat_mul(
-            quat_from_euler_xyz(pose[:, 3], pose[:, 4], pose[:, 5]),
-            motion_body_quat[:, 0],
-        )
-        root_state = torch.cat(
-            (
-                root_pos,
-                root_quat,
-                motion_body_lin_vel[:, 0] + velocity[:, :3],
-                motion_body_ang_vel[:, 0] + velocity[:, 3:],
-            ),
-            dim=-1,
-        )
-        root_values_ms = (time.perf_counter() - root_started) * 1000.0
+        root_values_ms = 0.0
         root_write_started = time.perf_counter()
         self.robot.write_motion_state_tensor_to_sim(
             root_state=root_state,
