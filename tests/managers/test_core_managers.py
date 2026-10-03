@@ -240,6 +240,58 @@ def test_reward_step_extras_report_per_term_weighted_rates(fake_env: FakeEnv) ->
     assert extras["reward/zero"] == 0.0
 
 
+def test_reward_pack_supplies_outputs_without_duplicate_execution(fake_env: FakeEnv) -> None:
+    calls: list[str] = []
+
+    def packed(env: FakeEnv) -> torch.Tensor:
+        calls.append("packed")
+        first = torch.arange(fake_env.num_envs, dtype=torch.float32) + 1.0
+        return torch.stack((first, first + 1.0), dim=1)
+
+    def left(env: FakeEnv) -> torch.Tensor:
+        calls.append("left")
+        return torch.ones(env.num_envs, dtype=torch.float32)
+
+    def right(env: FakeEnv) -> torch.Tensor:
+        calls.append("right")
+        return torch.full((env.num_envs,), 2.0, dtype=torch.float32)
+
+    manager = RewardManager(
+        {
+            "pack": RewardTermCfg(
+                func=packed,
+                weight=0.0,
+                reward_pack_names=("left", "right"),
+            ),
+            "left": RewardTermCfg(func=left, weight=2.0),
+            "right": RewardTermCfg(func=right, weight=-1.0),
+        },
+        fake_env,
+        scale_by_dt=False,
+    )
+    values = manager.compute(dt=1.0)
+    torch.testing.assert_close(values, torch.tensor([0.0, 1.0, 2.0, 3.0]))
+    torch.testing.assert_close(manager.step_reward_means, torch.tensor([0.0, 5.0, -3.5]))
+    assert calls == ["packed"]
+
+
+def test_reward_pack_rejects_invalid_output_width(fake_env: FakeEnv) -> None:
+    manager = RewardManager(
+        {
+            "pack": RewardTermCfg(
+                func=lambda env: torch.ones((env.num_envs, 3), dtype=torch.float32),
+                weight=0.0,
+                reward_pack_names=("left", "right"),
+            ),
+            "left": RewardTermCfg(func=lambda env: torch.ones(env.num_envs), weight=1.0),
+            "right": RewardTermCfg(func=lambda env: torch.ones(env.num_envs), weight=1.0),
+        },
+        fake_env,
+    )
+    with pytest.raises(ValueError, match="shape"):
+        manager.compute(dt=1.0)
+
+
 @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
 def test_reward_nonfinite_is_an_error(fake_env: FakeEnv, bad: float) -> None:
     def reward(env: FakeEnv) -> np.ndarray:
