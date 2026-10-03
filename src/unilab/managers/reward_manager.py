@@ -228,7 +228,10 @@ class RewardManager(ManagerBase):
                     f"RewardManager term '{name}' returned device {value.device}, "
                     f"expected {self._device}."
                 )
-            result = value.clone()
+            if getattr(term_cfg.func, "returns_transient_tensor", False):
+                result = value
+            else:
+                result = value.clone()
         else:
             host = np.array(value, dtype=np.float32, order="C", copy=True)
             result = torch.from_numpy(host).to(device=self._device)
