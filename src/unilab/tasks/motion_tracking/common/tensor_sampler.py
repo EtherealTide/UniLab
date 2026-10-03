@@ -155,7 +155,9 @@ class TensorMotionSampler:
         failures = torch.bincount(failed_bins, minlength=discard_bin + 1)[: self.bin_count].to(
             dtype=torch.float32
         )
-        alpha = terminated.any().to(dtype=self._bin_failed.dtype) * self.adaptive_alpha
+        # Keep the all-failed/all-active scalar on-device. Converting ``any()``
+        # to Python would synchronize at this point in every update-state pass.
+        alpha = terminated.any().reshape(1).to(dtype=self._bin_failed.dtype) * self.adaptive_alpha
         self._bin_failed.mul_(1.0 - alpha).add_(failures * alpha)
 
     def step_full(self, active: torch.Tensor, time_steps: torch.Tensor) -> torch.Tensor:
