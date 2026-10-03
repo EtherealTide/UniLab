@@ -69,7 +69,7 @@ _RUNTIME_ENV_KEYS = (
 )
 _AFTER_RUN_GPU_QUIESCE_TIMEOUT_S = 10.0
 _AFTER_RUN_GPU_QUIESCE_POLL_S = 0.25
-_SCOPED_BACKENDS = ("mujoco", "mjwarp", "genesis")
+_SCOPED_BACKENDS = ("mujoco", "mjwarp")
 _EXTERNAL_WORKER_PACKAGES = {
     "isaacgym": ("isaacgym", "isaacgym-preview.4", "torch"),
     "isaacsim": ("isaacsim", "isaacsim-core", "isaaclab", "omniverse-kit", "torch"),

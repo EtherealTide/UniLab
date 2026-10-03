@@ -90,7 +90,7 @@ uv sync --extra mujoco
 uv run python -c "import unisim; print(unisim.ADAPTER_SPECS)"
 ```
 
-`unisim` 不依赖 UniLab、Hydra 或训练组件。scoped MuJoCo/MJWarp/Genesis 适配器
+`unisim` 不依赖 UniLab、Hydra 或训练组件。scoped MuJoCo/MJWarp 适配器
 与暂时搁置的适配器使用同一个 public contract。缺失 proprietary SDK 或 GPU worker
 时会产生明确的 cold-path diagnostic；不会静默切换到另一个引擎。
 

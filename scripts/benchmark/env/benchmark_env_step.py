@@ -93,7 +93,7 @@ def _uninstall_mjwarp_patch() -> None:
 
 MJWARP_AVAILABLE = _install_mjwarp_patch()
 
-BACKENDS = ["mujoco", "mjwarp", "genesis"]
+BACKENDS = ["mujoco", "mjwarp"]
 
 
 @dataclass(frozen=True)
@@ -102,7 +102,7 @@ class TaskConfig:
     env_name: str
     cfg_factory: Callable[[str, list[str]], Any]
     env_cls_factory: Callable[[], Callable[..., Any]]
-    backends: tuple[str, ...] = ("mujoco", "mjwarp", "genesis")
+    backends: tuple[str, ...] = ("mujoco", "mjwarp")
     aliases: tuple[str, ...] = ()
     cfg_finalizer: Callable[[Any, str], None] | None = None
     include_in_matrix: bool = True
@@ -233,7 +233,7 @@ TASK_CONFIGS: dict[str, TaskConfig] = {
         env_name="G1WalkFlat",
         cfg_factory=_g1_flat_cfg,
         env_cls_factory=_g1_walk_env_cls,
-        backends=("mujoco", "mjwarp", "genesis"),
+        backends=("mujoco", "mjwarp"),
     ),
     "g1_mt": TaskConfig(
         task_id="g1_motion_tracking",

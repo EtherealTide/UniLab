@@ -36,12 +36,4 @@ registry.register_env(
     make_manager_based_rl_env,
     sim_backend="mjwarp",
 )
-# Genesis is the second scoped DEVICE_RESIDENT motion owner. The Manager tensor
-# command/action/read path owns its hot lifecycle; legacy device-resident
-# candidates remain unregistered while Phase 5 scope reduction proceeds.
-registry.register_env(
-    "G1MotionTrackingSAC",
-    make_manager_based_rl_env,
-    sim_backend="genesis",
-)
 __all__ = ["BoxMotionData", "BoxMotionLoader", "G1_MOTION_TASKS"]

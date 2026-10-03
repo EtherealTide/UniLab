@@ -2199,7 +2199,7 @@ def test_offpolicy_flashsac_g1_motion_tracking_mjwarp_task_composes() -> None:
     assert cfg.training.play_render_mode == "record"
 
 
-@pytest.mark.parametrize("backend", ["mujoco", "mjwarp", "genesis"])
+@pytest.mark.parametrize("backend", ["mujoco", "mjwarp"])
 def test_offpolicy_flashsac_g1_motion_tracking_task_composes(backend: str) -> None:
     cfg = _offpolicy_cfg([f"task=g1_motion_tracking/{backend}"], algo="flashsac")
     assert cfg.training.task_name == "G1MotionTrackingSAC"

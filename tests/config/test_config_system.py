@@ -20,7 +20,7 @@ from omegaconf import OmegaConf
 pytestmark = pytest.mark.slow
 
 CONF_DIR = Path(__file__).parent.parent.parent / "src" / "unilab" / "conf"
-_BACKENDS = ("mujoco", "mjwarp", "genesis")
+_BACKENDS = ("mujoco", "mjwarp")
 
 
 def _expected_backend_from_variant(name: str) -> str | None:
