@@ -24,6 +24,7 @@ from unilab.utils.rotation import (
     np_quat_apply_batched,
     np_quat_apply_inverse_batched,
     np_quat_error_magnitude_squared_batched,
+    np_quat_from_euler_xyz,
     np_quat_inv,
     np_quat_mul_batched,
     np_yaw_quat,
@@ -1368,3 +1369,101 @@ def test_motion_reset_owner_preserves_transaction_row_identity() -> None:
     assert rows.data_ptr() == transaction_rows.data_ptr()
     distinct = torch.tensor([1, 3], dtype=torch.int64)
     assert owner._normalize_rows(distinct) is distinct
+
+
+def test_motion_reset_values_kernel_matches_eager_and_reuses_scratch() -> None:
+    rng = np.random.default_rng(1811)
+    count, num_joints, num_bodies = 39, 29, 14
+    packet_joint_pos = rng.standard_normal((count, num_joints), dtype=np.float32)
+    packet_joint_vel = rng.standard_normal((count, num_joints), dtype=np.float32)
+    packet_body_pos = rng.standard_normal((count, num_bodies, 3), dtype=np.float32)
+    packet_body_quat = _unit_quat(rng.standard_normal((count, num_bodies, 4), dtype=np.float32))
+    packet_body_lin = rng.standard_normal((count, num_bodies, 3), dtype=np.float32)
+    packet_body_ang = rng.standard_normal((count, num_bodies, 3), dtype=np.float32)
+    origins = rng.standard_normal((count, 3), dtype=np.float32)
+    pose = rng.uniform(-0.5, 0.5, (count, 6)).astype(np.float32)
+    velocity = rng.standard_normal((count, 6), dtype=np.float32)
+    joint_noise = rng.standard_normal((count, num_joints), dtype=np.float32) * 0.01
+    soft_limits = np.stack(
+        (
+            rng.uniform(-2.0, -1.0, num_joints),
+            rng.uniform(1.0, 2.0, num_joints),
+        ),
+        axis=-1,
+    ).astype(np.float32)
+
+    def tensor(value: np.ndarray) -> torch.Tensor:
+        return torch.from_numpy(value.copy())
+
+    expected_joint = packet_joint_pos + joint_noise
+    np.clip(expected_joint, soft_limits[:, 0], soft_limits[:, 1], out=expected_joint)
+    expected_pose_quat = np_quat_from_euler_xyz(pose[:, 3], pose[:, 4], pose[:, 5])
+    expected_root_quat = np_quat_mul_batched(expected_pose_quat, packet_body_quat[:, 0])
+    expected_root = np.concatenate(
+        (
+            packet_body_pos[:, 0] + origins + pose[:, :3],
+            expected_root_quat,
+            packet_body_lin[:, 0] + velocity[:, :3],
+            packet_body_ang[:, 0] + velocity[:, 3:],
+        ),
+        axis=-1,
+    )
+
+    joint_scratch = torch.full((256, num_joints), torch.nan, dtype=torch.float32)
+    root_scratch = torch.full((256, 13), torch.nan, dtype=torch.float32)
+    for selected in (count, 17, count):
+        mt._motion_reset_values_kernel(
+            tensor(packet_joint_pos[:selected]),
+            tensor(packet_joint_vel[:selected]),
+            tensor(packet_body_pos[:selected]),
+            tensor(packet_body_quat[:selected]),
+            tensor(packet_body_lin[:selected]),
+            tensor(packet_body_ang[:selected]),
+            tensor(origins[:selected]),
+            tensor(pose[:selected]),
+            tensor(velocity[:selected]),
+            tensor(joint_noise[:selected]),
+            tensor(soft_limits),
+            joint_scratch[:selected],
+            root_scratch[:selected],
+        )
+
+        torch.testing.assert_close(
+            joint_scratch[:selected],
+            torch.from_numpy(expected_joint[:selected]),
+            rtol=2e-6,
+            atol=2e-6,
+        )
+        torch.testing.assert_close(
+            root_scratch[:selected],
+            torch.from_numpy(expected_root[:selected]),
+            rtol=2e-6,
+            atol=2e-6,
+        )
+        # The unused suffix must never be exposed through the selected prefix.
+        assert bool(torch.isfinite(joint_scratch[selected:]).all()) is False
+        assert bool(torch.isfinite(root_scratch[selected:]).all()) is False
+
+    compiled = mt._bind_compiled_motion_reset_values()
+    if compiled is not mt._motion_reset_values_kernel:
+        compiled(
+            tensor(packet_joint_pos),
+            tensor(packet_joint_vel),
+            tensor(packet_body_pos),
+            tensor(packet_body_quat),
+            tensor(packet_body_lin),
+            tensor(packet_body_ang),
+            tensor(origins),
+            tensor(pose),
+            tensor(velocity),
+            tensor(joint_noise),
+            tensor(soft_limits),
+            joint_scratch[:count],
+            root_scratch[:count],
+        )
+        torch.testing.assert_close(
+            joint_scratch[:count], torch.from_numpy(expected_joint), rtol=2e-6, atol=2e-6
+        )
+        torch.testing.assert_close(
+            root_scratch[:count], torch.from_numpy(expected_root), rtol=2e-6, atol=2e-6
+        )
