@@ -108,6 +108,7 @@ class TorchEnv(ABEnv):
         self.step_counter = 0
         self._autoreset = True
         self._autoreset_reset_active = False
+        self._autoreset_scattered_reset_obs = False
         self._rgb_array_renderer_ready = False
         self._nan_guard: "TensorNanGuard | None" = None
 
@@ -502,6 +503,7 @@ class TorchEnv(ABEnv):
 
         reset_started = time.perf_counter()
         self._autoreset_reset_active = True
+        self._autoreset_scattered_reset_obs = False
         try:
             new_obs, reset_info = self.reset(rows)
         finally:
@@ -513,9 +515,16 @@ class TorchEnv(ABEnv):
         )
 
         scatter_started = time.perf_counter()
-        self._validate_reset_observation(new_obs, rows)
-        for name, values in new_obs.items():
-            self._state.obs[name].index_copy_(0, rows, values)
+        if self._autoreset_scattered_reset_obs:
+            # The environment-specific reset owner already published selected
+            # observations into the full public state. Preserve the public
+            # reset return contract while avoiding a second selected-row finite
+            # reduction and scatter.
+            new_obs = {name: self._state.obs[name].index_select(0, rows) for name in new_obs}
+        else:
+            self._validate_reset_observation(new_obs, rows)
+            for name, values in new_obs.items():
+                self._state.obs[name].index_copy_(0, rows, values)
         self._scatter_reset_info(reset_info, rows)
         detail_timing["reset_done_obs_scatter_ms"] = (
             time.perf_counter() - scatter_started

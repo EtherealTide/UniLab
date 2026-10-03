@@ -69,7 +69,7 @@ def test_observation_partial_reset_row_contract() -> None:
             )
 
         assert env.state is not None
-        obs_before = {name: values.copy() for name, values in env.state.obs.items()}
+        obs_before = {name: values.clone() for name, values in env.state.obs.items()}
         reset_ids = np.array([0, 2], dtype=np.int32)
         keep_ids = np.array([1, 3], dtype=np.int32)
         reset_obs, _ = env.reset(env_indices=torch.tensor(reset_ids, dtype=torch.int64))
