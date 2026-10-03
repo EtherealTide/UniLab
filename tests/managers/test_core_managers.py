@@ -252,6 +252,31 @@ def test_reward_nonfinite_is_an_error(fake_env: FakeEnv, bad: float) -> None:
         manager.compute(0.01)
 
 
+def test_reward_compute_publishes_phase_attribution(fake_env: FakeEnv) -> None:
+    def ones(env: FakeEnv) -> np.ndarray:
+        return np.ones(env.num_envs, dtype=np.float32)
+
+    manager = RewardManager(
+        {"value": RewardTermCfg(func=ones, weight=1.0)},
+        fake_env,
+        scale_by_dt=False,
+    )
+    manager.compute(dt=1.0)
+
+    expected = {
+        "update_state_reward_term_dispatch_ms",
+        "update_state_reward_aggregation_ms",
+        "update_state_reward_finite_validation_ms",
+        "update_state_reward_manager_residual_ms",
+    }
+    assert set(manager.last_step_timing_ms) == expected
+    assert all(value >= 0.0 for value in manager.last_step_timing_ms.values())
+
+    manager.last_step_timing_ms.update({"stale": 1.0})
+    manager.compute(dt=1.0)
+    assert set(manager.last_step_timing_ms) == expected
+
+
 def test_tensor_manager_terms_require_declared_dtype(fake_env: FakeEnv) -> None:
     reward = RewardManager(
         {

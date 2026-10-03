@@ -84,6 +84,10 @@ RESET_DONE_DETAIL_TIMING_KEYS = (
 UPDATE_STATE_DETAIL_TIMING_KEYS = (
     "update_state_termination_term_dispatch_ms",
     "update_state_termination_aggregation_ms",
+    "update_state_reward_term_dispatch_ms",
+    "update_state_reward_aggregation_ms",
+    "update_state_reward_finite_validation_ms",
+    "update_state_reward_manager_residual_ms",
     "update_state_command_dt_validation_ms",
     "update_state_command_term_dispatch_ms",
     "update_state_command_validation_ms",

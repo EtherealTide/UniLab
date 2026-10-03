@@ -1099,6 +1099,9 @@ class ManagerBasedRlEnv(TorchEnv):
         phase_started = time.perf_counter()
 
         self.reward_buf = self.reward_manager.compute(dt=self.step_dt)
+        reward_timing = getattr(self.reward_manager, "last_step_timing_ms", {})
+        state.info["update_state_timing"].update(reward_timing)
+        timing.update(reward_timing)
         timing["update_state_reward_ms"] = (time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
         self._reward_log_names = self.reward_manager.step_reward_names
