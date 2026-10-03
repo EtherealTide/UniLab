@@ -821,6 +821,7 @@ class EntityData:
         self._actuator_ids = actuator_ids
         self._actuator_ctrl_range = actuator_ctrl_range
         self._control_buffer = control_buffer
+        self._tensor_actuator_id_cache: torch.Tensor | None = None
         self._state_read_cache = state_read_cache
 
     def _cached_getter(
@@ -1296,13 +1297,31 @@ class EntityData:
                 f"Entity '{self._entity_name}' tensor write_ctrl expected shape "
                 f"{expected}, received {tuple(values.shape)}"
             )
+        full_width = (
+            isinstance(row_index, slice)
+            and row_index == slice(None)
+            and int(column_index.numel()) == len(entity_actuator_ids)
+            and bool(torch.equal(column_index, self._tensor_actuator_ids(control.device)))
+        )
         if not bool(torch.isfinite(values).all()):
             raise ValueError(f"Entity '{self._entity_name}' tensor write_ctrl got NaN or Inf")
 
-        if isinstance(row_index, slice):
+        if full_width:
+            control.copy_(values)
+        elif isinstance(row_index, slice):
             control[:, column_index] = values
         else:
             control[row_index[:, None], column_index[None, :]] = values
+
+    def _tensor_actuator_ids(self, device: torch.device) -> torch.Tensor:
+        cached = self._tensor_actuator_id_cache
+        if cached is None or cached.device != device:
+            entity_actuator_ids = self._require(self._actuator_ids, "actuator control write")
+            cached = torch.from_numpy(np.ascontiguousarray(entity_actuator_ids, dtype=np.int64)).to(
+                device=device
+            )
+            self._tensor_actuator_id_cache = cached
+        return cached
 
 
 class Entity:
