@@ -681,10 +681,16 @@ class ObservationManager(ManagerBase):
             concatenation_started = time.perf_counter()
             values = list(group_obs.values())
             if all(isinstance(value, torch.Tensor) for value in values):
-                result = torch.cat(
-                    cast("list[torch.Tensor]", values),
-                    dim=self._group_obs_concatenate_dim[group_name],
-                )
+                tensors = cast("list[torch.Tensor]", values)
+                if len(tensors) == 1:
+                    # A one-term concatenated group already has final layout;
+                    # preserve its exact dtype/device without a defensive copy.
+                    result = tensors[0]
+                else:
+                    result = torch.cat(
+                        tensors,
+                        dim=self._group_obs_concatenate_dim[group_name],
+                    )
             elif self._device.type == "cuda":
                 mixed = [
                     term_name
