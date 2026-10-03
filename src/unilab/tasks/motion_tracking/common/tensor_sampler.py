@@ -9,13 +9,10 @@ on one Torch device and consume the Manager-owned Torch generator.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
 import torch
-
-_sampling_dispatch_compiled: Callable[..., None] | None = None
 
 
 def _sampling_dispatch_kernel(
@@ -26,21 +23,15 @@ def _sampling_dispatch_kernel(
     current_frames: torch.Tensor,
     current_clip_end_frames: torch.Tensor,
 ) -> None:
+    # Keep this tiny selected-row dispatch eager. An Inductor fusion of
+    # searchsorted/index-select measured no wall-time benefit at ~39 reset rows,
+    # and synthetic wide-clip tensors triggered a Triton index assertion while
+    # autotuning this graph. The surrounding eager operations are stable and
+    # already device-resident.
     current_frames.index_copy_(0, rows, frames)
     clip_indices = torch.searchsorted(clip_offsets, frames.to(dtype=torch.int64), right=True)
     clip_indices.sub_(1).clamp_(min=0)
     current_clip_end_frames.index_copy_(0, rows, clip_end_frames.index_select(0, clip_indices))
-
-
-def _bind_compiled_sampling_dispatch() -> Callable[..., None]:
-    global _sampling_dispatch_compiled
-    if _sampling_dispatch_compiled is not None:
-        return _sampling_dispatch_compiled
-    if not (hasattr(torch, "compile") and hasattr(torch.compiler, "is_compiling")):
-        _sampling_dispatch_compiled = _sampling_dispatch_kernel
-        return _sampling_dispatch_compiled
-    _sampling_dispatch_compiled = torch.compile(_sampling_dispatch_kernel, dynamic=True)
-    return _sampling_dispatch_compiled
 
 
 @dataclass
@@ -160,7 +151,7 @@ class TensorMotionSampler:
             )
             frames = torch.where(use_start, torch.zeros_like(uniform_frames), uniform_frames)
 
-        _bind_compiled_sampling_dispatch()(
+        _sampling_dispatch_kernel(
             rows,
             frames,
             self._clip_offsets,

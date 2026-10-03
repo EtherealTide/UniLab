@@ -150,7 +150,7 @@ def test_sampling_dispatch_matches_eager_clip_lookup_and_publishes_timing() -> N
     rows = torch.tensor([1, 3], dtype=torch.int64)
     frames = torch.tensor([31, 7], dtype=torch.int32)
 
-    mt._bind_compiled_sampling_dispatch()(
+    mt._sampling_dispatch_kernel(
         rows,
         frames,
         sampler._clip_offsets,
