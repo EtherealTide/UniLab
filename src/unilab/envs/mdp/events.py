@@ -1617,6 +1617,40 @@ def _tensor_quat_mul(left_wxyz: torch.Tensor, right_wxyz: torch.Tensor) -> torch
     )
 
 
+def _tensor_root_reset_kernel(
+    default_rows: torch.Tensor,
+    origins_rows: torch.Tensor | None,
+    pose_delta: torch.Tensor,
+    velocity_delta: torch.Tensor,
+    output: torch.Tensor,
+) -> None:
+    """Build one sampled floating-root state in a single compiled Torch graph."""
+    output.copy_(default_rows)
+    if origins_rows is not None:
+        output[:, 0:3] += origins_rows[:, 0:3]
+    output[:, 0:3] += pose_delta[:, 0:3]
+    orientation_delta = _tensor_quat_from_euler_xyz(
+        pose_delta[:, 3], pose_delta[:, 4], pose_delta[:, 5]
+    )
+    output[:, 3:7] = _tensor_quat_mul(output[:, 3:7], orientation_delta)
+    output[:, 7:13] += velocity_delta
+
+
+_TensorRootResetFn = Any
+_tensor_root_reset_compiled: _TensorRootResetFn | None = None
+
+
+def _bind_tensor_root_reset() -> _TensorRootResetFn:
+    global _tensor_root_reset_compiled
+    if _tensor_root_reset_compiled is not None:
+        return _tensor_root_reset_compiled
+    if not (hasattr(torch, "compile") and hasattr(torch.compiler, "is_compiling")):
+        _tensor_root_reset_compiled = _tensor_root_reset_kernel
+        return _tensor_root_reset_compiled
+    _tensor_root_reset_compiled = torch.compile(_tensor_root_reset_kernel, dynamic=True)
+    return _tensor_root_reset_compiled
+
+
 def reset_root_state_uniform_tensor(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
@@ -1705,15 +1739,24 @@ def reset_root_state_uniform_tensor(
     )
     pose_delta, velocity_delta = torch.split(deltas, len(_SE3_KEYS), dim=1)
 
-    root_state = default_tensor.index_select(0, rows).clone()
-    if origins_enabled:
-        root_state[:, 0:3] += origins_tensor.index_select(0, rows)[:, 0:3]
-    root_state[:, 0:3] += pose_delta[:, 0:3]
-    orientation_delta = _tensor_quat_from_euler_xyz(
-        pose_delta[:, 3], pose_delta[:, 4], pose_delta[:, 5]
+    default_rows = (
+        default_tensor if count == default_tensor.shape[0] else default_tensor.index_select(0, rows)
     )
-    root_state[:, 3:7] = _tensor_quat_mul(root_state[:, 3:7], orientation_delta)
-    root_state[:, 7:13] += velocity_delta
+    origins_rows = None
+    if origins_enabled:
+        origins_rows = (
+            origins_tensor
+            if count == origins_tensor.shape[0]
+            else origins_tensor.index_select(0, rows)
+        )
+    root_state = torch.empty_like(default_rows)
+    _bind_tensor_root_reset()(
+        default_rows,
+        origins_rows,
+        pose_delta,
+        velocity_delta,
+        root_state,
+    )
     asset.write_root_state_tensor_to_sim(root_state, env_ids=rows)
 
 
