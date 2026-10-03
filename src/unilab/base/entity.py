@@ -2490,6 +2490,57 @@ class Entity:
             )
         self.data.write_ctrl(target, env_ids, actuator_ids=actuator_ids)
 
+    def set_full_width_joint_position_target(self, target: torch.Tensor) -> None:
+        """Fuse the canonical all-joints/all-rows position target publication.
+
+        ``target`` is in the entity's natural joint order. This method resolves
+        the immutable joint-to-actuator mapping once on the cold path and
+        writes directly into the full Torch control plane, avoiding separate
+        index selection and control scatter kernels. Partial/reordered targets
+        use ``set_joint_position_target``.
+        """
+        joint_to_actuator = self._joint_to_actuator_local
+        if joint_to_actuator is None:
+            raise self._capability_error(
+                "joint position target",
+                "joint-to-actuator metadata was not materialized",
+            )
+        joint_count = len(self.joint_names)
+        if joint_count == 0 or joint_to_actuator.shape != (joint_count,):
+            raise ValueError(
+                f"Entity '{self.name}' full-width position target requires a one-actuator "
+                f"mapping for all {joint_count} joints"
+            )
+        if np.any(joint_to_actuator < 0):
+            passive_names = [
+                self.joint_names[int(i)] for i in np.flatnonzero(joint_to_actuator < 0)
+            ]
+            raise NotImplementedError(
+                f"Entity '{self.name}' capability 'joint position target' is unavailable "
+                f"for passive joints on backend '{self._backend_type}': {passive_names}"
+            )
+        control = self._require_tensor_control_buffer_public()
+        if target.dtype != torch.float32:
+            raise TypeError("full-width joint position target must be float32")
+        if target.device != control.device:
+            raise ValueError(
+                f"full-width joint position target must live on {control.device}, got {target.device}"
+            )
+        if tuple(target.shape) != tuple(control.shape):
+            raise ValueError(
+                f"full-width joint position target has shape {tuple(target.shape)}; "
+                f"expected {tuple(control.shape)}"
+            )
+        control.copy_(target)
+
+    def _require_tensor_control_buffer_public(self) -> torch.Tensor:
+        control = self.data.control_buffer
+        if not isinstance(control, torch.Tensor):
+            raise NotImplementedError(
+                f"Entity '{self.name}' full-width tensor target requires a Torch control plane"
+            )
+        return control
+
     def _set_joint_control_target(
         self,
         target: np.ndarray,

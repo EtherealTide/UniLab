@@ -267,6 +267,9 @@ class JointPositionAction(BaseAction):
             )
         self._target = np.empty((self.num_envs, self.action_dim), dtype=np.float32)
         self._tensor_target = torch.empty_like(self._processed_actions)
+        self._full_width_natural_target = self._target_ids.size == self._entity.num_joints and bool(
+            np.array_equal(self._target_ids, np.arange(self._entity.num_joints, dtype=np.intp))
+        )
 
     def apply_actions(self) -> None:
         control = self._entity.data.control_buffer
@@ -283,7 +286,12 @@ class JointPositionAction(BaseAction):
                 encoder_bias.index_select(1, self._target_index),
                 out=self._tensor_target,
             )
-            self._entity.set_joint_position_target(self._tensor_target, joint_ids=self._target_ids)
+            if self._full_width_natural_target:
+                self._entity.set_full_width_joint_position_target(self._tensor_target)
+            else:
+                self._entity.set_joint_position_target(
+                    self._tensor_target, joint_ids=self._target_ids
+                )
             return
         processed = self._entity_values(self._processed_actions)
         encoder_bias = self._entity.data.encoder_bias[:, self._target_ids]
