@@ -1460,6 +1460,10 @@ class ManagerBasedRlEnv(TorchEnv):
             for name in mapped_obs:
                 self._state.obs[name].index_copy_(0, rows, reset_obs[name])
             if self._autoreset_reset_active:
+                # The Manager already published into the full public state.
+                # ``TorchEnv._reset_done_envs`` must not validate and scatter
+                # the selected rows a second time.
+                self._autoreset_scattered_reset_obs = True
                 # Autoreset runs at the tail of step(): keep this step's
                 # per-step log entries (reward/* etc., computed pre-reset) and
                 # layer manager reset extras on top, so consumers still see the
