@@ -79,6 +79,13 @@ _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V14 = (
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V15 = (
     "29d3a052d0bb1cdab7eb5811477c32e16a3275236815fca8d6fa109e58b07bca"
 )
+# V16 applies only to MJWarp: the two fused reward owners may skip the Manager's
+# defensive result copy by declaring their stable per-call output transient, and
+# the sampler keeps its adaptive alpha scalar on-device. Equations, weights,
+# per-term logs, RNG, and all public reward values are unchanged.
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V16 = (
+    "c8c93a29ad3335092de8a50695677a63ea85eb47d4d5c0cbd75356a838762d71"
+)
 _TORCH_G1_SAC_OWNER_IDENTITY_V2 = "30cf78a5c6da8c94cd3bd2afa74fa9f4251cccf2a98db7251ee6b8346573a975"
 
 
@@ -91,6 +98,7 @@ def _validate_torch_g1_flashsac_owner_contract(cfg: ManagerBasedRlEnvCfg) -> Non
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V13,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V14,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V15,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V16,
         _TORCH_G1_SAC_OWNER_IDENTITY_V2,
     }:
         raise ValueError(
@@ -106,6 +114,7 @@ __all__ = [
     "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V13",
     "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V14",
     "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V15",
+    "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V16",
     "_TORCH_G1_SAC_OWNER_IDENTITY_V2",
     "_qualified_name",
     "_torch_g1_flashsac_owner_identity",
