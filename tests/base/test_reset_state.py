@@ -893,7 +893,7 @@ def test_tensor_motion_state_write_fails_closed() -> None:
             )
 
 
-def test_tensor_motion_state_diagnostic_uses_one_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tensor_motion_state_success_stays_device_resident(monkeypatch: pytest.MonkeyPatch) -> None:
     transaction = _transaction(_TensorResetBackend())
     transaction.declare_packed_reset_device(torch.device("cpu"))
     rows = torch.tensor([1], dtype=torch.int64)
@@ -922,7 +922,7 @@ def test_tensor_motion_state_diagnostic_uses_one_boundary(monkeypatch: pytest.Mo
             term_name="motion_owner",
         )
 
-    assert scalar_conversions == 1
+    assert scalar_conversions == 0
 
 
 def test_tensor_reset_commit_carries_randomization_payload() -> None:
