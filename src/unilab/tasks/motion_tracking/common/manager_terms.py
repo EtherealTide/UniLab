@@ -2630,7 +2630,22 @@ class MotionResetOwner(ResetOwner):
 
     def _normalize_rows(self, env_ids: torch.Tensor | slice | None) -> torch.Tensor:
         if isinstance(env_ids, torch.Tensor):
-            return env_ids.to(dtype=torch.int64, device=self._device)
+            rows = env_ids.to(dtype=torch.int64, device=self._device)
+            # Preserve the transaction's concrete row identity when already
+            # normalized. Tensor reset writes validate ownership before a
+            # scalar ``torch.equal`` fallback, so a newly normalized tensor can
+            # otherwise force a device comparison on every selected reset.
+            transaction = getattr(self, "_env", None)
+            transaction = getattr(transaction, "_reset_state", None)
+            active_rows = getattr(transaction, "_tensor_rows", None)
+            if (
+                active_rows is not None
+                and rows.dtype == torch.int64
+                and rows.device == self._device
+                and rows.data_ptr() == active_rows.data_ptr()
+            ):
+                return active_rows
+            return rows
         rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._device)
         return rows if env_ids is None else rows[env_ids]
 
