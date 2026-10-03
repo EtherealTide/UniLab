@@ -548,15 +548,11 @@ class RoughVelocityCommand(UniformVelocityCommand):
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         super()._resample_command(env_ids)
         tensor = self._tensor_command
-        if tensor is not None:
-            planar = tensor[env_ids, :2]
-            moving = torch.linalg.vector_norm(planar, dim=1) > self._planar_dead_zone
-            tensor[env_ids, :2] = planar * moving[:, None]
-            return
-        host_ids = env_ids.detach().cpu().numpy()
-        planar = self.vel_command_b[host_ids, :2]
-        moving = np.linalg.norm(planar, axis=1) > self._planar_dead_zone
-        self.vel_command_b[host_ids, :2] = planar * moving[:, None]
+        assert tensor is not None
+        rows = env_ids.to(dtype=torch.int64, device=tensor.device)
+        planar = tensor[rows, :2]
+        moving = torch.linalg.vector_norm(planar, dim=1) > self._planar_dead_zone
+        tensor[rows, :2] = planar * moving[:, None]
 
 
 def joint_deviation_l2(
