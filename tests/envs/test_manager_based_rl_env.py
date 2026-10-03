@@ -1712,6 +1712,21 @@ def test_update_state_publishes_drain_vs_host_termination_attribution() -> None:
     assert timing["update_state_state_replace_ms"] >= 0.0
     assert timing["update_state_child_sum_ms"] >= 0.0
     assert timing["update_state_command_preflight_ms"] >= 0.0
+    observation_timing = {
+        key: state.info["update_state_timing"][key]
+        for key in (
+            "update_state_observation_term_dispatch_ms",
+            "update_state_observation_validation_ms",
+            "update_state_observation_noise_ms",
+            "update_state_observation_transform_ms",
+            "update_state_observation_temporal_ms",
+            "update_state_observation_concatenation_ms",
+            "update_state_observation_boundary_ms",
+            "update_state_observation_manager_residual_ms",
+        )
+    }
+    assert all(value >= 0.0 for value in observation_timing.values())
+    assert all(timing[key] == value for key, value in observation_timing.items())
     update_state_timing = state.info["update_state_timing"]
     if update_state_timing:
         assert set(update_state_timing) <= set(UPDATE_STATE_DETAIL_TIMING_KEYS)
