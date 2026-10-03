@@ -274,7 +274,7 @@ def test_register_env_rejects_shelved_backend(backend):
 
 
 def test_default_backend_order_is_tensor_manager_scope():
-    assert registry_mod._DEFAULT_SIM_BACKEND_ORDER == ("mujoco", "mjwarp", "genesis")
+    assert registry_mod._DEFAULT_SIM_BACKEND_ORDER == ("mujoco", "mjwarp")
 
 
 def test_register_env_without_config_raises():
@@ -370,7 +370,12 @@ def test_make_rejects_invalid_factory_output_at_registry_boundary():
 def test_make_unsupported_backend_raises():
     """make() with an unsupported backend name raises ValueError."""
     with pytest.raises(ValueError, match="does not support simulation backend"):
-        registry_mod.make(_TEST_ENV_A, sim_backend="genesis")
+        registry_mod.make(_TEST_ENV_A, sim_backend="newton")
+
+
+def test_make_rejects_shelved_genesis_runtime_backend():
+    with pytest.raises(ValueError, match="temporarily out of the tensor-only"):
+        registry_mod.register_env(_TEST_ENV_A, lambda *args, **kwargs: None, "genesis")
 
 
 def test_make_no_env_factory_raises():

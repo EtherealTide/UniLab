@@ -76,7 +76,7 @@ def test_flashsac_owner_fingerprint_fails_closed(mutate) -> None:
 
 def test_fused_motion_reward_pack_owner_identity_is_canonical() -> None:
     """The fused Manager reward is the canonical FlashSAC semantic owner."""
-    for backend in ("mujoco", "mjwarp", "genesis"):
+    for backend in ("mujoco", "mjwarp"):
         cfg = _materialize_task(f"g1_motion_tracking/{backend}")
         identity = module._torch_g1_flashsac_owner_identity(cfg)
         expected = {

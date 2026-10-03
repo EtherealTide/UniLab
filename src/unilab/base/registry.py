@@ -44,9 +44,9 @@ RewardOverrideField = Literal["reward_config", "rewards"]
 _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS = (
     "mujoco",
     "mjwarp",
-    "genesis",
 )
 _SHELVED_SIM_BACKENDS = (
+    "genesis",
     "motrix",
     "drake",
     "isaacgym",
@@ -271,7 +271,7 @@ def make(
     Args:
         name: Environment name
         sim_backend: Simulation backend. If None, uses the
-            explicit tensor-manager backend order: "mujoco", "mjwarp", "genesis".
+            explicit tensor-manager backend order: "mujoco", "mjwarp".
         num_envs: Number of environments to create
 
     Returns:

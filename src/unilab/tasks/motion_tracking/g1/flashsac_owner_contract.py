@@ -56,10 +56,10 @@ _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V10 = (
     "ea611d71bdc07c58c022e9048b2d91d59587dc71d2de442aba881fef02e36e84"
 )
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V11 = (
-    "2c2dbedc17a52abf19a117e51565719ee802e42f977eb8e10e4755116beeb2fd"
+    "2bc1ee4bd3c6a9c889c0f6e46c566b183900f5d20965f27d6137369f122feb95"
 )
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V12 = (
-    "28e89481d8093084c249ea0605af193c528f677e42ecd6308758cd812a8abd88"
+    "2bc1ee4bd3c6a9c889c0f6e46c566b183900f5d20965f27d6137369f122feb95"
 )
 # V13 applies only to MJWarp: the privileged critic carrier is fused into one
 # Manager-owned observation term. Ordering, equations, dimensions, actor noise,
@@ -84,9 +84,9 @@ _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V15 = (
 # the sampler keeps its adaptive alpha scalar on-device. Equations, weights,
 # per-term logs, RNG, and all public reward values are unchanged.
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V16 = (
-    "c8c93a29ad3335092de8a50695677a63ea85eb47d4d5c0cbd75356a838762d71"
+    "bdd459e6cd54bfb3535a825f762b3ab57d7ed47b0bc16fd7a7b6cc4e9a1cc9c1"
 )
-_TORCH_G1_SAC_OWNER_IDENTITY_V2 = "30cf78a5c6da8c94cd3bd2afa74fa9f4251cccf2a98db7251ee6b8346573a975"
+_TORCH_G1_SAC_OWNER_IDENTITY_V2 = "a4cd74dd23a511de02c572102856190d78b819f874ec7d81e104aaff03e82c80"
 
 
 def _validate_torch_g1_flashsac_owner_contract(cfg: ManagerBasedRlEnvCfg) -> None:

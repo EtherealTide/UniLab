@@ -22,7 +22,7 @@ def test_discover_preserves_standard_task_layout() -> None:
 
     discovered = audit._discover("ppo")
 
-    assert {"mujoco", "mjwarp", "genesis"}.issubset(discovered["g1_walk_flat"])
+    assert {"mujoco", "mjwarp"}.issubset(discovered["g1_walk_flat"])
 
 
 def test_discover_offpolicy_trees_group_by_task() -> None:
@@ -32,7 +32,7 @@ def test_discover_offpolicy_trees_group_by_task() -> None:
     flashsac = audit._discover("flashsac")
     warpsac = audit._discover("warpsac")
 
-    assert {"mujoco", "mjwarp", "genesis"}.issubset(sac["g1_walk_flat"])
+    assert {"mujoco", "mjwarp"}.issubset(sac["g1_walk_flat"])
     assert {"mujoco", "mjwarp"}.issubset(flashsac["g1_walk_flat"])
     assert {"mujoco", "mjwarp"}.issubset(warpsac["g1_walk_flat"])
 
