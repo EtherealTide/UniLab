@@ -14,9 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 import torch
 
-from unilab.dtype_config import get_global_dtype
 from unilab.managers.command_manager import CommandTerm, CommandTermCfg
-from unilab.utils.rotation import np_wrap_to_pi
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
@@ -64,18 +62,15 @@ class UniformVelocityCommand(CommandTerm):
             )
 
         self.robot = cast("Entity", env.scene[cfg.entity_name])
-        dtype = get_global_dtype()
         self._tensor_command = torch.zeros(
             (self.num_envs, 3), dtype=torch.float32, device=self._device
         )
-        self.vel_command_b = np.zeros((self.num_envs, 3), dtype=dtype)
-        self.vel_command_w = np.zeros_like(self.vel_command_b)
-        self.heading_target = np.zeros(self.num_envs, dtype=dtype)
-        self.heading_error = np.zeros(self.num_envs, dtype=dtype)
-        self.is_heading_env = np.zeros(self.num_envs, dtype=np.bool_)
-        self.is_standing_env = np.zeros(self.num_envs, dtype=np.bool_)
-        self.is_world_env = np.zeros(self.num_envs, dtype=np.bool_)
-        self.is_forward_env = np.zeros(self.num_envs, dtype=np.bool_)
+        self._world_command = torch.zeros_like(self._tensor_command)
+        self._heading_target = torch.zeros(self.num_envs, dtype=torch.float32, device=self._device)
+        self._is_heading_env = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
+        self._is_standing_env = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
+        self._is_world_env = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
+        self._is_forward_env = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
         self.metrics["error_vel_xy"] = torch.zeros(self.num_envs, device=self._device)
         self.metrics["error_vel_yaw"] = torch.zeros(self.num_envs, device=self._device)
 
@@ -174,93 +169,93 @@ class UniformVelocityCommand(CommandTerm):
         self._resample_tensor_command(env_ids)
 
     def _resample_tensor_command(self, env_ids: torch.Tensor) -> None:
-        count = len(env_ids)
+        count = env_ids.numel()
+        if count == 0:
+            return
         tensor = self._tensor_command
         assert tensor is not None
-        rows = env_ids
-        host_ids = env_ids.detach().cpu().numpy()
+        rows = env_ids.to(dtype=torch.int64, device=self._device)
         ranges = self.cfg.ranges
         samples = torch.empty((count, 3), dtype=torch.float32, device=self._device)
         for column, bounds in enumerate((ranges.lin_vel_x, ranges.lin_vel_y, ranges.ang_vel_z)):
             samples[:, column] = self._sample_uniform(bounds[0], bounds[1], count)
+
         if self.cfg.heading_command:
             assert ranges.heading is not None
-            self.heading_target[host_ids] = self._host_uniform(
-                *ranges.heading, count=count, dtype=get_global_dtype()
+            self._heading_target[rows] = self._sample_uniform(*ranges.heading, count)
+            self._is_heading_env[rows] = self._sample_uniform(0.0, 1.0, count) <= (
+                self.cfg.rel_heading_envs
             )
-            self.is_heading_env[host_ids] = (
-                self._host_uniform(0.0, 1.0, count=count, dtype=np.float32)
-                <= self.cfg.rel_heading_envs
-            )
-        self.is_standing_env[host_ids] = (
-            self._host_uniform(0.0, 1.0, count=count, dtype=np.float32)
-            <= self.cfg.rel_standing_envs
+        self._is_standing_env[rows] = self._sample_uniform(0.0, 1.0, count) <= (
+            self.cfg.rel_standing_envs
         )
-        self.is_world_env[host_ids] = (
-            self._host_uniform(0.0, 1.0, count=count, dtype=np.float32) <= self.cfg.rel_world_envs
+        self._is_world_env[rows] = self._sample_uniform(0.0, 1.0, count) <= self.cfg.rel_world_envs
+        self._is_forward_env[rows] = self._sample_uniform(0.0, 1.0, count) <= (
+            self.cfg.rel_forward_envs
         )
-        self.is_forward_env[host_ids] = (
-            self._host_uniform(0.0, 1.0, count=count, dtype=np.float32) <= self.cfg.rel_forward_envs
-        )
-        forward = self.is_forward_env[host_ids]
-        if forward.any():
-            samples[forward, 0] = torch.clamp(samples[forward, 0].abs(), min=0.3)
-            samples[forward, 1:] = 0.0
+        forward = self._is_forward_env.index_select(0, rows)
+        if bool(forward.any()):
+            forward_rows = rows[forward]
+            tensor[forward_rows, 0] = torch.clamp(samples[forward, 0].abs(), min=0.3)
+            tensor[forward_rows, 1:] = 0.0
+            self._world_command[forward_rows] = tensor[forward_rows]
+            return
         tensor.index_copy_(0, rows, samples)
-        self.vel_command_w[host_ids] = samples.detach().cpu().numpy()
+        self._world_command.index_copy_(0, rows, samples)
 
     def _sample_uniform(self, lower: float, upper: float, count: int) -> torch.Tensor:
         rng_owner = getattr(self._env, "torch_rng", None)
         if rng_owner is not None:
             return rng_owner.uniform(lower, upper, (count,), dtype=torch.float32)
+        # CPU reference owners may still use the legacy NumPy stream. This is
+        # confined to the public HOST_BRIDGE carrier and is uploaded once here.
         return torch.as_tensor(
             self._env.rng.uniform(lower, upper, count),
             dtype=torch.float32,
             device=self._device,
         )
 
-    def _host_uniform(self, lower: float, upper: float, *, count: int, dtype: Any) -> np.ndarray:
-        rng_owner = getattr(self._env, "torch_rng", None)
-        if rng_owner is not None:
-            return (
-                (rng_owner.uniform(lower, upper, (count,), dtype=torch.float32))
-                .cpu()
-                .numpy()
-                .astype(dtype, copy=False)
-            )
-        return self._env.rng.uniform(lower, upper, count).astype(dtype, copy=False)
+    def _heading(self) -> torch.Tensor:
+        heading = self.robot.data.heading_w
+        if isinstance(heading, torch.Tensor):
+            return heading.to(device=self._device, dtype=torch.float32)
+        return torch.as_tensor(heading, dtype=torch.float32, device=self._device)
 
     def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
         del env_ids
         tensor = self._tensor_command
         assert tensor is not None
+
         if self.cfg.heading_command:
-            self.heading_error[:] = np_wrap_to_pi(self.heading_target - self.robot.data.heading_w)
-            heading_ids = np.flatnonzero(self.is_heading_env)
-            self.vel_command_b[heading_ids, 2] = np.clip(
-                self.cfg.heading_control_stiffness * self.heading_error[heading_ids],
-                self.cfg.ranges.ang_vel_z[0],
-                self.cfg.ranges.ang_vel_z[1],
+            heading_error = (
+                torch.remainder(
+                    self._heading_target - self._heading() + torch.pi,
+                    2.0 * torch.pi,
+                )
+                - torch.pi
             )
+            heading_ids = self._is_heading_env.nonzero(as_tuple=False).flatten()
+            if heading_ids.numel():
+                tensor[heading_ids, 2] = torch.clamp(
+                    self.cfg.heading_control_stiffness * heading_error[heading_ids],
+                    min=self.cfg.ranges.ang_vel_z[0],
+                    max=self.cfg.ranges.ang_vel_z[1],
+                )
 
-        world_ids = np.flatnonzero(self.is_world_env)
-        if len(world_ids) > 0:
-            heading = self.robot.data.heading_w[world_ids]
-            cos_heading = np.cos(heading)
-            sin_heading = np.sin(heading)
-            velocity_x_w = self.vel_command_w[world_ids, 0]
-            velocity_y_w = self.vel_command_w[world_ids, 1]
-            self.vel_command_b[world_ids, 0] = (
-                cos_heading * velocity_x_w + sin_heading * velocity_y_w
-            )
-            self.vel_command_b[world_ids, 1] = (
-                -sin_heading * velocity_x_w + cos_heading * velocity_y_w
-            )
+        world_ids = self._is_world_env.nonzero(as_tuple=False).flatten()
+        if world_ids.numel():
+            heading = self._heading()[world_ids]
+            cos_heading = torch.cos(heading)
+            sin_heading = torch.sin(heading)
+            velocity_x_w = self._world_command[world_ids, 0]
+            velocity_y_w = self._world_command[world_ids, 1]
+            tensor[world_ids, 0] = cos_heading * velocity_x_w + sin_heading * velocity_y_w
+            tensor[world_ids, 1] = -sin_heading * velocity_x_w + cos_heading * velocity_y_w
 
-        standing_ids = np.flatnonzero(self.is_standing_env)
-        self.vel_command_b[standing_ids] = 0.0
-        self.vel_command_w[standing_ids] = 0.0
-        tensor.copy_(torch.as_tensor(self.vel_command_b, dtype=torch.float32, device=tensor.device))
+        standing_ids = self._is_standing_env.nonzero(as_tuple=False).flatten()
+        if standing_ids.numel():
+            tensor[standing_ids] = 0.0
+            self._world_command[standing_ids] = 0.0
 
 
 @dataclass(kw_only=True)
