@@ -1279,7 +1279,13 @@ class ResetStateTransaction:
             & torch.isfinite(joint_velocity).all()
             & valid_quat.all()
         )
-        if bool(valid):
+        # Avoid a Python bool conversion of the aggregate: scalar conversion is
+        # itself synchronized and this fused reset path already has one device
+        # reduction. Compare against a device-resident true scalar so the
+        # success path remains non-synchronizing; invalid diagnostics below are
+        # still allowed to synchronize and identify the offending payload.
+        true_value = torch.ones_like(valid)
+        if torch.equal(valid, true_value):
             return
         payloads = (
             ("root state", root_state),
