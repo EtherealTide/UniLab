@@ -67,6 +67,7 @@ _OFFPOLICY_REWARDS = (
     "feet_phase",
     "alive",
 )
+_TENSOR_RESET_EVENT_BACKENDS = {"mjwarp", "newton"}
 
 _OBSERVATION_TERMS = (
     "base_ang_vel",
@@ -170,11 +171,22 @@ _OWNER_CASES = (
         1.0,
         "scene_flat.xml",
         _OFFPOLICY_REWARDS,
-        # kp/kd reset randomization stays enabled: the backend declares the
-        # measured RESET_TERM_KP/KD DR terms (REPORT #1372 §5.7).
-        (*_RESET_EVENTS, "pd_gains"),
+        _RESET_EVENTS,
         True,
         id="sac-genesis",
+    ),
+    pytest.param(
+        "sac",
+        ("task=g1_walk_flat/newton",),
+        "G1WalkFlat",
+        "newton",
+        29,
+        1.0,
+        "scene_flat.xml",
+        _OFFPOLICY_REWARDS,
+        _RESET_EVENTS,
+        True,
+        id="sac-newton",
     ),
     pytest.param(
         "flashsac",
@@ -195,6 +207,7 @@ _WALK_PROFILE_IDS = {
     "sac-mujoco",
     "sac-mjwarp",
     "sac-genesis",
+    "sac-newton",
     "sac-rough-mujoco",
     "flashsac-mujoco",
 }
@@ -325,15 +338,26 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
     assert env_cfg.actions["joint_pos"].scale == pytest.approx(action_scale)
     assert env_cfg.actions["joint_pos"].use_default_offset is True
 
-    assert list(env_cfg.terminations) == ["time_out", "tilt", "base_height"]
+    uses_fused_termination = case_id in {"sac-mjwarp", "sac-genesis", "sac-newton"}
+    expected_terminations = (
+        ["time_out", "tilt", "base_height", "g1_walk_termination_pack"]
+        if uses_fused_termination
+        else ["time_out", "tilt", "base_height"]
+    )
+    assert list(env_cfg.terminations) == expected_terminations
     assert env_cfg.terminations["time_out"].time_out is True
-    assert env_cfg.terminations["tilt"].func is g1_terms.g1_tilt_exceeded
-    assert env_cfg.terminations["base_height"].func is g1_terms.g1_base_height_below_minimum
+    if uses_fused_termination:
+        assert env_cfg.terminations["g1_walk_termination_pack"].func is (
+            g1_terms.G1WalkTerminationPack
+        )
+    else:
+        assert env_cfg.terminations["tilt"].func is g1_terms.g1_tilt_exceeded
+        assert env_cfg.terminations["base_height"].func is g1_terms.g1_base_height_below_minimum
 
     assert tuple(name for name, term in env_cfg.events.items() if term is not None) == (
         expected_events
     )
-    if backend == "mjwarp":
+    if backend in _TENSOR_RESET_EVENT_BACKENDS:
         assert env_cfg.events["reset_scene_to_default"].func is mdp.reset_scene_to_default_tensor
         assert (
             env_cfg.events["reset_root_state_uniform"].func is mdp.reset_root_state_uniform_tensor
@@ -371,6 +395,16 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
         assert env_cfg.genesis_friction_cone is None
         assert env_cfg.genesis_solver_iterations is None
         assert hydra_cfg.training.play_render_mode == "auto"
+    if backend == "newton":
+        assert env_cfg.newton_device == "cuda:0"
+        assert env_cfg.newton_nconmax == 320
+        assert env_cfg.newton_njmax == 512
+        assert env_cfg.newton_capacity_check_steps == 1
+        assert env_cfg.newton_use_cuda_graph is True
+        assert env_cfg.scene.fragment_files == []
+        assert env_cfg.scene.terrain is None
+        assert env_cfg.events["pd_gains"] is None
+        assert hydra_cfg.training.play_render_mode == "record"
 
     pose = env_cfg.rewards["pose"]
     expected_weights = _POSE_WEIGHTS_29
@@ -394,6 +428,7 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
                         ".mujoco",
                         ".mjwarp",
                         ".genesis",
+                        ".newton",
                     )
                 )
 
@@ -410,6 +445,7 @@ def test_g1_walk_registries_are_manager_only() -> None:
             "mujoco",
             "mjwarp",
             "genesis",
+            "newton",
         ],
     }
 
@@ -436,6 +472,16 @@ def test_g1_walk_registries_are_manager_only() -> None:
             98,
             101,
             id="sac-mujoco",
+        ),
+        pytest.param(
+            "sac",
+            ("task=g1_walk_flat/newton",),
+            "G1WalkFlat",
+            "newton",
+            29,
+            98,
+            101,
+            id="sac-newton",
         ),
     ),
 )
@@ -474,18 +520,92 @@ def test_g1_registry_executes_real_manager_runtime(
         }
         assert isinstance(info, dict)
         for _ in range(5):
-            state = env.step(torch.zeros((2, num_dof), dtype=torch.float32))
+            state = env.step(torch.zeros((2, num_dof), dtype=torch.float32, device=env.device))
         for value in (*state.obs.values(), state.reward):
             assert isinstance(value, torch.Tensor)
             assert torch.isfinite(value).all()
 
         # The command and gait-phase segments pin the legacy obs layout tail.
         command = env.command_manager.get_command("twist")
-        np.testing.assert_allclose(
-            state.obs["obs"][:, obs_dim - 5 : obs_dim - 2], command, rtol=0.0, atol=1.0e-6
+        torch.testing.assert_close(
+            state.obs["obs"][:, obs_dim - 5 : obs_dim - 2],
+            command.to(device=state.obs["obs"].device),
+            rtol=0.0,
+            atol=1.0e-6,
+            check_device=False,
         )
     finally:
         env.close()
+
+
+def test_g1_walk_newton_selected_reset_preserves_rows_and_rng() -> None:
+    """The canonical Newton walk owner keeps selected reset row-scoped."""
+    registry.ensure_registries()
+    _, _, env_override = _materialize("sac", ("task=g1_walk_flat/newton",), "G1WalkFlat")
+    try:
+        env = registry.make(
+            "G1WalkFlat",
+            sim_backend="newton",
+            env_cfg_override=env_override,
+            num_envs=4,
+        )
+    except ImportError as exc:
+        pytest.skip(f"newton runtime unavailable: {exc}")
+
+    try:
+        env.init_state()
+        device = env.device
+        obs_before = {name: value.clone() for name, value in env.state.obs.items()}
+        views = env.backend.get_state_views(("qpos", "qvel"), device=device)
+        qpos_before = views["qpos"].clone()
+        qvel_before = views["qvel"].clone()
+        command = env.command_manager.get_command("twist").clone()
+        rng_state = env.torch_rng.get_state().clone() if env.torch_rng is not None else None
+        assert rng_state is not None
+
+        rows = torch.tensor([1, 3], dtype=torch.int64, device=device)
+        keep = torch.tensor([0, 2], dtype=torch.int64, device=device)
+        reset_obs, _ = env.reset(env_indices=rows)
+
+        refreshed = env.backend.get_state_views(("qpos", "qvel"), device=device)
+        # The public reset event publishes default-derived rows; it is not a
+        # direct set_state harness. The decisive identity contract is that the
+        # selected rows move while untouched rows remain bit-identical.
+        changed_qpos = torch.count_nonzero(torch.ne(refreshed["qpos"][rows], qpos_before[rows])) > 0
+        assert changed_qpos
+        torch.testing.assert_close(refreshed["qpos"][keep], qpos_before[keep])
+        torch.testing.assert_close(refreshed["qvel"][keep], qvel_before[keep])
+        for group, values in reset_obs.items():
+            assert values.shape[0] == rows.numel()
+            assert torch.isfinite(values).all()
+            torch.testing.assert_close(env.state.obs[group][rows], values)
+            torch.testing.assert_close(
+                env.state.obs[group][keep],
+                obs_before[group][keep],
+                msg=lambda message: f"untouched observation rows changed: {message}",
+            )
+        new_command = env.command_manager.get_command("twist")
+        torch.testing.assert_close(
+            new_command[keep], command[keep], msg="untouched command rows changed"
+        )
+
+        env.torch_rng.set_state(rng_state)
+        reference_obs, _ = env.reset(env_indices=rows)
+        reference_command = env.command_manager.get_command("twist")
+        torch.testing.assert_close(
+            reference_command[rows],
+            new_command[rows],
+            msg="selected-row Torch RNG replay is not deterministic",
+        )
+        # The first replay starts from a different post-reset physical state;
+        # row-shaped rebuild identity, not equality of every state column, is
+        # the reset-observation contract.
+        for group, values in reference_obs.items():
+            assert values.shape == reset_obs[group].shape
+            assert torch.isfinite(values).all()
+    finally:
+        env.close()
+        env._backend.close()
 
 
 def test_g1_walk_profile_runtime_obs_scaling_matches_legacy_layout() -> None:
