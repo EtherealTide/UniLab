@@ -1167,11 +1167,7 @@ class ResetStateTransaction:
                 f"EventManager term '{term_name}' tensor root state must live on "
                 f"{device}; got {root_state.device}"
             )
-        if not bool(torch.isfinite(root_state).all()):
-            raise ValueError(
-                f"EventManager term '{term_name}' tensor root state contains NaN or Inf"
-            )
-        self._validate_tensor_root_quaternions(root_state[:, 3:7], term_name=term_name)
+        self._validate_tensor_root_payload(root_state, term_name=term_name)
         qpos = self._tensor_qpos
         qvel = self._tensor_qvel
         assert qpos is not None and qvel is not None
@@ -1856,6 +1852,24 @@ class ResetStateTransaction:
         assert qpos_default is not None and qvel_default is not None
         qpos.index_copy_(0, rows, qpos_default.expand(rows.numel(), -1))
         qvel.index_copy_(0, rows, qvel_default.expand(rows.numel(), -1))
+
+    def _validate_tensor_root_payload(self, root_state: torch.Tensor, *, term_name: str) -> None:
+        """Validate finite values and quaternion norms through one device comparison."""
+        quat_norm = torch.linalg.vector_norm(root_state[:, 3:7], dim=-1)
+        valid_quat = torch.isclose(
+            quat_norm,
+            torch.ones_like(quat_norm),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        valid = torch.isfinite(root_state).all() & valid_quat.all()
+        if torch.equal(valid, torch.ones_like(valid)):
+            return
+        if not bool(torch.isfinite(root_state).all()):
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor root state contains NaN or Inf"
+            )
+        self._validate_tensor_root_quaternions(root_state[:, 3:7], term_name=term_name)
 
     def _validate_tensor_root_quaternions(self, values: torch.Tensor, *, term_name: str) -> None:
         norms = torch.linalg.vector_norm(values, dim=-1)
