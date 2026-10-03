@@ -992,14 +992,15 @@ def _pretend_genesis_runtime(monkeypatch: pytest.MonkeyPatch, available: bool) -
     monkeypatch.setattr(genesis_deps, "genesis_dependencies_available", lambda: available)
 
 
-def test_genesis_runtime_is_shelved_before_dependency_probe(
+def test_genesis_runtime_dependency_probe_runs_after_scope_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts").mkdir(parents=True)
+    (tmp_path / "scripts" / "train_rsl_rl.py").write_text("", encoding="utf-8")
     (tmp_path / "conf").mkdir()
-    _pretend_genesis_runtime(monkeypatch, available=True)
+    _pretend_genesis_runtime(monkeypatch, available=False)
 
-    with pytest.raises(SystemExit, match="temporarily outside the tensor-only Manager runtime"):
+    with pytest.raises(SystemExit, match="uv sync --extra genesis"):
         cli.build_command(
             mode="train",
             algo="ppo",
