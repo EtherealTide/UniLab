@@ -30,4 +30,4 @@ def test_shelved_sims_fail_closed_before_dependency_detection(sim: str) -> None:
 
 
 def test_cli_backend_choices_are_tensor_manager_scope() -> None:
-    assert cli.SUPPORTED_SIMS == ("mujoco", "mjwarp")
+    assert cli.SUPPORTED_SIMS == ("mujoco", "mjwarp", "genesis")

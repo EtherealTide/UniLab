@@ -30,6 +30,11 @@ registry.register_env(
     make_manager_based_rl_env,
     sim_backend="mjwarp",
 )
+registry.register_env(
+    "G1MotionTrackingSAC",
+    make_manager_based_rl_env,
+    sim_backend="genesis",
+)
 # G1 flip tracking is the second scoped Manager tensor task owner.
 registry.register_env(
     "G1FlipTrackingSAC",
