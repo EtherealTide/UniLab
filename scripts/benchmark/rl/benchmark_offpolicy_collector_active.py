@@ -32,7 +32,7 @@ import re
 import subprocess
 import sys
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from importlib.util import find_spec
@@ -59,6 +59,7 @@ DEFAULT_OUTPUT_JSON = (
 DEFAULT_NUM_ENVS = 8192
 DEFAULT_WARMUP_STEPS = 10
 DEFAULT_MEASURE_STEPS = 100
+DEFAULT_TAIL_STEPS = 20
 DEFAULT_CASE_TEMPLATES = (
     "sac/g1_motion_tracking",
     "flashsac/g1_walk_flat",
@@ -340,6 +341,10 @@ class CollectorResult:
     phase_ms_per_vector_step: dict[str, TimingStats]
     phase_pct: dict[str, float]
     notes: list[str]
+    # Aggregate rate over the final measured steps. This mirrors the runner
+    # tail contract while remaining explicitly diagnostic, not acceptance.
+    tail_step_count: int = 0
+    tail_active_steps_per_sec: float | None = None
     # Fine-grained timings reported by `TorchEnv.step()` inside env_step_ms.
     env_step_timing_ms_per_vector_step: dict[str, TimingStats] = field(default_factory=dict)
     # Backend-internal physics time per vector step (sub-part of env_step_ms).
@@ -769,6 +774,7 @@ def _run_active_window_case(
     warmup_steps: int,
     measure_steps: int,
     profile_numpy_random: bool = False,
+    tail_steps: int = DEFAULT_TAIL_STEPS,
 ) -> CollectorResult:
     from uni_rl.ipc.replay_buffer import ReplayBuffer
     from uni_rl.utils.observations import split_obs_dict
@@ -795,6 +801,7 @@ def _run_active_window_case(
     ep_reward_components: defaultdict[str, list[Any]] = defaultdict(list)
 
     samples: dict[str, list[float]] = {key: [] for key in COLLECTOR_PHASES}
+    tail_step_samples: deque[float] = deque(maxlen=max(1, min(int(tail_steps), int(measure_steps))))
     # Auxiliary env.step breakdown samples. These are sub-parts of env_step_ms,
     # so they must NOT be summed into total_active_ns (that would double-count).
     aux_samples: dict[str, list[float]] = {
@@ -937,6 +944,7 @@ def _run_active_window_case(
                 total_active_ns += step_active_ns
                 for key, value in phase_values.items():
                     samples[key].append(value)
+                tail_step_samples.append(step_active_ns / 1.0e6)
                 # Env-step breakdown is aux only; env_step_ms is the additive phase.
                 if physics_ms is not None:
                     aux_samples["physics_ms"].append(physics_ms)
@@ -956,6 +964,13 @@ def _run_active_window_case(
 
     total_active_ms = total_active_ns / 1e6
     collector_active_steps_per_sec = (case.num_envs * measure_steps) / (total_active_ms / 1000.0)
+    tail_count = len(tail_step_samples)
+    tail_ms = sum(tail_step_samples)
+    tail_rate = (
+        case.num_envs * tail_count / (tail_ms / 1000.0)
+        if tail_count > 0 and tail_ms > 0.0
+        else None
+    )
     phase_stats = {key: _stats(values) for key, values in samples.items() if values}
     phase_mean_total = sum(stat.mean_ms for stat in phase_stats.values())
     phase_pct = {
@@ -978,6 +993,8 @@ def _run_active_window_case(
         measure_steps=int(measure_steps),
         total_active_ms=total_active_ms,
         collector_active_steps_per_sec=collector_active_steps_per_sec,
+        tail_step_count=tail_count,
+        tail_active_steps_per_sec=tail_rate,
         phase_ms_per_vector_step=phase_stats,
         phase_pct=phase_pct,
         notes=[],
@@ -1001,6 +1018,7 @@ def _build_and_run_case(
     warmup_steps: int,
     measure_steps: int,
     replay_capacity_steps: int,
+    tail_steps: int = DEFAULT_TAIL_STEPS,
     num_envs: int | None,
     extra_overrides: list[str],
     variant: str = "default",
@@ -1055,6 +1073,7 @@ def _build_and_run_case(
             warmup_steps=warmup_steps,
             measure_steps=measure_steps,
             profile_numpy_random=profile_numpy_random,
+            tail_steps=tail_steps,
         )
     finally:
         if env is not None:
@@ -1093,6 +1112,8 @@ def _write_csv(path: Path, results: list[CollectorResult]) -> None:
         "warmup_steps",
         "measure_steps",
         "collector_active_steps_per_sec",
+        "tail_step_count",
+        "tail_active_steps_per_sec",
         "total_active_ms",
         "env_step_ms",
         "replay_ms",
@@ -1126,6 +1147,12 @@ def _write_csv(path: Path, results: list[CollectorResult]) -> None:
                 "warmup_steps": result.warmup_steps,
                 "measure_steps": result.measure_steps,
                 "collector_active_steps_per_sec": result.collector_active_steps_per_sec,
+                "tail_step_count": result.tail_step_count,
+                "tail_active_steps_per_sec": (
+                    result.tail_active_steps_per_sec
+                    if result.tail_active_steps_per_sec is not None
+                    else ""
+                ),
                 "total_active_ms": result.total_active_ms,
             }
             for key in COLLECTOR_PHASES:
@@ -1820,6 +1847,7 @@ def _print_result(result: CollectorResult) -> None:
     print(
         f"{case.algo}/{case.task}/{case.sim}: "
         f"Collector/s={result.collector_active_steps_per_sec:,.0f} "
+        f"tail/s={result.tail_active_steps_per_sec or 0.0:,.0f}({result.tail_step_count}) "
         f"num_envs={case.num_envs:,} active_ms={result.total_active_ms:.1f} "
         f"cpu_util={cpu_str}"
     )
@@ -1979,6 +2007,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=f"Measured vector steps used for throughput statistics. Default: {DEFAULT_MEASURE_STEPS}.",
     )
     parser.add_argument(
+        "--tail-steps",
+        type=int,
+        default=DEFAULT_TAIL_STEPS,
+        help=(
+            "Final measured vector steps used for the diagnostic aggregate tail "
+            "rate. It is clamped to --measure-steps. Default: 20."
+        ),
+    )
+    parser.add_argument(
         "--replay-capacity-steps",
         type=int,
         default=64,
@@ -2077,6 +2114,7 @@ def main() -> int:
                             warmup_steps=int(args.warmup_steps),
                             measure_steps=int(args.measure_steps),
                             replay_capacity_steps=int(args.replay_capacity_steps),
+                            tail_steps=int(args.tail_steps),
                             num_envs=args.num_envs,
                             extra_overrides=[*args.override, *variant_extra_overrides],
                             variant=variant,
@@ -2110,6 +2148,7 @@ def main() -> int:
             "num_envs": args.num_envs,
             "warmup_steps": args.warmup_steps,
             "measure_steps": args.measure_steps,
+            "tail_steps": args.tail_steps,
             "replay_capacity_steps": args.replay_capacity_steps,
             "override": args.override,
             "variants": list(variants),

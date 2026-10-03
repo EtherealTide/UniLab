@@ -435,6 +435,7 @@ def test_variant_blocks_alternate_labels_without_extending_measurement(monkeypat
         warmup_steps,
         measure_steps,
         replay_capacity_steps,
+        tail_steps,
         num_envs,
         extra_overrides,
         variant,
