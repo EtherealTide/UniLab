@@ -1480,6 +1480,27 @@ class RandomizeEncoderBias(ManagerTermBase):
     ) -> None:
         del bias_range, asset_cfg
         ids = resolve_env_ids(env, env_ids)
+        control = getattr(self._entity.data, "control_buffer", None)
+        if isinstance(control, torch.Tensor):
+            rows = torch.as_tensor(ids, dtype=torch.int64, device=control.device)
+            columns = torch.from_numpy(self._joint_ids.astype(np.int64, copy=False)).to(
+                device=control.device
+            )
+            rng_owner = getattr(env, "torch_rng", None)
+            if rng_owner is None:
+                raise NotImplementedError(
+                    "Tensor encoder-bias reset requires the Manager Torch RNG"
+                )
+            lower, upper = self._range
+            sampled = rng_owner.uniform(
+                lower,
+                upper,
+                (rows.numel(), columns.numel()),
+                dtype=torch.float32,
+            )
+            bias = self._entity.data.encoder_bias_tensor
+            bias.index_copy_(0, rows, bias.index_select(0, rows).index_copy_(1, columns, sampled))
+            return
         self._entity.data.encoder_bias[np.ix_(ids, self._joint_ids)] = self._host_uniform(
             (ids.size, self._joint_ids.size), env
         )

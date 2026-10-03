@@ -822,6 +822,7 @@ class EntityData:
         self._actuator_ctrl_range = actuator_ctrl_range
         self._control_buffer = control_buffer
         self._tensor_actuator_id_cache: torch.Tensor | None = None
+        self._encoder_bias_tensor: torch.Tensor | None = None
         self._state_read_cache = state_read_cache
 
     def _cached_getter(
@@ -1002,8 +1003,43 @@ class EntityData:
     @property
     def encoder_bias_tensor(self) -> torch.Tensor:
         """Return the mutable encoder bias as a same-storage Torch view."""
-        bias = self._require(self._encoder_bias, "joint encoder bias")
-        return torch.from_numpy(bias)
+        resolved_device = self._tensor_control_device()
+        if resolved_device is None:
+            bias = self._require(self._encoder_bias, "joint encoder bias")
+            return torch.from_numpy(bias)
+        cached = self._encoder_bias_tensor
+        if cached is None or cached.device != resolved_device:
+            bias = self._require(self._encoder_bias, "joint encoder bias")
+            cached = torch.from_numpy(np.ascontiguousarray(bias)).to(
+                device=resolved_device, dtype=torch.float32
+            )
+            self._encoder_bias_tensor = cached
+        return cached
+
+    def set_encoder_bias_tensor(self, values: torch.Tensor) -> None:
+        """Publish a device-resident encoder-bias transaction.
+
+        The tensor becomes the authoritative same-storage carrier. This is an
+        explicit public tensor boundary for DEVICE_RESIDENT owners; CPU/HOST
+        bridge owners retain the existing NumPy carrier.
+        """
+        control = self._require(self._control_buffer, "joint encoder bias")
+        if not isinstance(control, torch.Tensor):
+            raise NotImplementedError("Device-resident encoder bias requires a Torch control plane")
+        self._require(self._encoder_bias, "joint encoder bias")
+        if values.dtype != torch.float32 or not values.is_contiguous():
+            raise TypeError("encoder_bias_tensor must be contiguous float32")
+        if values.device != control.device:
+            raise ValueError(
+                f"encoder_bias_tensor must live on {control.device}, got {values.device}"
+            )
+        self._encoder_bias_tensor = values
+
+    def _tensor_control_device(self) -> torch.device | None:
+        control = self._control_buffer
+        if not isinstance(control, torch.Tensor):
+            return None
+        return control.device
 
     @property
     def control_buffer(self) -> np.ndarray | torch.Tensor | None:
