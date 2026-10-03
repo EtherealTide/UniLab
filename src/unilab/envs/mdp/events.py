@@ -1636,6 +1636,7 @@ def reset_root_state_uniform_tensor(
     # selected reset pays one cold H2D copy; subsequent resets reuse them.
     default_tensor = getattr(env, "_tensor_reset_default_root_state", None)
     origins_tensor = getattr(env, "_tensor_reset_env_origins", None)
+    origins_enabled = getattr(env, "_tensor_reset_env_origins_nonzero", None)
     pose_bounds_tensor = getattr(env, "_tensor_reset_pose_bounds", None)
     velocity_bounds_tensor = getattr(env, "_tensor_reset_velocity_bounds", None)
     new_origins_tensor = torch.as_tensor(
@@ -1651,6 +1652,10 @@ def reset_root_state_uniform_tensor(
     if origins_tensor is None or origins_tensor.device != device:
         env._tensor_reset_env_origins = new_origins_tensor
         origins_tensor = new_origins_tensor
+        # Decide immutable origin applicability once on the cold path. A hot
+        # ``max().item()`` would synchronize every selected reset.
+        origins_enabled = bool(torch.not_equal(origins_tensor, 0.0).any().item())
+        setattr(env, "_tensor_reset_env_origins_nonzero", origins_enabled)
     if pose_bounds_tensor is None or not torch.equal(pose_bounds_tensor, new_pose_bounds):
         env._tensor_reset_pose_bounds = new_pose_bounds
         pose_bounds_tensor = new_pose_bounds
@@ -1675,7 +1680,7 @@ def reset_root_state_uniform_tensor(
     pose_delta, velocity_delta = torch.split(deltas, len(_SE3_KEYS), dim=1)
 
     root_state = default_tensor.index_select(0, rows).clone()
-    if bool(origins_tensor.abs().max().item()):
+    if origins_enabled:
         root_state[:, 0:3] += origins_tensor.index_select(0, rows)[:, 0:3]
     root_state[:, 0:3] += pose_delta[:, 0:3]
     orientation_delta = _tensor_quat_from_euler_xyz(

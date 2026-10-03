@@ -20,7 +20,7 @@ from omegaconf import DictConfig, OmegaConf
 from unilab.base import registry
 from unilab.base.config_adapter import BackendAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
-from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
+from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg, mdp
 from unilab.tasks.locomotion.g1 import manager_terms as g1_terms
 
 # CPU-bound on the single-core CI runner; kept in the slow lane (make test-slow).
@@ -30,6 +30,7 @@ ROOT_DIR = Path(__file__).parents[4]
 CONF_DIR = ROOT_DIR / "src" / "unilab" / "conf"
 
 _RESET_EVENTS = ("reset_scene_to_default", "reset_root_state_uniform")
+_TENSOR_RESET_EVENTS = _RESET_EVENTS
 _PPO_REWARDS = (
     "tracking_lin_vel",
     "tracking_ang_vel",
@@ -332,6 +333,11 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
     assert tuple(name for name, term in env_cfg.events.items() if term is not None) == (
         expected_events
     )
+    if backend == "mjwarp":
+        assert env_cfg.events["reset_scene_to_default"].func is mdp.reset_scene_to_default_tensor
+        assert (
+            env_cfg.events["reset_root_state_uniform"].func is mdp.reset_root_state_uniform_tensor
+        )
     assert tuple(name for name, term in env_cfg.rewards.items() if term is not None) == (
         expected_rewards
     )
@@ -667,7 +673,7 @@ from hydra.core.global_hydra import GlobalHydra
 from unilab.base import registry
 from unilab.base.config_adapter import BackendAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
-from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
+from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg, mdp
 
 ROOT = Path.cwd()
 CONFIG_GROUP = sys.argv[1]

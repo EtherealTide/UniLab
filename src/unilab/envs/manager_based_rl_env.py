@@ -307,6 +307,7 @@ class ManagerBasedRlEnv(TorchEnv):
     _tensor_reset_default_root_state: torch.Tensor | None
     _last_reset_manager_timing_ms: dict[str, float]
     _tensor_reset_env_origins: torch.Tensor | None
+    _tensor_reset_env_origins_nonzero: bool | None
     _tensor_reset_pose_bounds: torch.Tensor | None
     _tensor_reset_velocity_bounds: torch.Tensor | None
 
@@ -344,6 +345,7 @@ class ManagerBasedRlEnv(TorchEnv):
         self._last_reset_manager_timing_ms = {}
         self._tensor_reset_default_root_state = None
         self._tensor_reset_env_origins = None
+        self._tensor_reset_env_origins_nonzero = None
         self._tensor_reset_pose_bounds = None
         self._tensor_reset_velocity_bounds = None
 
