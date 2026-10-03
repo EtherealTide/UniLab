@@ -1329,3 +1329,28 @@ def test_motion_termination_pack_matches_individual_tensor_failures(
     )
     expected = anchor_failed | ori_failed | ee_failed
     torch.testing.assert_close(value, expected)
+
+
+def test_motion_reward_packs_publish_owner_call_timing(
+    monkeypatch: pytest.MonkeyPatch, body_setup
+) -> None:
+    command, env, snapshots = body_setup
+    tensor_command = SimpleNamespace(
+        num_envs=command.num_envs,
+        cfg=command.cfg,
+        anchor_body_idx=command.anchor_body_idx,
+        tensor_carrier=True,
+        **{
+            name: torch.from_numpy(value.copy())
+            for name, value in snapshots.items()
+            if isinstance(value, np.ndarray)
+        },
+    )
+    monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
+    cfg = mt.MotionRewardPackCfg(func=mt.MotionRewardPack, weight=1.0)
+    term = mt.MotionRewardPack(cfg, env)
+
+    term(env)
+
+    assert set(term.last_step_timing_ms) == {"update_state_reward_motion_pack_call_ms"}
+    assert term.last_step_timing_ms["update_state_reward_motion_pack_call_ms"] >= 0.0

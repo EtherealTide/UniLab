@@ -95,6 +95,8 @@ ENV_STEP_TIMING_KEYS = (
     "update_state_reward_aggregation_ms",
     "update_state_reward_finite_validation_ms",
     "update_state_reward_manager_residual_ms",
+    "update_state_reward_motion_pack_call_ms",
+    "update_state_reward_penalty_pack_call_ms",
     "update_state_reset_flags_ms",
     "update_state_metrics_ms",
     "update_state_events_ms",
