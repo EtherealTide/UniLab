@@ -260,6 +260,32 @@ def test_reset_indices_are_normalized_and_validated() -> None:
         env._normalize_reset_indices(torch.tensor([3]))
 
 
+def test_reset_indices_from_mask_skip_redundant_public_validation() -> None:
+    env = _StubTorchEnv()
+    scalar_conversions = 0
+    original_bool = torch.Tensor.__bool__
+
+    def counted_bool(self: torch.Tensor) -> bool:
+        nonlocal scalar_conversions
+        scalar_conversions += 1
+        return original_bool(self)
+
+    monkeypatch_holder = pytest.MonkeyPatch()
+    monkeypatch_holder.setattr(torch.Tensor, "__bool__", counted_bool)
+    try:
+        rows = env._reset_indices_from_mask(torch.tensor([False, True, True]))
+    finally:
+        monkeypatch_holder.undo()
+
+    assert rows.tolist() == [1, 2]
+    assert rows.dtype == torch.int64
+    assert scalar_conversions == 0
+    with pytest.raises(ValueError, match="reset mask"):
+        env._reset_indices_from_mask(torch.zeros(2, dtype=torch.bool))
+    with pytest.raises(ValueError, match="reset mask"):
+        env._reset_indices_from_mask(torch.zeros(3, dtype=torch.int32))
+
+
 def test_timeout_computes_truncation_and_selected_reset() -> None:
     env = _StubTorchEnv(cfg=_StubCfg(max_episode_seconds=0.2), terminate=False)
     env.init_state()

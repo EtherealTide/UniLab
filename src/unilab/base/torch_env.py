@@ -235,6 +235,23 @@ class TorchEnv(ABEnv):
             raise ValueError(f"TorchEnv reset indices must be in [0, {self._num_envs})")
         return rows.to(torch.int64)
 
+    def _reset_indices_from_mask(self, mask: torch.Tensor) -> torch.Tensor:
+        """Return validated int64 reset rows from a boolean full-batch mask.
+
+        ``nonzero`` output is already sorted, unique, and range-valid by
+        construction. Reusing the generic public reset normalizer here would
+        add three scalar reductions (including a device ``unique`` sort) after
+        every autoreset boundary.
+        """
+        if mask.ndim != 1 or mask.shape[0] != self._num_envs:
+            raise ValueError(f"TorchEnv reset mask must have shape ({self._num_envs},)")
+        if mask.dtype != torch.bool or mask.device != self._device:
+            raise ValueError(
+                f"TorchEnv reset mask must be a bool tensor on {self._device}; got "
+                f"{mask.dtype} on {mask.device}"
+            )
+        return mask.nonzero(as_tuple=False).flatten().to(torch.int64)
+
     def step(self, actions: torch.Tensor) -> TorchEnvState:
         started = time.perf_counter()
         cpu_started = _cpu_time()
@@ -470,7 +487,7 @@ class TorchEnv(ABEnv):
             self._clear_reset_done_detail_timing(self._state.info.setdefault("timing", {}))
             return
 
-        rows = done.nonzero(as_tuple=False).flatten().to(torch.int64)
+        rows = self._reset_indices_from_mask(done)
         terminal_started = time.perf_counter()
         detail_timing["reset_done_count"] = float(rows.numel())
         self._state.info["steps"][rows] = 0
