@@ -9,9 +9,10 @@ from __future__ import annotations
 import math
 import re
 import secrets
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import gymnasium as gym
 import numpy as np
@@ -58,17 +59,35 @@ from unilab.managers import (
     NullCurriculumManager,
     NullMetricsManager,
     NullRecorderManager,
+    NullResetOwnerManager,
     ObservationGroupCfg,
     ObservationManager,
     ObservationTermCfg,
     RecorderManager,
     RecorderTermCfg,
+    ResetOwnerCfg,
+    ResetOwnerManager,
     RewardManager,
     RewardTermCfg,
     TerminationManager,
     TerminationTermCfg,
+    TorchManagerRng,
 )
 from unilab.managers.scene_entity_config import SceneEntityCfg
+
+
+def _supported_device_resident_sensors(backend_type: str) -> frozenset[str]:
+    """Return names a DEVICE_RESIDENT backend must publish.
+
+    The audited default covers an unlisted device-resident adapter. Unsupported
+    declared names must fail closed rather than silently select a host reader.
+    """
+
+    return _DEVICE_RESIDENT_TENSOR_SENSORS.get(
+        backend_type,
+        frozenset({"pelvis_local_linvel", "torso_gyro", "torso_upvector"}),
+    )
+
 
 _DEVICE_RESIDENT_TENSOR_SENSORS: dict[str, frozenset[str]] = {
     "isaacgym": frozenset({"pelvis_local_linvel", "torso_gyro"}),
@@ -113,12 +132,11 @@ class ManagerBasedRlEnvCfg(EnvCfg):
     curriculum: dict[str, CurriculumTermCfg | None] = _manager_terms_field()
     metrics: dict[str, MetricsTermCfg | None] = _manager_terms_field()
     recorders: dict[str, RecorderTermCfg | None] = _manager_terms_field()
+    reset_owners: dict[str, ResetOwnerCfg | None] = _manager_terms_field()
 
     seed: int | None = None
     is_finite_horizon: bool = False
     auto_reset: bool = True
-    tensor_runtime: bool = False
-    tensor_runtime_device: str | None = None
     scale_rewards_by_dt: bool = True
     policy_observation_group: str = "policy"
     critic_observation_group: str | None = None
@@ -129,43 +147,6 @@ class ManagerBasedRlEnvCfg(EnvCfg):
                 raise TypeError(f"ManagerBasedRlEnvCfg {name} must be a real number")
             if not np.isfinite(value) or value <= 0.0:
                 raise ValueError(f"ManagerBasedRlEnvCfg {name} must be finite and positive")
-        if not isinstance(self.tensor_runtime, bool):
-            raise TypeError("ManagerBasedRlEnvCfg tensor_runtime must be a boolean")
-        if self.tensor_runtime_device is not None:
-            if (
-                not isinstance(self.tensor_runtime_device, str)
-                or not self.tensor_runtime_device.strip()
-            ):
-                raise TypeError(
-                    "ManagerBasedRlEnvCfg tensor_runtime_device must be a device string "
-                    f"or None; got {self.tensor_runtime_device!r}"
-                )
-            try:
-                requested_device = torch.device(self.tensor_runtime_device)
-            except (RuntimeError, ValueError) as exc:
-                raise ValueError(
-                    "ManagerBasedRlEnvCfg tensor_runtime_device is not a valid Torch "
-                    f"device: {self.tensor_runtime_device!r}"
-                ) from exc
-            if requested_device.type not in {"cpu", "cuda"}:
-                raise ValueError(
-                    "ManagerBasedRlEnvCfg tensor_runtime_device must be cpu, cuda, or "
-                    f"None; got {self.tensor_runtime_device!r}"
-                )
-            if self.tensor_runtime and requested_device.type != "cuda":
-                raise ValueError(
-                    "ManagerBasedRlEnvCfg tensor_runtime=true requires a CUDA "
-                    f"tensor_runtime_device; got {self.tensor_runtime_device!r}"
-                )
-            if not self.tensor_runtime and requested_device.type != "cpu":
-                raise ValueError(
-                    "ManagerBasedRlEnvCfg CPU tensor runtime requires cpu or None "
-                    f"tensor_runtime_device; got {self.tensor_runtime_device!r}"
-                )
-        if self.isaacsim_tensor_cuda_ipc and not self.tensor_runtime:
-            raise ValueError(
-                "ManagerBasedRlEnvCfg isaacsim_tensor_cuda_ipc requires tensor_runtime"
-            )
         super().validate()
         ratio = self.ctrl_dt / self.sim_dt
         if not np.isclose(ratio, round(ratio), rtol=0.0, atol=1e-9):
@@ -199,6 +180,7 @@ class ManagerBasedRlEnvCfg(EnvCfg):
             "curriculum",
             "metrics",
             "recorders",
+            "reset_owners",
         ):
             if not isinstance(getattr(self, name), dict):
                 raise TypeError(f"ManagerBasedRlEnvCfg {name} must be a dict")
@@ -337,7 +319,9 @@ class ManagerBasedRlEnv(TorchEnv):
     recorder_manager: RecorderManager | NullRecorderManager
     _tensor_read_plan: SceneTensorReadPlan | None
     _tensor_reset_default_root_state: torch.Tensor | None
+    _last_reset_manager_timing_ms: dict[str, float]
     _tensor_reset_env_origins: torch.Tensor | None
+    _tensor_reset_env_origins_nonzero: bool | None
     _tensor_reset_pose_bounds: torch.Tensor | None
     _tensor_reset_velocity_bounds: torch.Tensor | None
 
@@ -358,28 +342,24 @@ class ManagerBasedRlEnv(TorchEnv):
             )
 
         initial_capabilities = backend.get_tensor_capabilities()
-        requested_runtime_device = cfg.tensor_runtime_device
-        if requested_runtime_device is not None:
-            runtime_device = torch.device(requested_runtime_device)
-        else:
-            runtime_device = (
-                torch.device("cuda", index=torch.cuda.current_device())
-                if initial_capabilities.execution is TensorExecution.DEVICE_RESIDENT
-                else torch.device("cpu")
-            )
+        runtime_device = (
+            torch.device("cuda", index=torch.cuda.current_device())
+            if initial_capabilities.execution is TensorExecution.DEVICE_RESIDENT
+            else torch.device("cpu")
+        )
         super().__init__(cfg, backend, num_envs, device=runtime_device)
         actual_seed = cfg.seed if cfg.seed is not None else secrets.randbits(63)
         cfg.seed = actual_seed
         self.rng = np.random.default_rng(actual_seed)
-        self.torch_rng = (
-            torch.Generator(device=self.device)
-            if self.device.type == "cuda" and cfg.tensor_runtime
-            else None
-        )
-        if self.torch_rng is not None:
-            self.torch_rng.manual_seed(actual_seed)
+        self._torch_rng_owner = TorchManagerRng(device=self.device)
+        self.torch_rng = self._torch_rng_owner
+        self._torch_generator = self._torch_rng_owner.generator if self._torch_rng_owner else None
+        self._reward_log_names: tuple[str, ...] = ()
+        self._reward_log_means = torch.empty(0, dtype=torch.float32, device=self.device)
+        self._last_reset_manager_timing_ms = {}
         self._tensor_reset_default_root_state = None
         self._tensor_reset_env_origins = None
+        self._tensor_reset_env_origins_nonzero = None
         self._tensor_reset_pose_bounds = None
         self._tensor_reset_velocity_bounds = None
 
@@ -405,7 +385,7 @@ class ManagerBasedRlEnv(TorchEnv):
 
         self.common_step_counter = 0
         self._sim_step_counter = 0
-        self.episode_length_buf = np.zeros(num_envs, dtype=np.int64)
+        self.episode_length_buf = torch.zeros(num_envs, dtype=torch.int64, device=self.device)
         self.reset_buf = torch.zeros(num_envs, dtype=torch.bool, device=self.device)
         self.reset_terminated = torch.zeros_like(self.reset_buf)
         self.reset_time_outs = torch.zeros_like(self.reset_buf)
@@ -416,8 +396,7 @@ class ManagerBasedRlEnv(TorchEnv):
             (num_envs,), self.step_dt, dtype=self._dtype, device=self.device
         )
         self._manual_reset_pending = torch.zeros_like(self.reset_buf)
-        self._all_env_ids = np.arange(num_envs, dtype=np.int32)
-        self._all_env_ids.setflags(write=False)
+        self._all_env_rows = torch.arange(num_envs, dtype=torch.int64, device=self.device)
         self._has_transition = False
 
         self._load_managers()
@@ -430,16 +409,11 @@ class ManagerBasedRlEnv(TorchEnv):
             self.event_manager.apply(mode="startup")
         self._materialize_backend()
         self._compile_tensor_read_plan()
+        self.command_manager.bind_read_phase()
         self._validate_manager_tensor_runtime()
 
     def _compile_tensor_read_plan(self) -> None:
         """Compile the scene's only packed tensor read phase."""
-        if (
-            self._cfg.tensor_runtime is False
-            and self._backend.get_tensor_capabilities().execution is TensorExecution.UNSUPPORTED
-        ):
-            self.scene._tensor_read_plan = None
-            return
         specs: list[SceneTensorReadSpec] = []
         specs.extend(self._action_tensor_read_specs())
         specs.extend(self._observation_tensor_read_specs())
@@ -494,17 +468,19 @@ class ManagerBasedRlEnv(TorchEnv):
                         self._backend.get_tensor_capabilities().execution
                         is TensorExecution.DEVICE_RESIDENT
                     ):
-                        supported = _DEVICE_RESIDENT_TENSOR_SENSORS.get(
-                            self._backend.backend_type,
-                            {"pelvis_local_linvel", "torso_gyro", "torso_upvector"},
+                        supported = _supported_device_resident_sensors(self._backend.backend_type)
+                        missing = tuple(
+                            sensor_name
+                            for sensor_name in sensor_names
+                            if sensor_name not in supported
                         )
-                        sensor_names = tuple(
-                            sensor_name for sensor_name in sensor_names if sensor_name in supported
-                        )
-                        if not sensor_names:
-                            body_names = term_cfg.params.get("tensor_body_names")
-                            if body_names is None:
-                                continue
+                        if missing:
+                            raise NotImplementedError(
+                                "DEVICE_RESIDENT backend "
+                                f"'{self._backend.backend_type}' does not publish tensor "
+                                f"sensors {missing} required by observation term "
+                                f"'{group_name}/{name}'"
+                            )
                     specs.append(
                         SceneTensorReadSpec(
                             entity=self._observation_tensor_entity(term_cfg),
@@ -520,7 +496,10 @@ class ManagerBasedRlEnv(TorchEnv):
                             entity=self._observation_tensor_entity(term_cfg), body_names=()
                         )
                     )
+                term = term_cfg.func
                 body_names = term_cfg.params.get("tensor_body_names")
+                if body_names is None:
+                    body_names = getattr(term, "tensor_body_names", None)
                 if body_names is None:
                     continue
                 if (
@@ -533,6 +512,8 @@ class ManagerBasedRlEnv(TorchEnv):
                         f"'{name}' must be a unique sequence of body names; got {body_names!r}"
                     )
                 entity_name = term_cfg.params.get("entity_name")
+                if not isinstance(entity_name, str) or not entity_name:
+                    entity_name = getattr(term, "entity_name", None)
                 if not isinstance(entity_name, str) or not entity_name:
                     raise TypeError(
                         "ManagerBasedRlEnv observation tensor read declaration "
@@ -600,7 +581,30 @@ class ManagerBasedRlEnv(TorchEnv):
                 raise KeyError(
                     f"Manager command term '{name}' has no ManagerBasedRlEnvCfg declaration"
                 )
-            sensor_names = getattr(self.command_manager.get_term(name), "tensor_sensor_names", None)
+            command_term = self.command_manager.get_term(name)
+            entity_name = getattr(command_cfg, "entity_name", "robot") if command_cfg else "robot"
+            entity_name = entity_name if isinstance(entity_name, str) and entity_name else "robot"
+            body_names = getattr(command_term, "tensor_body_names", None)
+            if body_names is not None:
+                if (
+                    not isinstance(body_names, (tuple, list))
+                    or any(
+                        not isinstance(body_name, str) or not body_name for body_name in body_names
+                    )
+                    or len(set(body_names)) != len(body_names)
+                ):
+                    raise TypeError(
+                        "ManagerBasedRlEnv tensor body declaration for command term "
+                        f"'{name}' must be a unique sequence of body names; got {body_names!r}"
+                    )
+                specs.append(
+                    SceneTensorReadSpec(
+                        entity=entity_name,
+                        body_names=tuple(body_names),
+                    )
+                )
+                continue
+            sensor_names = getattr(command_term, "tensor_sensor_names", None)
             if sensor_names is None:
                 continue
             if not isinstance(sensor_names, (tuple, list)) or any(
@@ -612,11 +616,14 @@ class ManagerBasedRlEnv(TorchEnv):
                 )
             names = tuple(sensor_names)
             if narrow:
-                allowed = _DEVICE_RESIDENT_TENSOR_SENSORS.get(
-                    self._backend.backend_type,
-                    {"pelvis_local_linvel", "torso_gyro", "torso_upvector"},
-                )
-                names = tuple(sensor_name for sensor_name in names if sensor_name in allowed)
+                allowed = _supported_device_resident_sensors(self._backend.backend_type)
+                missing = tuple(name for name in names if name not in allowed)
+                if missing:
+                    raise NotImplementedError(
+                        "DEVICE_RESIDENT backend "
+                        f"'{self._backend.backend_type}' does not publish tensor "
+                        f"sensors {missing} required by command term '{name}'"
+                    )
             elif capabilities.packed_host_bridge:
                 # Only HOST_BRIDGE packs need backend-local aliases. Device-
                 # resident plans consume the term's canonical semantic names.
@@ -628,10 +635,9 @@ class ManagerBasedRlEnv(TorchEnv):
                 )
             if not names:
                 continue
-            entity_name = getattr(command_cfg, "entity_name", "robot") if command_cfg else "robot"
             specs.append(
                 SceneTensorReadSpec(
-                    entity=entity_name if isinstance(entity_name, str) and entity_name else "robot",
+                    entity=entity_name,
                     sensor_names=names,
                 )
             )
@@ -720,17 +726,16 @@ class ManagerBasedRlEnv(TorchEnv):
                 f"{sensor_names!r}"
             )
         if narrow:
-            sensor_names = tuple(
+            missing = tuple(
                 name
                 for name in sensor_names
-                if name
-                in _DEVICE_RESIDENT_TENSOR_SENSORS.get(
-                    backend_type,
-                    {"pelvis_local_linvel", "torso_gyro", "torso_upvector"},
-                )
+                if name not in _supported_device_resident_sensors(backend_type)
             )
-            if not sensor_names:
-                return []
+            if missing:
+                raise NotImplementedError(
+                    f"DEVICE_RESIDENT backend '{backend_type}' does not publish tensor "
+                    f"sensors {missing} required by {manager_name} term '{term_name}'"
+                )
         return [SceneTensorReadSpec(entity="robot", sensor_names=tuple(sensor_names))]
 
     def _warm_external_cuda_ipc_views(self) -> None:
@@ -927,6 +932,11 @@ class ManagerBasedRlEnv(TorchEnv):
             if self._cfg.recorders
             else NullRecorderManager()
         )
+        self.reset_owner_manager = (
+            ResetOwnerManager(self._cfg.reset_owners, self)
+            if self._cfg.reset_owners
+            else NullResetOwnerManager()
+        )
 
     def _validate_observation_mapping(self) -> dict[str, int]:
         mapping = {"obs": self._cfg.policy_observation_group}
@@ -982,20 +992,16 @@ class ManagerBasedRlEnv(TorchEnv):
         """Return the contiguous authoritative Torch control tensor."""
         return self._control
 
-    def _reset_rows_to_manager_boundary(self, rows: torch.Tensor) -> np.ndarray:
-        """Publish validated Torch reset rows to the NumPy Manager host."""
-        return np.array(rows.detach().cpu().numpy(), dtype=np.int32, order="C", copy=True)
-
-    def _manager_tensor(self, values: np.ndarray, *, dtype: torch.dtype) -> torch.Tensor:
-        """Copy one completed NumPy Manager result across the public Torch boundary."""
+    def _manager_tensor(
+        self, values: np.ndarray | torch.Tensor, *, dtype: torch.dtype
+    ) -> torch.Tensor:
+        """Publish one completed Manager result on the public Torch carrier."""
         if isinstance(values, torch.Tensor):
+            if values.device == self.device and values.dtype == dtype and values.is_contiguous():
+                return values
             return values.to(device=self.device, dtype=dtype, copy=True)
         host = np.array(values, order="C", copy=True)
         return torch.from_numpy(host).to(device=self.device, dtype=dtype, copy=True)
-
-    def _tensor_flags_to_manager_boundary(self, values: torch.Tensor) -> np.ndarray:
-        """Publish public Torch flags to temporary NumPy Manager/recorder scratch."""
-        return np.array(values.detach().cpu().numpy(), order="C", copy=True)
 
     def _initial_episode_steps(self) -> torch.Tensor:
         max_steps = self._cfg.max_episode_steps
@@ -1022,8 +1028,7 @@ class ManagerBasedRlEnv(TorchEnv):
         initial_steps = self._last_initial_episode_steps
         self._last_initial_episode_steps = None
         state.info["steps"].copy_(initial_steps)
-        self.episode_length_buf = self._tensor_steps_to_manager_boundary(state)
-        self.reward_buf = np.zeros(self.num_envs, dtype=get_global_dtype())
+        self.episode_length_buf.copy_(state.info["steps"])
         self.extras = state.info
         return state
 
@@ -1037,6 +1042,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 "when auto_reset=False"
             )
         state = super().step(actions)
+        state.info["log"].update(self.publish_reward_log())
         if not self._autoreset:
             self._manual_reset_pending.logical_or_(state.terminated | state.truncated)
         self.recorder_manager.record_post_step()
@@ -1061,23 +1067,45 @@ class ManagerBasedRlEnv(TorchEnv):
         # scope, so values packed before ``step_tensor`` are stale here. Drop
         # the action-phase packet first; in-phase mutations explicitly invalidate
         # it below.
+        timing = state.info.setdefault("timing", {})
+        boundary_started = time.perf_counter()
         self.scene._invalidate_state_reads()
         with self.scene._scoped_state_reads():
             read_plan = self.scene._tensor_read_plan
             if read_plan is not None and not read_plan.ready:
                 read_plan.refresh()
+            boundary_ms = (time.perf_counter() - boundary_started) * 1000.0
+            timing["update_state_read_boundary_ms"] = boundary_ms
             return self._update_state_in_read_phase(state)
 
     def _update_state_in_read_phase(self, state: TorchEnvState) -> TorchEnvState:
+        timing = state.info.setdefault("timing", {})
+        update_started_ns = time.perf_counter_ns()
+        prelude_started_ns = time.perf_counter_ns()
+        queue_started = time.perf_counter()
+        phase_started = time.perf_counter()
         log: dict[str, Any] = {}
         state.info["log"] = log
         self.extras = state.info
 
-        self.episode_length_buf = self._tensor_steps_to_manager_boundary(state) + 1
+        self.episode_length_buf.copy_(state.info["steps"]).add_(1)
         self.common_step_counter = self.step_counter + 1
         self._sim_step_counter = self.common_step_counter * self._cfg.sim_substeps
+        timing["update_state_prelude_ms"] = (time.perf_counter_ns() - prelude_started_ns) / 1.0e6
 
+        termination_compute_started = time.perf_counter()
         self.termination_manager.compute()
+        termination_compute_ms = (time.perf_counter() - termination_compute_started) * 1000.0
+        termination_timing = getattr(self.termination_manager, "last_step_timing_ms", {})
+        timing.update(termination_timing)
+        state.info["update_state_timing"] = dict(termination_timing)
+        # Termination is normally the first update-state reduction after the
+        # backend step. Its wall time can therefore drain pre-update GPU work;
+        # keep that synchronization attribution separate from Manager work.
+        timing["update_state_queue_drain_ms"] = (time.perf_counter() - queue_started) * 1000.0
+        timing["update_state_termination_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        timing["update_state_termination_host_ms"] = termination_compute_ms
+        phase_started = time.perf_counter()
         terminated = self.termination_manager.terminated
         time_outs = self.termination_manager.time_outs
         if self._cfg.is_finite_horizon:
@@ -1087,14 +1115,25 @@ class ManagerBasedRlEnv(TorchEnv):
             self.reset_terminated.copy_(terminated)
             self.reset_time_outs.copy_(time_outs)
         torch.logical_or(self.reset_terminated, self.reset_time_outs, out=self.reset_buf)
+        timing["update_state_reset_flags_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        phase_started = time.perf_counter()
 
         self.reward_buf = self.reward_manager.compute(dt=self.step_dt)
-        log.update(self.reward_manager.step_reward_extras())
+        reward_timing = getattr(self.reward_manager, "last_step_timing_ms", {})
+        state.info["update_state_timing"].update(reward_timing)
+        timing.update(reward_timing)
+        timing["update_state_reward_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        phase_started = time.perf_counter()
+        self._reward_log_names = self.reward_manager.step_reward_names
+        self._reward_log_means = self.reward_manager.step_reward_means
 
         if self._cfg.sim_substeps == 1:
             self.metrics_manager.compute_substep()
         self.metrics_manager.compute()
+        timing["update_state_metrics_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        phase_started = time.perf_counter()
 
+        events_started = time.perf_counter()
         applied_runtime_event = False
         if "step" in self.event_manager.available_modes:
             self.event_manager.apply(mode="step", dt=self.step_dt)
@@ -1108,7 +1147,9 @@ class ManagerBasedRlEnv(TorchEnv):
             # particular interval fired, so this boundary stays fail-closed.
             self.scene._invalidate_state_reads()
             self._refresh_tensor_reads_after_mutation()
+        timing["update_state_events_ms"] = (time.perf_counter() - events_started) * 1000.0
 
+        command_preflight_started = time.perf_counter()
         self._command_dt.fill_(self.step_dt)
         self._command_dt.masked_fill_(self.reset_buf, 0.0)
         step_read_plan = self.scene._tensor_read_plan
@@ -1116,31 +1157,100 @@ class ManagerBasedRlEnv(TorchEnv):
         if self._uses_device_resident_reset(step_read_plan, step_reset_capabilities):
             assert step_read_plan is not None
             self._reset_state.declare_packed_reset_device(step_read_plan.device)
-            step_reset_context = self._reset_state.scoped_device_tensor(self._all_env_ids)
+            step_reset_context = self._reset_state.scoped_device_tensor(self._all_env_rows)
         else:
-            step_reset_context = self._reset_state.scoped(self._all_env_ids)
+            step_reset_context = self._reset_state.scoped(self._all_env_rows)
+        timing["update_state_command_preflight_ms"] = (
+            time.perf_counter() - command_preflight_started
+        ) * 1000.0
+        command_started = time.perf_counter()
         with step_reset_context:
             self.command_manager.compute(dt=self._command_dt)
+            step_timing = getattr(self.command_manager, "last_step_timing_ms", {})
+            state.info["update_state_timing"].update(step_timing)
+            timing.update(step_timing)
+        timing["update_state_command_compute_ms"] = (time.perf_counter() - command_started) * 1000.0
+        command_epilogue_started = time.perf_counter()
         if self._reset_state.last_commit_had_writes:
             self.scene._invalidate_state_reads()
             self._refresh_tensor_reads_after_mutation()
+        read_refresh_ms = (time.perf_counter() - command_epilogue_started) * 1000.0
+        post_compute_started = time.perf_counter()
         self.command_manager.post_compute()
+        post_compute_ms = (time.perf_counter() - post_compute_started) * 1000.0
+        timing["update_state_command_read_refresh_ms"] = read_refresh_ms
+        timing["update_state_command_post_compute_ms"] = post_compute_ms
+        timing["update_state_command_epilogue_ms"] = (
+            time.perf_counter() - command_epilogue_started
+        ) * 1000.0
+        timing["update_state_command_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        phase_started = time.perf_counter()
 
         manager_obs = self.observation_manager.compute(update_history=True)
+        observation_timing = getattr(self.observation_manager, "last_step_timing_ms", {})
+        state.info["update_state_timing"].update(observation_timing)
+        timing.update(observation_timing)
+        timing["update_state_observation_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        phase_started = time.perf_counter()
 
         mapped_obs = self._map_observations(manager_obs)
         self.obs_buf = mapped_obs
         self._has_transition = True
+        timing["update_state_map_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        phase_started = time.perf_counter()
 
-        return state.replace(
-            obs={
-                name: self._manager_tensor(values, dtype=self._dtype)
-                for name, values in mapped_obs.items()
-            },
-            reward=self._manager_tensor(self.reward_buf, dtype=self._dtype),
-            terminated=self._manager_tensor(self.reset_terminated, dtype=torch.bool),
-            truncated=self._manager_tensor(self.reset_time_outs, dtype=torch.bool),
+        publish_started = time.perf_counter()
+        public_obs = {
+            name: self._manager_tensor(values, dtype=self._dtype)
+            for name, values in mapped_obs.items()
+        }
+        public_reward = self._manager_tensor(self.reward_buf, dtype=self._dtype)
+        public_terminated = self._manager_tensor(self.reset_terminated, dtype=torch.bool)
+        public_truncated = self._manager_tensor(self.reset_time_outs, dtype=torch.bool)
+        timing["update_state_publication_ms"] = (time.perf_counter() - publish_started) * 1000.0
+
+        replace_started = time.perf_counter()
+        replacement = state.replace(
+            obs=public_obs,
+            reward=public_reward,
+            terminated=public_terminated,
+            truncated=public_truncated,
         )
+        timing["update_state_state_replace_ms"] = (time.perf_counter() - replace_started) * 1000.0
+        timing["update_state_publish_ms"] = (time.perf_counter() - phase_started) * 1000.0
+        update_children = (
+            timing.get("update_state_termination_ms"),
+            timing.get("update_state_reward_ms"),
+            timing.get("update_state_metrics_ms"),
+            timing.get("update_state_command_ms"),
+            timing.get("update_state_observation_ms"),
+            timing.get("update_state_map_ms"),
+            timing.get("update_state_publish_ms"),
+        )
+        if all(value is not None for value in update_children):
+            epilogue_started_ns = time.perf_counter_ns()
+            # Queue drain and the same boundary inside termination are excluded:
+            # they drain pre-update GPU work already timed by step_core_ms.
+            drain_ns = int(float(timing["update_state_queue_drain_ms"]) * 1.0e6)
+            child_sum_ms = sum(float(value) for value in update_children)
+            timing["update_state_child_sum_ms"] = child_sum_ms
+            timing["update_state_nonattributed_ms"] = (
+                time.perf_counter_ns() - update_started_ns - child_sum_ms * 1.0e6 + drain_ns
+            ) / 1.0e6
+            timing["update_state_timing_epilogue_ms"] = (
+                time.perf_counter_ns() - epilogue_started_ns
+            ) / 1.0e6
+        return replacement
+
+    def publish_reward_log(self) -> dict[str, float]:
+        """Publish latest device reward means through the legacy log contract."""
+        if not self._reward_log_names:
+            return {}
+        means = self._reward_log_means.detach().cpu().tolist()
+        return {
+            f"reward/{name}": float(mean)
+            for name, mean in zip(self._reward_log_names, means, strict=True)
+        }
 
     def _refresh_tensor_reads_after_mutation(self) -> None:
         """Repack scene tensor reads after an in-phase simulation mutation."""
@@ -1150,7 +1260,6 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def _reset_manager_state(self, rows: torch.Tensor) -> None:
         """Re-run row-scoped manager reset after initial state allocation."""
-        ids = self._reset_rows_to_manager_boundary(rows)
         for manager in (
             self.observation_manager,
             self.action_manager,
@@ -1160,19 +1269,11 @@ class ManagerBasedRlEnv(TorchEnv):
             self.event_manager,
             self.termination_manager,
         ):
-            manager.reset(ids)
+            manager.reset(rows)
 
     def _compute_truncated(self, state: TorchEnvState) -> torch.Tensor:
         del state
         return torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
-
-    def _tensor_steps_to_manager_boundary(self, state: TorchEnvState) -> np.ndarray:
-        return np.array(
-            state.info["steps"].detach().cpu().numpy(),
-            dtype=np.int64,
-            order="C",
-            copy=True,
-        )
 
     def reset(
         self,
@@ -1182,8 +1283,8 @@ class ManagerBasedRlEnv(TorchEnv):
         options: dict[str, Any] | None = None,
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
         del options
+        reset_timing: dict[str, float] = {}
         rows = self._normalize_reset_indices(env_indices)
-        ids = self._reset_rows_to_manager_boundary(rows)
         if seed is not None:
             self.seed(seed)
         if self._state is None:
@@ -1196,20 +1297,12 @@ class ManagerBasedRlEnv(TorchEnv):
             self._reset_manager_state(rows)
             return state.obs, {"log": state.info.get("log", {})}
 
-        if isinstance(self.reset_buf, np.ndarray):
-            done_ids = ids[self.reset_buf[ids]]
-        else:
-            done_ids = np.asarray(ids)[
-                self.reset_buf[torch.as_tensor(ids, device=self.reset_buf.device)]
-                .detach()
-                .cpu()
-                .numpy()
-            ]
-        if self._has_transition and len(done_ids) > 0:
-            self.recorder_manager.record_pre_reset(done_ids)
+        done_rows = rows[self.reset_buf[rows]]
+        if self._has_transition and done_rows.numel() > 0:
+            self.recorder_manager.record_pre_reset(done_rows)
 
         log: dict[str, Any] = {}
-        self.curriculum_manager.compute(env_ids=ids)
+        self.curriculum_manager.compute(env_ids=rows)
         read_plan = self.scene._tensor_read_plan
         reset_capabilities = self._backend.get_tensor_capabilities()
         device_resident_reset = self._uses_device_resident_reset(read_plan, reset_capabilities)
@@ -1225,59 +1318,107 @@ class ManagerBasedRlEnv(TorchEnv):
             assert read_plan is not None
             assert read_plan.host_plan is not None
             self._reset_state.declare_packed_reset_device(read_plan.device)
-            reset_context = self._reset_state.scoped_tensor(ids, read_plan.host_plan)
+            tensor_reset_events = self.command_manager.uses_tensor_reset_rows()
+            if tensor_reset_events:
+                reset_context = self._reset_state.scoped_device_event_tensor_with_host_commit(
+                    rows, read_plan.host_plan
+                )
+            else:
+                reset_context = self._reset_state.scoped_tensor(rows, read_plan.host_plan)
         elif device_resident_reset:
             assert read_plan is not None
             self._reset_state.declare_packed_reset_device(read_plan.device)
             tensor_reset_events = self.event_manager.uses_tensor_reset_rows
+            tensor_reset_events = tensor_reset_events or (
+                self.command_manager.uses_tensor_reset_rows()
+            )
             if tensor_reset_events:
                 reset_context = self._reset_state.scoped_device_event_tensor(rows)
             else:
-                reset_context = self._reset_state.scoped_device_tensor(ids)
+                reset_context = self._reset_state.scoped_device_tensor(rows)
         else:
-            reset_context = self._reset_state.scoped(ids)
+            reset_context = self._reset_state.scoped(rows)
+        command_event_started = time.perf_counter()
+        event_term_count = len(self.event_manager.active_terms.get("reset", ()))
+        command_term_count = len(self.command_manager.active_terms)
+        reset_owner = self.reset_owner_manager.owner
+        owns_command_reset = bool(reset_owner is not None and reset_owner.cfg.owns_command_reset)
         with reset_context:
             if "reset" in self.event_manager.available_modes:
                 self.event_manager.apply(
                     mode="reset",
-                    env_ids=rows if tensor_reset_events else ids,
+                    env_ids=rows,
                     global_env_step_count=self.step_counter,
                 )
-            log.update(self.command_manager.reset(ids))
+            if owns_command_reset:
+                assert reset_owner is not None
+                log.update(reset_owner.reset_transaction(rows))
+            else:
+                log.update(self.command_manager.reset(rows))
+            reset_timing.update(getattr(self.command_manager, "last_reset_timing_ms", {}))
+            reset_timing.update(self.command_manager.reset_diagnostics())
+            reset_commit_started = time.perf_counter()
+        reset_timing["reset_done_reset_commit_ms"] = (
+            time.perf_counter() - reset_commit_started
+        ) * 1000.0
+        reset_timing["reset_done_command_event_ms"] = (
+            time.perf_counter() - command_event_started
+        ) * 1000.0
 
-        for manager in (
-            self.observation_manager,
-            self.action_manager,
+        manager_state_started = time.perf_counter()
+        reset_managers: tuple[Any, ...] = (
+            *(
+                ()
+                if reset_owner is not None and reset_owner.cfg.owns_observation_reset
+                else (self.observation_manager,)
+            ),
+            *(
+                ()
+                if reset_owner is not None and reset_owner.cfg.owns_action_reset
+                else (self.action_manager,)
+            ),
             self.reward_manager,
-            self.metrics_manager,
+            *(
+                ()
+                if reset_owner is not None and reset_owner.cfg.owns_metric_reset
+                else (self.metrics_manager,)
+            ),
             self.curriculum_manager,
             self.event_manager,
             self.termination_manager,
-        ):
-            log.update(manager.reset(ids))
+        )
+        for manager in reset_managers:
+            log.update(manager.reset(rows))
+        if reset_owner is not None:
+            log.update(reset_owner.reset_committed(rows))
+        observation_term_count = sum(
+            len(terms) for terms in self.observation_manager.active_terms.values()
+        )
+        reset_timing.update(
+            {
+                "reset_done_event_term_count": float(event_term_count),
+                "reset_done_command_term_count": float(command_term_count),
+                "reset_done_manager_reset_count": float(len(reset_managers)),
+                "reset_done_observation_term_count": float(observation_term_count),
+            }
+        )
+        reset_timing["reset_done_manager_state_ms"] = (
+            time.perf_counter() - manager_state_started
+        ) * 1000.0
 
-        episode_rows = (
-            ids
-            if isinstance(self.episode_length_buf, np.ndarray)
-            else torch.as_tensor(ids, device=self.episode_length_buf.device)
-        )
-        self.episode_length_buf[episode_rows] = 0
+        self.episode_length_buf[rows] = 0
         if self._reset_state.scene_layout is not None:
-            self._control[ids] = self._initial_backend_control()[ids]
+            self._control[rows] = self._initial_backend_control()[rows]
         else:
-            self._control[ids] = 0.0
-        pending_rows = (
-            ids
-            if isinstance(self._manual_reset_pending, np.ndarray)
-            else torch.as_tensor(ids, device=self._manual_reset_pending.device)
-        )
-        self._manual_reset_pending[pending_rows] = False
+            self._control[rows] = 0.0
+        self._manual_reset_pending[rows] = False
         if self._state is not None:
-            self._state.info["steps"][ids] = 0
+            self._state.info["steps"][rows] = 0
 
         # The read phase starts only after the reset-state transaction above
         # committed, so cached getter values are post-set_state reads shared
         # across terms (issue #1295).
+        state_publish_started = time.perf_counter()
         with self.scene._scoped_state_reads():
             read_plan = self.scene._tensor_read_plan
             if read_plan is not None:
@@ -1287,25 +1428,62 @@ class ManagerBasedRlEnv(TorchEnv):
                 # zero-control tensor step materializes the post-reset packet
                 # before Manager terms read those stable views.
                 if use_packed_reset:
+                    selected_read_started = time.perf_counter()
                     read_plan.refresh_selected()
+                    reset_timing["reset_done_selected_read_ms"] = (
+                        time.perf_counter() - selected_read_started
+                    ) * 1000.0
                 else:
+                    read_drain_started = time.perf_counter()
                     self._warm_external_cuda_ipc_views()
+                    reset_timing["reset_done_read_drain_ms"] = (
+                        time.perf_counter() - read_drain_started
+                    ) * 1000.0
+                    selected_read_started = time.perf_counter()
                     read_plan.refresh()
-            self.command_manager.compute(dt=0.0, env_ids=ids)
+                    reset_timing["reset_done_selected_read_ms"] = (
+                        time.perf_counter() - selected_read_started
+                    ) * 1000.0
+            command_refresh_started = time.perf_counter()
+            self.command_manager.compute(dt=0.0, env_ids=rows)
+            reset_timing["reset_done_command_refresh_ms"] = (
+                time.perf_counter() - command_refresh_started
+            ) * 1000.0
+            command_post_compute_started = time.perf_counter()
             self.command_manager.post_compute()
+            reset_timing["reset_done_command_post_compute_ms"] = (
+                time.perf_counter() - command_post_compute_started
+            ) * 1000.0
+            reset_timing.update(getattr(self.command_manager, "last_post_compute_timing_ms", {}))
+            observation_started = time.perf_counter()
             # Row-scoped reset rebuild (issue #1259 R2): the observation manager
             # returns only the reset rows, so no full-batch slice is needed here.
-            manager_obs = self.observation_manager.compute(update_history=True, env_ids=ids)
-        mapped_obs = self._map_observations(manager_obs, num_rows=len(ids))
+            manager_obs = self.observation_manager.compute(update_history=True, env_ids=rows)
+            reset_timing["reset_done_observation_ms"] = (
+                time.perf_counter() - observation_started
+            ) * 1000.0
+        reset_timing["reset_done_state_publish_ms"] = (
+            time.perf_counter() - state_publish_started
+        ) * 1000.0
+        mapped_obs = self._map_observations(manager_obs, num_rows=rows.numel())
+        observation_scatter_started = time.perf_counter()
         reset_obs = {
             name: self._manager_tensor(values, dtype=self._dtype)
             for name, values in mapped_obs.items()
         }
+        reset_timing["reset_done_observation_scatter_ms"] = (
+            time.perf_counter() - observation_scatter_started
+        ) * 1000.0
+        self._last_reset_manager_timing_ms = reset_timing
 
         if self._state is not None:
             for name in mapped_obs:
                 self._state.obs[name].index_copy_(0, rows, reset_obs[name])
             if self._autoreset_reset_active:
+                # The Manager already published into the full public state.
+                # ``TorchEnv._reset_done_envs`` must not validate and scatter
+                # the selected rows a second time.
+                self._autoreset_scattered_reset_obs = True
                 # Autoreset runs at the tail of step(): keep this step's
                 # per-step log entries (reward/* etc., computed pre-reset) and
                 # layer manager reset extras on top, so consumers still see the
@@ -1317,26 +1495,22 @@ class ManagerBasedRlEnv(TorchEnv):
             if not self._autoreset_reset_active:
                 self._state.terminated[rows] = False
                 self._state.truncated[rows] = False
-                flag_rows = (
-                    ids
-                    if isinstance(self.reset_buf, np.ndarray)
-                    else torch.as_tensor(ids, device=self.reset_buf.device)
-                )
-                self.reset_buf[flag_rows] = False
-                self.reset_terminated[flag_rows] = False
-                self.reset_time_outs[flag_rows] = False
+                self.reset_buf[rows] = False
+                self.reset_terminated[rows] = False
+                self.reset_time_outs[rows] = False
         if not self.obs_buf or set(self.obs_buf) != set(mapped_obs):
             self.obs_buf = mapped_obs
         else:
             for name, values in mapped_obs.items():
                 self.obs_buf[name][rows] = values
         self.extras = self._state.info if self._state is not None else {"log": log}
-        self.recorder_manager.record_post_reset(ids)
+        self.recorder_manager.record_post_reset(rows)
         return reset_obs, {"log": log}
 
     def _collect_reset_backend_timing_ms(self) -> dict[str, float]:
         timing = dict(super()._collect_reset_backend_timing_ms())
         timing.update(self._reset_state.last_set_state_timing_ms)
+        timing.update(self._last_reset_manager_timing_ms)
         return timing
 
     def _map_observations(
@@ -1397,8 +1571,7 @@ class ManagerBasedRlEnv(TorchEnv):
             )
         if bool((values < 0).any()):
             raise ValueError("episode length counters must be non-negative")
-        host_values = np.array(values.detach().cpu().numpy(), dtype=np.int64, copy=True)
-        np.copyto(self.episode_length_buf, host_values)
+        self.episode_length_buf.copy_(values)
         if self._state is not None:
             self._state.info["steps"].copy_(values)
 
@@ -1409,8 +1582,8 @@ class ManagerBasedRlEnv(TorchEnv):
             raise ValueError(f"ManagerBasedRlEnv seed must be a non-negative integer, got {seed!r}")
         replacement = np.random.default_rng(seed)
         self.rng.bit_generator.state = replacement.bit_generator.state
-        if self.torch_rng is not None:
-            self.torch_rng.manual_seed(seed)
+        if self._torch_rng_owner is not None:
+            self._torch_rng_owner.manual_seed(seed)
         self._cfg.seed = seed
         return seed
 
@@ -1435,6 +1608,12 @@ def make_manager_based_rl_env(
     backend_type: str = "mujoco",
 ) -> ManagerBasedRlEnv:
     """Construct the generic Registry-owned Manager-Based production runtime."""
+    from unilab.base.registry import (
+        _SHELVED_SIM_BACKENDS,
+        _TENSOR_MANAGER_BACKEND_SCOPE_ERROR,
+        _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS,
+    )
+
     if not isinstance(cfg, ManagerBasedRlEnvCfg):
         raise TypeError(
             "make_manager_based_rl_env expected ManagerBasedRlEnvCfg, "
@@ -1448,6 +1627,13 @@ def make_manager_based_rl_env(
         raise ValueError(
             "make_manager_based_rl_env backend_type must be a non-empty string, "
             f"got {backend_type!r}"
+        )
+    if backend_type in _SHELVED_SIM_BACKENDS:
+        raise ValueError(_TENSOR_MANAGER_BACKEND_SCOPE_ERROR.format(backend=backend_type))
+    if backend_type not in _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS:
+        raise ValueError(
+            "make_manager_based_rl_env supports only the tensor Manager backends "
+            f"{', '.join(_TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS)}; got {backend_type!r}."
         )
 
     cfg.validate()

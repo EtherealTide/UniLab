@@ -1,3 +1,9 @@
+# HISTORICAL SHELVED-BACKEND BENCHMARK (#1811)
+# This adapter-specific probe is retained for migration context only.
+# It is not part of the scoped tensor Manager benchmark surface
+# (mujoco/mjwarp/genesis), is not discovered by default benchmark
+# selection, and must not be used as a production support claim.
+
 #!/usr/bin/env python3
 """Phase-local G1 FlashSAC backend tensor benchmark.
 
@@ -63,6 +69,7 @@ _RUNTIME_ENV_KEYS = (
 )
 _AFTER_RUN_GPU_QUIESCE_TIMEOUT_S = 10.0
 _AFTER_RUN_GPU_QUIESCE_POLL_S = 0.25
+_SCOPED_BACKENDS = ("mujoco", "mjwarp")
 _EXTERNAL_WORKER_PACKAGES = {
     "isaacgym": ("isaacgym", "isaacgym-preview.4", "torch"),
     "isaacsim": ("isaacsim", "isaacsim-core", "isaaclab", "omniverse-kit", "torch"),
@@ -1074,6 +1081,12 @@ def _parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list
     backends = [backend.strip() for backend in args.backends.split(",") if backend.strip()]
     if not backends:
         parser.error("at least one backend is required")
+    unsupported = sorted(set(backends) - set(_SCOPED_BACKENDS))
+    if unsupported:
+        parser.error(
+            "shelved benchmark backend(s) are outside the tensor-only Manager runtime "
+            f"({_SCOPED_BACKENDS}): {', '.join(unsupported)}; see issue #1811"
+        )
     if args.isaacsim_test_fixture:
         parser.error(
             "--isaacsim-test-fixture is obsolete; the #1771 production owner is used by default"

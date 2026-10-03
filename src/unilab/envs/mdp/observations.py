@@ -186,6 +186,18 @@ def _imu_misalignment_quat(env: ManagerBasedRlEnv, max_angle_rad: float) -> np.n
         _IMU_MISALIGNMENT_QUATS[env] = per_env
     quat = per_env.get(max_angle_rad)
     if quat is None:
+        rng_owner = getattr(env, "torch_rng", None)
+        if rng_owner is not None:
+            axis = rng_owner.standard_normal((env.num_envs, 3))
+            angle = rng_owner.uniform(0.0, max_angle_rad, (env.num_envs,), dtype=torch.float32)
+            axis = axis / torch.linalg.vector_norm(axis, dim=-1, keepdim=True)
+            half = 0.5 * angle
+            quat_torch = torch.cat(
+                (torch.cos(half)[:, None], axis * torch.sin(half)[:, None]), dim=1
+            )
+            quat = quat_torch.detach().cpu().numpy().astype(np.float32, copy=False)
+            per_env[max_angle_rad] = quat
+            return quat
         axis = env.rng.standard_normal((env.num_envs, 3))
         angle = env.rng.uniform(0.0, max_angle_rad, size=env.num_envs)
         quat = np_quat_from_angle_axis(angle, axis).astype(np.float32)

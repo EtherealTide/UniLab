@@ -265,6 +265,7 @@ class SceneTensorReadPlan:
         self._body_names = MappingProxyType(dict(body_names))
         self._host_plan = host_plan
         self._packet_names = self._aggregate_packet_names()
+        self._aggregate_body_views: dict[str, EntityTensorBodyStateView] = {}
         self._joint_column_indices: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
         self._packet_sensor_owners: dict[str, str] = {}
         self._packet_sensor_owners.update(
@@ -318,7 +319,10 @@ class SceneTensorReadPlan:
     def refresh(self) -> None:
         """Publish one full-batch packet for the current read phase."""
         self._require_not_closed()
-        packet = self._read_packet(self._host_plan.read_state_sensors if self._host_plan else None)
+        if self._host_plan is not None:
+            packet = self._read_packet(self._host_plan.read_state_sensors)
+        else:
+            packet = self._reuse_stable_device_packet()
         self._publish_packet(packet)
 
     def refresh_selected(self) -> None:
@@ -329,11 +333,23 @@ class SceneTensorReadPlan:
         their stable public views through the same normal read path.
         """
         self._require_not_closed()
-        reader = (
-            self._host_plan.read_selected_state_sensors if self._host_plan is not None else None
-        )
-        packet = self._read_packet(reader)
+        if self._host_plan is not None:
+            packet = self._read_packet(self._host_plan.read_selected_state_sensors)
+        else:
+            packet = self._reuse_stable_device_packet()
         self._publish_packet(packet)
+
+    def _reuse_stable_device_packet(self) -> dict[str, torch.Tensor]:
+        """Publish stable device-resident views without another sensor crossing.
+
+        The first device-resident refresh owns the public adapter projection
+        crossing. Stable aliases remain live after selected reset, so a
+        subsequent read phase can republish them without repeating one
+        Python/DLPack boundary per sensor family.
+        """
+        if not self._refreshed:
+            return self._read_packet(None)
+        return dict(self._packet)
 
     def invalidate(self) -> None:
         """Drop phase values after an in-phase simulation mutation."""
@@ -476,6 +492,44 @@ class SceneTensorReadPlan:
                 f"into the packed read; compiled={list(self._body_names[owner.name])}"
             )
 
+        aggregate = self._aggregate_body_views.get(owner.name)
+        if aggregate is not None and aggregate.body_names == requested:
+            return aggregate
+
+        capabilities = self._scene._backend.get_tensor_capabilities()
+        if getattr(capabilities, "tracked_body_views", False):
+            try:
+                # A single requested body needs no four-block column projection;
+                # the per-body canonical sensors are already the exact packed
+                # layout for that body. Use them directly to avoid four extra
+                # gathers on hot termination/reward checks.
+                if len(requested) == 1 and all(
+                    prefix + requested[0] in self._packet
+                    for prefix, _ in _TENSOR_BODY_SENSOR_FIELDS
+                ):
+                    single_fields = {
+                        field: self._packet[prefix + requested[0]]
+                        for field, prefix in _TENSOR_BODY_SENSOR_FIELDS
+                    }
+                    return EntityTensorBodyStateView(
+                        body_names=requested,
+                        pos_w=single_fields["pos_w"].unsqueeze(1),
+                        quat_w=single_fields["quat_w"].unsqueeze(1),
+                        lin_vel_w=single_fields["lin_vel_w"].unsqueeze(1),
+                        ang_vel_w=single_fields["ang_vel_w"].unsqueeze(1),
+                    )
+                backend_views = self._scene._backend.get_tracked_body_views(
+                    requested, device=self._device
+                )
+            except (AttributeError, KeyError, TypeError, ValueError, NotImplementedError) as exc:
+                raise type(exc)(
+                    f"Manager scene aggregate body tensor read on backend "
+                    f"'{self._scene._backend.backend_type}': {exc}"
+                ) from exc
+            view = self._validated_aggregate_body_view(owner, backend_views)
+            self._aggregate_body_views[owner.name] = view
+            return view
+
         fields: dict[str, torch.Tensor] = {}
         for field, prefix in _TENSOR_BODY_SENSOR_FIELDS:
             stacked = [
@@ -494,6 +548,38 @@ class SceneTensorReadPlan:
             fields[field] = torch.stack(stacked, dim=1)
         return EntityTensorBodyStateView(
             body_names=requested,
+            pos_w=fields["pos_w"],
+            quat_w=fields["quat_w"],
+            lin_vel_w=fields["lin_vel_w"],
+            ang_vel_w=fields["ang_vel_w"],
+        )
+
+    def _validated_aggregate_body_view(
+        self, owner: "Entity", views: Any
+    ) -> EntityTensorBodyStateView:
+        num_envs = self._scene._backend.num_envs
+        fields: dict[str, torch.Tensor] = {}
+        for field, width in _TENSOR_SENSOR_WIDTHS.items():
+            value = views.__getattribute__(field)
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(
+                    f"Entity '{owner.name}' aggregate body tensor {field} on backend "
+                    f"'{owner._backend_type}' is {type(value).__name__}, expected torch.Tensor"
+                )
+            expected = (num_envs, len(views.body_names), width)
+            if tuple(value.shape) != expected:
+                raise ValueError(
+                    f"Entity '{owner.name}' aggregate body tensor {field} on backend "
+                    f"'{owner._backend_type}' has shape {tuple(value.shape)}; expected {expected}"
+                )
+            if value.dtype != torch.float32 or value.device != self._device:
+                raise TypeError(
+                    f"Entity '{owner.name}' aggregate body tensor {field} must be float32 on "
+                    f"{self._device}; got {value.dtype} on {value.device}"
+                )
+            fields[field] = value
+        return EntityTensorBodyStateView(
+            body_names=tuple(views.body_names),
             pos_w=fields["pos_w"],
             quat_w=fields["quat_w"],
             lin_vel_w=fields["lin_vel_w"],
@@ -613,6 +699,7 @@ class SceneTensorReadPlan:
                 finite=False,
             )
         self._packet = MappingProxyType(packet)
+        self._aggregate_body_views.clear()
         self._refreshed = True
 
     def _require_open(self) -> None:
@@ -734,6 +821,8 @@ class EntityData:
         self._actuator_ids = actuator_ids
         self._actuator_ctrl_range = actuator_ctrl_range
         self._control_buffer = control_buffer
+        self._tensor_actuator_id_cache: torch.Tensor | None = None
+        self._encoder_bias_tensor: torch.Tensor | None = None
         self._state_read_cache = state_read_cache
 
     def _cached_getter(
@@ -914,8 +1003,43 @@ class EntityData:
     @property
     def encoder_bias_tensor(self) -> torch.Tensor:
         """Return the mutable encoder bias as a same-storage Torch view."""
-        bias = self._require(self._encoder_bias, "joint encoder bias")
-        return torch.from_numpy(bias)
+        resolved_device = self._tensor_control_device()
+        if resolved_device is None:
+            bias = self._require(self._encoder_bias, "joint encoder bias")
+            return torch.from_numpy(bias)
+        cached = self._encoder_bias_tensor
+        if cached is None or cached.device != resolved_device:
+            bias = self._require(self._encoder_bias, "joint encoder bias")
+            cached = torch.from_numpy(np.ascontiguousarray(bias)).to(
+                device=resolved_device, dtype=torch.float32
+            )
+            self._encoder_bias_tensor = cached
+        return cached
+
+    def set_encoder_bias_tensor(self, values: torch.Tensor) -> None:
+        """Publish a device-resident encoder-bias transaction.
+
+        The tensor becomes the authoritative same-storage carrier. This is an
+        explicit public tensor boundary for DEVICE_RESIDENT owners; CPU/HOST
+        bridge owners retain the existing NumPy carrier.
+        """
+        control = self._require(self._control_buffer, "joint encoder bias")
+        if not isinstance(control, torch.Tensor):
+            raise NotImplementedError("Device-resident encoder bias requires a Torch control plane")
+        self._require(self._encoder_bias, "joint encoder bias")
+        if values.dtype != torch.float32 or not values.is_contiguous():
+            raise TypeError("encoder_bias_tensor must be contiguous float32")
+        if values.device != control.device:
+            raise ValueError(
+                f"encoder_bias_tensor must live on {control.device}, got {values.device}"
+            )
+        self._encoder_bias_tensor = values
+
+    def _tensor_control_device(self) -> torch.device | None:
+        control = self._control_buffer
+        if not isinstance(control, torch.Tensor):
+            return None
+        return control.device
 
     @property
     def control_buffer(self) -> np.ndarray | torch.Tensor | None:
@@ -1209,13 +1333,31 @@ class EntityData:
                 f"Entity '{self._entity_name}' tensor write_ctrl expected shape "
                 f"{expected}, received {tuple(values.shape)}"
             )
+        full_width = (
+            isinstance(row_index, slice)
+            and row_index == slice(None)
+            and int(column_index.numel()) == len(entity_actuator_ids)
+            and bool(torch.equal(column_index, self._tensor_actuator_ids(control.device)))
+        )
         if not bool(torch.isfinite(values).all()):
             raise ValueError(f"Entity '{self._entity_name}' tensor write_ctrl got NaN or Inf")
 
-        if isinstance(row_index, slice):
+        if full_width:
+            control.copy_(values)
+        elif isinstance(row_index, slice):
             control[:, column_index] = values
         else:
             control[row_index[:, None], column_index[None, :]] = values
+
+    def _tensor_actuator_ids(self, device: torch.device) -> torch.Tensor:
+        cached = self._tensor_actuator_id_cache
+        if cached is None or cached.device != device:
+            entity_actuator_ids = self._require(self._actuator_ids, "actuator control write")
+            cached = torch.from_numpy(np.ascontiguousarray(entity_actuator_ids, dtype=np.int64)).to(
+                device=device
+            )
+            self._tensor_actuator_id_cache = cached
+        return cached
 
 
 class Entity:
@@ -2322,7 +2464,7 @@ class Entity:
 
     def set_joint_position_target(
         self,
-        target: np.ndarray,
+        target: np.ndarray | torch.Tensor,
         joint_ids: np.ndarray | Sequence[int] | slice | None = None,
         env_ids: np.ndarray | slice | None = None,
     ) -> None:
@@ -2347,6 +2489,57 @@ class Entity:
                 f"for passive joints on backend '{self._backend_type}': {passive_names}"
             )
         self.data.write_ctrl(target, env_ids, actuator_ids=actuator_ids)
+
+    def set_full_width_joint_position_target(self, target: torch.Tensor) -> None:
+        """Fuse the canonical all-joints/all-rows position target publication.
+
+        ``target`` is in the entity's natural joint order. This method resolves
+        the immutable joint-to-actuator mapping once on the cold path and
+        writes directly into the full Torch control plane, avoiding separate
+        index selection and control scatter kernels. Partial/reordered targets
+        use ``set_joint_position_target``.
+        """
+        joint_to_actuator = self._joint_to_actuator_local
+        if joint_to_actuator is None:
+            raise self._capability_error(
+                "joint position target",
+                "joint-to-actuator metadata was not materialized",
+            )
+        joint_count = len(self.joint_names)
+        if joint_count == 0 or joint_to_actuator.shape != (joint_count,):
+            raise ValueError(
+                f"Entity '{self.name}' full-width position target requires a one-actuator "
+                f"mapping for all {joint_count} joints"
+            )
+        if np.any(joint_to_actuator < 0):
+            passive_names = [
+                self.joint_names[int(i)] for i in np.flatnonzero(joint_to_actuator < 0)
+            ]
+            raise NotImplementedError(
+                f"Entity '{self.name}' capability 'joint position target' is unavailable "
+                f"for passive joints on backend '{self._backend_type}': {passive_names}"
+            )
+        control = self._require_tensor_control_buffer_public()
+        if target.dtype != torch.float32:
+            raise TypeError("full-width joint position target must be float32")
+        if target.device != control.device:
+            raise ValueError(
+                f"full-width joint position target must live on {control.device}, got {target.device}"
+            )
+        if tuple(target.shape) != tuple(control.shape):
+            raise ValueError(
+                f"full-width joint position target has shape {tuple(target.shape)}; "
+                f"expected {tuple(control.shape)}"
+            )
+        control.copy_(target)
+
+    def _require_tensor_control_buffer_public(self) -> torch.Tensor:
+        control = self.data.control_buffer
+        if not isinstance(control, torch.Tensor):
+            raise NotImplementedError(
+                f"Entity '{self.name}' full-width tensor target requires a Torch control plane"
+            )
+        return control
 
     def _set_joint_control_target(
         self,
@@ -2474,6 +2667,78 @@ class Entity:
                 root_state.detach().cpu().numpy(),
                 term_name=f"{self.name}.write_root_state_to_sim",
             )
+
+    def write_joint_state_tensor_to_sim(
+        self,
+        position: torch.Tensor,
+        velocity: torch.Tensor,
+        joint_ids: np.ndarray | Sequence[int] | slice | None = None,
+        env_ids: torch.Tensor | None = None,
+    ) -> None:
+        """Stage selected device-resident joint state in the tensor transaction."""
+        if self._reset_state is None:
+            raise self._capability_error(
+                "tensor reset joint-state write",
+                "EntityScene was materialized without an env-owned reset transaction",
+            )
+        if self._joint_names is None:
+            raise self._capability_error(
+                "tensor reset joint-state write",
+                "joint_names were not declared in EntityCfg",
+            )
+        if self._physical_entity is not None:
+            raise NotImplementedError(
+                "mapped entity tensor joint-state reset requires a public entity transaction"
+            )
+        if env_ids is None:
+            raise ValueError("tensor joint-state reset requires explicit device row indices")
+        local_joint_ids = self._normalize_local_joint_ids(
+            joint_ids,
+            capability="tensor reset joint-state write",
+        )
+        self._materialize_reset_joint_indices()
+        assert self._reset_joint_qpos_ids is not None
+        assert self._reset_joint_qvel_ids is not None
+        self._reset_state.write_joint_state_tensor(
+            env_ids,
+            self._reset_joint_qpos_ids[local_joint_ids],
+            self._reset_joint_qvel_ids[local_joint_ids],
+            position,
+            velocity,
+            term_name=f"{self.name}.write_joint_state_tensor_to_sim",
+        )
+
+    def write_motion_state_tensor_to_sim(
+        self,
+        root_state: torch.Tensor,
+        position: torch.Tensor,
+        velocity: torch.Tensor,
+        env_ids: torch.Tensor,
+    ) -> None:
+        """Stage one device-resident motion root and selected joint state."""
+        if self._physical_entity is not None:
+            raise NotImplementedError(
+                "mapped entity tensor motion-state reset requires a public entity transaction"
+            )
+        reset_state, layout = self._require_root_state_write()
+        if self._joint_names is None:
+            raise self._capability_error(
+                "tensor reset motion-state write",
+                "joint_names were not declared in EntityCfg",
+            )
+        self._materialize_reset_joint_indices()
+        assert self._reset_joint_qpos_ids is not None
+        assert self._reset_joint_qvel_ids is not None
+        reset_state.write_motion_state_tensor(
+            env_ids,
+            layout,
+            self._reset_joint_qpos_ids,
+            self._reset_joint_qvel_ids,
+            root_state,
+            position,
+            velocity,
+            term_name=f"{self.name}.write_motion_state_tensor_to_sim",
+        )
 
     def bind_actuator_gain_write(
         self,
@@ -3878,7 +4143,7 @@ class EntityScene(Mapping[str, Entity]):
         if self._tensor_read_plan is not None:
             self._tensor_read_plan.invalidate()
 
-    def reset_to_default(self, env_ids: np.ndarray, *, term_name: str) -> None:
+    def reset_to_default(self, env_ids: torch.Tensor, *, term_name: str) -> None:
         """Stage a full-scene default state in the active reset transaction."""
         if self._reset_state is None:
             raise NotImplementedError(

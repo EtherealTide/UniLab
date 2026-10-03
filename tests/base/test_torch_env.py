@@ -29,7 +29,6 @@ class _StubCfg(EnvCfg):
     max_episode_seconds: float | None = 1.0
     ctrl_dt: float = 0.1
     sim_dt: float = 0.1
-    tensor_runtime: bool = False
 
 
 def _backend() -> MagicMock:
@@ -200,23 +199,8 @@ def test_step_uses_backend_tensor_contract_and_autoreset() -> None:
     assert "_final_observation" not in state.info
 
 
-def test_legacy_runtime_uses_public_numpy_backend_step() -> None:
-    backend = _unsupported_backend()
-    env = _StubTorchEnv(cfg=_StubCfg(tensor_runtime=False), backend=backend)
-    env.init_state()
-    actions = torch.ones((env.num_envs, 4), dtype=torch.float32)
-
-    env.step(actions)
-
-    backend.step_tensor.assert_not_called()
-    backend.step.assert_called_once()
-    np.testing.assert_array_equal(backend.step.call_args.args[0], actions.numpy() * 2.0)
-    assert backend.step.call_args.args[1] == 1
-
-
 def test_unsupported_backend_tensor_runtime_fails_closed() -> None:
     cfg = _StubCfg()
-    cfg.tensor_runtime = True
     env = _StubTorchEnv(cfg=cfg, backend=_unsupported_backend())
 
     with pytest.raises(ValueError, match="does not declare a tensor lifecycle"):
@@ -274,6 +258,32 @@ def test_reset_indices_are_normalized_and_validated() -> None:
         env._normalize_reset_indices(torch.tensor([0, 0]))
     with pytest.raises(ValueError, match=r"\[0, 3\)"):
         env._normalize_reset_indices(torch.tensor([3]))
+
+
+def test_reset_indices_from_mask_skip_redundant_public_validation() -> None:
+    env = _StubTorchEnv()
+    scalar_conversions = 0
+    original_bool = torch.Tensor.__bool__
+
+    def counted_bool(self: torch.Tensor) -> bool:
+        nonlocal scalar_conversions
+        scalar_conversions += 1
+        return original_bool(self)
+
+    monkeypatch_holder = pytest.MonkeyPatch()
+    monkeypatch_holder.setattr(torch.Tensor, "__bool__", counted_bool)
+    try:
+        rows = env._reset_indices_from_mask(torch.tensor([False, True, True]))
+    finally:
+        monkeypatch_holder.undo()
+
+    assert rows.tolist() == [1, 2]
+    assert rows.dtype == torch.int64
+    assert scalar_conversions == 0
+    with pytest.raises(ValueError, match="reset mask"):
+        env._reset_indices_from_mask(torch.zeros(2, dtype=torch.bool))
+    with pytest.raises(ValueError, match="reset mask"):
+        env._reset_indices_from_mask(torch.zeros(3, dtype=torch.int32))
 
 
 def test_timeout_computes_truncation_and_selected_reset() -> None:
@@ -496,7 +506,6 @@ def test_device_resident_backend_requires_cuda() -> None:
         torch_devices=("cpu",),
     )
     cfg = _StubCfg()
-    cfg.tensor_runtime = True
     env = _StubTorchEnv(cfg=cfg, backend=backend, device="cpu")
     with pytest.raises(ValueError, match="requires a CUDA device"):
         env.init_state()

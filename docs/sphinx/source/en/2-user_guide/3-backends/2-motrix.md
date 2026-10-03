@@ -1,5 +1,8 @@
 # Motrix Backend
 
+> **Motrix is temporarily shelved.** This adapter is outside the tensor-only Manager runtime during #1811 and is not a production support claim. The train/eval CLI rejects it until new capability, parity, and support-matrix evidence is provided.
+
+
 Motrix is an optional backend installed through the `motrix` extra, which
 delegates to `unisim-core[motrix]`: the runtime pin lives in UniSim's
 `pyproject.toml`, and the adapter lives under `unisim.backend.motrix`.
@@ -10,7 +13,7 @@ delegates to `unisim-core[motrix]`: the runtime pin lives in UniSim's
 uv sync --extra motrix
 ```
 
-`make setup-motrix` runs the same dependency sync and installs shell completion.
+`make setup` runs the same dependency sync and installs shell completion.
 
 ## When To Use It
 

@@ -29,7 +29,9 @@ from unisim.backend.base import (
     tensor_device_matches,
 )
 
-from unilab.base.backend_timing import RESET_DONE_DETAIL_TIMING_KEYS
+from unilab.base.backend_timing import (
+    RESET_DONE_DETAIL_TIMING_KEYS,
+)
 from unilab.base.base import ABEnv, EnvCfg, EnvPlayCapabilities
 from unilab.base.cpu_runtime import apply_env_cpu_runtime
 from unilab.base.scene import SceneCfg
@@ -106,6 +108,7 @@ class TorchEnv(ABEnv):
         self.step_counter = 0
         self._autoreset = True
         self._autoreset_reset_active = False
+        self._autoreset_scattered_reset_obs = False
         self._rgb_array_renderer_ready = False
         self._nan_guard: "TensorNanGuard | None" = None
 
@@ -115,25 +118,6 @@ class TorchEnv(ABEnv):
 
     def _bind_tensor_runtime(self) -> None:
         if self._tensor_runtime_bound:
-            return
-        # A backend without a tensor lifecycle has only its public NumPy wire.
-        # That lifecycle is legal solely for the legacy runtime request, which
-        # is the default for subprocess owners such as IsaacSim. Tensor runtime
-        # requests remain fail-closed below.
-        if (
-            getattr(self.cfg, "tensor_runtime", True) is False
-            and self._backend.get_tensor_capabilities().execution is TensorExecution.UNSUPPORTED
-        ):
-            self._tensor_runtime_bound = True
-            return
-        # A device-resident backend cannot expose a public CPU lifecycle. The
-        # only valid false request is a task-owned cold-path proxy used to extract
-        # contracts before its direct CUDA runtime is constructed.
-        if (
-            getattr(self.cfg, "tensor_runtime", True) is False
-            and self._backend.get_tensor_capabilities().execution is TensorExecution.DEVICE_RESIDENT
-        ):
-            self._tensor_runtime_bound = True
             return
         capabilities = self._backend.get_tensor_capabilities()
         execution = capabilities.execution
@@ -162,6 +146,11 @@ class TorchEnv(ABEnv):
     @property
     def cfg(self) -> EnvCfg:
         return self._cfg
+
+    @property
+    def backend(self) -> SimBackend:
+        """Public backend owner used by Manager terms and tensor contracts."""
+        return self._backend
 
     @property
     def num_envs(self) -> int:
@@ -247,6 +236,23 @@ class TorchEnv(ABEnv):
             raise ValueError(f"TorchEnv reset indices must be in [0, {self._num_envs})")
         return rows.to(torch.int64)
 
+    def _reset_indices_from_mask(self, mask: torch.Tensor) -> torch.Tensor:
+        """Return validated int64 reset rows from a boolean full-batch mask.
+
+        ``nonzero`` output is already sorted, unique, and range-valid by
+        construction. Reusing the generic public reset normalizer here would
+        add three scalar reductions (including a device ``unique`` sort) after
+        every autoreset boundary.
+        """
+        if mask.ndim != 1 or mask.shape[0] != self._num_envs:
+            raise ValueError(f"TorchEnv reset mask must have shape ({self._num_envs},)")
+        if mask.dtype != torch.bool or mask.device != self._device:
+            raise ValueError(
+                f"TorchEnv reset mask must be a bool tensor on {self._device}; got "
+                f"{mask.dtype} on {mask.device}"
+            )
+        return mask.nonzero(as_tuple=False).flatten().to(torch.int64)
+
     def step(self, actions: torch.Tensor) -> TorchEnvState:
         started = time.perf_counter()
         cpu_started = _cpu_time()
@@ -276,13 +282,7 @@ class TorchEnv(ABEnv):
 
         phase = time.perf_counter()
         phase_cpu = _cpu_time()
-        if self._backend.get_tensor_capabilities().execution is TensorExecution.UNSUPPORTED:
-            if getattr(self.cfg, "tensor_runtime", True) is not False:
-                self._bind_tensor_runtime()
-            host_control = ctrl.detach().cpu().numpy()
-            backend_result = self._backend.step(host_control, self._cfg.sim_substeps)
-        else:
-            backend_result = self._backend.step_tensor(ctrl, self._cfg.sim_substeps)
+        backend_result = self._backend.step_tensor(ctrl, self._cfg.sim_substeps)
         step_core_ms = (time.perf_counter() - phase) * 1000.0
         step_core_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
 
@@ -382,7 +382,6 @@ class TorchEnv(ABEnv):
             raise ValueError("TorchEnv control contains NaN or Inf")
 
     def _validate_state(self, state: TorchEnvState) -> None:
-        finite_checks: list[tuple[torch.Tensor, str]] = []
         expected_keys = set(self.obs_groups_spec)
         if not isinstance(state.obs, dict) or set(state.obs) != expected_keys:
             raise ValueError("TorchEnvState.obs keys do not match obs_groups_spec")
@@ -398,19 +397,43 @@ class TorchEnv(ABEnv):
                 raise ValueError(f"TorchEnvState.obs[{name!r}] device must be {self.device}")
             if value.shape != (self._num_envs, dim):
                 raise ValueError(f"TorchEnvState.obs[{name!r}] has shape {tuple(value.shape)}")
-            finite_checks.append((value, f"obs[{name!r}]"))
         self._validate_vector(state.reward, "reward", self._dtype)
-        finite_checks.append((state.reward, "reward"))
         self._validate_vector(state.terminated, "terminated", torch.bool)
         self._validate_vector(state.truncated, "truncated", torch.bool)
         steps = state.info.get("steps")
         self._validate_vector(steps, "info['steps']", torch.int64)
         self._validate_final_observation(state.final_observation)
-        if finite_checks:
-            finite = torch.stack([torch.isfinite(value).all() for value, _ in finite_checks])
-            if not bool(finite.all()):
-                for value, label in finite_checks:
-                    self._validate_finite_float(value, label)
+        # Different observation groups and reward are validated as one finite
+        # reduction on CPU/GPU owners alike. On a low-clock CUDA host this
+        # avoids separate stream synchronizations per public output carrier.
+        for value in state.obs.values():
+            self._require_floating_float(value)
+        self._require_floating_float(state.reward)
+        if not bool(
+            torch.isfinite(
+                torch.cat(
+                    tuple(value.reshape(value.shape[0], -1) for value in state.obs.values())
+                    + (state.reward.reshape(state.reward.shape[0], -1),),
+                    dim=1,
+                )
+            ).all()
+        ):
+            for label, value in (
+                *((f"obs[{name!r}]", value) for name, value in state.obs.items()),
+                ("reward", state.reward),
+            ):
+                if not bool(torch.isfinite(value).all()):
+                    raise ValueError(f"TorchEnvState {label} contains NaN or Inf")
+
+    def _validate_finite_float(self, value: torch.Tensor, label: str) -> None:
+        if not value.is_floating_point():
+            raise TypeError(f"TorchEnvState {label} must be floating-point")
+        if not bool(torch.isfinite(value).all()):
+            raise ValueError(f"TorchEnvState {label} contains NaN or Inf")
+
+    def _require_floating_float(self, value: torch.Tensor) -> None:
+        if not value.is_floating_point():
+            raise TypeError("TorchEnvState floating outputs must be floating-point")
 
     def _validate_vector(self, value: Any, label: str, dtype: torch.dtype) -> None:
         if not isinstance(value, torch.Tensor):
@@ -421,12 +444,6 @@ class TorchEnv(ABEnv):
             raise TypeError(f"TorchEnvState {label} dtype must be {dtype}, got {value.dtype}")
         if value.device != self.device:
             raise ValueError(f"TorchEnvState {label} device must be {self.device}")
-
-    def _validate_finite_float(self, value: torch.Tensor, label: str) -> None:
-        if not value.is_floating_point():
-            raise TypeError(f"TorchEnvState {label} must be floating-point")
-        if not bool(torch.isfinite(value).all()):
-            raise ValueError(f"TorchEnvState {label} contains NaN or Inf")
 
     def _validate_final_observation(
         self, final_observation: dict[str, torch.Tensor] | None
@@ -471,7 +488,7 @@ class TorchEnv(ABEnv):
             self._clear_reset_done_detail_timing(self._state.info.setdefault("timing", {}))
             return
 
-        rows = done.nonzero(as_tuple=False).flatten().to(torch.int64)
+        rows = self._reset_indices_from_mask(done)
         terminal_started = time.perf_counter()
         detail_timing["reset_done_count"] = float(rows.numel())
         self._state.info["steps"][rows] = 0
@@ -486,6 +503,7 @@ class TorchEnv(ABEnv):
 
         reset_started = time.perf_counter()
         self._autoreset_reset_active = True
+        self._autoreset_scattered_reset_obs = False
         try:
             new_obs, reset_info = self.reset(rows)
         finally:
@@ -497,9 +515,16 @@ class TorchEnv(ABEnv):
         )
 
         scatter_started = time.perf_counter()
-        self._validate_reset_observation(new_obs, rows)
-        for name, values in new_obs.items():
-            self._state.obs[name].index_copy_(0, rows, values)
+        if self._autoreset_scattered_reset_obs:
+            # The environment-specific reset owner already published selected
+            # observations into the full public state. Preserve the public
+            # reset return contract while avoiding a second selected-row finite
+            # reduction and scatter.
+            new_obs = {name: self._state.obs[name].index_select(0, rows) for name in new_obs}
+        else:
+            self._validate_reset_observation(new_obs, rows)
+            for name, values in new_obs.items():
+                self._state.obs[name].index_copy_(0, rows, values)
         self._scatter_reset_info(reset_info, rows)
         detail_timing["reset_done_obs_scatter_ms"] = (
             time.perf_counter() - scatter_started
@@ -557,7 +582,18 @@ class TorchEnv(ABEnv):
                 )
             if value.device != self.device:
                 raise ValueError(f"TorchEnv reset obs[{name!r}] device must be {self.device}")
-            self._validate_finite_float(value, f"reset obs[{name!r}]")
+            self._require_floating_float(value)
+        if not bool(
+            torch.isfinite(
+                torch.cat(
+                    tuple(value.reshape(value.shape[0], -1) for value in obs.values()),
+                    dim=1,
+                )
+            ).all()
+        ):
+            for name, value in obs.items():
+                if not bool(torch.isfinite(value).all()):
+                    raise ValueError(f"TorchEnv reset obs[{name!r}] contains NaN or Inf")
 
     def _scatter_reset_info(self, reset_info: Mapping[str, Any], rows: torch.Tensor) -> None:
         assert self._state is not None

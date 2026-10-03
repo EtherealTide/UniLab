@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import torch
 
 from unilab.base.config_overrides import (
     CONFIG_MAPPING_POLICY_KEY,
@@ -87,7 +88,7 @@ class ManagerTermBase:
 
     # Methods.
 
-    def reset(self, env_ids: np.ndarray | slice | None) -> Any:
+    def reset(self, env_ids: torch.Tensor | slice | None) -> Any:
         """Resets the manager term."""
         del env_ids  # Unused.
         pass
@@ -118,37 +119,10 @@ class ManagerBase(abc.ABC):
 
     # Methods.
 
-    def reset(self, env_ids: np.ndarray) -> dict[str, Any]:
+    def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, Any]:
         """Resets the manager and returns logging info for the current step."""
         del env_ids  # Unused.
         return {}
-
-    def _check_term_shape(self, term_name: str, value: np.ndarray) -> None:
-        if not isinstance(value, np.ndarray):
-            manager_name = type(self).__name__
-            raise TypeError(
-                f"{manager_name} term '{term_name}' returned {type(value).__name__}, "
-                "expected np.ndarray."
-            )
-        if value.shape != (self.num_envs,):
-            manager_name = type(self).__name__
-            raise ValueError(
-                f"{manager_name} term '{term_name}' returned shape {tuple(value.shape)}, "
-                f"expected ({self.num_envs},)."
-            )
-
-    def _check_term_finite(self, term_name: str, value: np.ndarray) -> None:
-        if np.isfinite(value).all():
-            return
-        manager_name = type(self).__name__
-        has_nan = np.isnan(value).any()
-        has_inf = np.isinf(value).any()
-        invalid_kind = "NaN/Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
-        env_ids = np.flatnonzero(~np.isfinite(value)).tolist()
-        raise ValueError(
-            f"{manager_name} term '{term_name}' returned {invalid_kind} for "
-            f"environments {env_ids[:10]}."
-        )
 
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:
         raise NotImplementedError

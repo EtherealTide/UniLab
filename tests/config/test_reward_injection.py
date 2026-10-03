@@ -14,15 +14,6 @@ def test_reward_config_loading_g1():
         assert cfg.reward.feet_phase.params.swing_height == 0.09
 
 
-def test_reward_config_loading_g1_motrix():
-    """Test G1 Motrix reward config loads correctly."""
-    with initialize(config_path="../../src/unilab/conf/sac", version_base="1.3"):
-        cfg = compose(config_name="config", overrides=["task=g1_walk_flat/motrix"])
-        assert hasattr(cfg, "reward")
-        assert cfg.reward.tracking_lin_vel.weight == 2.2
-        assert cfg.reward.alive.weight == 12.0
-
-
 def test_resolve_reward_dict_reads_task_reward():
     """Task-backend configs should expose the final reward mapping directly."""
     from unilab.utils.reward import resolve_reward_dict
@@ -30,7 +21,7 @@ def test_resolve_reward_dict_reads_task_reward():
     with initialize(config_path="../../src/unilab/conf/ppo", version_base="1.3"):
         cfg = compose(
             config_name="config",
-            overrides=["task=go2_joystick_flat/motrix"],
+            overrides=["task=go2_joystick_flat/mujoco"],
         )
 
     reward_dict = resolve_reward_dict(cfg)

@@ -11,5 +11,3 @@ training:
   task_name: G1MotionTrackingSAC
   sim_backend: mjwarp
   play_render_mode: record
-env:
-  tensor_runtime: true

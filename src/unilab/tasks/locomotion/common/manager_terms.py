@@ -153,7 +153,7 @@ def track_lin_vel_xy_exp(
     std: float,
     command_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
+) -> np.ndarray | torch.Tensor:
     """Track commanded planar velocity with the legacy independent exponential kernel."""
     scale = _real("track_lin_vel_xy_exp", "std", std, minimum=0.0, strict_minimum=True)
     actual = _state(
@@ -162,11 +162,19 @@ def track_lin_vel_xy_exp(
         _asset(env, asset_cfg).data.root_link_lin_vel_b,
         (env.num_envs, 3),
     )
-    error = np.sum(
-        np.square(_command(env, "track_lin_vel_xy_exp", command_name)[:, :2] - actual[:, :2]),
-        axis=1,
-    )
-    return np.asarray(np.exp(-error / scale**2), dtype=get_global_dtype())
+    command = _command(env, "track_lin_vel_xy_exp", command_name)
+    if isinstance(command, torch.Tensor):
+        actual_t = (
+            actual
+            if isinstance(actual, torch.Tensor)
+            else torch.as_tensor(actual, device=command.device, dtype=command.dtype)
+        )
+        actual_tensor = cast(torch.Tensor, actual_t)
+        delta_t = command[:, :2] - actual_tensor[:, :2]
+        error = torch.sum(delta_t.square(), dim=1)
+    else:
+        error = np.sum(np.square(command[:, :2] - actual[:, :2]), axis=1)
+    return _exp_scaled(error, scale)
 
 
 def track_ang_vel_z_exp(
@@ -174,7 +182,7 @@ def track_ang_vel_z_exp(
     std: float,
     command_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
+) -> np.ndarray | torch.Tensor:
     """Track commanded yaw velocity without folding roll/pitch into the kernel."""
     scale = _real("track_ang_vel_z_exp", "std", std, minimum=0.0, strict_minimum=True)
     actual = _state(
@@ -183,8 +191,24 @@ def track_ang_vel_z_exp(
         _asset(env, asset_cfg).data.root_link_ang_vel_b,
         (env.num_envs, 3),
     )
-    error = np.square(_command(env, "track_ang_vel_z_exp", command_name)[:, 2] - actual[:, 2])
-    return np.asarray(np.exp(-error / scale**2), dtype=get_global_dtype())
+    command = _command(env, "track_ang_vel_z_exp", command_name)
+    if isinstance(command, torch.Tensor):
+        actual_t = (
+            actual
+            if isinstance(actual, torch.Tensor)
+            else torch.as_tensor(actual, device=command.device, dtype=command.dtype)
+        )
+        actual_tensor = cast(torch.Tensor, actual_t)
+        error = (command[:, 2] - actual_tensor[:, 2]).square()
+    else:
+        error = np.square(command[:, 2] - actual[:, 2])
+    return _exp_scaled(error, scale)
+
+
+def _exp_scaled(error: np.ndarray | torch.Tensor, scale: float):
+    if isinstance(error, torch.Tensor):
+        return torch.exp(-error / (scale * scale))
+    return np.asarray(np.exp(-error / (scale * scale)), dtype=get_global_dtype())
 
 
 def lin_vel_z_l2(

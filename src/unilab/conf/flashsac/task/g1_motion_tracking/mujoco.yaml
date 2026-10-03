@@ -12,7 +12,9 @@ training:
   task_name: G1MotionTrackingSAC
   sim_backend: mujoco
 env:
-  tensor_runtime: true
+  commands:
+    motion:
+      _target_: unilab.tasks.motion_tracking.common.manager_terms.TensorMotionCommandCfg
 algo:
   num_envs: 2048
   max_iterations: 25000

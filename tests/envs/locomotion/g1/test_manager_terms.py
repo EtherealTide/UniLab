@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+import torch
 
 from unilab.managers import ObservationTermCfg, RewardTermCfg
 from unilab.tasks.locomotion.g1 import manager_terms as g1_terms
@@ -53,6 +54,7 @@ class _FakeEnv:
         self.num_envs = num_envs
         self.common_step_counter = counter
         self.step_dt = 0.02
+        self.device = torch.device("cpu")
         self.rng = np.random.default_rng(0)
         self.scene = _fake_scene(sensor_data)
         self.command_manager = SimpleNamespace(get_command=lambda name: commands[name])
@@ -78,10 +80,10 @@ def test_gait_phase_advances_with_counter_and_resamples_per_init_mode():
     )
 
     np.testing.assert_array_equal(term(env), np.zeros((4, 2)))
-    term.reset(np.arange(4, dtype=np.int32))
+    term.reset(torch.arange(4, dtype=torch.int64))
     phase = term(env)
     np.testing.assert_allclose(phase[:, 1] - phase[:, 0], np.pi, rtol=1.0e-6)
-    assert np.all(phase[:, 0] >= 0.0) and np.all(phase[:, 0] < 2.0 * np.pi)
+    assert bool(torch.all(phase[:, 0] >= 0.0)) and bool(torch.all(phase[:, 0] < 2.0 * np.pi))
 
     env.common_step_counter = 1
     advanced = term(env)
@@ -102,7 +104,7 @@ def test_gait_phase_independent_mode_samples_feet_independently():
         ObservationTermCfg(func=G1GaitPhase, params={"frequency": 1.5, "init_mode": "independent"}),
         cast(Any, env),
     )
-    term.reset(np.arange(64, dtype=np.int32))
+    term.reset(torch.arange(64, dtype=torch.int64))
     phase = term(env)
     assert not np.allclose(phase[:, 1] - phase[:, 0], np.pi)
 
@@ -117,6 +119,43 @@ def test_bezier_targets_match_legacy_reference_values():
     left_contact, right_contact = compute_feet_phase_contact_targets(phase, 0.09)
     np.testing.assert_array_equal(left_contact, [False, True])
     np.testing.assert_array_equal(right_contact, [True, True])
+
+
+def test_gait_rewards_share_phase_without_double_advance():
+    sensors = {
+        "left_foot_pos": np.zeros((2, 3), dtype=np.float32),
+        "right_foot_pos": np.zeros((2, 3), dtype=np.float32),
+        "pelvis_local_linvel": np.ones((2, 1), dtype=np.float32) * 0.1,
+        **{f"left_foot_contact_{i}": np.ones((2, 1)) for i in range(4)},
+        **{f"right_foot_contact_{i}": np.ones((2, 1)) for i in range(4)},
+    }
+    env = _fake_env(sensors)
+    cfg_params = {"frequency": 1.5, "swing_height": 0.09}
+    phase_cfg = RewardTermCfg(
+        func=g1_terms.feet_phase,
+        weight=1.0,
+        params={**cfg_params, "tracking_sigma": 0.008, "command_name": "twist"},
+    )
+    contrast_cfg = RewardTermCfg(
+        func=g1_terms.feet_phase_contrast,
+        weight=1.0,
+        params={**cfg_params, "tracking_sigma": 0.008, "command_name": "twist"},
+    )
+    phase_term = g1_terms.feet_phase(phase_cfg, cast(Any, env))
+    contrast_term = g1_terms.feet_phase_contrast(contrast_cfg, cast(Any, env))
+
+    first = phase_term._targets(cast(Any, env))
+    second = contrast_term._targets(cast(Any, env))
+    env.common_step_counter = 1
+    advanced = phase_term._targets(cast(Any, env))
+    shared = contrast_term._targets(cast(Any, env))
+
+    np.testing.assert_array_equal(first[0], second[0])
+    np.testing.assert_array_equal(first[1], second[1])
+    with np.testing.assert_raises(AssertionError):
+        np.testing.assert_array_equal(first[0], advanced[0])
+    np.testing.assert_array_equal(advanced[0], shared[0])
+    np.testing.assert_array_equal(advanced[1], shared[1])
 
 
 def test_feet_phase_reward_is_gated_by_forward_speed():
@@ -173,12 +212,13 @@ def _curriculum_env(weights: dict[str, float], num_envs: int = 4) -> Any:
     cfgs = {name: SimpleNamespace(weight=value) for name, value in weights.items()}
     return SimpleNamespace(
         num_envs=num_envs,
+        device=torch.device("cpu"),
         reward_manager=SimpleNamespace(
             active_terms=list(weights),
             get_term_cfg=lambda name: cfgs[name],
         ),
-        reset_buf=np.zeros(num_envs, dtype=np.bool_),
-        episode_length_buf=np.zeros(num_envs, dtype=np.int64),
+        reset_buf=torch.zeros(num_envs, dtype=torch.bool),
+        episode_length_buf=torch.zeros(num_envs, dtype=torch.int64),
         rng=np.random.default_rng(0),
     )
 
@@ -202,14 +242,16 @@ def test_penalty_curriculum_scales_only_negative_weights_and_tracks_episodes():
     # clamped at min_scale.
     env.reset_buf[:] = True
     env.episode_length_buf[:] = 10
-    state = term(cast(Any, env), np.arange(4, dtype=np.int32))
+    state = term(cast(Any, env), torch.arange(4, dtype=torch.int64))
     assert state["average_episode_length"] == pytest.approx(10.0)
     assert state["penalty_scale"] == pytest.approx(0.5)
     assert env.reward_manager.get_term_cfg("pose").weight == pytest.approx(-0.25)
 
-    # Long episodes (> level_up_threshold=750 default) relax the scale.
+    # Long episodes (> level_up_threshold=750 default) relax the scale. The
+    # tracker remains cumulative within this term instance, matching the
+    # production reset cadence where both short and long episodes accumulate.
     env.episode_length_buf[:] = 1000
-    state = term(cast(Any, env), np.arange(4, dtype=np.int32))
+    state = term(cast(Any, env), torch.arange(4, dtype=torch.int64))
     assert state["penalty_scale"] == pytest.approx(0.5 * (1.0 + 0.001))
     assert env.reward_manager.get_term_cfg("pose").weight == pytest.approx(
         -0.5 * 0.5 * (1.0 + 0.001)
@@ -236,9 +278,10 @@ def test_penalty_curriculum_repeated_construction_never_mutates_source_cfg():
         reward_manager = RewardManager(source_cfg, cast(Any, SimpleNamespace(num_envs=4)))
         env = SimpleNamespace(
             num_envs=4,
+            device=torch.device("cpu"),
             reward_manager=reward_manager,
-            reset_buf=np.zeros(4, dtype=np.bool_),
-            episode_length_buf=np.zeros(4, dtype=np.int64),
+            reset_buf=torch.zeros(4, dtype=torch.bool),
+            episode_length_buf=torch.zeros(4, dtype=torch.int64),
             rng=np.random.default_rng(0),
         )
         G1PenaltyCurriculum(
@@ -270,7 +313,7 @@ def test_penalty_curriculum_shrinks_scale_below_initial_when_min_allows():
 
     env.reset_buf[:] = True
     env.episode_length_buf[:] = 10
-    state = term(cast(Any, env), np.arange(4, dtype=np.int32))
+    state = term(cast(Any, env), torch.arange(4, dtype=torch.int64))
     assert state["penalty_scale"] == pytest.approx(0.5 * (1.0 - 0.001))
     assert env.reward_manager.get_term_cfg("pose").weight == pytest.approx(
         -0.5 * 0.5 * (1.0 - 0.001)
@@ -302,11 +345,12 @@ def test_velocity_command_dead_zone_zeroes_small_planar_commands():
         ),
     )
     term = cfg.build(cast(Any, env))
-    term._resample_command(np.arange(64, dtype=np.int32))
+    term._resample_command(torch.arange(64, dtype=torch.int64))
 
-    planar_norm = np.linalg.norm(term.vel_command_b[:, :2], axis=1)
-    assert np.all((planar_norm == 0.0) | (planar_norm > 0.2))
-    assert np.any(planar_norm == 0.0)
+    planar_norm = torch.linalg.vector_norm(term.command[:, :2], dim=1)
+    assert bool(torch.all((planar_norm == 0.0) | (planar_norm > 0.2)))
+    assert bool(torch.any(planar_norm == 0.0))
+    assert term.command.dtype == torch.float32
 
 
 def test_velocity_command_fails_closed_on_heading_command():

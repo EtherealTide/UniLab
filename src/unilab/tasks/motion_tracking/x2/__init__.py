@@ -17,7 +17,6 @@ def make_x2_wall_flip_env(
 
 registry.register_env_config("X2WallFlipTracking", ManagerBasedRlEnvCfg)
 registry.register_env("X2WallFlipTracking", make_x2_wall_flip_env, sim_backend="mujoco")
-registry.register_env("X2WallFlipTracking", make_x2_wall_flip_env, sim_backend="motrix")
 
 
 __all__ = ["make_x2_wall_flip_env"]

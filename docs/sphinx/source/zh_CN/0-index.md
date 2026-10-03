@@ -50,7 +50,7 @@ event、command 和 curriculum。常见任务变体无需新写 environment clas
 
 :::{grid-item-card} 后端选择留在配置里
 用 CLI flag 在当前和未来的物理 adapter 之间切换，例如
-`--task go2_joystick_flat --sim motrix`；CLI 会组合 `src/unilab/conf/` 下对应的 owner YAML。
+`--task go2_joystick_flat --sim mujoco`；CLI 会组合 `src/unilab/conf/` 下对应的 owner YAML。
 :::
 
 :::{grid-item-card} 跨硬件扩展
@@ -66,9 +66,9 @@ event、command 和 curriculum。常见任务变体无需新写 environment clas
 curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone https://github.com/unilabsim/UniLab.git
 cd UniLab
-uv sync --extra motrix
+uv sync --extra mujoco --extra uni_rl
 uv run demo dance
-uv run train --algo ppo --task go2_joystick_flat --sim motrix \
+uv run train --algo ppo --task go2_joystick_flat --sim mujoco \
   algo.max_iterations=1 algo.num_envs=16 training.no_play=true
 ```
 

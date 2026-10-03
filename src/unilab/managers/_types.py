@@ -12,6 +12,9 @@ from typing import Any, Protocol
 
 import numpy as np
 import torch
+from unisim.backend.base import SimBackend
+
+from unilab.managers.torch_rng import TorchManagerRng
 
 
 class ManagerEntity(Protocol):
@@ -144,6 +147,14 @@ class ManagerEntity(Protocol):
         env_ids: torch.Tensor | np.ndarray | slice | None = None,
     ) -> None: ...
 
+    def write_motion_state_tensor_to_sim(
+        self,
+        root_state: torch.Tensor,
+        position: torch.Tensor,
+        velocity: torch.Tensor,
+        env_ids: torch.Tensor,
+    ) -> None: ...
+
 
 class ManagerSensorView(Protocol):
     """Backend-owned named-sensor view retained by a manager term."""
@@ -254,7 +265,13 @@ class ManagerBasedRlEnv(Protocol):
     def rng(self) -> np.random.Generator: ...
 
     @property
-    def torch_rng(self) -> torch.Generator | None: ...
+    def torch_rng(self) -> TorchManagerRng | None: ...
+
+    @property
+    def cfg(self) -> Any: ...
+
+    @property
+    def backend(self) -> SimBackend: ...
 
     _tensor_reset_default_root_state: torch.Tensor | None
     _tensor_reset_env_origins: torch.Tensor | None
@@ -286,7 +303,10 @@ class ManagerBasedRlEnv(Protocol):
     def reward_manager(self) -> ManagerRewardManager: ...
 
     @property
-    def episode_length_buf(self) -> np.ndarray: ...
+    def metrics_manager(self) -> Any: ...
+
+    @property
+    def episode_length_buf(self) -> torch.Tensor: ...
 
     @property
     def reset_buf(self) -> np.ndarray: ...

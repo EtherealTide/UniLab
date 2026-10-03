@@ -2,21 +2,38 @@
 
 from __future__ import annotations
 
-import numpy as np
+import torch
 
 
 class EpisodeLengthTracker:
-    """Track moving average of episode length."""
+    """Track a weighted moving average of episode lengths on one tensor."""
 
-    def __init__(self, num_envs: int, window_size: int = 1000):
+    def __init__(self, num_envs: int, window_size: int = 1000, *, device=None):
         self.num_envs = num_envs
         self.window_size = max(1, int(window_size * num_envs / 4096))
-        self.average_length = 0.0
+        device = torch.device("cpu") if device is None else torch.device(device)
+        self._average = torch.zeros((), dtype=torch.float64, device=device)
 
-    def update(self, episode_lengths: np.ndarray) -> None:
-        """Update average with new episode lengths."""
-        if len(episode_lengths) == 0:
+    def update(self, episode_lengths: torch.Tensor) -> None:
+        """Recursively update the average without synchronizing each batch."""
+        count = int(episode_lengths.numel())
+        if count == 0:
             return
-        current_avg = float(np.mean(episode_lengths))
-        weight = min(len(episode_lengths) / self.window_size, 1.0)
-        self.average_length = self.average_length * (1 - weight) + current_avg * weight
+        lengths = episode_lengths.to(dtype=torch.float64, device=self._average.device)
+        batch_average = lengths.sum() / count
+        weight = torch.as_tensor(
+            min(count / self.window_size, 1.0),
+            dtype=torch.float64,
+            device=self._average.device,
+        )
+        self._average.add_((batch_average - self._average) * weight)
+
+    @property
+    def average(self) -> torch.Tensor:
+        """Recursive average as a device-resident scalar tensor."""
+        return self._average
+
+    @property
+    def average_length(self) -> float:
+        """Public scalar view; only this boundary synchronizes."""
+        return float(self._average.item())

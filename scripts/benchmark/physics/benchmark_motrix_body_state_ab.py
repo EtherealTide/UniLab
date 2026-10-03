@@ -1,3 +1,9 @@
+# HISTORICAL SHELVED-BACKEND BENCHMARK (#1811)
+# This adapter-specific probe is retained for migration context only.
+# It is not part of the scoped tensor Manager benchmark surface
+# (mujoco/mjwarp/genesis), is not discovered by default benchmark
+# selection, and must not be used as a production support claim.
+
 """Local A/B microbenchmark for Motrix selected-body world-state reads (#1308).
 
 Measures the UniLab motion-tracking body-state read pattern (8192 envs x 14

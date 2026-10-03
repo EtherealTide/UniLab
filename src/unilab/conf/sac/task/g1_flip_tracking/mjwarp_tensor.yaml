@@ -10,4 +10,6 @@ training:
   sim_backend: mjwarp
   play_render_mode: record
 env:
-  tensor_runtime: true
+  commands:
+    motion:
+      _target_: unilab.tasks.motion_tracking.common.manager_terms.TensorMotionCommandCfg

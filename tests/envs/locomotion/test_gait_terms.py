@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.base import BackendSensorView
 
 from unilab.managers import RewardManager, RewardTermCfg
@@ -86,6 +87,7 @@ def _env(scene: _Scene | None = None, command: np.ndarray | None = None) -> Mana
         SimpleNamespace(
             num_envs=2,
             step_dt=0.02,
+            device=torch.device("cpu"),
             scene=scene or _Scene(),
             command_manager=_Commands(command),
         ),
@@ -365,7 +367,9 @@ def test_gait_term_module_has_no_forbidden_runtime_dependencies() -> None:
         / "gait_terms.py"
     )
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    forbidden = ("torch", "uni_rl", "unilab.training", "unilab.base.backend")
+    # Torch is the Manager carrier since #1807. Runtime owner dependencies
+    # remain forbidden.
+    forbidden = ("uni_rl", "unilab.training", "unilab.base.backend")
     imports = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)] + [
         alias.name
         for node in ast.walk(tree)
@@ -412,6 +416,23 @@ def test_foot_air_time_reset_clears_only_targeted_rows() -> None:
     term(env)  # Both feet at 0.02 s air time in both envs.
     term.reset(np.array([1]))
     np.testing.assert_allclose(term(env), [[0.04, 0.04], [0.02, 0.02]])
+
+
+def test_air_time_reset_accepts_torch_row_selector_without_host_conversion() -> None:
+    scene = _Scene()
+    env = _env(scene)
+    term = _term(gait_terms.feet_air_time, env, sensor_groups=GROUPS)
+    window = _term(gait_terms.foot_air_time, env, sensor_groups=GROUPS)
+    scene.set_foot_contact(0, False)
+    scene.set_foot_contact(1, False)
+    term(env)
+    window(env)
+
+    term.reset(torch.tensor([0], dtype=torch.int64))
+    window.reset(torch.tensor([0], dtype=torch.int64))
+
+    np.testing.assert_allclose(term(env), [0.0, 0.0])
+    np.testing.assert_allclose(window(env), [[0.02, 0.02], [0.04, 0.04]])
 
 
 def test_foot_contact_reports_float_flags() -> None:

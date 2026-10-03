@@ -12,7 +12,6 @@ training:
   sim_backend: isaacsim
   play_render_mode: auto
 env:
-  tensor_runtime: true
   isaacsim_device_id: 0
   isaacsim_worker_timeout_s: 300.0
   isaacsim_tensor_cuda_ipc: true

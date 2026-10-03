@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 from unisim.scene_layout import CompiledSceneLayout, EntityLayout, JointLayout
 
 from unilab.base.reset_state import ResetStateTransaction
@@ -93,7 +94,7 @@ def test_mixed_joint_field_subsets_read_once_only_for_missing_merge_columns():
 
 def test_overlapping_joint_writes_preserve_fractions_and_last_write_wins():
     transaction, reads, commits = fixture()
-    with transaction.scoped(np.array([1])):
+    with transaction.scoped(torch.tensor([1], dtype=torch.int64)):
         transaction.write_entity_state(
             "object",
             np.array([1]),
@@ -114,7 +115,7 @@ def test_overlapping_joint_writes_preserve_fractions_and_last_write_wins():
 
 def test_late_invalid_patch_does_not_read_current_or_commit():
     transaction, reads, commits = fixture()
-    with pytest.raises(ValueError), transaction.scoped(np.array([1])):
+    with pytest.raises(ValueError), transaction.scoped(torch.tensor([1], dtype=torch.int64)):
         transaction.write_entity_state(
             "object",
             np.array([1]),

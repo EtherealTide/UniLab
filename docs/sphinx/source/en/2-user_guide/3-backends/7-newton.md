@@ -1,5 +1,8 @@
 # Newton Backend
 
+> **Newton is temporarily shelved.** This adapter is outside the tensor-only Manager runtime during #1811 and is not a production support claim. The train/eval CLI rejects it until new capability, parity, and support-matrix evidence is provided.
+
+
 [Newton](https://github.com/newton-physics/newton) (PyPI distribution
 `newton`, pinned to 1.5.1) is a GPU physics simulator built on Warp that
 UniLab runs **in-process**: `unisim.backend.newton.NewtonBackend` serves the

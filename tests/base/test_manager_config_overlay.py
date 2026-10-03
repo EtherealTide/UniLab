@@ -16,6 +16,8 @@ from unilab.managers import (
     ObservationGroupCfg,
     ObservationTermCfg,
     RecorderTermCfg,
+    ResetOwner,
+    ResetOwnerCfg,
     RewardTermCfg,
     SceneEntityCfg,
     TerminationTermCfg,
@@ -479,3 +481,27 @@ def test_legacy_plain_dict_keeps_replacement_semantics() -> None:
     apply_cfg_overrides(cfg, {"reward_config": {"scales": {"alive": 1.0}}})
 
     assert cfg.reward_config == {"scales": {"alive": 1.0}}
+
+
+def test_hydra_materializes_reset_owner_mapping() -> None:
+    cfg = ManagerBasedRlEnvCfg()
+    apply_cfg_overrides(
+        cfg,
+        {
+            "reset_owners": {
+                "motion": {
+                    "_target_": "unilab.managers.ResetOwnerCfg",
+                    "func": "unilab.managers.ResetOwner",
+                    "command_name": "motion",
+                    "owns_observation_reset": False,
+                }
+            }
+        },
+    )
+    owner = cfg.reset_owners["motion"]
+
+    assert isinstance(owner, ResetOwnerCfg)
+    assert owner.func is ResetOwner
+    assert owner.command_name == "motion"
+    assert owner.owns_command_reset
+    assert owner.owns_observation_reset is False

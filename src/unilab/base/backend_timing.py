@@ -1,4 +1,4 @@
-"""Stable backend-facing reset timing schema.
+"""Stable backend-facing reset and update-state timing schemas.
 
 These keys are consumed by environment runtimes and benchmark tooling. They are
 owned here rather than by a particular NumPy or Torch environment base so the
@@ -9,8 +9,40 @@ from __future__ import annotations
 
 RESET_DONE_DETAIL_TIMING_KEYS = (
     "reset_done_count",
+    "reset_done_event_term_count",
+    "reset_done_command_term_count",
+    "reset_done_manager_reset_count",
+    "reset_done_observation_term_count",
+    "reset_done_sampler_host_transfer_count",
     "reset_done_terminal_obs_ms",
     "reset_done_reset_call_ms",
+    "reset_done_command_event_ms",
+    "reset_done_manager_state_ms",
+    "reset_done_state_publish_ms",
+    "reset_done_selected_read_ms",
+    "reset_done_read_drain_ms",
+    "reset_done_command_metrics_ms",
+    "reset_done_command_resample_ms",
+    "reset_done_motion_sampler_ms",
+    "reset_done_motion_sampler_dispatch_ms",
+    "reset_done_motion_sampler_sync_ms",
+    "reset_done_motion_packet_ms",
+    "reset_done_motion_reset_rng_ms",
+    "reset_done_motion_reset_values_ms",
+    "reset_done_motion_reset_construction_ms",
+    "reset_done_motion_reset_write_ms",
+    "reset_done_motion_reset_publish_ms",
+    "reset_done_reset_commit_ms",
+    "reset_done_reset_validation_ms",
+    "reset_done_command_refresh_ms",
+    "reset_done_command_post_compute_ms",
+    "reset_done_motion_robot_refresh_ms",
+    "reset_done_motion_relative_refresh_ms",
+    "reset_done_motion_post_compute_view_ms",
+    "reset_done_motion_post_compute_kernel_ms",
+    "reset_done_motion_post_compute_rebind_ms",
+    "reset_done_observation_ms",
+    "reset_done_observation_scatter_ms",
     "reset_done_obs_scatter_ms",
     "reset_done_info_scatter_ms",
     "reset_done_internal_gap_ms",
@@ -51,6 +83,34 @@ RESET_DONE_DETAIL_TIMING_KEYS = (
     "set_state_internal_gap_ms",
 )
 
+UPDATE_STATE_DETAIL_TIMING_KEYS = (
+    "update_state_termination_term_dispatch_ms",
+    "update_state_termination_aggregation_ms",
+    "update_state_reward_term_dispatch_ms",
+    "update_state_reward_aggregation_ms",
+    "update_state_reward_finite_validation_ms",
+    "update_state_reward_manager_residual_ms",
+    "update_state_reward_motion_pack_call_ms",
+    "update_state_reward_penalty_pack_call_ms",
+    "update_state_observation_term_dispatch_ms",
+    "update_state_observation_validation_ms",
+    "update_state_observation_noise_ms",
+    "update_state_observation_transform_ms",
+    "update_state_observation_temporal_ms",
+    "update_state_observation_concatenation_ms",
+    "update_state_observation_boundary_ms",
+    "update_state_observation_manager_residual_ms",
+    "update_state_command_dt_validation_ms",
+    "update_state_command_term_dispatch_ms",
+    "update_state_command_validation_ms",
+    "update_state_command_metrics_update_ms",
+    "update_state_command_timer_ms",
+    "update_state_command_update_dispatch_ms",
+    "update_state_motion_failure_stats_ms",
+    "update_state_motion_step_sampler_ms",
+    "update_state_motion_refresh_current_ms",
+)
+
 BACKEND_SET_STATE_DETAIL_TIMING_KEYS = (
     "set_state_mask_ms",
     "set_state_data_slice_ms",
@@ -76,4 +136,5 @@ BACKEND_SET_STATE_DETAIL_TIMING_KEYS = (
 __all__ = [
     "BACKEND_SET_STATE_DETAIL_TIMING_KEYS",
     "RESET_DONE_DETAIL_TIMING_KEYS",
+    "UPDATE_STATE_DETAIL_TIMING_KEYS",
 ]

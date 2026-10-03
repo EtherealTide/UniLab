@@ -52,7 +52,7 @@ new environment class.
 
 :::{grid-item-card} Backend choice stays in config
 Move between current and future physics adapters with CLI flags such as
-`--task go2_joystick_flat --sim motrix`; the CLI composes the matching owner
+`--task go2_joystick_flat --sim mujoco`; the CLI composes the matching owner
 YAML under `src/unilab/conf/`.
 :::
 
@@ -70,9 +70,9 @@ to you.
 curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone https://github.com/unilabsim/UniLab.git
 cd UniLab
-uv sync --extra motrix
+uv sync --extra mujoco --extra uni_rl
 uv run demo dance
-uv run train --algo ppo --task go2_joystick_flat --sim motrix \
+uv run train --algo ppo --task go2_joystick_flat --sim mujoco \
   algo.max_iterations=1 algo.num_envs=16 training.no_play=true
 ```
 

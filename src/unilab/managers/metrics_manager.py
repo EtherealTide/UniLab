@@ -1,6 +1,6 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681), src/mjlab/managers/metrics_manager.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy and UniLab contracts; licensed under Apache-2.0.
+# Modified by UniLab for the tensor-only Manager runtime; licensed under Apache-2.0.
 """Metrics manager for logging custom per-step metrics during training."""
 
 from __future__ import annotations
@@ -9,7 +9,6 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Sequence
 
-import numpy as np
 import torch
 from prettytable import PrettyTable
 
@@ -124,7 +123,7 @@ class MetricsManager(ManagerBase):
 
     # Methods.
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> dict[str, float]:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
         if env_ids is None:
             env_ids = slice(None)
         extras = {}
@@ -137,7 +136,6 @@ class MetricsManager(ManagerBase):
             if reduce == "max":
                 values = self._episode_max[key][mask]
                 extras["Episode_Metrics/" + key] = self._log_mean(values)
-                self._episode_max[key].masked_fill_(mask, float("-inf"))
 
             elif reduce == "last":
                 extras["Episode_Metrics/" + key] = self._log_mean(self._step_values[mask, idx])
@@ -149,16 +147,28 @@ class MetricsManager(ManagerBase):
                 values = self._episode_sums[key][mask] / safe_counts
                 extras["Episode_Metrics/" + key] = self._log_mean(values)
 
-            self._episode_sums[key].masked_fill_(mask, 0.0)
-        self._step_count.masked_fill_(mask, 0)
+        self.clear_episode_state(env_ids)
+        return extras
 
+    def clear_episode_state(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        """Clear selected episode accumulators without publishing summaries.
+
+        Reset owners consume this boundary when they own metric reset. Generic
+        reset behavior remains publication followed by this same selected-row
+        state clear.
+        """
+        if env_ids is None:
+            env_ids = slice(None)
+        mask = self._reset_mask(env_ids)
+        for key in self._episode_sums:
+            self._episode_sums[key].masked_fill_(mask, 0.0)
+            if key in self._episode_max:
+                self._episode_max[key].masked_fill_(mask, float("-inf"))
+        self._step_count.masked_fill_(mask, 0)
         for buf in self._substep_accum:
             buf.masked_fill_(mask, 0.0)
-
         for term_cfg in self._class_term_cfgs:
             term_cfg.func.reset(env_ids=env_ids)
-
-        return extras
 
     def compute_substep(self) -> None:
         """Accumulate per-substep metric values inside the decimation loop.
@@ -230,8 +240,10 @@ class MetricsManager(ManagerBase):
                 )
             result = value.clone()
         else:
-            host = np.array(value, dtype=np.float32, order="C", copy=True)
-            result = torch.from_numpy(host).to(device=self._device)
+            raise TypeError(
+                f"MetricsManager term '{name}' returned {type(value).__name__}, expected "
+                "torch.Tensor."
+            )
         if result.shape != (self.num_envs,):
             raise ValueError(
                 f"MetricsManager term '{name}' returned shape {tuple(result.shape)}; "
@@ -241,16 +253,24 @@ class MetricsManager(ManagerBase):
             raise ValueError(f"MetricsManager term '{name}' returned non-finite values.")
         return result
 
-    def _reset_mask(self, env_ids: np.ndarray | slice) -> torch.Tensor:
+    def _reset_mask(self, env_ids: torch.Tensor | slice) -> torch.Tensor:
         if env_ids is None:
             return torch.ones(self.num_envs, dtype=torch.bool, device=self._device)
         if isinstance(env_ids, slice):
             indices = torch.arange(self.num_envs, dtype=torch.int64, device=self._device)[env_ids]
             mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
             return mask.index_fill(0, indices, True)
-        rows = torch.as_tensor(np.asarray(env_ids), device=self._device)
-        if rows.ndim != 1 or rows.dtype not in {torch.int32, torch.int64}:
+        if (
+            not isinstance(env_ids, torch.Tensor)
+            or env_ids.ndim != 1
+            or env_ids.dtype
+            not in {
+                torch.int32,
+                torch.int64,
+            }
+        ):
             raise TypeError("MetricsManager reset rows must be one-dimensional integers")
+        rows = env_ids.to(self._device)
         if rows.numel() and (rows.min() < 0 or rows.max() >= self.num_envs):
             raise IndexError(f"MetricsManager reset rows out of range: {rows.tolist()}")
         mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
@@ -279,7 +299,7 @@ class NullMetricsManager:
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:
         return []
 
-    def reset(self, env_ids: np.ndarray | None = None) -> dict[str, float]:
+    def reset(self, env_ids: torch.Tensor | None = None) -> dict[str, float]:
         return {}
 
     def compute_substep(self) -> None:

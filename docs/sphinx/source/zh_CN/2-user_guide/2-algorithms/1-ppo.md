@@ -12,7 +12,7 @@ PPO 是默认的同步 on-policy 训练路径。它使用 `src/unilab/scripts/tr
 
 ```bash
 uv run train --algo ppo --task go2_joystick_flat --sim mujoco
-uv run train --algo ppo --task go2_joystick_flat --sim motrix training.no_play=true
+uv run train --algo ppo --task go2_joystick_flat --sim mujoco training.no_play=true
 ```
 
 ## 常用 Override

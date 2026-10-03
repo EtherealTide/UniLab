@@ -298,38 +298,18 @@ def test_offpolicy_hydra_default_torch_thread_budget():
     assert cfg.training.torch_threads.set_env_vars is True
 
 
-def test_offpolicy_go2_motrix_task_is_not_configured():
-    """SAC has no Go2 Motrix owner config; use PPO for Go2 joystick tasks."""
-    from hydra.errors import MissingConfigException
-
-    with pytest.raises(MissingConfigException, match="task/go2_joystick_flat/motrix"):
-        _offpolicy_cfg(["task=go2_joystick_flat/motrix"])
-
-
-def test_offpolicy_g1_walk_flat_motrix_resolved_algo_matches_task_owner():
-    """Motrix SAC G1 walk flat composes backend-owned algo hyperparameters."""
-    cfg = _offpolicy_cfg(["task=g1_walk_flat/motrix"])
-
-    assert cfg.algo.num_envs == 2048
-    assert cfg.algo.max_iterations == 5000
-
-
 def test_offpolicy_g1_walk_flat_env_cfg_override_has_rewards_and_events():
-    cfg = _offpolicy_cfg(["task=g1_walk_flat/motrix"])
+    cfg = _offpolicy_cfg(["task=g1_walk_flat/mujoco"])
 
     env_cfg_override = _offpolicy().build_offpolicy_env_cfg_override("sac", cfg)
 
-    assert env_cfg_override["rewards"]["tracking_lin_vel"]["weight"] == pytest.approx(2.2)
-    assert env_cfg_override["events"]["pd_gains"] is None
+    assert env_cfg_override["rewards"]["tracking_lin_vel"]["weight"] == pytest.approx(2.0)
 
 
 @pytest.mark.parametrize(
     ("backend", "field"),
     [
-        ("isaacgym", "isaacgym_device_id"),
-        ("isaacsim", "isaacsim_device_id"),
         ("genesis", "genesis_device_id"),
-        ("newton", "newton_device"),
     ],
 )
 def test_offpolicy_backend_env_follows_rank_local_cuda_visibility(
@@ -346,10 +326,7 @@ def test_offpolicy_backend_env_follows_rank_local_cuda_visibility(
     override = mod.build_offpolicy_env_cfg_override("sac", cfg)
 
     assert override is not None
-    if field == "newton_device":
-        assert override[field] == "cuda:0"
-    else:
-        assert override[field] == 0
+    assert override[field] == 0
 
 
 def test_removed_training_devices_fails_closed() -> None:
@@ -363,8 +340,6 @@ def test_removed_training_devices_fails_closed() -> None:
 @pytest.mark.parametrize(
     ("backend", "field"),
     [
-        ("isaacgym", "isaacgym_device_id"),
-        ("isaacsim", "isaacsim_device_id"),
         ("genesis", "genesis_device_id"),
     ],
 )
@@ -388,7 +363,7 @@ def test_ppo_multi_rank_routes_one_cpu_partition_to_the_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=go2_joystick_flat/superdex"])
+    cfg = _ppo_cfg(["task=go2_joystick_flat/mujoco"])
     monkeypatch.setenv("RANK", "1")
     monkeypatch.setenv("LOCAL_RANK", "1")
     monkeypatch.setenv("WORLD_SIZE", "2")
@@ -403,74 +378,7 @@ def test_ppo_multi_rank_routes_one_cpu_partition_to_the_env(
     assert override["cpu_ids"] == [8, 24]
 
 
-def test_offpolicy_isaacsim_training_and_eval_use_separate_render_overrides():
-    cfg = _offpolicy_cfg(
-        [
-            "task=g1_walk_flat/isaacsim",
-            "training.play_render_mode=record",
-        ]
-    )
-    mod = _offpolicy()
-
-    training_override = mod.build_offpolicy_env_cfg_override("sac", cfg)
-    play_override = mod.build_offpolicy_play_env_cfg_override("sac", cfg)
-
-    assert "isaacsim_render_mode" not in training_override
-    assert play_override["isaacsim_render_mode"] == "record"
-
-
-def test_ppo_go2_resolved_algo_matches_old_motrix_behavior():
-    """Equivalence: PPO Go2 algo hyperparams match pre-refactor motrix values."""
-    cfg = _ppo_cfg(["task=go2_joystick_flat/motrix"])
-
-    assert cfg.algo.max_iterations == 151
-    assert cfg.algo.actor.obs_normalization is True
-    assert cfg.algo.critic.obs_normalization is True
-    assert cfg.algo.actor.distribution_cfg.init_std == pytest.approx(0.5)
-    assert cfg.algo.algorithm.learning_rate == pytest.approx(3.0e-4)
-    assert cfg.algo.algorithm.entropy_coef == pytest.approx(1.0e-3)
-
-
-def test_ppo_g1_resolved_algo_matches_motrix_owner():
-    """Equivalence: PPO G1 algo hyperparams match the Motrix owner values.
-
-    For this migration we align with the final UniLab1 Motrix runtime.
-    """
-    cfg = _ppo_cfg(["task=g1_walk_flat/motrix"])
-
-    assert cfg.algo.max_iterations == 2200
-    assert cfg.algo.actor.obs_normalization is True
-    assert cfg.algo.critic.obs_normalization is True
-    assert cfg.algo.obs_groups.actor == ["policy"]
-    assert cfg.algo.actor.distribution_cfg.init_std == pytest.approx(0.5)
-    assert cfg.algo.algorithm.learning_rate == pytest.approx(3.0e-4)
-    assert cfg.algo.algorithm.entropy_coef == pytest.approx(5.0e-3)
-
-
-def test_ppo_g1_mujoco_base_hyperparams_remain_separate():
-    cfg = _ppo_cfg(["task=g1_walk_flat/mujoco"])
-
-    assert cfg.algo.max_iterations == 2200
-    assert cfg.algo.actor.obs_normalization is False
-    assert cfg.algo.critic.obs_normalization is False
-    assert cfg.algo.obs_groups.actor == ["actor"]
-
-
-def test_ppo_g1_env_preset_has_env_overrides():
-    cfg = _ppo_cfg(["task=g1_walk_flat/motrix"])
-
-    assert OmegaConf.select(cfg, "env.motrix_max_iterations") is None
-    assert cfg.env.actions.joint_pos.scale == pytest.approx(0.5)
-    assert cfg.env.commands.twist.ranges.lin_vel_x == [0.4, 0.7]
-    assert cfg.env.observations.policy.terms.gait_phase.params.init_mode == "offset_phase"
-    assert cfg.env.events.reset_root_state_uniform.params.velocity_range.x == [-0.05, 0.05]
-    assert cfg.reward.feet_phase_contrast.weight == pytest.approx(1.5)
-    assert cfg.reward.feet_phase_contact.weight == pytest.approx(1.0)
-    assert cfg.reward.feet_double_stance.weight == pytest.approx(-1.0)
-    assert cfg.reward.feet_phase.params.min_forward_speed == pytest.approx(0.05)
-
-
-def test_ppo_task_go2_aligns_mujoco_with_motrix_defaults():
+def test_ppo_task_go2_training_defaults():
     cfg = _ppo_cfg(["task=go2_joystick_flat/mujoco"])
 
     assert cfg.algo.num_envs == 1024
@@ -487,116 +395,12 @@ def test_ppo_task_go2_aligns_mujoco_with_motrix_defaults():
     assert cfg.algo.algorithm.entropy_coef == pytest.approx(1.0e-3)
 
 
-def test_ppo_go2_drake_batch_config_matches_go2_training_defaults():
-    cfg = _ppo_cfg(["task=go2_joystick_flat/drake"])
-
-    assert cfg.training.task_name == "Go2JoystickFlat"
-    assert cfg.training.sim_backend == "drake"
-    assert cfg.algo.num_envs == 1024
-    assert cfg.algo.max_iterations == 151
-    assert cfg.algo.actor.obs_normalization is True
-    assert cfg.algo.critic.obs_normalization is True
-    assert cfg.algo.actor.distribution_cfg.init_std == pytest.approx(0.5)
-    assert cfg.algo.algorithm.learning_rate == pytest.approx(3.0e-4)
-    assert cfg.algo.algorithm.entropy_coef == pytest.approx(1.0e-3)
-    assert cfg.env.drake_backend_mode == "batch"
-    assert cfg.env.drake_nthread == 0
-    assert cfg.env.scene.model_file == "src/unilab/assets/robots/go2/scene_flat.xml"
-    assert cfg.env.events.pd_gains is None
-    # Contact reward disabled on drake: drake_uni reports world-frame net
-    # contact force, not contact-frame force (issue #1471).
-    assert cfg.reward.contact is None
-
-
-def test_build_ppo_env_cfg_override_go2_motrix(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=go2_joystick_flat/motrix"])
-
-    env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
-
-    assert env_cfg_override["rewards"]["tracking_lin_vel"]["weight"] == pytest.approx(1.0)
-    assert env_cfg_override["rewards"]["contact"]["func"].endswith("feet_phase_contact")
-    assert env_cfg_override["commands"]["twist"]["ranges"] == {
-        "lin_vel_x": [0.5, 0.5],
-        "lin_vel_y": [0.0, 0.0],
-        "ang_vel_z": [0.0, 0.0],
-    }
-    assert env_cfg_override["events"]["pd_gains"] is None
-
-
-def test_build_ppo_env_cfg_override_g1_motrix(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=g1_walk_flat/motrix"])
-
-    env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
-
-    # env_cfg_override has reward + env preset fields (flat, matching env cfg structure)
-    assert env_cfg_override["rewards"]["upper_body_pose"]["weight"] == pytest.approx(-0.05)
-    assert env_cfg_override["rewards"]["penalty_feet_ori"]["weight"] == pytest.approx(0.0)
-    assert env_cfg_override["rewards"]["feet_phase_contrast"]["weight"] == pytest.approx(1.5)
-    assert env_cfg_override["rewards"]["feet_phase_contact"]["weight"] == pytest.approx(1.0)
-    assert env_cfg_override["rewards"]["feet_double_stance"]["weight"] == pytest.approx(-1.0)
-    assert env_cfg_override["rewards"]["feet_phase"]["params"][
-        "min_forward_speed"
-    ] == pytest.approx(0.05)
-    assert "motrix_max_iterations" not in env_cfg_override
-    assert env_cfg_override["actions"]["joint_pos"]["scale"] == pytest.approx(0.5)
-    assert env_cfg_override["commands"]["twist"]["ranges"]["lin_vel_x"] == [0.4, 0.7]
-    assert env_cfg_override["events"]["pd_gains"] is None
-    assert env_cfg_override["events"]["reset_root_state_uniform"]["params"]["velocity_range"][
-        "x"
-    ] == [-0.05, 0.05]
-
-
-def test_build_ppo_env_cfg_override_carries_motrix_max_iterations_override(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=g1_walk_flat/motrix", "+env.motrix_max_iterations=9"])
-
-    env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
-
-    assert env_cfg_override["motrix_max_iterations"] == 9
-
-
-def test_offpolicy_g1_walk_flat_motrix_env_cfg_override_disables_pd_gains():
-    cfg = _offpolicy_cfg(["task=g1_walk_flat/motrix"])
-
-    env_cfg_override = _offpolicy().build_offpolicy_env_cfg_override("sac", cfg)
-
-    assert env_cfg_override["events"]["pd_gains"] is None
-    assert env_cfg_override["rewards"]["tracking_lin_vel"]["weight"] == pytest.approx(2.2)
-
-
-def test_build_ppo_env_cfg_override_applies_go2_motrix_reward(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=go2_joystick_flat/motrix"])
-
-    env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
-
-    assert cfg.reward.tracking_lin_vel.weight == pytest.approx(1.0)
-    assert cfg.algo.num_envs == 1024
-    assert env_cfg_override["events"]["pd_gains"] is None
-    assert env_cfg_override["rewards"]["tracking_lin_vel"]["weight"] == pytest.approx(1.0)
-    assert env_cfg_override["rewards"]["tracking_ang_vel"]["weight"] == pytest.approx(0.2)
-
-
 def test_build_ppo_env_cfg_override_allegro_mujoco(
     monkeypatch: pytest.MonkeyPatch,
 ):
     mod = _train_rsl_rl(monkeypatch)
     cfg = _ppo_cfg(["task=allegro_inhand/mujoco"])
-    ppo_motrix_cfg = _ppo_cfg(["task=allegro_inhand/motrix"])
-    ppo_drake_cfg = _ppo_cfg(["task=allegro_inhand/drake"])
     appo_cfg = _appo_cfg(["task=allegro_inhand/mujoco"])
-    appo_motrix_cfg = _appo_cfg(["task=allegro_inhand/motrix"])
-    appo_drake_cfg = _appo_cfg(["task=allegro_inhand/drake"])
 
     env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
 
@@ -638,19 +442,6 @@ def test_build_ppo_env_cfg_override_allegro_mujoco(
         appo_cfg.algo.algorithm.use_clipped_value_loss is cfg.algo.algorithm.use_clipped_value_loss
     )
     assert appo_cfg.algo.algorithm.schedule == cfg.algo.algorithm.schedule
-    assert appo_motrix_cfg.training.task_name == appo_cfg.training.task_name
-    assert appo_motrix_cfg.training.sim_backend == ppo_motrix_cfg.training.sim_backend
-    assert appo_motrix_cfg.algo.actor.obs_normalization is True
-    assert appo_motrix_cfg.algo.critic.obs_normalization is True
-    assert appo_motrix_cfg.reward.rotate.weight == pytest.approx(
-        ppo_motrix_cfg.reward.rotate.weight
-    )
-    assert appo_motrix_cfg.env.events.pd_gains is None
-    assert ppo_motrix_cfg.env.events.pd_gains is None
-    assert ppo_drake_cfg.training.sim_backend == "drake"
-    assert appo_drake_cfg.training.sim_backend == "drake"
-    assert ppo_drake_cfg.env.events.pd_gains is None
-    assert appo_drake_cfg.env.events.pd_gains is None
 
 
 def test_build_ppo_env_cfg_override_allegro_grasp_mujoco(
@@ -998,19 +789,18 @@ def test_ppo_cli_algo_override_wins_over_base(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """CLI override takes precedence over base task algo values via Hydra compose."""
-    cfg = _ppo_cfg(["task=g1_walk_flat/motrix", "algo.max_iterations=1"])
+    cfg = _ppo_cfg(["task=g1_walk_flat/mujoco", "algo.max_iterations=1"])
 
     assert cfg.algo.max_iterations == 1
-    # Other base values remain intact
-    assert cfg.algo.actor.obs_normalization is True
-    assert cfg.algo.critic.obs_normalization is True
+    # Other base values remain intact.
+    assert cfg.algo.actor.obs_normalization is False
 
 
-def test_g1_motion_tracking_ppo_motrix_prefers_backend_specific_reward(
+def test_g1_motion_tracking_ppo_prefers_backend_specific_reward(
     monkeypatch: pytest.MonkeyPatch,
 ):
     mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=g1_motion_tracking/motrix"])
+    cfg = _ppo_cfg(["task=g1_motion_tracking/mujoco"])
 
     assert cfg.reward.motion_body_pos.weight == pytest.approx(1.0)
     cfg.reward.motion_body_pos.weight = 1.25
@@ -1024,7 +814,7 @@ def test_build_ppo_play_env_cfg_override_applies_g1_motion_tracking_play_profile
     monkeypatch: pytest.MonkeyPatch,
 ):
     mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=g1_motion_tracking/motrix", "training.play_only=true"])
+    cfg = _ppo_cfg(["task=g1_motion_tracking/mujoco", "training.play_only=true"])
     assert cfg.training.play_env_num == 16
 
     monkeypatch.setattr(
@@ -1035,8 +825,7 @@ def test_build_ppo_play_env_cfg_override_applies_g1_motion_tracking_play_profile
 
     env_cfg_override = mod.build_ppo_play_env_cfg_override(cfg)
 
-    assert cfg.training.play_env_num == 16
-    assert env_cfg_override["render_spacing"] == pytest.approx(2.5)
+    assert env_cfg_override["render_spacing"] == pytest.approx(2.0)
     assert env_cfg_override["scene"]["model_file"].endswith("robots/g1/scene_flat.xml")
     assert "robot" in env_cfg_override["scene"]["entities"]
     assert env_cfg_override["rewards"]["motion_body_pos"]["weight"] == pytest.approx(1.0)
@@ -1048,7 +837,7 @@ def test_build_ppo_play_env_cfg_override_respects_cli_play_env_override(
     mod = _train_rsl_rl(monkeypatch)
     cfg = _ppo_cfg(
         [
-            "task=g1_motion_tracking/motrix",
+            "task=g1_motion_tracking/mujoco",
             "training.play_only=true",
             "training.play_env_num=32",
         ]
@@ -1063,14 +852,14 @@ def test_build_ppo_play_env_cfg_override_respects_cli_play_env_override(
     env_cfg_override = mod.build_ppo_play_env_cfg_override(cfg)
 
     assert cfg.training.play_env_num == 32
-    assert env_cfg_override["render_spacing"] == pytest.approx(2.5)
+    assert env_cfg_override["render_spacing"] == pytest.approx(2.0)
 
 
 def test_build_ppo_play_env_cfg_override_keeps_task_owned_manager_scene(
     monkeypatch: pytest.MonkeyPatch,
 ):
     mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=g1_motion_tracking/motrix", "training.play_only=true"])
+    cfg = _ppo_cfg(["task=g1_motion_tracking/mujoco", "training.play_only=true"])
     monkeypatch.setattr(
         mod,
         "materialize_scene_visual_override",
@@ -1176,7 +965,7 @@ def test_run_motrix_rsl_play_loop_uses_render_spacing_and_offset_mode(
 def test_g1_motion_tracking_appo_reward_extraction_prefers_backend_specific_reward():
     from unilab.base.config_adapter import BackendAdapter
 
-    cfg = _appo_cfg(["task=g1_motion_tracking/motrix"])
+    cfg = _appo_cfg(["task=g1_motion_tracking/mujoco"])
 
     assert cfg.reward.motion_body_pos.weight == pytest.approx(1.0)
     cfg.reward.motion_body_pos.weight = 1.5
@@ -1187,25 +976,25 @@ def test_g1_motion_tracking_appo_reward_extraction_prefers_backend_specific_rewa
 
 
 def test_g1_motion_tracking_ppo_task_exposes_final_reward():
-    cfg = _ppo_cfg(["task=g1_motion_tracking/motrix"])
+    cfg = _ppo_cfg(["task=g1_motion_tracking/mujoco"])
 
     assert cfg.reward.motion_body_pos.weight == pytest.approx(1.0)
 
 
 def test_g1_motion_tracking_appo_task_exposes_final_reward():
-    cfg = _appo_cfg(["task=g1_motion_tracking/motrix"])
+    cfg = _appo_cfg(["task=g1_motion_tracking/mujoco"])
 
     assert cfg.reward.motion_body_pos.weight == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------
-# train_appo.py — motrix runner / play helpers
+# train_appo.py — runner / play helpers
 # ---------------------------------------------------------------------------
 
 
 def test_build_appo_runner_kwargs_forwards_sim_backend():
     mod = _train_appo()
-    cfg = _appo_cfg(["task=g1_motion_tracking/motrix"])
+    cfg = _appo_cfg(["task=g1_motion_tracking/mujoco"])
 
     runner_kwargs = mod.build_appo_runner_kwargs(
         cfg,
@@ -1214,7 +1003,7 @@ def test_build_appo_runner_kwargs_forwards_sim_backend():
     )
 
     assert runner_kwargs["env_name"] == "G1MotionTracking"
-    assert runner_kwargs["sim_backend"] == "motrix"
+    assert runner_kwargs["sim_backend"] == "mujoco"
     assert runner_kwargs["collector_device"] == "cpu"
     assert runner_kwargs["num_envs"] == cfg.algo.num_envs
     assert runner_kwargs["steps_per_env"] == cfg.algo.steps_per_env
@@ -2410,15 +2199,13 @@ def test_offpolicy_flashsac_g1_motion_tracking_mjwarp_task_composes() -> None:
     assert cfg.training.play_render_mode == "record"
 
 
-@pytest.mark.parametrize("backend", ["mujoco", "motrix", "newton", "genesis"])
+@pytest.mark.parametrize("backend", ["mujoco", "mjwarp"])
 def test_offpolicy_flashsac_g1_motion_tracking_task_composes(backend: str) -> None:
     cfg = _offpolicy_cfg([f"task=g1_motion_tracking/{backend}"], algo="flashsac")
     assert cfg.training.task_name == "G1MotionTrackingSAC"
     assert cfg.training.sim_backend == backend
     assert cfg.algo.num_envs == 2048
     assert cfg.algo.max_iterations == 25000
-    if backend == "newton":
-        assert cfg.env.newton_use_cuda_graph is True
 
 
 @pytest.mark.parametrize("backend", ["mujoco", "mjwarp"])
@@ -2516,13 +2303,11 @@ def test_train_rsl_rl_play_reports_missing_requested_checkpoint_in_resolved_run(
     assert "algo.checkpoint=12" in captured
 
 
-def test_train_rsl_rl_motrix_auto_play_is_interactive(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
+def test_train_rsl_rl_auto_play_is_interactive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     mod = _train_rsl_rl(monkeypatch)
     cfg = _ppo_cfg(
         [
-            "task=go2_joystick_flat/motrix",
+            "task=go2_joystick_flat/mujoco",
             "training.play_only=true",
             "training.play_steps=37",
             "training.render_spacing=2.5",
@@ -2621,7 +2406,7 @@ def test_train_rsl_rl_record_play_uses_backend_plan(
     mod = _train_rsl_rl(monkeypatch)
     cfg = _ppo_cfg(
         [
-            "task=go2_joystick_flat/motrix",
+            "task=go2_joystick_flat/mujoco",
             "training.play_only=true",
             "training.play_render_mode=record",
             "training.play_steps=37",

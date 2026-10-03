@@ -8,15 +8,15 @@ pre-generated because policy inference is learner-owned.
 
 Usage:
     uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py
-    uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --backend motrix
+    uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --backend mujoco
     uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --all
     uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --cases auto --backend mujoco
-    uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --cases auto --backend motrix
     uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --cases sac/g1_walk_flat/mujoco
-    uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --cases sac/g1_walk_flat/motrixsim
-    # mjwarp (GPU) is opt-in and requires the optional mjwarp extra:
+    # CUDA tensor backends are opt-in and require their extras:
     uv run --extra mjwarp scripts/benchmark/rl/benchmark_offpolicy_collector_active.py \
-        --cases sac/g1_motion_tracking/mjwarp
+        --cases flashsac/g1_motion_tracking/mjwarp
+    uv run --extra genesis scripts/benchmark/rl/benchmark_offpolicy_collector_active.py \
+        --cases flashsac/g1_motion_tracking/genesis
     uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --num-envs 1024 --measure-steps 100
 """
 
@@ -32,7 +32,7 @@ import re
 import subprocess
 import sys
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from importlib.util import find_spec
@@ -51,6 +51,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
 from scripts.benchmark.core.device_info import get_device_info_dict, get_device_info_line
+from unilab.base.backend_timing import UPDATE_STATE_DETAIL_TIMING_KEYS
 
 DEFAULT_OUTPUT_JSON = (
     ROOT_DIR / "scripts" / "benchmark" / "outputs" / "offpolicy_collector_active" / "results.json"
@@ -58,24 +59,19 @@ DEFAULT_OUTPUT_JSON = (
 DEFAULT_NUM_ENVS = 8192
 DEFAULT_WARMUP_STEPS = 10
 DEFAULT_MEASURE_STEPS = 100
+DEFAULT_TAIL_STEPS = 20
 DEFAULT_CASE_TEMPLATES = (
     "sac/g1_motion_tracking",
     "flashsac/g1_walk_flat",
 )
 DEFAULT_ALGOS = ("sac", "flashsac")
-DEFAULT_BACKEND = "motrix"
-BENCHMARK_BACKENDS = ("mujoco", "motrix")
-# mjwarp (GPU) is opt-in only: it requires the optional ``mjwarp`` extra
-# (mujoco-warp + warp-lang) and is never part of --all. Request it explicitly
-# via --backend mjwarp or an explicit <algo>/<task>/mjwarp case.
-OPTIONAL_BACKENDS = ("mjwarp",)
+DEFAULT_BACKEND = "mujoco"
+# CPU and CUDA tensor profiles have different dependency footprints. CPU host
+# bridge is default-safe; CUDA tensor backends are explicitly requested.
+BENCHMARK_BACKENDS = ("mujoco",)
+OPTIONAL_BACKENDS = ("mjwarp", "genesis")
 DEFAULT_COLLECTOR_CPU_THREADS = 8
 COLLECTOR_CPU_THREADS_ENV = "UNILAB_COLLECTOR_TORCH_THREADS"
-BACKEND_ALIASES = {
-    # UniLab's registry/backend contract uses "motrix"; "motrixsim" is the package
-    # and benchmark-facing backend family name.
-    "motrixsim": "motrix",
-}
 COLLECTOR_PHASES = (
     "env_step_ms",
     "replay_ms",
@@ -87,10 +83,86 @@ ENV_STEP_TIMING_KEYS = (
     "apply_action_ms",
     "step_core_ms",
     "update_state_ms",
+    "update_state_cpu_ms",
+    "update_state_read_boundary_ms",
+    "update_state_prelude_ms",
+    "update_state_queue_drain_ms",
+    "update_state_termination_ms",
+    "update_state_termination_host_ms",
+    "update_state_termination_term_dispatch_ms",
+    "update_state_termination_aggregation_ms",
+    "update_state_reward_ms",
+    "update_state_reward_term_dispatch_ms",
+    "update_state_reward_aggregation_ms",
+    "update_state_reward_finite_validation_ms",
+    "update_state_reward_manager_residual_ms",
+    "update_state_reward_motion_pack_call_ms",
+    "update_state_reward_penalty_pack_call_ms",
+    "update_state_reset_flags_ms",
+    "update_state_metrics_ms",
+    "update_state_events_ms",
+    "update_state_command_ms",
+    "update_state_command_compute_ms",
+    "update_state_command_dt_validation_ms",
+    "update_state_command_term_dispatch_ms",
+    "update_state_command_validation_ms",
+    "update_state_command_metrics_update_ms",
+    "update_state_command_timer_ms",
+    "update_state_command_update_dispatch_ms",
+    "update_state_command_preflight_ms",
+    "update_state_command_epilogue_ms",
+    "update_state_command_read_refresh_ms",
+    "update_state_command_post_compute_ms",
+    "update_state_observation_ms",
+    "update_state_observation_term_dispatch_ms",
+    "update_state_observation_validation_ms",
+    "update_state_observation_noise_ms",
+    "update_state_observation_transform_ms",
+    "update_state_observation_temporal_ms",
+    "update_state_observation_concatenation_ms",
+    "update_state_observation_boundary_ms",
+    "update_state_observation_manager_residual_ms",
+    "update_state_map_ms",
+    "update_state_publish_ms",
+    "update_state_publication_ms",
+    "update_state_state_replace_ms",
+    "update_state_timing_epilogue_ms",
+    "update_state_child_sum_ms",
+    "update_state_nonattributed_ms",
     "reset_done_ms",
     "env_step_internal_gap_ms",
     "reset_done_terminal_obs_ms",
     "reset_done_reset_call_ms",
+    "reset_done_command_event_ms",
+    "reset_done_manager_state_ms",
+    "reset_done_state_publish_ms",
+    "reset_done_selected_read_ms",
+    "reset_done_read_drain_ms",
+    "reset_done_command_metrics_ms",
+    "reset_done_command_resample_ms",
+    "reset_done_motion_sampler_ms",
+    "reset_done_motion_sampler_dispatch_ms",
+    "reset_done_motion_sampler_sync_ms",
+    "reset_done_motion_packet_ms",
+    "reset_done_motion_reset_rng_ms",
+    "reset_done_motion_reset_values_ms",
+    "reset_done_motion_reset_construction_ms",
+    "reset_done_motion_reset_write_ms",
+    "reset_done_motion_reset_publish_ms",
+    "reset_done_reset_commit_ms",
+    "reset_done_reset_validation_ms",
+    "reset_done_command_refresh_ms",
+    "reset_done_command_post_compute_ms",
+    "reset_done_motion_robot_refresh_ms",
+    "reset_done_motion_relative_refresh_ms",
+    "update_state_motion_failure_stats_ms",
+    "update_state_motion_step_sampler_ms",
+    "update_state_motion_refresh_current_ms",
+    "reset_done_motion_post_compute_view_ms",
+    "reset_done_motion_post_compute_kernel_ms",
+    "reset_done_motion_post_compute_rebind_ms",
+    "reset_done_observation_ms",
+    "reset_done_observation_scatter_ms",
     "reset_done_obs_scatter_ms",
     "reset_done_info_scatter_ms",
     "reset_done_internal_gap_ms",
@@ -133,7 +205,14 @@ ENV_STEP_TIMING_KEYS = (
     "set_state_host_cache_refresh_ms",
     "set_state_internal_gap_ms",
 )
-ENV_STEP_COUNT_KEYS = ("reset_done_count",)
+ENV_STEP_COUNT_KEYS = (
+    "reset_done_count",
+    "reset_done_event_term_count",
+    "reset_done_command_term_count",
+    "reset_done_manager_reset_count",
+    "reset_done_observation_term_count",
+    "reset_done_sampler_host_transfer_count",
+)
 ENV_STEP_SAMPLE_KEYS = (*ENV_STEP_TIMING_KEYS, *ENV_STEP_COUNT_KEYS)
 NP_RANDOM_PROFILE_FUNCTIONS = (
     "uniform",
@@ -153,6 +232,36 @@ ENV_STEP_TIMING_CSV_FIELDS = (
     ("env_step_internal_gap_ms", "env_step_internal_gap_ms"),
     ("reset_done_terminal_obs_ms", "reset_done_terminal_obs_ms"),
     ("reset_done_reset_call_ms", "reset_done_reset_call_ms"),
+    ("reset_done_command_event_ms", "reset_done_command_event_ms"),
+    ("reset_done_manager_state_ms", "reset_done_manager_state_ms"),
+    ("reset_done_state_publish_ms", "reset_done_state_publish_ms"),
+    ("reset_done_selected_read_ms", "reset_done_selected_read_ms"),
+    ("reset_done_read_drain_ms", "reset_done_read_drain_ms"),
+    ("reset_done_command_metrics_ms", "reset_done_command_metrics_ms"),
+    ("reset_done_command_resample_ms", "reset_done_command_resample_ms"),
+    ("reset_done_motion_sampler_ms", "reset_done_motion_sampler_ms"),
+    (
+        "reset_done_motion_sampler_dispatch_ms",
+        "reset_done_motion_sampler_dispatch_ms",
+    ),
+    ("reset_done_motion_sampler_sync_ms", "reset_done_motion_sampler_sync_ms"),
+    ("reset_done_motion_packet_ms", "reset_done_motion_packet_ms"),
+    ("reset_done_motion_reset_rng_ms", "reset_done_motion_reset_rng_ms"),
+    ("reset_done_motion_reset_values_ms", "reset_done_motion_reset_values_ms"),
+    (
+        "reset_done_motion_reset_construction_ms",
+        "reset_done_motion_reset_construction_ms",
+    ),
+    ("reset_done_motion_reset_write_ms", "reset_done_motion_reset_write_ms"),
+    ("reset_done_motion_reset_publish_ms", "reset_done_motion_reset_publish_ms"),
+    ("reset_done_reset_commit_ms", "reset_done_reset_commit_ms"),
+    ("reset_done_reset_validation_ms", "reset_done_reset_validation_ms"),
+    ("reset_done_command_refresh_ms", "reset_done_command_refresh_ms"),
+    ("reset_done_command_post_compute_ms", "reset_done_command_post_compute_ms"),
+    ("reset_done_motion_robot_refresh_ms", "reset_done_motion_robot_refresh_ms"),
+    ("reset_done_motion_relative_refresh_ms", "reset_done_motion_relative_refresh_ms"),
+    ("reset_done_observation_ms", "reset_done_observation_ms"),
+    ("reset_done_observation_scatter_ms", "reset_done_observation_scatter_ms"),
     ("reset_done_obs_scatter_ms", "reset_done_obs_scatter_ms"),
     ("reset_done_info_scatter_ms", "reset_done_info_scatter_ms"),
     ("reset_done_internal_gap_ms", "reset_done_internal_gap_ms"),
@@ -232,10 +341,14 @@ class CollectorResult:
     phase_ms_per_vector_step: dict[str, TimingStats]
     phase_pct: dict[str, float]
     notes: list[str]
+    # Aggregate rate over the final measured steps. This mirrors the runner
+    # tail contract while remaining explicitly diagnostic, not acceptance.
+    tail_step_count: int = 0
+    tail_active_steps_per_sec: float | None = None
     # Fine-grained timings reported by `TorchEnv.step()` inside env_step_ms.
     env_step_timing_ms_per_vector_step: dict[str, TimingStats] = field(default_factory=dict)
     # Backend-internal physics time per vector step (sub-part of env_step_ms).
-    # None when the backend does not report it (e.g. motrix).
+    # None when the backend does not report it.
     physics_ms_per_vector_step: TimingStats | None = None
     # Non-physics env.step time per vector step: env_step_ms - physics_ms.
     # None when backend-internal physics timing is unavailable.
@@ -476,7 +589,7 @@ def _backend_runtime_diagnostics(env: Any) -> dict[str, dict[str, bool | str | N
 
 
 def _runtime_sim_backend(sim: str) -> str:
-    return BACKEND_ALIASES.get(sim, sim)
+    return sim
 
 
 def _compose_offpolicy_cfg(
@@ -552,6 +665,15 @@ def _check_optional_backend_deps(backend: str) -> None:
             "backend=mjwarp requires the mjwarp extra. Install it with `uv sync --extra mjwarp` "
             "or run this benchmark with `uv run --extra mjwarp ...`."
         )
+    if backend == "genesis":
+        from unisim.backend.genesis.dependencies import genesis_dependencies_available
+
+        if not genesis_dependencies_available():
+            raise SystemExit(
+                "backend=genesis requires the genesis extra. Install it with "
+                "`uv sync --extra genesis` or run this benchmark with "
+                "`uv run --extra genesis ...`."
+            )
 
 
 def _default_case_specs(backends: Sequence[str]) -> list[str]:
@@ -652,6 +774,7 @@ def _run_active_window_case(
     warmup_steps: int,
     measure_steps: int,
     profile_numpy_random: bool = False,
+    tail_steps: int = DEFAULT_TAIL_STEPS,
 ) -> CollectorResult:
     from uni_rl.ipc.replay_buffer import ReplayBuffer
     from uni_rl.utils.observations import split_obs_dict
@@ -678,6 +801,7 @@ def _run_active_window_case(
     ep_reward_components: defaultdict[str, list[Any]] = defaultdict(list)
 
     samples: dict[str, list[float]] = {key: [] for key in COLLECTOR_PHASES}
+    tail_step_samples: deque[float] = deque(maxlen=max(1, min(int(tail_steps), int(measure_steps))))
     # Auxiliary env.step breakdown samples. These are sub-parts of env_step_ms,
     # so they must NOT be summed into total_active_ns (that would double-count).
     aux_samples: dict[str, list[float]] = {
@@ -730,9 +854,14 @@ def _run_active_window_case(
             # MuJoCo (via backend.step timing); absent for backends that don't
             # report it -> NaN, rendered as "n/a".
             _timing = state.info.get("timing", {}) if isinstance(state.info, dict) else {}
+            _update_state_timing = (
+                state.info.get("update_state_timing", {}) if isinstance(state.info, dict) else {}
+            )
             physics_ms = _optional_timing_ms(_timing, "backend_physics_ms")
             env_step_timing_values = {
-                key: _optional_timing_ms(_timing, key)
+                key: _optional_timing_ms(_update_state_timing, key)
+                if key in UPDATE_STATE_DETAIL_TIMING_KEYS
+                else _optional_timing_ms(_timing, key)
                 for key in ENV_STEP_SAMPLE_KEYS
                 if key != "env_step_internal_gap_ms"
             }
@@ -815,6 +944,7 @@ def _run_active_window_case(
                 total_active_ns += step_active_ns
                 for key, value in phase_values.items():
                     samples[key].append(value)
+                tail_step_samples.append(step_active_ns / 1.0e6)
                 # Env-step breakdown is aux only; env_step_ms is the additive phase.
                 if physics_ms is not None:
                     aux_samples["physics_ms"].append(physics_ms)
@@ -834,6 +964,13 @@ def _run_active_window_case(
 
     total_active_ms = total_active_ns / 1e6
     collector_active_steps_per_sec = (case.num_envs * measure_steps) / (total_active_ms / 1000.0)
+    tail_count = len(tail_step_samples)
+    tail_ms = sum(tail_step_samples)
+    tail_rate = (
+        case.num_envs * tail_count / (tail_ms / 1000.0)
+        if tail_count > 0 and tail_ms > 0.0
+        else None
+    )
     phase_stats = {key: _stats(values) for key, values in samples.items() if values}
     phase_mean_total = sum(stat.mean_ms for stat in phase_stats.values())
     phase_pct = {
@@ -856,6 +993,8 @@ def _run_active_window_case(
         measure_steps=int(measure_steps),
         total_active_ms=total_active_ms,
         collector_active_steps_per_sec=collector_active_steps_per_sec,
+        tail_step_count=tail_count,
+        tail_active_steps_per_sec=tail_rate,
         phase_ms_per_vector_step=phase_stats,
         phase_pct=phase_pct,
         notes=[],
@@ -879,6 +1018,7 @@ def _build_and_run_case(
     warmup_steps: int,
     measure_steps: int,
     replay_capacity_steps: int,
+    tail_steps: int = DEFAULT_TAIL_STEPS,
     num_envs: int | None,
     extra_overrides: list[str],
     variant: str = "default",
@@ -933,6 +1073,7 @@ def _build_and_run_case(
             warmup_steps=warmup_steps,
             measure_steps=measure_steps,
             profile_numpy_random=profile_numpy_random,
+            tail_steps=tail_steps,
         )
     finally:
         if env is not None:
@@ -971,6 +1112,8 @@ def _write_csv(path: Path, results: list[CollectorResult]) -> None:
         "warmup_steps",
         "measure_steps",
         "collector_active_steps_per_sec",
+        "tail_step_count",
+        "tail_active_steps_per_sec",
         "total_active_ms",
         "env_step_ms",
         "replay_ms",
@@ -1004,6 +1147,12 @@ def _write_csv(path: Path, results: list[CollectorResult]) -> None:
                 "warmup_steps": result.warmup_steps,
                 "measure_steps": result.measure_steps,
                 "collector_active_steps_per_sec": result.collector_active_steps_per_sec,
+                "tail_step_count": result.tail_step_count,
+                "tail_active_steps_per_sec": (
+                    result.tail_active_steps_per_sec
+                    if result.tail_active_steps_per_sec is not None
+                    else ""
+                ),
                 "total_active_ms": result.total_active_ms,
             }
             for key in COLLECTOR_PHASES:
@@ -1290,8 +1439,13 @@ def _format_set_state_sub_ms(result: CollectorResult, key: str) -> str:
     return f"{stat.mean_ms:.3f} ({pct:.1f}%)"
 
 
-def _format_variant_ablation_table(results: list[CollectorResult]) -> str:
-    """Compare variants within each algo/task/backend and num_envs tuple."""
+def _format_variant_ablation_table(results: list[CollectorResult], *, paired: bool = False) -> str:
+    """Compare variants within each algo/task/backend and num_envs tuple.
+
+    With ``paired=True``, each non-baseline row uses the preceding baseline
+    result as its denominator. This exposes per-block in-process A/B effects
+    instead of dividing every row by one process-placement sample.
+    """
     groups: dict[tuple[str, str, str, int], list[CollectorResult]] = {}
     for result in results:
         key = (
@@ -1306,10 +1460,23 @@ def _format_variant_ablation_table(results: list[CollectorResult]) -> str:
     for key in sorted(groups):
         grouped = groups[key]
         baseline = next((item for item in grouped if item.case.variant == "default"), grouped[0])
-        baseline_throughput = baseline.collector_active_steps_per_sec
+        baseline_result = baseline
         for result in grouped:
             if result is baseline:
                 continue
+            if paired and result.case.variant == baseline.case.variant:
+                baseline_result = result
+                continue
+            if paired:
+                baseline_result = next(
+                    (
+                        item
+                        for item in grouped[: grouped.index(result)]
+                        if item.case.variant == baseline.case.variant
+                    ),
+                    baseline_result,
+                )
+            baseline_throughput = baseline_result.collector_active_steps_per_sec
             ratio = (
                 result.collector_active_steps_per_sec / baseline_throughput
                 if baseline_throughput > 0.0
@@ -1319,7 +1486,7 @@ def _format_variant_ablation_table(results: list[CollectorResult]) -> str:
                 (
                     *key[:3],
                     f"{key[3]:,}",
-                    baseline.case.variant,
+                    baseline_result.case.variant,
                     result.case.variant,
                     f"{ratio:.3f}x",
                 )
@@ -1477,12 +1644,12 @@ _SET_STATE_MJWARP_KEYS = (
 
 
 def _format_set_state_detail_table(results: list[CollectorResult]) -> str:
-    """Backend set_state sub-timing table (motrix keyset).
+    """Backend set-state sub-timing table for adapter-defined keys.
 
-    Renders the 14 motrix-oriented sub-keys next to the outer
+    Renders adapter-defined sub-keys next to the outer
     ``dr_reset_set_state_ms``. Backends that don't populate a key emit 0.0 so
     columns stay stable across backends. MuJoCo runs will show 0.0 for the
-    motrix-only sub-keys; use :func:`_format_set_state_mujoco_table` for the
+    keys; use :func:`_format_set_state_mujoco_table` for the MuJoCo
     MuJoCo-oriented view instead.
     """
     headers = (
@@ -1680,6 +1847,7 @@ def _print_result(result: CollectorResult) -> None:
     print(
         f"{case.algo}/{case.task}/{case.sim}: "
         f"Collector/s={result.collector_active_steps_per_sec:,.0f} "
+        f"tail/s={result.tail_active_steps_per_sec or 0.0:,.0f}({result.tail_step_count}) "
         f"num_envs={case.num_envs:,} active_ms={result.total_active_ms:.1f} "
         f"cpu_util={cpu_str}"
     )
@@ -1804,19 +1972,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=(*BENCHMARK_BACKENDS, *OPTIONAL_BACKENDS),
         default=DEFAULT_BACKEND,
         help=(
-            "Backend to benchmark for --cases default/auto. Default: motrix. "
-            "mjwarp is opt-in and requires the mjwarp extra."
+            "Backend to benchmark for --cases default/auto. Default: mujoco. "
+            "mjwarp and genesis are opt-in CUDA tensor backends."
         ),
     )
     parser.add_argument(
         "--all",
         action="store_true",
         dest="all_backends",
-        help="Benchmark all default backends (mujoco and motrix).",
+        help="Benchmark all default backends.",
     )
     parser.add_argument(
         "--sim",
-        choices=(*BENCHMARK_BACKENDS, *OPTIONAL_BACKENDS, *BACKEND_ALIASES.keys()),
+        choices=(*BENCHMARK_BACKENDS, *OPTIONAL_BACKENDS),
         default=None,
         help=argparse.SUPPRESS,
     )
@@ -1837,6 +2005,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=int,
         default=DEFAULT_MEASURE_STEPS,
         help=f"Measured vector steps used for throughput statistics. Default: {DEFAULT_MEASURE_STEPS}.",
+    )
+    parser.add_argument(
+        "--tail-steps",
+        type=int,
+        default=DEFAULT_TAIL_STEPS,
+        help=(
+            "Final measured vector steps used for the diagnostic aggregate tail "
+            "rate. It is clamped to --measure-steps. Default: 20."
+        ),
     )
     parser.add_argument(
         "--replay-capacity-steps",
@@ -1878,8 +2055,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--out-json", type=Path, default=DEFAULT_OUTPUT_JSON)
     parser.add_argument("--out-csv", type=Path, default=None)
+    parser.add_argument(
+        "--repeat-variant-blocks",
+        type=int,
+        default=1,
+        help=(
+            "Build and run each --variants label this many times in alternating label "
+            "order. More than one block is an in-process paired A/B protocol that "
+            "avoids process-placement bimodality without extending warmup/measure steps."
+        ),
+    )
     parser.add_argument("--continue-on-error", action="store_true")
     args = parser.parse_args(argv)
+    if args.repeat_variant_blocks < 1:
+        raise ValueError("--repeat-variant-blocks must be at least 1")
     if args.sim is not None:
         args.backend = _runtime_sim_backend(args.sim)
     return args
@@ -1916,23 +2105,25 @@ def main() -> int:
         )
     for spec in specs:
         try:
-            for variant in variants:
-                variant_extra_overrides = variant_overrides.get(variant, [])
-                case_results = [
-                    _build_and_run_case(
-                        spec,
-                        warmup_steps=int(args.warmup_steps),
-                        measure_steps=int(args.measure_steps),
-                        replay_capacity_steps=int(args.replay_capacity_steps),
-                        num_envs=args.num_envs,
-                        extra_overrides=[*args.override, *variant_extra_overrides],
-                        variant=variant,
-                        profile_numpy_random=bool(args.profile_numpy_random),
-                    )
-                ]
-                results.extend(case_results)
-                for result in case_results:
-                    _print_result(result)
+            for _ in range(int(args.repeat_variant_blocks)):
+                for variant in variants:
+                    variant_extra_overrides = variant_overrides.get(variant, [])
+                    case_results = [
+                        _build_and_run_case(
+                            spec,
+                            warmup_steps=int(args.warmup_steps),
+                            measure_steps=int(args.measure_steps),
+                            replay_capacity_steps=int(args.replay_capacity_steps),
+                            tail_steps=int(args.tail_steps),
+                            num_envs=args.num_envs,
+                            extra_overrides=[*args.override, *variant_extra_overrides],
+                            variant=variant,
+                            profile_numpy_random=bool(args.profile_numpy_random),
+                        )
+                    ]
+                    results.extend(case_results)
+                    for result in case_results:
+                        _print_result(result)
         except Exception as exc:
             error = {"case": spec, "type": type(exc).__name__, "message": str(exc)}
             errors.append(error)
@@ -1957,10 +2148,12 @@ def main() -> int:
             "num_envs": args.num_envs,
             "warmup_steps": args.warmup_steps,
             "measure_steps": args.measure_steps,
+            "tail_steps": args.tail_steps,
             "replay_capacity_steps": args.replay_capacity_steps,
             "override": args.override,
             "variants": list(variants),
             "variant_override": args.variant_override,
+            "repeat_variant_blocks": args.repeat_variant_blocks,
             "profile_numpy_random": args.profile_numpy_random,
         },
         "results": [_result_to_dict(result) for result in results],
@@ -1976,9 +2169,15 @@ def main() -> int:
     print("\nTask throughput (active phases; phase percentages add to 100%):")
     if results:
         print(_format_throughput_table(results))
-        variant_table = _format_variant_ablation_table(results)
+        variant_table = _format_variant_ablation_table(
+            results,
+            paired=int(args.repeat_variant_blocks) > 1,
+        )
         if variant_table.count("\n") > 2:
-            print("\nVariant ablation (throughput ratio vs baseline; baseline=default or first):")
+            print(
+                "\nVariant ablation "
+                "(throughput ratio vs preceding baseline when repeat blocks > 1):"
+            )
             print(variant_table)
         print(
             "\nEnv step breakdown (subparts of Env step; do not add Env step together with its subparts):"
@@ -1995,7 +2194,7 @@ def main() -> int:
         )
         print(_format_dr_reset_timing_table(results))
         print(
-            "\nBackend set_state detail — motrix keyset "
+            "\nBackend set_state detail — adapter keyset "
             "(sub-timings sum to dr_reset_set_state_ms; % is share of that outer wall-clock):"
         )
         print(_format_set_state_detail_table(results))

@@ -46,8 +46,8 @@ if TYPE_CHECKING:
     from unisim.backend.base import BackendHeightScanner
 
     from unilab.base.entity import Entity
-    from unilab.envs.manager_based_rl_env import ManagerBasedRlEnv as RoughManagerBasedRlEnv
     from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers._types import ManagerBasedRlEnv as RoughManagerBasedRlEnv
 
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
@@ -153,11 +153,15 @@ def _ranges(value: Any, axes: Sequence[str], *, label: str) -> dict[str, tuple[f
     return {axis: _pair(value[axis], label=f"{label}.{axis}") for axis in axes}
 
 
-def _env_ids(env: ManagerBasedRlEnv, env_ids: np.ndarray | slice | None) -> np.ndarray:
+def _env_ids(
+    env: ManagerBasedRlEnv, env_ids: torch.Tensor | np.ndarray | slice | None
+) -> np.ndarray:
     if env_ids is None:
         return np.arange(env.num_envs, dtype=np.int32)
     if isinstance(env_ids, slice):
         return np.arange(env.num_envs, dtype=np.int32)[env_ids]
+    if isinstance(env_ids, torch.Tensor):
+        return env_ids.detach().cpu().numpy().astype(np.int32, copy=False)
     raw = np.asarray(env_ids)
     if (
         raw.ndim != 1
@@ -173,8 +177,8 @@ def _env_ids(env: ManagerBasedRlEnv, env_ids: np.ndarray | slice | None) -> np.n
     return ids
 
 
-def _terrain_generator(env: RoughManagerBasedRlEnv) -> TerrainGeneratorCfg:
-    scene = env._cfg.scene
+def _terrain_generator(env: ManagerBasedRlEnv) -> TerrainGeneratorCfg:
+    scene = env.cfg.scene
     terrain = None if scene is None else scene.terrain
     generator = None if terrain is None else terrain.generator
     if not isinstance(generator, TerrainGeneratorCfg):
@@ -224,7 +228,7 @@ def _materialize_terrain_context(
     existing = _TERRAIN_CONTEXTS.get(env)
     if existing is not None:
         return existing
-    spawn_data = env._backend.get_terrain_spawn_data()
+    spawn_data = env.backend.get_terrain_spawn_data()
     if not isinstance(spawn_data, BackendTerrainSpawnData):
         raise NotImplementedError(
             "rough terrain reset requires SimBackend.get_terrain_spawn_data()"
@@ -238,7 +242,7 @@ def _materialize_terrain_context(
         demote_frac=demote_frac,
         cycle_top_frac=cycle_top_frac,
         spawn_height_margin=spawn_height_margin,
-        seed=env._cfg.seed,
+        seed=env.cfg.seed,
     )
     context = _RoughTerrainContext(
         spawn_manager=TerrainSpawnManager(
@@ -310,7 +314,7 @@ class RoughTerrainReset(ManagerTermBase):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
-        env_ids: np.ndarray | slice | None,
+        env_ids: torch.Tensor | np.ndarray | slice | None,
         **params: Any,
     ) -> None:
         del params
@@ -355,7 +359,7 @@ class RoughTerrainCurriculum(ManagerTermBase):
     def __call__(
         self,
         env: RoughManagerBasedRlEnv,
-        env_ids: np.ndarray | slice | None,
+        env_ids: torch.Tensor | np.ndarray | slice | None,
         **params: Any,
     ) -> dict[str, float]:
         del params
@@ -418,7 +422,7 @@ class RoughHeightScan(ManagerTermBase):
         if not isinstance(geom_name, str) or not geom_name:
             raise ValueError("RoughHeightScan geom_name must be non-empty")
         if base_body_name is None:
-            scene = env._cfg.scene
+            scene = env.cfg.scene
             if scene is None or asset_cfg.name not in scene.entities:
                 raise ValueError(
                     f"RoughHeightScan scene entity '{asset_cfg.name}' is not configured"
@@ -445,9 +449,9 @@ class RoughHeightScan(ManagerTermBase):
             label="RoughHeightScan scale",
             minimum=0.0,
         )
-        geom_id = env._backend.get_geom_id(geom_name)
-        frame_body_id = env._backend.get_body_id(base_body_name)
-        self._scanner: BackendHeightScanner = env._backend.create_hfield_scanner(
+        geom_id = env.backend.get_geom_id(geom_name)
+        frame_body_id = env.backend.get_body_id(base_body_name)
+        self._scanner: BackendHeightScanner = env.backend.create_hfield_scanner(
             hfield_geom_id=geom_id,
             offsets=offsets,
             frame_body_id=frame_body_id,
@@ -541,11 +545,14 @@ class RoughVelocityCommand(UniformVelocityCommand):
             )
         super().__init__(cfg, env)
 
-    def _resample_command(self, env_ids: np.ndarray) -> None:
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
         super()._resample_command(env_ids)
-        planar = self.vel_command_b[env_ids, :2]
-        moving = np.linalg.norm(planar, axis=1) > self._planar_dead_zone
-        self.vel_command_b[env_ids, :2] = planar * moving[:, None]
+        tensor = self._tensor_command
+        assert tensor is not None
+        rows = env_ids.to(dtype=torch.int64, device=tensor.device)
+        planar = tensor[rows, :2]
+        moving = torch.linalg.vector_norm(planar, dim=1) > self._planar_dead_zone
+        tensor[rows, :2] = planar * moving[:, None]
 
 
 def joint_deviation_l2(

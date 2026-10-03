@@ -63,7 +63,7 @@ def test_partial_reset_row_scoped_noise() -> None:
     manager = ObservationManager(_noisy_cfg(), env)
     manager.compute(update_history=True)  # populate caches like a step would
 
-    ids = np.array([0, 2], dtype=np.int32)
+    ids = torch.tensor([0, 2], dtype=torch.int64)
     rng_state = env.rng.bit_generator.state
     rows = manager.compute(update_history=True, env_ids=ids)
     rng_after_rows = env.rng.bit_generator.state
@@ -93,9 +93,9 @@ def test_partial_reset_does_not_populate_obs_cache() -> None:
     manager.compute(update_history=True)
     assert manager._obs_buffer is not None
 
-    manager.reset(np.array([1], dtype=np.int32))
+    manager.reset(torch.tensor([1], dtype=torch.int64))
     assert manager._obs_buffer is None
-    manager.compute(update_history=True, env_ids=np.array([1], dtype=np.int32))
+    manager.compute(update_history=True, env_ids=torch.tensor([1], dtype=torch.int64))
     # The reset path leaves the cache invalidated; the next per-step compute
     # refreshes it with a full-batch entry.
     assert manager._obs_buffer is None
@@ -108,7 +108,7 @@ def test_partial_reset_slices_per_env_scale() -> None:
     env = FakeEnv(seed=13)
     manager = ObservationManager(_row_scale_cfg(), env)
     full = manager.compute(update_history=True)
-    ids = np.array([1, 3], dtype=np.int32)
+    ids = torch.tensor([1, 3], dtype=torch.int64)
     rows = manager.compute(update_history=True, env_ids=ids)
 
     assert rows["policy"].shape == (len(ids), full["policy"].shape[1])
@@ -132,8 +132,8 @@ def test_partial_reset_temporal_group_falls_back_and_preserves_rows() -> None:
         env.obs = env.obs + 1
         manager.compute(update_history=True)
 
-    ids = np.array([1], dtype=np.int32)
-    keep_ids = np.array([0, 2, 3], dtype=np.int32)
+    ids = torch.tensor([1], dtype=torch.int64)
+    keep_ids = torch.tensor([0, 2, 3], dtype=torch.int64)
     history_before = manager._group_obs_term_history_buffer["policy"]["state"].buffer.clone()
     delay_before = manager._group_obs_term_delay_buffer["policy"]["delayed"].peek().clone()
 
@@ -166,7 +166,7 @@ def test_partial_reset_temporal_group_falls_back_and_preserves_rows() -> None:
 @pytest.mark.parametrize("bad", [np.nan, np.inf])
 def test_partial_reset_nan_error_reports_env_ids(bad: float) -> None:
     def invalid(env: FakeEnv) -> np.ndarray:
-        result = env.obs.copy()
+        result = env.obs.clone()
         result[2, 0] = bad
         return result
 
@@ -176,12 +176,12 @@ def test_partial_reset_nan_error_reports_env_ids(bad: float) -> None:
         env,
     )
     with pytest.raises(ValueError, match=r"for environments: \[2\]"):
-        manager.compute(update_history=True, env_ids=np.array([0, 2], dtype=np.int32))
+        manager.compute(update_history=True, env_ids=torch.tensor([0, 2], dtype=torch.int64))
 
 
 def test_partial_reset_nan_on_untouched_row_is_not_rechecked() -> None:
     def invalid(env: FakeEnv) -> np.ndarray:
-        result = env.obs.copy()
+        result = env.obs.clone()
         result[1, 0] = np.nan
         return result
 
@@ -196,7 +196,102 @@ def test_partial_reset_nan_on_untouched_row_is_not_rechecked() -> None:
     )
     # Row-scoped NaN checks cover only the reset rows; untouched rows were
     # already checked by the per-step compute of their control step.
-    rows = manager.compute(update_history=True, env_ids=np.array([0, 2], dtype=np.int32))
+    rows = manager.compute(update_history=True, env_ids=torch.tensor([0, 2], dtype=torch.int64))
     assert rows["policy"].shape == (2, env.obs.shape[1])
     assert isinstance(rows["policy"], torch.Tensor)
     assert torch.isfinite(rows["policy"]).all()
+
+
+INSTANCES: list["RowScopedTerm"] = []
+
+
+class RowScopedTerm:
+    """Callable class-based observation term with reset-row execution."""
+
+    def __init__(self, cfg: ObservationTermCfg | None = None, env: FakeEnv | None = None) -> None:
+        del cfg, env
+        self.reset_row_calls: list[torch.Tensor] = []
+        self.full_calls = 0
+        INSTANCES.append(self)
+
+    def __call__(self, env: FakeEnv) -> torch.Tensor:
+        self.full_calls += 1
+        return env.obs.clone()
+
+    def compute_reset_rows(self, env: FakeEnv, env_ids: torch.Tensor) -> torch.Tensor:
+        self.reset_row_calls.append(env_ids.clone())
+        return env.obs.index_select(0, env_ids.to(env.obs.device))
+
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        del env_ids
+
+
+def test_opt_in_reset_row_term_executes_only_requested_rows() -> None:
+    env = FakeEnv(seed=17)
+    manager = ObservationManager(
+        {"policy": ObservationGroupCfg(terms={"state": ObservationTermCfg(func=RowScopedTerm)})},
+        env,
+    )
+    term = INSTANCES[-1]
+    full = manager.compute(update_history=True)
+    ids = torch.tensor([1, 3], dtype=torch.int64)
+    rows = manager.compute(update_history=True, env_ids=ids)
+
+    assert term.full_calls == 2  # construction plus the explicit full compute
+    assert len(term.reset_row_calls) == 1
+    torch.testing.assert_close(term.reset_row_calls[0], ids)
+    assert rows["policy"].shape == (len(ids), full["policy"].shape[1])
+    torch.testing.assert_close(rows["policy"], full["policy"][ids])
+
+
+def test_stateful_reset_row_terms_are_not_shared_across_groups() -> None:
+    env = FakeEnv(seed=19)
+    cfg = {
+        "actor": ObservationGroupCfg(terms={"state": ObservationTermCfg(func=RowScopedTerm)}),
+        "critic": ObservationGroupCfg(terms={"state": ObservationTermCfg(func=RowScopedTerm)}),
+    }
+    manager = ObservationManager(cfg, env)
+    manager.compute(update_history=True)
+    ids = torch.tensor([0, 2], dtype=torch.int64)
+    rows = manager.compute(update_history=True, env_ids=ids)
+
+    actor_term, critic_term = INSTANCES[-2:]
+    assert len(actor_term.reset_row_calls) == 1
+    torch.testing.assert_close(actor_term.reset_row_calls[0], ids)
+    assert len(critic_term.reset_row_calls) == 1
+    torch.testing.assert_close(critic_term.reset_row_calls[0], ids)
+    torch.testing.assert_close(rows["actor"], rows["critic"])
+
+
+def test_opt_in_reset_row_term_rejects_wrong_leading_dimension() -> None:
+    class BadRows(RowScopedTerm):
+        def compute_reset_rows(self, env: FakeEnv, env_ids: torch.Tensor) -> torch.Tensor:
+            del env_ids
+            return env.obs
+
+    env = FakeEnv(seed=23)
+    manager = ObservationManager(
+        {"policy": ObservationGroupCfg(terms={"state": ObservationTermCfg(func=BadRows())})},
+        env,
+    )
+    with pytest.raises(ValueError, match="expected \\(1, \\.\\.\\.\\)"):
+        manager.compute(update_history=True, env_ids=torch.tensor([2], dtype=torch.int64))
+
+
+def test_opt_in_reset_row_term_temporal_group_falls_back() -> None:
+    env = FakeEnv(seed=29)
+    term = RowScopedTerm()
+    manager = ObservationManager(
+        {
+            "policy": ObservationGroupCfg(
+                terms={"state": ObservationTermCfg(func=term, history_length=2)},
+            ),
+        },
+        env,
+    )
+    manager.compute(update_history=True)
+    ids = torch.tensor([1], dtype=torch.int64)
+    rows = manager.compute(update_history=True, env_ids=ids)
+
+    assert term.reset_row_calls == []
+    assert rows["policy"].shape[0] == len(ids)

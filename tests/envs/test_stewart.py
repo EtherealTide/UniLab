@@ -48,17 +48,7 @@ _BODY_NAMES = (
 )
 _ACTUATOR_NAMES = ("a0", "a1", "a2", "a3", "a4", "a5")
 
-_OWNER_CASES = (
-    pytest.param("ppo", ("task=stewart_balance/motrix",), "motrix", id="ppo-motrix"),
-    pytest.param("ppo", ("task=stewart_balance/mujoco",), "mujoco", id="ppo-mujoco"),
-    pytest.param("ppo", ("task=stewart_balance/drake",), "drake", id="ppo-drake"),
-    pytest.param(
-        "sac",
-        ("task=stewart_balance/drake",),
-        "drake",
-        id="sac-drake",
-    ),
-)
+_OWNER_CASES = (pytest.param("ppo", ("task=stewart_balance/mujoco",), "mujoco", id="ppo-mujoco"),)
 
 
 def _compose(config_group: str, overrides: Sequence[str]) -> DictConfig:
@@ -204,7 +194,7 @@ def test_stewart_registry_is_manager_only() -> None:
     registry.ensure_registries()
     assert registry.list_registered_envs()["StewartBalance"] == {
         "config_factory": "ManagerBasedRlEnvCfg",
-        "available_backends": ["mujoco", "motrix", "drake"],
+        "available_backends": ["mujoco"],
     }
 
 
@@ -227,7 +217,7 @@ def test_stewart_terms_do_not_access_physics_implementations() -> None:
         assert forbidden not in source
 
 
-@pytest.mark.parametrize("backend", ("motrix", "mujoco"))
+@pytest.mark.parametrize("backend", ("mujoco",))
 def test_stewart_real_manager_runtime_preserves_io_reset_and_level_ik(backend: str) -> None:
     try:
         env = _make_env(backend, num_envs=2)
@@ -280,9 +270,9 @@ def test_stewart_real_manager_runtime_preserves_io_reset_and_level_ik(backend: s
 
 def test_stewart_action_smoothing_and_center_authority_match_legacy_equations() -> None:
     try:
-        env = _make_env("motrix", num_envs=2)
+        env = _make_env("mujoco", num_envs=2)
     except ImportError as exc:
-        pytest.skip(f"motrix runtime unavailable: {exc}")
+        pytest.skip(f"mujoco runtime unavailable: {exc}")
 
     try:
         env.reset(seed=11)
@@ -321,9 +311,9 @@ def test_stewart_action_smoothing_and_center_authority_match_legacy_equations() 
 
 def test_stewart_state_machine_and_fall_reward_are_exact() -> None:
     try:
-        env = _make_env("motrix", num_envs=2)
+        env = _make_env("mujoco", num_envs=2)
     except ImportError as exc:
-        pytest.skip(f"motrix runtime unavailable: {exc}")
+        pytest.skip(f"mujoco runtime unavailable: {exc}")
 
     try:
         env.reset(seed=3)
@@ -365,31 +355,18 @@ def test_stewart_state_machine_and_fall_reward_are_exact() -> None:
 
 
 def test_stewart_drake_materializes_or_fails_at_optional_runtime_boundary() -> None:
-    _, env_cfg, _ = _materialize("ppo", ("task=stewart_balance/drake",))
-    try:
-        env = make_manager_based_rl_env(env_cfg, num_envs=1, backend_type="drake")
-    except (ImportError, NotImplementedError) as exc:
-        # The optional runtime can be absent, lack its native extension, or
-        # expose no floating-root layout yet. All are actionable boundary
-        # failures for this backend owner.
-        message = str(exc)
-        assert (
-            "DrakeUni batch runtime is not installed" in message
-            or "DrakeEnvPool batch extension has not been built" in message
-            or "does not expose root-state layout" in message
+    with pytest.raises(ValueError, match="temporarily out of the tensor-only Manager runtime"):
+        make_manager_based_rl_env(
+            _materialize("ppo", ("task=stewart_balance/mujoco",))[1],
+            num_envs=1,
+            backend_type="drake",
         )
-        return
-    try:
-        obs, _ = env.reset(seed=5)
-        assert obs["obs"].shape == (1, 15)
-    finally:
-        env.close()
 
 
 @pytest.mark.slow
 def test_stewart_solver_stable_under_random_actions() -> None:
     try:
-        env = _make_env("motrix", num_envs=8)
+        env = _make_env("mujoco", num_envs=8)
     except ImportError as exc:
         pytest.skip(f"motrix runtime unavailable: {exc}")
     try:

@@ -13,7 +13,7 @@ The production path is deliberately narrow:
 - FlashSAC;
 - `g1_motion_tracking`;
 - the `mjwarp` owner selected through the unified task-owner route;
-- explicit tensor-runtime opt-in from the task owner.
+- a tensor-native Manager runtime.
 
 It is not a multi-GPU guide, does not publish packages, and does not generalize
 to every MJWarp task. macOS and ROCm/HIP do not provide a fallback for this
@@ -23,8 +23,7 @@ device-resident lifecycle; invalid requests fail before backend construction.
 
 Use `--algo`, `--task`, and `--sim` together. They compose the owner YAML under
 `src/unilab/conf/<algo>/task/<task>/<sim>.yaml`. That owner, rather than the CLI
-spelling alone, sets `training.sim_backend` and may set
-`env.tensor_runtime: true`.
+spelling alone, sets `training.sim_backend`; tensor execution is a Manager invariant.
 
 For the canonical combination:
 
@@ -38,7 +37,7 @@ the MJWarp owner inherits the MuJoCo FlashSAC owner and resolves to:
 | --- | --- |
 | Task semantic name | `G1MotionTrackingSAC` |
 | Backend identity | `mjwarp` |
-| Tensor-runtime opt-in | `env.tensor_runtime=true` |
+| Tensor runtime | invariant of the Manager lifecycle |
 | Inference slots | `training.inference_slot_capacity=1` |
 | Replay-ingress depth | `training.replay_ingress_depth=2` |
 | Replay-ingress slot rows | `null`, resolving to `algo.num_envs` |
@@ -75,16 +74,18 @@ the `mjwarp` extra. The command above matches the gated CUDA CI profile. CI
 materializes the same siblings with Python 3.11 and uv 0.12.5; those are the
 reference versions even though the package supports a wider Python range.
 
-Pin the process to one physical GPU before any `uv run` command:
+On a host with one visible GPU, no `CUDA_VISIBLE_DEVICES` mask is required.
+The automatic single-device topology binds the learner, collector, MJWarp
+physics, inference ring, and replay ingress to the same current CUDA device.
+Set the variable only to select one physical GPU on a multi-GPU host or to
+preserve a launcher/debug/MPS mask:
 
 ```bash
 export CUDA_VISIBLE_DEVICES=<single-host-cuda-ordinal>
 ```
 
-All CUDA ordinals inside trainer processes are relative to this mask. With one
-visible GPU, the off-policy launcher's automatic single-device topology binds
-the learner, collector, MJWarp physics, inference ring, and replay ingress to
-the same `cuda:0` namespace. Do not add more devices: M11 is single-GPU only.
+All CUDA ordinals inside trainer processes are relative to that mask. Do not
+add more devices: M11 is single-GPU only.
 
 Check the runtime that will execute the benchmark:
 
@@ -276,3 +277,12 @@ MuJoCo results also include the packed H2D/D2H inventory and transfer counters.
 
 For full schema definitions and metric interpretation, see {doc}`3-logging` and
 {doc}`4-tensor_runtime`.
+
+## Breaking Tensor Runtime Migration
+
+`env.tensor_runtime` and `env.tensor_runtime_device` were removed without a
+compatibility alias. The Manager runtime is tensor-native by construction:
+placement is derived from the backend's declared data plane and rank process
+device. Owner YAMLs and runner overrides that previously set either field must
+delete those keys. Unsupported tensor lifecycles fail during binding rather
+than falling back to a NumPy wire.

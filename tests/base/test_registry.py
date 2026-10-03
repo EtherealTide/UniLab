@@ -105,7 +105,7 @@ class _TestEnvA(TorchEnv):
         pass
 
 
-class _TestEnvMotrix(_TestEnvA):
+class _TestEnvMjwarp(_TestEnvA):
     pass
 
 
@@ -119,7 +119,7 @@ if not registry_mod.contains(_TEST_ENV_B):
 
 if not registry_mod.contains(_TEST_ENV_C):
     registry_mod.register_env_config(_TEST_ENV_C, _TestCfgA)
-    registry_mod.register_env(_TEST_ENV_C, _TestEnvMotrix, "motrix")
+    registry_mod.register_env(_TEST_ENV_C, _TestEnvMjwarp, "mjwarp")
     registry_mod.register_env(_TEST_ENV_C, _TestEnvA, "mujoco")
 
 
@@ -258,6 +258,25 @@ def test_register_env_invalid_backend_raises():
         registry_mod.register_env(_name, _TestEnvA, "not_a_backend")
 
 
+@pytest.mark.parametrize(
+    "backend", ["motrix", "drake", "isaacgym", "isaacsim", "newton", "superdex"]
+)
+def test_register_env_rejects_shelved_backend(backend):
+    """Shelved adapters fail closed instead of registering a runtime path."""
+    _name = "_TestShelvedBackendEnv"
+    if not registry_mod.contains(_name):
+        registry_mod.register_env_config(_name, _TestCfgA)
+    with pytest.raises(
+        ValueError,
+        match=r"temporarily out of the tensor-only Manager runtime scope",
+    ):
+        registry_mod.register_env(_name, _TestEnvA, backend)
+
+
+def test_default_backend_order_is_tensor_manager_scope():
+    assert registry_mod._DEFAULT_SIM_BACKEND_ORDER == ("mujoco", "mjwarp")
+
+
 def test_register_env_without_config_raises():
     """register_env() when config is not yet registered must raise ValueError."""
     with pytest.raises(ValueError, match="not registered"):
@@ -315,7 +334,7 @@ def test_make_calls_plain_factory_with_cfg_num_envs_and_backend():
         return _TestEnvA(cfg, num_envs=num_envs, backend_type=backend_type)
 
     registry_mod.register_env_config(_name, _CallableFactoryCfg)
-    registered = registry_mod.register_env(_name, make_env, "motrix")
+    registered = registry_mod.register_env(_name, make_env, "mjwarp")
 
     made = registry_mod.make(
         _name,
@@ -328,7 +347,7 @@ def test_make_calls_plain_factory_with_cfg_num_envs_and_backend():
     assert isinstance(made, _TestEnvA)
     assert received["cfg"] is made.cfg
     assert received["num_envs"] == 7
-    assert received["backend_type"] == "motrix"
+    assert received["backend_type"] == "mjwarp"
     assert made.cfg.ctrl_dt == pytest.approx(0.05)
 
 
@@ -351,7 +370,12 @@ def test_make_rejects_invalid_factory_output_at_registry_boundary():
 def test_make_unsupported_backend_raises():
     """make() with an unsupported backend name raises ValueError."""
     with pytest.raises(ValueError, match="does not support simulation backend"):
-        registry_mod.make(_TEST_ENV_A, sim_backend="motrix")
+        registry_mod.make(_TEST_ENV_A, sim_backend="newton")
+
+
+def test_make_rejects_shelved_genesis_runtime_backend():
+    with pytest.raises(ValueError, match="temporarily out of the tensor-only"):
+        registry_mod.register_env(_TEST_ENV_A, lambda *args, **kwargs: None, "genesis")
 
 
 def test_make_no_env_factory_raises():

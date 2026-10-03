@@ -9,6 +9,7 @@ privates.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, cast
 from weakref import WeakKeyDictionary
@@ -31,7 +32,10 @@ from unilab.envs.mdp.commands.velocity_command import (
     UniformVelocityCommandCfg,
 )
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
+from unilab.managers.reset_owner import ResetOwner, ResetOwnerCfg
+from unilab.managers.reward_manager import RewardTermCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
+from unilab.managers.termination_manager import TerminationTermCfg
 from unilab.tasks.locomotion.common.manager_terms import SensorTermBase
 
 if TYPE_CHECKING:
@@ -228,31 +232,35 @@ def compute_feet_phase_height_targets(
         phi: np.ndarray | torch.Tensor, swing_height: float
     ) -> np.ndarray | torch.Tensor:
         if isinstance(phi, torch.Tensor):
-            # Keep the legacy branch structure while bounding only the half
-            # of the domain it selects; ``where`` preserves the original values.
-            phi_normalized = torch.remainder(phi + math.pi, 2 * math.pi) - math.pi
+            phase = phi if phi.ndim == 2 else phi[:, None]
+            phi_normalized = torch.remainder(phase + math.pi, 2 * math.pi) - math.pi
             x = (phi_normalized + math.pi) / (2 * math.pi)
             stance_t = (2 * x).clamp(max=1.0)
-            stance = swing_height * (stance_t**3 + 3 * stance_t**2 * (1 - stance_t))
             swing_t = (2 * x - 1).clamp(min=0.0)
-            swing = swing_height - swing_height * (swing_t**3 + 3 * swing_t**2 * (1 - swing_t))
-            return torch.where(x <= 0.5, stance, swing)
+            bezier = torch.where(
+                x <= 0.5,
+                stance_t**3 + 3 * stance_t**2 * (1 - stance_t),
+                1.0 - (swing_t**3 + 3 * swing_t**2 * (1 - swing_t)),
+            )
+            return swing_height * bezier
+        # The legacy NumPy helper branches on the same x<=0.5 boundary while
+        # evaluating both sides. Evaluate only the selected branch on the hot
+        # path; result values are identical where each branch is defined.
         phi_normalized = np.fmod(phi + np.pi, 2 * np.pi) - np.pi
-        x = (phi_normalized + np.pi) / (2 * np.pi)
-
-        def cubic_bezier_interpolation(
-            y_start: np.ndarray, y_end: np.ndarray, t: np.ndarray
-        ) -> np.ndarray:
-            y_diff = y_end - y_start
-            bezier = t**3 + 3 * (t**2 * (1 - t))
-            return np.asarray(y_start + y_diff * bezier, dtype=get_global_dtype())
-
-        stance = cubic_bezier_interpolation(np.zeros_like(x), np.full_like(x, swing_height), 2 * x)
-        swing = cubic_bezier_interpolation(
-            np.full_like(x, swing_height), np.zeros_like(x), 2 * x - 1
+        x = (phi_normalized + np.pi) / (2 * math.pi)
+        stance = x <= 0.5
+        stance_t = np.clip(2 * x, None, 1.0)
+        swing_t = np.clip(2 * x - 1.0, 0.0, None)
+        bezier = np.where(
+            stance,
+            stance_t**3 + 3 * stance_t**2 * (1 - stance_t),
+            1.0 - (swing_t**3 + 3 * swing_t**2 * (1 - swing_t)),
         )
-        return np.where(x <= 0.5, stance, swing)
+        return np.asarray(swing_height * bezier, dtype=get_global_dtype())
 
+    if isinstance(gait_phase, torch.Tensor):
+        targets = cubic_bezier_height(gait_phase, swing_height)
+        return targets[:, 0], targets[:, 1]
     left_target = cubic_bezier_height(gait_phase[:, 0], swing_height)
     right_target = cubic_bezier_height(gait_phase[:, 1], swing_height)
     return left_target, right_target
@@ -269,7 +277,7 @@ def compute_feet_phase_contact_targets(
 
 @dataclass
 class _G1GaitContext:
-    phase: np.ndarray | torch.Tensor  # (num_envs, 2), radians in [0, 2*pi)
+    phase: torch.Tensor  # (num_envs, 2), radians in [0, 2*pi)
     delta: float  # 2*pi*frequency*ctrl_dt
     frequency: float
     init_mode: str
@@ -277,6 +285,7 @@ class _G1GaitContext:
 
 
 _GAIT_CONTEXTS: WeakKeyDictionary[Any, _G1GaitContext] = WeakKeyDictionary()
+_GAIT_PHASE_CACHE: WeakKeyDictionary[Any, tuple[_G1GaitContext, int]] = WeakKeyDictionary()
 
 
 def _gait_context(env: _G1Env, term: str, frequency: float, init_mode: str) -> _G1GaitContext:
@@ -289,11 +298,7 @@ def _gait_context(env: _G1Env, term: str, frequency: float, init_mode: str) -> _
             * _real(term, "step_dt", env.step_dt, minimum=0.0, strict_minimum=True)
         )
         device = torch.device(env.device)
-        phase = (
-            torch.zeros((env.num_envs, 2), dtype=torch.float32, device=device)
-            if device.type == "cuda"
-            else np.zeros((env.num_envs, 2), dtype=get_global_dtype())
-        )
+        phase = torch.zeros((env.num_envs, 2), dtype=torch.float32, device=device)
         context = _G1GaitContext(
             phase=phase,
             delta=delta,
@@ -319,40 +324,66 @@ def _advance_gait(env: _G1Env, context: _G1GaitContext) -> np.ndarray | torch.Te
     counter = int(counter)
     if counter < context.last_counter:
         raise ValueError("G1 gait terms common_step_counter cannot move backwards")
-    two_pi = 2.0 * np.pi
-    if isinstance(context.phase, torch.Tensor):
-        steps = counter - context.last_counter
-        if steps:
-            phase = torch.remainder(context.phase + steps * context.delta, two_pi)
-            context.phase = phase
-        context.last_counter = counter
-        return context.phase
-    for _ in range(counter - context.last_counter):
-        context.phase = np.asarray(
-            np.fmod(context.phase + context.delta, two_pi), dtype=get_global_dtype()
-        )
+    steps = counter - context.last_counter
+    if steps:
+        context.phase = torch.remainder(context.phase + steps * context.delta, 2.0 * np.pi)
     context.last_counter = counter
     return context.phase
 
 
-def _resample_gait(env: _G1Env, context: _G1GaitContext, env_ids: np.ndarray) -> None:
-    ids = np.asarray(env_ids, dtype=np.intp).reshape(-1)
-    count = len(ids)
+def _cached_gait_phase(env: _G1Env, context: _G1GaitContext) -> np.ndarray | torch.Tensor:
+    """Return the phase already advanced for this env and step.
+
+    Gait rewards are semantically pure in the phase for a given counter:
+    ``_advance_gait`` is counter-idempotent, but its earlier host-side dispatch
+    and tensor ops were repeated by every gait reward. The cache is keyed by
+    the same weak env identity and exact context object, and reset only changes
+    selected rows after the latest public phase read. A backward counter is
+    still rejected by ``_advance_gait`` on the first call of a new step.
+    """
+    cached = _GAIT_PHASE_CACHE.get(env)
+    counter = int(env.common_step_counter)
+    if cached is not None:
+        cached_context, cached_counter = cached
+        if cached_context is context and cached_counter == counter:
+            return cached_context.phase
+    phase = _advance_gait(env, context)
+    _GAIT_PHASE_CACHE[env] = (context, counter)
+    return phase
+
+
+def _resample_gait(
+    env: _G1Env, context: _G1GaitContext, env_ids: torch.Tensor | np.ndarray
+) -> None:
+    device = context.phase.device
+    if isinstance(env_ids, torch.Tensor):
+        rows = env_ids.to(dtype=torch.int64, device=device)
+    else:
+        rows = torch.as_tensor(np.asarray(env_ids), dtype=torch.int64, device=device)
+    count = rows.numel()
     if count == 0:
         return
-    if context.init_mode == "independent":
-        left = env.rng.uniform(0.0, 2.0 * np.pi, size=(count,))
-        right = env.rng.uniform(0.0, 2.0 * np.pi, size=(count,))
+
+    rng_owner = getattr(env, "torch_rng", None)
+    if rng_owner is not None:
+        left = rng_owner.uniform(0.0, 2.0 * np.pi, (count,), dtype=torch.float32)
+        if context.init_mode == "independent":
+            right = rng_owner.uniform(0.0, 2.0 * np.pi, (count,), dtype=torch.float32)
+        else:
+            right = left + torch.pi
+        samples = torch.stack((left, right), dim=1)
     else:
-        left = env.rng.uniform(0.0, 2.0 * np.pi, size=(count,))
-        right = left + np.pi
-    samples = np.column_stack([left, right]).astype(get_global_dtype(), copy=False)
-    if isinstance(context.phase, torch.Tensor):
-        context.phase[torch.as_tensor(ids, device=context.phase.device)] = torch.from_numpy(
-            samples
-        ).to(device=context.phase.device, dtype=context.phase.dtype)
-    else:
-        context.phase[ids] = samples
+        # CPU/HOST_BRIDGE reference owners may still expose the legacy NumPy
+        # stream; upload the explicitly sampled selected rows once.
+        host_left = env.rng.uniform(0.0, 2.0 * np.pi, size=(count,))
+        if context.init_mode == "independent":
+            host_right = env.rng.uniform(0.0, 2.0 * np.pi, size=(count,))
+        else:
+            host_right = host_left + np.pi
+        samples = torch.as_tensor(
+            np.column_stack((host_left, host_right)), dtype=torch.float32, device=device
+        )
+    context.phase.index_copy_(0, rows, samples.to(dtype=context.phase.dtype))
 
 
 class G1GaitPhase(ManagerTermBase):
@@ -378,14 +409,14 @@ class G1GaitPhase(ManagerTermBase):
             return phase
         return phase.copy()
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         if env_ids is None:
-            ids = np.arange(self.num_envs, dtype=np.intp)
+            rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._env.device)
         elif isinstance(env_ids, slice):
-            ids = np.arange(self.num_envs, dtype=np.intp)[env_ids]
+            rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._env.device)[env_ids]
         else:
-            ids = np.asarray(env_ids, dtype=np.intp).reshape(-1)
-        _resample_gait(cast("_G1Env", self._env), self._context, ids)
+            rows = env_ids.to(dtype=torch.int64, device=self._env.device).reshape(-1)
+        _resample_gait(cast("_G1Env", self._env), self._context, rows)
 
 
 class _GaitRewardTerm(_SensorTerm):
@@ -436,13 +467,14 @@ class _GaitRewardTerm(_SensorTerm):
                 f"{self._feet_pos.dimensions} on backend '{self._feet_pos.backend_type}'"
             )
         self._linvel = self._bind(("pelvis_local_linvel",))
+        self._phase_inputs_view = self._bind((*_FOOT_POS_SENSORS, "pelvis_local_linvel"))
 
     @property
     def tensor_sensor_names(self) -> tuple[str, ...]:
         return (*_FOOT_POS_SENSORS, "pelvis_local_linvel")
 
     def _targets(self, env: _G1Env) -> tuple[np.ndarray | torch.Tensor, np.ndarray | torch.Tensor]:
-        phase = _advance_gait(env, self._context)
+        phase = _cached_gait_phase(env, self._context)
         return compute_feet_phase_height_targets(phase, self._swing_height)
 
     def _foot_heights(
@@ -466,24 +498,56 @@ class _GaitRewardTerm(_SensorTerm):
         forward_speed = np.maximum(linvel[:, 0], 0.0)
         return np.asarray(forward_speed >= self._min_forward_speed, dtype=get_global_dtype())
 
+    def _gate_from_forward_speed(
+        self, forward_speed: np.ndarray | torch.Tensor
+    ) -> np.ndarray | torch.Tensor:
+        if isinstance(forward_speed, torch.Tensor):
+            positive_speed = torch.clamp(forward_speed, min=0.0)
+            return (positive_speed >= self._min_forward_speed).to(dtype=torch.float32)
+        positive_speed = np.maximum(forward_speed, 0.0)
+        return np.asarray(positive_speed >= self._min_forward_speed, dtype=get_global_dtype())
+
+    def _phase_reward_inputs(
+        self, env: _G1Env
+    ) -> tuple[
+        np.ndarray | torch.Tensor,
+        np.ndarray | torch.Tensor,
+        np.ndarray | torch.Tensor,
+        np.ndarray | torch.Tensor,
+        np.ndarray | torch.Tensor,
+    ]:
+        """Read foot height, forward speed, and both height targets in one call."""
+        values = self._read_state_tensor(
+            env,
+            "foot position and pelvis linear velocity",
+            (self._phase_inputs_view, (*_FOOT_POS_SENSORS, "pelvis_local_linvel")),
+            (self.num_envs, 9),
+        )
+        phase = _cached_gait_phase(env, self._context)
+        left_target, right_target = compute_feet_phase_height_targets(phase, self._swing_height)
+        if isinstance(values, torch.Tensor):
+            if not isinstance(left_target, torch.Tensor):
+                left_target = torch.as_tensor(left_target, device=values.device)
+                right_target = torch.as_tensor(right_target, device=values.device)
+            return values[:, 2], values[:, 5], values[:, 6], left_target, right_target
+        # HOST_BRIDGE reference terms still publish NumPy sensors. Convert the
+        # shared Torch phase target once at this explicit public boundary.
+        left_target = np.asarray(torch.as_tensor(left_target).cpu())
+        right_target = np.asarray(torch.as_tensor(right_target).cpu())
+        return values[:, 2], values[:, 5], values[:, 6], left_target, right_target
+
 
 class feet_phase(_GaitRewardTerm):
     """Reward gait phase tracking by encouraging the expected swing-foot height."""
 
     def __call__(self, env: _G1Env, **params: Any) -> np.ndarray | torch.Tensor:
         del params
-        left_target, right_target = self._targets(env)
-        left_height, right_height = self._foot_heights(env)
-        if isinstance(left_height, torch.Tensor) or isinstance(left_target, torch.Tensor):
-            source = left_height if isinstance(left_height, torch.Tensor) else left_target
-            device = source.device
-            left_height = torch.as_tensor(left_height, device=device, dtype=torch.float32)
-            right_height = torch.as_tensor(right_height, device=device, dtype=torch.float32)
-            left_target = torch.as_tensor(left_target, device=device, dtype=torch.float32)
-            right_target = torch.as_tensor(right_target, device=device, dtype=torch.float32)
+        left_height, right_height, forward_speed, left_target, right_target = (
+            self._phase_reward_inputs(env)
+        )
         error = _square(left_height - left_target) + _square(right_height - right_target)
         reward = _exp(-error / self._tracking_sigma)
-        return _values(reward * self._gate(env))
+        return _values(reward * self._gate_from_forward_speed(forward_speed))
 
 
 class feet_phase_contrast(_GaitRewardTerm):
@@ -534,7 +598,7 @@ class feet_phase_contact(_FootContactTerm):
 
     def __call__(self, env: _G1Env, **params: Any) -> np.ndarray | torch.Tensor:
         del params
-        phase = _advance_gait(env, self._context)
+        phase = _cached_gait_phase(env, self._context)
         left_target, right_target = compute_feet_phase_contact_targets(phase, self._swing_height)
         left_contact, right_contact = self._contact_pair(env)
         left_values: np.ndarray | torch.Tensor = left_contact
@@ -552,12 +616,20 @@ class feet_double_stance(_FootContactTerm):
         command = _command(env, self.name, self._command_name)
         left_contact, right_contact = self._contact_pair(env)
         if isinstance(command, torch.Tensor):
-            if not isinstance(left_contact, torch.Tensor):
-                left_contact = torch.as_tensor(left_contact, device=command.device)
-                right_contact = torch.as_tensor(right_contact, device=command.device)
-            double_stance = (left_contact & right_contact).to(dtype=torch.float32)
+            left = (
+                left_contact
+                if isinstance(left_contact, torch.Tensor)
+                else torch.as_tensor(left_contact, device=command.device)
+            )
+            right = (
+                right_contact
+                if isinstance(right_contact, torch.Tensor)
+                else torch.as_tensor(right_contact, device=command.device)
+            )
+            double_stance = (left & right).to(dtype=torch.float32)
             forward_mask = (torch.clamp(command[:, 0], min=0.0) > 1.0e-6).to(dtype=torch.float32)
             return double_stance * forward_mask
+        assert isinstance(command, np.ndarray)
         double_stance = np.asarray(
             np.logical_and(left_contact, right_contact), dtype=get_global_dtype()
         )
@@ -572,7 +644,7 @@ class feet_air_time(_FootContactTerm):
         super().__init__(cfg, env)
         self._air_time = np.zeros((env.num_envs, 2), dtype=get_global_dtype())
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | np.ndarray | slice | None = None) -> None:
         self._air_time[env_ids if env_ids is not None else slice(None)] = 0.0
 
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray | torch.Tensor:
@@ -737,6 +809,10 @@ class g1_base_height_below_minimum(ManagerTermBase):
     @property
     def tensor_body_names(self) -> tuple[str, ...]:
         return (self._root_body_name,)
+
+    @property
+    def entity_name(self) -> str:
+        return self._entity_name
 
     def __call__(self, env: _G1Env, **params: Any) -> np.ndarray | torch.Tensor:
         del params
@@ -911,11 +987,13 @@ class G1VelocityCommand(UniformVelocityCommand):
             )
         super().__init__(cfg, env)
 
-    def _resample_command(self, env_ids: np.ndarray) -> None:
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
         super()._resample_command(env_ids)
-        planar = self.vel_command_b[env_ids, :2]
-        moving = np.linalg.norm(planar, axis=1) > self._planar_dead_zone
-        self.vel_command_b[env_ids, :2] = planar * moving[:, None]
+        tensor = self._tensor_command
+        assert tensor is not None
+        planar = tensor[env_ids, :2]
+        moving = torch.linalg.vector_norm(planar, dim=1) > self._planar_dead_zone
+        tensor[env_ids, :2] = planar * moving[:, None]
 
 
 # ---------------------------------------------------------------------------
@@ -977,7 +1055,7 @@ class G1PenaltyCurriculum(ManagerTermBase):
             minimum=0.0,
         )
         self._degree = _real(self.name, "degree", cfg.params.get("degree", 0.001), minimum=0.0)
-        self._tracker = EpisodeLengthTracker(env.num_envs)
+        self._tracker = EpisodeLengthTracker(env.num_envs, device=env.device)
         self._original_weights: dict[str, float] = {}
         for name in env.reward_manager.active_terms:
             weight = float(env.reward_manager.get_term_cfg(name).weight)
@@ -993,48 +1071,51 @@ class G1PenaltyCurriculum(ManagerTermBase):
     def __call__(
         self,
         env: _G1Env,
-        env_ids: np.ndarray | slice | None,
+        env_ids: torch.Tensor | slice | None,
         **params: Any,
     ) -> dict[str, float]:
         del params
-        ids = (
-            np.arange(env.num_envs, dtype=np.intp)
-            if env_ids is None
-            else np.arange(env.num_envs, dtype=np.intp)[env_ids]
-            if isinstance(env_ids, slice)
-            else np.asarray(env_ids, dtype=np.intp).reshape(-1)
-        )
-        reset_buf = env.reset_buf
-        if isinstance(reset_buf, torch.Tensor):
-            reset_buf = reset_buf.detach().cpu().numpy()
-        done_ids = ids[reset_buf[ids]]
-        if isinstance(env.episode_length_buf, torch.Tensor):
-            if len(done_ids) > 0:
-                episode_lengths = (
-                    env.episode_length_buf[torch.as_tensor(done_ids, device=env.device)]
-                    .detach()
-                    .cpu()
-                    .numpy()
-                )
-                self._tracker.update(episode_lengths.astype(np.float64))
-            return {
-                "average_episode_length": float(self._tracker.average_length),
-                "penalty_scale": float(self._current_scale),
-            }
-        if len(done_ids) > 0:
-            self._tracker.update(env.episode_length_buf[done_ids].astype(np.float64))
-            average = self._tracker.average_length
-            if average < self._level_down_threshold:
-                self._current_scale *= 1.0 - self._degree
-            elif average > self._level_up_threshold:
-                self._current_scale *= 1.0 + self._degree
-            self._current_scale = float(
-                np.clip(self._current_scale, self._min_scale, self._max_scale)
+        device = env.device
+        if env_ids is None:
+            ids = torch.arange(env.num_envs, dtype=torch.int64, device=device)
+        elif isinstance(env_ids, slice):
+            ids = torch.arange(env.num_envs, dtype=torch.int64, device=device)[env_ids]
+        elif isinstance(env_ids, torch.Tensor):
+            ids = env_ids.to(device=device, dtype=torch.int64).reshape(-1)
+        else:
+            raise TypeError(
+                f"{self.name} env_ids must be Torch tensor, slice, or None; "
+                f"got {type(env_ids).__name__}"
             )
+        reset_buf = env.reset_buf
+        if not isinstance(reset_buf, torch.Tensor):
+            raise TypeError(f"{self.name} requires reset_buf to be a Torch tensor")
+        done_ids = ids[reset_buf.index_select(0, ids)]
+        episode_lengths = env.episode_length_buf
+        if not isinstance(episode_lengths, torch.Tensor):
+            raise TypeError(f"{self.name} requires episode_length_buf to be a Torch tensor")
+        if done_ids.numel() > 0:
+            self._tracker.update(episode_lengths.index_select(0, done_ids))
+
+        average = self._tracker.average
+        # Reward weights are public Python floats, so this is the unavoidable
+        # scalar publication boundary. It happens once per curriculum update,
+        # not once per tracker batch.
+        average_value = float(average.item())
+        changed = False
+        if done_ids.numel() > 0:
+            if average_value < self._level_down_threshold:
+                self._current_scale *= 1.0 - self._degree
+                changed = True
+            elif average_value > self._level_up_threshold:
+                self._current_scale *= 1.0 + self._degree
+                changed = True
+        if changed:
+            self._current_scale = min(max(self._current_scale, self._min_scale), self._max_scale)
             self._apply_scale()
         return {
-            "average_episode_length": float(self._tracker.average_length),
-            "penalty_scale": float(self._current_scale),
+            "average_episode_length": average_value,
+            "penalty_scale": self._current_scale,
         }
 
 
@@ -1042,6 +1123,304 @@ class G1PenaltyCurriculum(ManagerTermBase):
 # G1 Manager-Based env: Registry-owned production runtime on the single
 # lifecycle
 # ---------------------------------------------------------------------------
+
+
+class G1WalkResetOwnerCfg(ResetOwnerCfg):
+    """Fuse the selected-reset lifecycle for the canonical G1 walk command."""
+
+    command_name: str = "twist"
+
+
+class G1WalkResetOwner(ResetOwner):
+    """Own the tensor G1 command reset and skip redundant host validations.
+
+    The walk command is sampled from bounded Torch uniforms and the G1 dead-zone
+    write is bounded by construction. Re-running the generic full-command
+    finite synchronization after that device-resident transaction only adds a
+    device synchronization on the reset hot path.
+    """
+
+    def __init__(self, cfg: G1WalkResetOwnerCfg, env: _G1Env):
+        super().__init__(cfg, env)
+        command_manager = getattr(env, "command_manager", None)
+        if command_manager is None:
+            raise KeyError("G1WalkResetOwner requires a configured command manager")
+        try:
+            command = command_manager.get_term(cfg.command_name)
+        except (AttributeError, KeyError) as exc:
+            raise KeyError(
+                f"G1WalkResetOwner command term '{cfg.command_name}' is not configured"
+            ) from exc
+        if not isinstance(command, UniformVelocityCommand):
+            raise TypeError("G1WalkResetOwner requires a UniformVelocityCommand term")
+        if getattr(env, "torch_rng", None) is None:
+            raise NotImplementedError("G1WalkResetOwner requires the Manager Torch RNG")
+
+    def _rows(self, env_ids: torch.Tensor | slice | None) -> torch.Tensor:
+        device = torch.device(getattr(self._env, "device", torch.device("cpu")))
+        if isinstance(env_ids, torch.Tensor):
+            return env_ids.to(dtype=torch.int64, device=device)
+        num_envs = int(getattr(self._env, "num_envs", 0))
+        return torch.arange(num_envs, dtype=torch.int64, device=device)
+
+    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+        env = cast("_G1Env", self._env)
+        rows = self._rows(env_ids)
+        extras, _commands = cast(
+            Any,
+            env.command_manager,
+        ).reset_command_state(
+            rows,
+            publish_metrics=False,
+            validate_commands=False,
+        )
+        return cast(dict[str, float], extras)
+
+    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+        env = cast("_G1Env", self._env)
+        rows = self._rows(env_ids)
+        cast(Any, env.action_manager).clear_action_state(rows)
+        clear_metrics = getattr(env.metrics_manager, "clear_episode_state", None)
+        if callable(clear_metrics):
+            clear_metrics(rows)
+        return {}
+
+
+@dataclass(kw_only=True)
+class G1WalkRewardPackCfg(RewardTermCfg):
+    """Fused canonical G1 walk reward family for tensor-resident owners."""
+
+    command_name: str = "twist"
+    entity_name: str = "robot"
+    tracking_lin_sigma: float = 0.25
+    tracking_ang_sigma: float = 0.25
+    gait_frequency: float = 1.5
+    gait_init_mode: str = "offset_phase"
+    swing_height: float = 0.09
+    feet_phase_sigma: float = 0.04
+    min_forward_speed: float = 0.0
+    pose_weights: tuple[float, ...] = tuple(1.0 for _ in range(29))
+
+
+_G1_WALK_REWARD_PACK_PARAMS: frozenset[str] = frozenset(
+    {
+        "command_name",
+        "entity_name",
+        "tracking_lin_sigma",
+        "tracking_ang_sigma",
+        "gait_frequency",
+        "gait_init_mode",
+        "swing_height",
+        "feet_phase_sigma",
+        "min_forward_speed",
+        "pose_weights",
+    }
+)
+
+
+class G1WalkRewardPack(ManagerTermBase):
+    """Evaluate the canonical walk reward family in one tensor carrier read.
+
+    This pack fuses the G1 owner's state-only per-step rewards: linear/angular
+    tracking, angular-xy and orientation penalties, action rate, weighted pose,
+    foot-orientation penalty, and phase tracking. Equations, weights, and
+    declaration order remain owned by ``RewardManager``; this owner only removes
+    duplicate carrier reads and intermediate per-term kernel launches.
+    """
+
+    returns_transient_tensor = True
+    last_step_timing_ms: dict[str, float] = {}
+
+    def __init__(self, cfg: G1WalkRewardPackCfg, env: _G1Env):
+        super().__init__(env)
+        if not isinstance(cfg, G1WalkRewardPackCfg):
+            raise TypeError("G1WalkRewardPack requires G1WalkRewardPackCfg")
+        unexpected = set(cfg.params) - _G1_WALK_REWARD_PACK_PARAMS
+        if unexpected:
+            raise TypeError(
+                f"G1WalkRewardPack received unsupported parameters: {sorted(unexpected)}"
+            )
+        self.cfg = cfg
+        self._device = torch.device(env.device)
+        self._command = _command(env, self.name, cfg.command_name)
+        self._gait_context = _gait_context(env, self.name, cfg.gait_frequency, cfg.gait_init_mode)
+        self._entity = cast("Entity", env.scene[cfg.entity_name])
+        self._pose_weights = torch.as_tensor(
+            cfg.pose_weights, dtype=torch.float32, device=self._device
+        )
+        if self._pose_weights.ndim != 1 or self._pose_weights.numel() == 0:
+            raise ValueError("G1WalkRewardPack pose_weights must be a non-empty vector")
+        self._tracking_lin_scale = cfg.tracking_lin_sigma * cfg.tracking_lin_sigma
+        self._tracking_ang_scale = cfg.tracking_ang_sigma * cfg.tracking_ang_sigma
+        self._feet_phase_scale = cfg.feet_phase_sigma
+
+    @property
+    def tensor_sensor_names(self) -> tuple[str, ...]:
+        return (
+            "pelvis_local_linvel",
+            "torso_gyro",
+            "torso_upvector",
+            *_FOOT_QUAT_SENSORS,
+            *_FOOT_POS_SENSORS,
+        )
+
+    def _read_sensors(self, env: _G1Env) -> dict[str, torch.Tensor]:
+        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        if read_plan is None or read_plan.device.type != self._device.type:
+            raise NotImplementedError(
+                "G1WalkRewardPack requires the declared tensor sensor read plan"
+            )
+        names = self.tensor_sensor_names
+        owner_sensors = set(read_plan.sensor_names.get(self.cfg.entity_name, ()))
+        if not set(names).issubset(owner_sensors):
+            missing = sorted(set(names) - owner_sensors)
+            raise NotImplementedError(f"G1WalkRewardPack requires device tensor sensors {missing}")
+        entity = env.scene[self.cfg.entity_name]
+        return cast(dict[str, torch.Tensor], read_plan.sensor_tensor_views(entity, names).values)
+
+    def __call__(self, env: _G1Env) -> torch.Tensor:
+        call_started = time.perf_counter()
+        values = self._read_sensors(env)
+        command = self._command
+        if not isinstance(command, torch.Tensor):
+            raise TypeError("G1WalkRewardPack requires a tensor command carrier")
+        linvel = values["pelvis_local_linvel"]
+        gyro = values["torso_gyro"]
+        upvector = values["torso_upvector"]
+        foot_quat = values[_FOOT_QUAT_SENSORS[0]]
+        for name in _FOOT_QUAT_SENSORS[1:]:
+            foot_quat = torch.cat((foot_quat, values[name]), dim=1)
+        foot_pos = values[_FOOT_POS_SENSORS[0]]
+        for name in _FOOT_POS_SENSORS[1:]:
+            foot_pos = torch.cat((foot_pos, values[name]), dim=1)
+        action_manager = cast(Any, self._env.action_manager)
+        joint_state = getattr(env.scene, "_tensor_read_plan", None)
+        if joint_state is None:
+            raise NotImplementedError("G1WalkRewardPack requires the tensor joint read plan")
+        joint_pos = joint_state.joint_tensor_view(self._entity).joint_pos
+        default = self._entity.data.default_joint_pos_torch(self._device)
+        phase = _cached_gait_phase(env, self._gait_context)
+        targets = compute_feet_phase_height_targets(phase, self.cfg.swing_height)
+        left_target = cast(torch.Tensor, targets[0])
+        right_target = cast(torch.Tensor, targets[1])
+
+        lin_error = torch.sum(torch.square(command[:, :2] - linvel[:, :2]), dim=1)
+        ang_error = torch.square(command[:, 2] - gyro[:, 2])
+        ang_xy_error = torch.sum(torch.square(gyro[:, :2]), dim=1)
+        ori_error = torch.sum(torch.square(upvector[:, :2]), dim=1)
+        action_delta = action_manager.action - action_manager.prev_action
+        action_error = torch.sum(torch.square(action_delta), dim=1)
+        pose_error = torch.sum(self._pose_weights * torch.square(joint_pos - default), dim=1)
+        foot_ori_error = (
+            torch.square(foot_quat[:, 1])
+            + torch.square(foot_quat[:, 2])
+            + torch.square(foot_quat[:, 5])
+            + torch.square(foot_quat[:, 6])
+        )
+        phase_error = torch.square(foot_pos[:, 2] - left_target) + torch.square(
+            foot_pos[:, 5] - right_target
+        )
+        forward_speed = linvel[:, 0]
+        gate = (torch.clamp(forward_speed, min=0.0) >= self.cfg.min_forward_speed).to(
+            dtype=torch.float32
+        )
+
+        outputs = [
+            torch.exp(-lin_error / self._tracking_lin_scale),
+            torch.exp(-ang_error / self._tracking_ang_scale),
+            ang_xy_error,
+            ori_error,
+            action_error,
+            pose_error,
+            foot_ori_error,
+            torch.exp(-phase_error / self._feet_phase_scale) * gate,
+            torch.ones_like(lin_error),
+        ]
+        result = torch.stack(outputs, dim=1)
+        self.last_step_timing_ms["update_state_reward_g1_walk_pack_call_ms"] = (
+            time.perf_counter() - call_started
+        ) * 1000.0
+        return result
+
+
+@dataclass(kw_only=True)
+class G1WalkTerminationPackCfg(TerminationTermCfg):
+    """Fused canonical G1 walk timeout, tilt, and height termination."""
+
+    entity_name: str = "robot"
+    root_body_name: str = "pelvis"
+    max_tilt_deg: float = 65.0
+    minimum_height: float = 0.3
+
+
+class G1WalkTerminationPack(ManagerTermBase):
+    """Evaluate the canonical G1 walk failure terms in one carrier read."""
+
+    returns_transient_tensor = True
+
+    def __init__(self, cfg: G1WalkTerminationPackCfg, env: _G1Env):
+        super().__init__(env)
+        if not isinstance(cfg, G1WalkTerminationPackCfg):
+            raise TypeError("G1WalkTerminationPack requires G1WalkTerminationPackCfg")
+        unexpected = set(cfg.params) - {
+            "entity_name",
+            "root_body_name",
+            "max_tilt_deg",
+            "minimum_height",
+        }
+        if unexpected:
+            raise TypeError(
+                f"G1WalkTerminationPack received unsupported parameters: {sorted(unexpected)}"
+            )
+        self.cfg = cfg
+        self._device = torch.device(env.device)
+        self._entity = cast("Entity", env.scene[cfg.entity_name])
+        self._max_tilt_rad = math.radians(
+            _real(
+                "G1WalkTerminationPack",
+                "max_tilt_deg",
+                cfg.max_tilt_deg,
+                minimum=0.0,
+            )
+        )
+        self._minimum_height = _real(
+            "G1WalkTerminationPack",
+            "minimum_height",
+            cfg.minimum_height,
+        )
+        self._tilt_threshold = math.cos(self._max_tilt_rad)
+
+    @property
+    def tensor_sensor_names(self) -> tuple[str, ...]:
+        return ("torso_upvector",)
+
+    @property
+    def tensor_body_names(self) -> tuple[str, ...]:
+        return (self.cfg.root_body_name,)
+
+    @property
+    def entity_name(self) -> str:
+        return self.cfg.entity_name
+
+    def __call__(self, env: _G1Env) -> torch.Tensor:
+        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        if read_plan is None or read_plan.device.type != self._device.type:
+            raise NotImplementedError(
+                "G1WalkTerminationPack requires the declared tensor sensor/body read plan"
+            )
+        owner_sensors = set(read_plan.sensor_names.get(self.cfg.entity_name, ()))
+        if "torso_upvector" not in owner_sensors:
+            raise NotImplementedError(
+                "G1WalkTerminationPack requires device tensor sensor 'torso_upvector'"
+            )
+        entity = env.scene[self.cfg.entity_name]
+        upvector = read_plan.sensor_tensor_views(entity, ("torso_upvector",)).values[
+            "torso_upvector"
+        ]
+        body = read_plan.body_tensor_view(self.cfg.entity_name, (self.cfg.root_body_name,))
+        return (upvector[:, 2] < self._tilt_threshold) | (
+            body.pos_w[:, 0, 2] < self._minimum_height
+        )
 
 
 class G1WalkManagerBasedEnv(_ConcreteManagerBasedRlEnv):
@@ -1093,7 +1472,13 @@ __all__ = [
     "G1PenaltyCurriculum",
     "G1VelocityCommand",
     "G1VelocityCommandCfg",
+    "G1WalkResetOwner",
+    "G1WalkResetOwnerCfg",
     "G1WalkManagerBasedEnv",
+    "G1WalkRewardPack",
+    "G1WalkTerminationPack",
+    "G1WalkTerminationPackCfg",
+    "G1WalkRewardPackCfg",
     "compute_feet_phase_contact_targets",
     "compute_feet_phase_height_targets",
     "feet_air_time",

@@ -202,6 +202,11 @@ class BaseAction(ActionTerm):
         self._raw_actions.copy_(actions)
         self._apply_affine(self._raw_actions, self._processed_actions)
 
+    def validate_actions(self) -> None:
+        """Validate the manager-owned raw action, not its affine projection."""
+        if not bool(torch.isfinite(self._raw_actions).all()):
+            raise ValueError(f"{type(self).__name__} received NaN or Inf actions")
+
     def _apply_affine(self, source: torch.Tensor, destination: torch.Tensor) -> None:
         destination.copy_(source)
         destination.mul_(self._scale).add_(self._offset)
@@ -211,19 +216,26 @@ class BaseAction(ActionTerm):
                 max=self._clip[..., 1],
             )
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         if env_ids is None:
             env_ids = slice(None)
         selector = self._reset_selector(env_ids)
         self._raw_actions[selector] = 0.0
 
-    def _reset_selector(self, env_ids: np.ndarray | slice) -> torch.Tensor | slice:
+    def _reset_selector(self, env_ids: torch.Tensor | np.ndarray | slice) -> torch.Tensor | slice:
         if isinstance(env_ids, slice):
             return env_ids
-        rows = torch.as_tensor(np.asarray(env_ids), device=self._device)
-        if rows.ndim != 1 or rows.dtype not in {torch.int32, torch.int64}:
+        if (
+            not isinstance(env_ids, torch.Tensor)
+            or env_ids.ndim != 1
+            or env_ids.dtype
+            not in {
+                torch.int32,
+                torch.int64,
+            }
+        ):
             raise TypeError(f"{type(self).__name__} reset rows must be 1-D integers")
-        return rows.to(torch.int64)
+        return env_ids.to(self._device, torch.int64)
 
     def _entity_values(self, values: torch.Tensor) -> np.ndarray:
         """Publish processed controls to the temporary NumPy Entity write boundary."""
@@ -255,6 +267,9 @@ class JointPositionAction(BaseAction):
             )
         self._target = np.empty((self.num_envs, self.action_dim), dtype=np.float32)
         self._tensor_target = torch.empty_like(self._processed_actions)
+        self._full_width_natural_target = self._target_ids.size == self._entity.num_joints and bool(
+            np.array_equal(self._target_ids, np.arange(self._entity.num_joints, dtype=np.intp))
+        )
 
     def apply_actions(self) -> None:
         control = self._entity.data.control_buffer
@@ -271,7 +286,12 @@ class JointPositionAction(BaseAction):
                 encoder_bias.index_select(1, self._target_index),
                 out=self._tensor_target,
             )
-            self._entity.set_joint_position_target(self._tensor_target, joint_ids=self._target_ids)
+            if self._full_width_natural_target:
+                self._entity.set_full_width_joint_position_target(self._tensor_target)
+            else:
+                self._entity.set_joint_position_target(
+                    self._tensor_target, joint_ids=self._target_ids
+                )
             return
         processed = self._entity_values(self._processed_actions)
         encoder_bias = self._entity.data.encoder_bias[:, self._target_ids]

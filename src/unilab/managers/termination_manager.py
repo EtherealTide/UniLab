@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import time
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
@@ -88,7 +89,7 @@ class TerminationManager(ManagerBase):
 
     # Methods.
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> dict[str, int]:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, int]:
         if env_ids is None:
             env_ids = slice(None)
         extras = {}
@@ -105,15 +106,28 @@ class TerminationManager(ManagerBase):
         return extras
 
     def compute(self) -> torch.Tensor:
+        timing = getattr(self, "last_step_timing_ms", None)
+        if timing is None:
+            timing = {}
+            self.last_step_timing_ms = timing
+        timing.clear()
         self._truncated_buf[:] = False
         self._terminated_buf[:] = False
+        dispatch_ms = 0.0
+        aggregation_ms = 0.0
         for name, term_cfg in zip(self._term_names, self._term_cfgs, strict=False):
+            dispatch_started = time.perf_counter()
             value = self._compute_term(name, term_cfg)
+            dispatch_ms += time.perf_counter() - dispatch_started
+            aggregation_started = time.perf_counter()
             if term_cfg.time_out:
                 self._truncated_buf |= value
             else:
                 self._terminated_buf |= value
             self._term_dones[name][:] = value
+            aggregation_ms += time.perf_counter() - aggregation_started
+        timing["update_state_termination_term_dispatch_ms"] = dispatch_ms * 1000.0
+        timing["update_state_termination_aggregation_ms"] = aggregation_ms * 1000.0
         return self._truncated_buf | self._terminated_buf
 
     def get_term(self, name: str) -> torch.Tensor:
@@ -153,7 +167,10 @@ class TerminationManager(ManagerBase):
                     f"TerminationManager term '{name}' returned device {value.device}, "
                     f"expected {self._device}."
                 )
-            result = value.clone()
+            if getattr(term_cfg.func, "returns_transient_tensor", False):
+                result = value
+            else:
+                result = value.clone()
         else:
             host = np.asarray(value)
             if host.dtype != np.bool_:
@@ -168,7 +185,7 @@ class TerminationManager(ManagerBase):
             )
         return result
 
-    def _reset_mask(self, env_ids: np.ndarray | slice) -> torch.Tensor:
+    def _reset_mask(self, env_ids: torch.Tensor | slice) -> torch.Tensor:
         if env_ids is None:
             return torch.ones(self.num_envs, dtype=torch.bool, device=self._device)
         if isinstance(env_ids, slice):
@@ -176,9 +193,17 @@ class TerminationManager(ManagerBase):
             return torch.zeros(self.num_envs, dtype=torch.bool, device=self._device).index_fill(
                 0, indices, True
             )
-        rows = torch.as_tensor(np.asarray(env_ids), device=self._device)
-        if rows.ndim != 1 or rows.dtype not in {torch.int32, torch.int64}:
+        if (
+            not isinstance(env_ids, torch.Tensor)
+            or env_ids.ndim != 1
+            or env_ids.dtype
+            not in {
+                torch.int32,
+                torch.int64,
+            }
+        ):
             raise TypeError("TerminationManager reset rows must be one-dimensional integers")
+        rows = env_ids.to(self._device)
         if rows.numel() and (rows.min() < 0 or rows.max() >= self.num_envs):
             raise IndexError(f"TerminationManager reset rows out of range: {rows.tolist()}")
         return torch.zeros(self.num_envs, dtype=torch.bool, device=self._device).index_fill(

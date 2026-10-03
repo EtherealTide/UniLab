@@ -199,7 +199,7 @@ def test_regex_scale_offset_clip_and_local_reset() -> None:
 
     np.testing.assert_allclose(action.processed_action, [[1.0, 5.5], [-1.0, -6.5]])
     np.testing.assert_array_equal(action.raw_action, raw)
-    action.reset(np.asarray([1], dtype=np.int32))
+    action.reset(torch.tensor([1], dtype=torch.int64))
     np.testing.assert_array_equal(action.raw_action[0], raw[0])
     np.testing.assert_array_equal(action.raw_action[1], 0.0)
 
@@ -266,6 +266,59 @@ def test_velocity_and_effort_actions_use_the_shared_joint_control_mapping(
     np.testing.assert_allclose(control[:, 1], raw[:, 0] * 2.0)
     np.testing.assert_allclose(control[:, 0], raw[:, 1] * 2.0)
     np.testing.assert_array_equal(control[:, 2], 0.0)
+
+
+def test_tensor_motion_control_stays_on_control_plane_with_default_bias() -> None:
+    from types import SimpleNamespace
+
+    from unilab.tasks.motion_tracking.common.manager_terms import (
+        MotionCommand,
+        MotionJointPositionAction,
+        MotionJointPositionActionCfg,
+    )
+
+    backend = _Backend()
+    control = torch.zeros((backend.num_envs, backend.num_actuators), dtype=torch.float32)
+    scene = EntityScene(
+        {
+            "robot": EntityCfg(
+                joint_names=("hip", "knee", "ankle"),
+                actuator_names=backend.actuator_names,
+            )
+        },
+        cast(SimBackend, backend),
+        control,
+    )
+    command = MotionCommand.__new__(MotionCommand)
+    command.joint_default_bias = torch.tensor(
+        [[0.2, -0.1, 0.0], [-0.2, 0.1, 0.0]], dtype=torch.float32
+    )
+    env = cast(
+        ManagerBasedRlEnv,
+        SimpleNamespace(
+            num_envs=backend.num_envs,
+            scene=scene,
+            command_manager=SimpleNamespace(get_term=lambda name: command),
+        ),
+    )
+    action = MotionJointPositionActionCfg(
+        entity_name="robot",
+        actuator_names=("hip|knee",),
+        command_name="motion",
+        scale=1.0,
+        use_default_offset=False,
+    ).build(env)
+    scene["robot"].data.encoder_bias[:, 0] = np.asarray([0.05, -0.05])
+
+    assert isinstance(action, MotionJointPositionAction)
+    action.process_actions(torch.tensor([[0.25, -0.5], [1.0, 1.5]], dtype=torch.float32))
+    action.apply_actions()
+
+    expected_hip = torch.tensor([0.25 + 0.2 - 0.05, 1.0 - 0.2 + 0.05])
+    expected_knee = torch.tensor([-0.5 - 0.1, 1.5 + 0.1])
+    torch.testing.assert_close(control[:, 1], expected_hip)
+    torch.testing.assert_close(control[:, 0], expected_knee)
+    torch.testing.assert_close(control[:, 2], torch.zeros_like(control[:, 2]))
 
 
 def test_relative_joint_position_action_reads_current_position_at_apply_time() -> None:

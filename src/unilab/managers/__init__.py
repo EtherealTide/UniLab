@@ -10,6 +10,9 @@ from unilab.managers._noise.noise_cfg import NoiseModelCfg as NoiseModelCfg
 from unilab.managers._noise.noise_cfg import (
     NoiseModelWithAdditiveBiasCfg as NoiseModelWithAdditiveBiasCfg,
 )
+from unilab.managers._noise.noise_cfg import (
+    SegmentwiseUniformNoiseCfg as SegmentwiseUniformNoiseCfg,
+)
 from unilab.managers._noise.noise_cfg import UniformNoiseCfg as UniformNoiseCfg
 from unilab.managers.action_manager import ActionManager as ActionManager
 from unilab.managers.action_manager import ActionTerm as ActionTerm
@@ -41,6 +44,10 @@ from unilab.managers.recorder_manager import NullRecorderManager as NullRecorder
 from unilab.managers.recorder_manager import RecorderManager as RecorderManager
 from unilab.managers.recorder_manager import RecorderTerm as RecorderTerm
 from unilab.managers.recorder_manager import RecorderTermCfg as RecorderTermCfg
+from unilab.managers.reset_owner import NullResetOwnerManager as NullResetOwnerManager
+from unilab.managers.reset_owner import ResetOwner as ResetOwner
+from unilab.managers.reset_owner import ResetOwnerCfg as ResetOwnerCfg
+from unilab.managers.reset_owner import ResetOwnerManager as ResetOwnerManager
 from unilab.managers.reward_manager import RewardManager as RewardManager
 from unilab.managers.reward_manager import RewardTermCfg as RewardTermCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg as SceneEntityCfg
