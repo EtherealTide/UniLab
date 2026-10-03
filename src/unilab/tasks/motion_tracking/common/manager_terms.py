@@ -1473,7 +1473,11 @@ class TensorMotionCommand(MotionCommand):
                 "reset_done_motion_reset_publish_ms": publish_ms,
             }
         )
+        sync_started = time.perf_counter()
         self._sync_tensor_sampler_state(rows)
+        self.last_reset_timing_ms["reset_done_motion_sampler_sync_ms"] = (
+            time.perf_counter() - sync_started
+        ) * 1000.0
 
     def _update_command(self, env_ids: torch.Tensor | None) -> None:
         self._tensor_post_compute_env_ids = env_ids
