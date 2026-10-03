@@ -183,6 +183,8 @@ class SegmentwiseUniformNoiseCfg(NoiseCfg):
     """Independent additive uniform noise with a bound for each final column."""
 
     ranges: tuple[SegmentRange, ...]
+    _lower_torch: torch.Tensor | None = None
+    _upper_torch: torch.Tensor | None = None
 
     def __post_init__(self):
         self.ranges = tuple((float(lower), float(upper)) for lower, upper in self.ranges)
@@ -199,9 +201,24 @@ class SegmentwiseUniformNoiseCfg(NoiseCfg):
         if isinstance(dtype, torch.dtype):
             if device is None:
                 raise ValueError("Torch segment noise requires a device")
-            lower = torch.as_tensor([range[0] for range in self.ranges], dtype=dtype, device=device)
-            upper = torch.as_tensor([range[1] for range in self.ranges], dtype=dtype, device=device)
-            return lower, upper
+            if (
+                self._lower_torch is not None
+                and self._upper_torch is not None
+                and self._lower_torch.device == device
+                and self._lower_torch.dtype == dtype
+                and self._upper_torch.device == device
+                and self._upper_torch.dtype == dtype
+            ):
+                lower_torch = self._lower_torch
+                upper_torch = self._upper_torch
+                return lower_torch, upper_torch
+            self._lower_torch = torch.as_tensor(
+                [range[0] for range in self.ranges], dtype=dtype, device=device
+            )
+            self._upper_torch = torch.as_tensor(
+                [range[1] for range in self.ranges], dtype=dtype, device=device
+            )
+            return self._lower_torch, self._upper_torch
         return (
             np.asarray([range[0] for range in self.ranges], dtype=dtype),
             np.asarray([range[1] for range in self.ranges], dtype=dtype),
