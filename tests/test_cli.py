@@ -204,7 +204,7 @@ def test_eval_mujoco_interactive_falls_back_to_sibling_owner(
     (scripts_dir / "play_interactive.py").write_text("", encoding="utf-8")
     owner_dir = tmp_path / "conf" / "ppo" / "task" / "go2_joystick_flat"
     owner_dir.mkdir(parents=True)
-    (owner_dir / "genesis.yaml").write_text("training:\n  sim_backend: genesis\n", encoding="utf-8")
+    (owner_dir / "mjwarp.yaml").write_text("training:\n  sim_backend: mjwarp\n", encoding="utf-8")
     monkeypatch.setattr(
         cli,
         "find_spec",
@@ -231,7 +231,7 @@ def test_eval_mujoco_interactive_falls_back_to_sibling_owner(
         "--task",
         "go2_joystick_flat",
         "--sim",
-        "genesis",
+        "mjwarp",
     ]
     assert "training.sim_backend=mujoco" in command
     assert "training.play_only=true" in command
@@ -372,47 +372,6 @@ def test_macos_mujoco_viser_eval_uses_current_python(
     )
 
     assert command[0] == sys.executable
-
-
-def test_eval_viser_render_mode_rejected_for_genesis(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    owner_dir = tmp_path / "conf" / "ppo" / "task" / "go2_joystick_flat"
-    owner_dir.mkdir(parents=True)
-    (owner_dir / "genesis.yaml").write_text("training:\n  sim_backend: genesis\n", encoding="utf-8")
-    _pretend_genesis_runtime(monkeypatch, available=True)
-
-    with pytest.raises(SystemExit, match="viser"):
-        cli.build_command(
-            mode="eval",
-            algo="ppo",
-            task="go2_joystick_flat",
-            sim="genesis",
-            overrides=[],
-            load_run="-1",
-            render_mode="viser",
-            root=tmp_path,
-        )
-
-
-def test_train_viser_render_mode_rejected_for_genesis(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    owner_dir = tmp_path / "conf" / "ppo" / "task" / "go2_joystick_flat"
-    owner_dir.mkdir(parents=True)
-    (owner_dir / "genesis.yaml").write_text("training:\n  sim_backend: genesis\n", encoding="utf-8")
-    _pretend_genesis_runtime(monkeypatch, available=True)
-
-    with pytest.raises(SystemExit, match="viser"):
-        cli.build_command(
-            mode="train",
-            algo="ppo",
-            task="go2_joystick_flat",
-            sim="genesis",
-            overrides=[],
-            render_mode="viser",
-            root=tmp_path,
-        )
 
 
 def test_train_viser_render_mode_routes_to_train_script(
@@ -1033,14 +992,14 @@ def _pretend_genesis_runtime(monkeypatch: pytest.MonkeyPatch, available: bool) -
     monkeypatch.setattr(genesis_deps, "genesis_dependencies_available", lambda: available)
 
 
-def test_genesis_without_extra_exits_with_install_hint(
+def test_genesis_runtime_is_shelved_before_dependency_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "scripts").mkdir()
     (tmp_path / "conf").mkdir()
-    _pretend_genesis_runtime(monkeypatch, available=False)
+    _pretend_genesis_runtime(monkeypatch, available=True)
 
-    with pytest.raises(SystemExit, match="uv sync --extra genesis"):
+    with pytest.raises(SystemExit, match="temporarily outside the tensor-only Manager runtime"):
         cli.build_command(
             mode="train",
             algo="ppo",
@@ -1049,31 +1008,6 @@ def test_genesis_without_extra_exits_with_install_hint(
             overrides=[],
             root=tmp_path,
         )
-
-
-def test_genesis_train_builds_owner_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (tmp_path / "scripts").mkdir(parents=True)
-    (tmp_path / "scripts" / "train_rsl_rl.py").write_text("", encoding="utf-8")
-    owner_dir = tmp_path / "conf" / "ppo" / "task" / "g1_walk_flat"
-    owner_dir.mkdir(parents=True)
-    (owner_dir / "genesis.yaml").write_text("training:\n  sim_backend: genesis\n", encoding="utf-8")
-    _pretend_genesis_runtime(monkeypatch, available=True)
-    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
-
-    command = cli.build_command(
-        mode="train",
-        algo="ppo",
-        task="g1_walk_flat",
-        sim="genesis",
-        overrides=["algo.num_envs=64"],
-        root=tmp_path,
-    )
-
-    assert command[1:] == [
-        str(tmp_path / "scripts" / "train_rsl_rl.py"),
-        "task=g1_walk_flat/genesis",
-        "algo.num_envs=64",
-    ]
 
 
 def _make_custom_algo_checkout(

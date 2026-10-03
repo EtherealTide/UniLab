@@ -5,10 +5,12 @@ from __future__ import annotations
 import importlib.util
 import queue
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import gymnasium as gym
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from uni_rl.ipc.dp_launcher import UNILAB_DP_LOG_DIR, UNILAB_DP_RANK, UNILAB_DP_WORLD_SIZE
@@ -53,6 +55,9 @@ def _offpolicy_cfg(overrides: list[str] | None = None, *, algo: str = "sac"):
 class _FakeEnv:
     obs_groups_spec = {"obs": 4, "critic": 6}
     action_space = gym.spaces.Box(-1.0, 1.0, shape=(2,))
+
+    def init_state(self):
+        return SimpleNamespace(obs={"obs": torch.zeros((1, 4)), "critic": torch.zeros((1, 6))})
 
     def close(self):
         return None
