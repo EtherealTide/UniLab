@@ -83,7 +83,7 @@ def test_gait_phase_advances_with_counter_and_resamples_per_init_mode():
     term.reset(torch.arange(4, dtype=torch.int64))
     phase = term(env)
     np.testing.assert_allclose(phase[:, 1] - phase[:, 0], np.pi, rtol=1.0e-6)
-    assert np.all(phase[:, 0] >= 0.0) and np.all(phase[:, 0] < 2.0 * np.pi)
+    assert bool(torch.all(phase[:, 0] >= 0.0)) and bool(torch.all(phase[:, 0] < 2.0 * np.pi))
 
     env.common_step_counter = 1
     advanced = term(env)

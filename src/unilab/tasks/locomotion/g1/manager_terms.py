@@ -273,7 +273,7 @@ def compute_feet_phase_contact_targets(
 
 @dataclass
 class _G1GaitContext:
-    phase: np.ndarray | torch.Tensor  # (num_envs, 2), radians in [0, 2*pi)
+    phase: torch.Tensor  # (num_envs, 2), radians in [0, 2*pi)
     delta: float  # 2*pi*frequency*ctrl_dt
     frequency: float
     init_mode: str
@@ -294,11 +294,7 @@ def _gait_context(env: _G1Env, term: str, frequency: float, init_mode: str) -> _
             * _real(term, "step_dt", env.step_dt, minimum=0.0, strict_minimum=True)
         )
         device = torch.device(env.device)
-        phase = (
-            torch.zeros((env.num_envs, 2), dtype=torch.float32, device=device)
-            if device.type == "cuda"
-            else np.zeros((env.num_envs, 2), dtype=get_global_dtype())
-        )
+        phase = torch.zeros((env.num_envs, 2), dtype=torch.float32, device=device)
         context = _G1GaitContext(
             phase=phase,
             delta=delta,
@@ -324,18 +320,9 @@ def _advance_gait(env: _G1Env, context: _G1GaitContext) -> np.ndarray | torch.Te
     counter = int(counter)
     if counter < context.last_counter:
         raise ValueError("G1 gait terms common_step_counter cannot move backwards")
-    two_pi = 2.0 * np.pi
-    if isinstance(context.phase, torch.Tensor):
-        steps = counter - context.last_counter
-        if steps:
-            phase = torch.remainder(context.phase + steps * context.delta, two_pi)
-            context.phase = phase
-        context.last_counter = counter
-        return context.phase
-    for _ in range(counter - context.last_counter):
-        context.phase = np.asarray(
-            np.fmod(context.phase + context.delta, two_pi), dtype=get_global_dtype()
-        )
+    steps = counter - context.last_counter
+    if steps:
+        context.phase = torch.remainder(context.phase + steps * context.delta, 2.0 * np.pi)
     context.last_counter = counter
     return context.phase
 
@@ -361,24 +348,38 @@ def _cached_gait_phase(env: _G1Env, context: _G1GaitContext) -> np.ndarray | tor
     return phase
 
 
-def _resample_gait(env: _G1Env, context: _G1GaitContext, env_ids: np.ndarray) -> None:
-    ids = np.asarray(env_ids, dtype=np.intp).reshape(-1)
-    count = len(ids)
+def _resample_gait(
+    env: _G1Env, context: _G1GaitContext, env_ids: torch.Tensor | np.ndarray
+) -> None:
+    device = context.phase.device
+    if isinstance(env_ids, torch.Tensor):
+        rows = env_ids.to(dtype=torch.int64, device=device)
+    else:
+        rows = torch.as_tensor(np.asarray(env_ids), dtype=torch.int64, device=device)
+    count = rows.numel()
     if count == 0:
         return
-    if context.init_mode == "independent":
-        left = env.rng.uniform(0.0, 2.0 * np.pi, size=(count,))
-        right = env.rng.uniform(0.0, 2.0 * np.pi, size=(count,))
+
+    rng_owner = getattr(env, "torch_rng", None)
+    if rng_owner is not None:
+        left = rng_owner.uniform(0.0, 2.0 * np.pi, (count,), dtype=torch.float32)
+        if context.init_mode == "independent":
+            right = rng_owner.uniform(0.0, 2.0 * np.pi, (count,), dtype=torch.float32)
+        else:
+            right = left + torch.pi
+        samples = torch.stack((left, right), dim=1)
     else:
-        left = env.rng.uniform(0.0, 2.0 * np.pi, size=(count,))
-        right = left + np.pi
-    samples = np.column_stack([left, right]).astype(get_global_dtype(), copy=False)
-    if isinstance(context.phase, torch.Tensor):
-        context.phase[torch.as_tensor(ids, device=context.phase.device)] = torch.from_numpy(
-            samples
-        ).to(device=context.phase.device, dtype=context.phase.dtype)
-    else:
-        context.phase[ids] = samples
+        # CPU/HOST_BRIDGE reference owners may still expose the legacy NumPy
+        # stream; upload the explicitly sampled selected rows once.
+        host_left = env.rng.uniform(0.0, 2.0 * np.pi, size=(count,))
+        if context.init_mode == "independent":
+            host_right = env.rng.uniform(0.0, 2.0 * np.pi, size=(count,))
+        else:
+            host_right = host_left + np.pi
+        samples = torch.as_tensor(
+            np.column_stack((host_left, host_right)), dtype=torch.float32, device=device
+        )
+    context.phase.index_copy_(0, rows, samples.to(dtype=context.phase.dtype))
 
 
 class G1GaitPhase(ManagerTermBase):
@@ -406,12 +407,12 @@ class G1GaitPhase(ManagerTermBase):
 
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         if env_ids is None:
-            ids = np.arange(self.num_envs, dtype=np.intp)
+            rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._env.device)
         elif isinstance(env_ids, slice):
-            ids = np.arange(self.num_envs, dtype=np.intp)[env_ids]
+            rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._env.device)[env_ids]
         else:
-            ids = env_ids.detach().cpu().numpy().astype(np.intp, copy=False).reshape(-1)
-        _resample_gait(cast("_G1Env", self._env), self._context, ids)
+            rows = env_ids.to(dtype=torch.int64, device=self._env.device).reshape(-1)
+        _resample_gait(cast("_G1Env", self._env), self._context, rows)
 
 
 class _GaitRewardTerm(_SensorTerm):
@@ -525,6 +526,10 @@ class _GaitRewardTerm(_SensorTerm):
                 left_target = torch.as_tensor(left_target, device=values.device)
                 right_target = torch.as_tensor(right_target, device=values.device)
             return values[:, 2], values[:, 5], values[:, 6], left_target, right_target
+        # HOST_BRIDGE reference terms still publish NumPy sensors. Convert the
+        # shared Torch phase target once at this explicit public boundary.
+        left_target = np.asarray(torch.as_tensor(left_target).cpu())
+        right_target = np.asarray(torch.as_tensor(right_target).cpu())
         return values[:, 2], values[:, 5], values[:, 6], left_target, right_target
 
 
