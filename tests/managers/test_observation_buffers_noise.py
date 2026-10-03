@@ -729,3 +729,8 @@ def test_observation_manager_publishes_step_phase_attribution() -> None:
     manager.last_step_timing_ms.update({"stale": 1.0})
     manager.compute(update_history=True)
     assert set(manager.last_step_timing_ms) == expected
+
+    child_keys = expected - {"update_state_observation_manager_residual_ms"}
+    assert manager.last_step_timing_ms["update_state_observation_manager_residual_ms"] <= sum(
+        manager.last_step_timing_ms[key] for key in child_keys
+    )

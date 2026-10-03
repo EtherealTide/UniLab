@@ -395,6 +395,15 @@ class ObservationManager(ManagerBase):
             timing = {}
             self.last_step_timing_ms = timing
         timing.clear()
+        child_keys = (
+            "update_state_observation_term_dispatch_ms",
+            "update_state_observation_validation_ms",
+            "update_state_observation_noise_ms",
+            "update_state_observation_transform_ms",
+            "update_state_observation_temporal_ms",
+            "update_state_observation_concatenation_ms",
+            "update_state_observation_boundary_ms",
+        )
         groups_started = time.perf_counter()
         obs_buffer: dict[str, torch.Tensor | dict[str, torch.Tensor]] = dict()
         # Cross-group sharing of identical term computations (issue #1351):
@@ -406,11 +415,19 @@ class ObservationManager(ManagerBase):
             obs_buffer[group_name] = self.compute_group(
                 group_name, update_history, env_ids, share_cache=share_cache
             )
+        groups_ms = time.perf_counter() - groups_started
+        cache_started = time.perf_counter()
         if env_ids is None:
             self._obs_buffer = obs_buffer
-        timing["update_state_observation_manager_residual_ms"] = (
-            time.perf_counter() - groups_started
-        ) * 1000.0
+        cache_ms = time.perf_counter() - cache_started
+        if env_ids is None:
+            # Exclude phases already published by nested compute_group calls.
+            # The remainder retains top-level group iteration, setup, timing
+            # calls, and any uninstrumented group branch; it is not GPU work.
+            child_ms = sum(float(timing[key]) for key in child_keys if key in timing)
+            timing["update_state_observation_manager_residual_ms"] = max(
+                (groups_ms + cache_ms - child_ms) * 1000.0, 0.0
+            )
         return obs_buffer
 
     def compute_group(
