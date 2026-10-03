@@ -167,7 +167,10 @@ class TerminationManager(ManagerBase):
                     f"TerminationManager term '{name}' returned device {value.device}, "
                     f"expected {self._device}."
                 )
-            result = value.clone()
+            if getattr(term_cfg.func, "returns_transient_tensor", False):
+                result = value
+            else:
+                result = value.clone()
         else:
             host = np.asarray(value)
             if host.dtype != np.bool_:

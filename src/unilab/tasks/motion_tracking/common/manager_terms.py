@@ -2743,6 +2743,7 @@ class MotionTerminationPack(ManagerTermBase):
     """Evaluate canonical anchor and end-effector failure terminations."""
 
     cfg: MotionTerminationPackCfg
+    returns_transient_tensor = True
 
     def __init__(self, cfg: MotionTerminationPackCfg, env: ManagerBasedRlEnv):
         super().__init__(env)
