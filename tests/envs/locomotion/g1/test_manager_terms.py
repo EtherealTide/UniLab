@@ -247,7 +247,9 @@ def test_penalty_curriculum_scales_only_negative_weights_and_tracks_episodes():
     assert state["penalty_scale"] == pytest.approx(0.5)
     assert env.reward_manager.get_term_cfg("pose").weight == pytest.approx(-0.25)
 
-    # Long episodes (> level_up_threshold=750 default) relax the scale.
+    # Long episodes (> level_up_threshold=750 default) relax the scale. The
+    # tracker remains cumulative within this term instance, matching the
+    # production reset cadence where both short and long episodes accumulate.
     env.episode_length_buf[:] = 1000
     state = term(cast(Any, env), torch.arange(4, dtype=torch.int64))
     assert state["penalty_scale"] == pytest.approx(0.5 * (1.0 + 0.001))

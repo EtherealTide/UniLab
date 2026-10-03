@@ -1051,7 +1051,7 @@ class G1PenaltyCurriculum(ManagerTermBase):
             minimum=0.0,
         )
         self._degree = _real(self.name, "degree", cfg.params.get("degree", 0.001), minimum=0.0)
-        self._tracker = EpisodeLengthTracker(env.num_envs)
+        self._tracker = EpisodeLengthTracker(env.num_envs, device=env.device)
         self._original_weights: dict[str, float] = {}
         for name in env.reward_manager.active_terms:
             weight = float(env.reward_manager.get_term_cfg(name).weight)
@@ -1087,31 +1087,31 @@ class G1PenaltyCurriculum(ManagerTermBase):
         if not isinstance(reset_buf, torch.Tensor):
             raise TypeError(f"{self.name} requires reset_buf to be a Torch tensor")
         done_ids = ids[reset_buf.index_select(0, ids)]
-        if isinstance(env.episode_length_buf, torch.Tensor):
-            if done_ids.numel() > 0:
-                self._tracker.update(
-                    env.episode_length_buf.index_select(0, done_ids).to(dtype=torch.float64)
-                )
-            return {
-                "average_episode_length": float(self._tracker.average_length),
-                "penalty_scale": float(self._current_scale),
-            }
+        episode_lengths = env.episode_length_buf
+        if not isinstance(episode_lengths, torch.Tensor):
+            raise TypeError(f"{self.name} requires episode_length_buf to be a Torch tensor")
         if done_ids.numel() > 0:
-            self._tracker.update(
-                torch.as_tensor(env.episode_length_buf[done_ids.numpy()], dtype=torch.float64)
-            )
-            average = self._tracker.average_length
-            if average < self._level_down_threshold:
+            self._tracker.update(episode_lengths.index_select(0, done_ids))
+
+        average = self._tracker.average
+        # Reward weights are public Python floats, so this is the unavoidable
+        # scalar publication boundary. It happens once per curriculum update,
+        # not once per tracker batch.
+        average_value = float(average.item())
+        changed = False
+        if done_ids.numel() > 0:
+            if average_value < self._level_down_threshold:
                 self._current_scale *= 1.0 - self._degree
-            elif average > self._level_up_threshold:
+                changed = True
+            elif average_value > self._level_up_threshold:
                 self._current_scale *= 1.0 + self._degree
-            self._current_scale = float(
-                np.clip(self._current_scale, self._min_scale, self._max_scale)
-            )
+                changed = True
+        if changed:
+            self._current_scale = min(max(self._current_scale, self._min_scale), self._max_scale)
             self._apply_scale()
         return {
-            "average_episode_length": float(self._tracker.average_length),
-            "penalty_scale": float(self._current_scale),
+            "average_episode_length": average_value,
+            "penalty_scale": self._current_scale,
         }
 
 
