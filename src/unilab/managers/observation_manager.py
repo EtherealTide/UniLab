@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -389,6 +390,12 @@ class ObservationManager(ManagerBase):
         if not update_history and self._obs_buffer is not None:
             return self._obs_buffer
 
+        timing = getattr(self, "last_step_timing_ms", None)
+        if timing is None:
+            timing = {}
+            self.last_step_timing_ms = timing
+        timing.clear()
+        groups_started = time.perf_counter()
         obs_buffer: dict[str, torch.Tensor | dict[str, torch.Tensor]] = dict()
         # Cross-group sharing of identical term computations (issue #1351):
         # within one compute() call, terms with the same func and params yield
@@ -401,6 +408,9 @@ class ObservationManager(ManagerBase):
             )
         if env_ids is None:
             self._obs_buffer = obs_buffer
+        timing["update_state_observation_manager_residual_ms"] = (
+            time.perf_counter() - groups_started
+        ) * 1000.0
         return obs_buffer
 
     def compute_group(
@@ -419,6 +429,16 @@ class ObservationManager(ManagerBase):
         obs_terms = zip(group_term_names, self._group_obs_term_cfgs[group_name], strict=False)
         if share_cache is None:
             share_cache = {}
+        timing = getattr(self, "last_step_timing_ms", None)
+        if timing is None:
+            timing = {}
+            self.last_step_timing_ms = timing
+        group_timing = timing if env_ids is None else None
+        dispatch_ms = 0.0
+        validation_ms = 0.0
+        noise_ms = 0.0
+        transform_ms = 0.0
+        temporal_ms = 0.0
         share_map = self._group_obs_term_share.get(group_name, {})
         # In the strict default policy a finite result is by far the common
         # case.  For concatenated groups, scan the assembled output once and
@@ -453,12 +473,15 @@ class ObservationManager(ManagerBase):
             if share_key is not None and share_key in share_cache:
                 obs = share_cache[share_key]
             else:
+                dispatch_started = time.perf_counter()
                 if selected_env_ids is not None and row_executor is not None:
                     obs = row_executor(self._env, selected_env_ids, **term_cfg.params)
                 else:
                     obs = term_cfg.func(self._env, **term_cfg.params)
+                dispatch_ms += time.perf_counter() - dispatch_started
                 if share_key is not None:
                     share_cache[share_key] = obs
+            validation_started = time.perf_counter()
             tensor_obs = isinstance(obs, torch.Tensor)
             if not tensor_obs and not isinstance(obs, np.ndarray):
                 raise TypeError(
@@ -488,7 +511,9 @@ class ObservationManager(ManagerBase):
                     f"{obs.shape}, expected ({expected_rows}, ...) with "
                     f"num_envs={self.num_envs}."
                 )
+            validation_ms += time.perf_counter() - validation_started
             fresh = False
+            transform_started = time.perf_counter()
             if row_scoped and row_executor is None:
                 # Slice before noise: reset-path noise is drawn for the reset
                 # rows only (issue #1349 removed the full-batch RNG-stream
@@ -500,14 +525,17 @@ class ObservationManager(ManagerBase):
                 else:
                     obs = obs[env_ids.detach().cpu().numpy()]
                 fresh = True
+            noise_started = time.perf_counter()
             if isinstance(term_cfg.noise, noise_cfg.NoiseCfg):
                 # Noise accepts either carrier and returns a fresh allocation.
                 obs = term_cfg.noise.apply(obs, rng=self._env.rng, torch_rng=self._torch_generator)
                 fresh = True
+                noise_ms += time.perf_counter() - noise_started
             elif isinstance(term_cfg.noise, noise_cfg.NoiseModelCfg):
                 # Noise models likewise return a fresh carrier allocation.
                 obs = self._group_obs_class_instances[group_name][term_name](obs)
                 fresh = True
+                noise_ms += time.perf_counter() - noise_started
             sanitizes_per_term = group_cfg.nan_check_per_term and group_cfg.nan_policy in (
                 "warn",
                 "sanitize",
@@ -576,6 +604,9 @@ class ObservationManager(ManagerBase):
                         scale = scale[env_ids]
                     host_obs = cast("np.ndarray", obs)
                     np.multiply(host_obs, scale, out=host_obs)
+            transform_ms += time.perf_counter() - transform_started
+
+            temporal_started = time.perf_counter()
 
             # Check for NaN/Inf before delay/history buffers (per-term checking).
             if (
@@ -613,6 +644,7 @@ class ObservationManager(ManagerBase):
                     group_obs[term_name] = circular_buffer.buffer
             else:
                 group_obs[term_name] = obs
+            temporal_ms += time.perf_counter() - temporal_started
 
         # Final NaN check for non-per-term checking.
         if not group_cfg.nan_check_per_term and group_cfg.nan_policy != "disabled":
@@ -629,6 +661,7 @@ class ObservationManager(ManagerBase):
                     )
 
         if self._group_obs_concatenate[group_name]:
+            concatenation_started = time.perf_counter()
             values = list(group_obs.values())
             if all(isinstance(value, torch.Tensor) for value in values):
                 result = torch.cat(
@@ -687,6 +720,11 @@ class ObservationManager(ManagerBase):
                     policy=group_cfg.nan_policy,
                     env_ids=env_ids if row_scoped else None,
                 )
+            if group_timing is not None:
+                group_timing["update_state_observation_concatenation_ms"] = (
+                    group_timing.get("update_state_observation_concatenation_ms", 0.0)
+                    + (time.perf_counter() - concatenation_started) * 1000.0
+                )
         else:
             result = group_obs
 
@@ -703,7 +741,32 @@ class ObservationManager(ManagerBase):
                 else:
                     result = result[env_ids.detach().cpu().numpy()]
 
-        return self._observations_to_tensor_boundary(result)
+        boundary_started = time.perf_counter()
+        public_result = self._observations_to_tensor_boundary(result)
+        if group_timing is not None:
+            group_timing["update_state_observation_term_dispatch_ms"] = (
+                group_timing.get("update_state_observation_term_dispatch_ms", 0.0)
+                + dispatch_ms * 1000.0
+            )
+            group_timing["update_state_observation_validation_ms"] = (
+                group_timing.get("update_state_observation_validation_ms", 0.0)
+                + validation_ms * 1000.0
+            )
+            group_timing["update_state_observation_noise_ms"] = (
+                group_timing.get("update_state_observation_noise_ms", 0.0) + noise_ms * 1000.0
+            )
+            group_timing["update_state_observation_transform_ms"] = (
+                group_timing.get("update_state_observation_transform_ms", 0.0)
+                + transform_ms * 1000.0
+            )
+            group_timing["update_state_observation_temporal_ms"] = (
+                group_timing.get("update_state_observation_temporal_ms", 0.0) + temporal_ms * 1000.0
+            )
+            group_timing["update_state_observation_boundary_ms"] = (
+                group_timing.get("update_state_observation_boundary_ms", 0.0)
+                + (time.perf_counter() - boundary_started) * 1000.0
+            )
+        return public_result
 
     @staticmethod
     def _reset_row_executor(

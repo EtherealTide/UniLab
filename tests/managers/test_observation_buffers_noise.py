@@ -691,3 +691,41 @@ def test_class_terms_are_never_shared_across_groups() -> None:
     )
     assert manager._group_obs_term_share["policy"] == {}
     assert manager._group_obs_term_share["critic"] == {}
+
+
+def test_observation_manager_publishes_step_phase_attribution() -> None:
+    manager = ObservationManager(
+        {
+            "policy": ObservationGroupCfg(
+                terms={
+                    "state": ObservationTermCfg(
+                        func=lambda env: env.obs,
+                        noise=UniformNoiseCfg(n_min=-0.1, n_max=0.1),
+                    )
+                },
+                enable_corruption=True,
+            ),
+            "critic": ObservationGroupCfg(
+                terms={"state": ObservationTermCfg(func=lambda env: env.obs)}
+            ),
+        },
+        FakeEnv(seed=3),
+    )
+    manager.compute(update_history=True)
+
+    expected = {
+        "update_state_observation_term_dispatch_ms",
+        "update_state_observation_validation_ms",
+        "update_state_observation_noise_ms",
+        "update_state_observation_transform_ms",
+        "update_state_observation_temporal_ms",
+        "update_state_observation_concatenation_ms",
+        "update_state_observation_boundary_ms",
+        "update_state_observation_manager_residual_ms",
+    }
+    assert set(manager.last_step_timing_ms) == expected
+    assert all(value >= 0.0 for value in manager.last_step_timing_ms.values())
+
+    manager.last_step_timing_ms.update({"stale": 1.0})
+    manager.compute(update_history=True)
+    assert set(manager.last_step_timing_ms) == expected

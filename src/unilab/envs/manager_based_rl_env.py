@@ -1167,6 +1167,9 @@ class ManagerBasedRlEnv(TorchEnv):
         phase_started = time.perf_counter()
 
         manager_obs = self.observation_manager.compute(update_history=True)
+        observation_timing = getattr(self.observation_manager, "last_step_timing_ms", {})
+        state.info["update_state_timing"].update(observation_timing)
+        timing.update(observation_timing)
         timing["update_state_observation_ms"] = (time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
 
