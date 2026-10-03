@@ -30,6 +30,9 @@ class RewardTermCfg(ManagerTermBaseCfg):
     weight: float
     """Weight multiplier for this reward term."""
 
+    reward_pack_names: tuple[str, ...] = ()
+    """Ordered outputs when ``func`` evaluates multiple terms in one carrier read."""
+
 
 class RewardManager(ManagerBase):
     """Manages reward computation by aggregating weighted reward terms.
@@ -121,9 +124,16 @@ class RewardManager(ManagerBase):
         dispatch_ms = 0.0
         aggregation_ms = 0.0
         scale = dt if self._scale_by_dt else 1.0
+        packed_targets = {
+            packed_name
+            for term_cfg in self._term_cfgs
+            for packed_name in term_cfg.reward_pack_names
+        }
         for term_idx, (name, term_cfg) in enumerate(
             zip(self._term_names, self._term_cfgs, strict=False)
         ):
+            if term_cfg.reward_pack_names or name in packed_targets:
+                continue
             if term_cfg.weight == 0.0:
                 self._step_reward[:, term_idx] = 0.0
                 continue
@@ -139,6 +149,43 @@ class RewardManager(ManagerBase):
             weighted = value * float(term_cfg.weight) * scale
             self._reward_buf += weighted
             self._step_reward[:, term_idx] = weighted / scale
+            aggregation_ms += time.perf_counter() - aggregation_started
+        for term_idx, term_cfg in enumerate(self._term_cfgs):
+            if not term_cfg.reward_pack_names:
+                continue
+            dispatch_started = time.perf_counter()
+            pack_name = self._term_names[term_idx]
+            pack_value = term_cfg.func(self._env, **term_cfg.params)
+            if not isinstance(pack_value, torch.Tensor):
+                raise TypeError(
+                    f"RewardManager pack term '{pack_name}' must return a torch.Tensor; "
+                    f"got {type(pack_value).__name__}"
+                )
+            if pack_value.dtype != torch.float32:
+                raise TypeError(
+                    f"RewardManager pack term '{pack_name}' returned dtype "
+                    f"{pack_value.dtype}, expected float32."
+                )
+            if pack_value.device != self._device:
+                raise ValueError(
+                    f"RewardManager pack term '{pack_name}' returned device "
+                    f"{pack_value.device}, expected {self._device}."
+                )
+            packed = pack_value
+            dispatch_ms += time.perf_counter() - dispatch_started
+            if packed.ndim != 2 or packed.shape[1] != len(term_cfg.reward_pack_names):
+                raise ValueError(
+                    f"RewardManager pack term '{self._term_names[term_idx]}' returned "
+                    f"shape {tuple(packed.shape)}; expected "
+                    f"({self.num_envs}, {len(term_cfg.reward_pack_names)})."
+                )
+            aggregation_started = time.perf_counter()
+            for offset, packed_name in enumerate(term_cfg.reward_pack_names):
+                target_idx = self._term_names.index(packed_name)
+                target_cfg = self._term_cfgs[target_idx]
+                weighted = packed[:, offset] * float(target_cfg.weight) * scale
+                self._reward_buf += weighted
+                self._step_reward[:, target_idx] = weighted / scale
             aggregation_ms += time.perf_counter() - aggregation_started
         finite_started = time.perf_counter()
         finite = bool(torch.isfinite(self._reward_buf).all())

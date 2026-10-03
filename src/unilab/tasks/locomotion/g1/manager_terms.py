@@ -9,6 +9,7 @@ privates.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, cast
 from weakref import WeakKeyDictionary
@@ -32,6 +33,7 @@ from unilab.envs.mdp.commands.velocity_command import (
 )
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
 from unilab.managers.reset_owner import ResetOwner, ResetOwnerCfg
+from unilab.managers.reward_manager import RewardTermCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
 from unilab.tasks.locomotion.common.manager_terms import SensorTermBase
 
@@ -1183,6 +1185,163 @@ class G1WalkResetOwner(ResetOwner):
         return {}
 
 
+@dataclass(kw_only=True)
+class G1WalkRewardPackCfg(RewardTermCfg):
+    """Fused canonical G1 walk reward family for tensor-resident owners."""
+
+    command_name: str = "twist"
+    entity_name: str = "robot"
+    tracking_lin_sigma: float = 0.25
+    tracking_ang_sigma: float = 0.25
+    gait_frequency: float = 1.5
+    gait_init_mode: str = "offset_phase"
+    swing_height: float = 0.09
+    feet_phase_sigma: float = 0.04
+    min_forward_speed: float = 0.0
+    pose_weights: tuple[float, ...] = tuple(1.0 for _ in range(29))
+
+
+_G1_WALK_REWARD_PACK_PARAMS: frozenset[str] = frozenset(
+    {
+        "command_name",
+        "entity_name",
+        "tracking_lin_sigma",
+        "tracking_ang_sigma",
+        "gait_frequency",
+        "gait_init_mode",
+        "swing_height",
+        "feet_phase_sigma",
+        "min_forward_speed",
+        "pose_weights",
+    }
+)
+
+
+class G1WalkRewardPack(ManagerTermBase):
+    """Evaluate the canonical walk reward family in one tensor carrier read.
+
+    This pack fuses the G1 owner's state-only per-step rewards: linear/angular
+    tracking, angular-xy and orientation penalties, action rate, weighted pose,
+    foot-orientation penalty, and phase tracking. Equations, weights, and
+    declaration order remain owned by ``RewardManager``; this owner only removes
+    duplicate carrier reads and intermediate per-term kernel launches.
+    """
+
+    returns_transient_tensor = True
+    last_step_timing_ms: dict[str, float] = {}
+
+    def __init__(self, cfg: G1WalkRewardPackCfg, env: _G1Env):
+        super().__init__(env)
+        if not isinstance(cfg, G1WalkRewardPackCfg):
+            raise TypeError("G1WalkRewardPack requires G1WalkRewardPackCfg")
+        unexpected = set(cfg.params) - _G1_WALK_REWARD_PACK_PARAMS
+        if unexpected:
+            raise TypeError(
+                f"G1WalkRewardPack received unsupported parameters: {sorted(unexpected)}"
+            )
+        self.cfg = cfg
+        self._device = torch.device(env.device)
+        self._command = _command(env, self.name, cfg.command_name)
+        self._gait_context = _gait_context(env, self.name, cfg.gait_frequency, cfg.gait_init_mode)
+        self._entity = cast("Entity", env.scene[cfg.entity_name])
+        self._pose_weights = torch.as_tensor(
+            cfg.pose_weights, dtype=torch.float32, device=self._device
+        )
+        if self._pose_weights.ndim != 1 or self._pose_weights.numel() == 0:
+            raise ValueError("G1WalkRewardPack pose_weights must be a non-empty vector")
+        self._tracking_lin_scale = cfg.tracking_lin_sigma * cfg.tracking_lin_sigma
+        self._tracking_ang_scale = cfg.tracking_ang_sigma * cfg.tracking_ang_sigma
+        self._feet_phase_scale = cfg.feet_phase_sigma
+
+    @property
+    def tensor_sensor_names(self) -> tuple[str, ...]:
+        return (
+            "pelvis_local_linvel",
+            "torso_gyro",
+            "torso_upvector",
+            *_FOOT_QUAT_SENSORS,
+            *_FOOT_POS_SENSORS,
+        )
+
+    def _read_sensors(self, env: _G1Env) -> dict[str, torch.Tensor]:
+        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        if read_plan is None or read_plan.device.type != self._device.type:
+            raise NotImplementedError(
+                "G1WalkRewardPack requires the declared tensor sensor read plan"
+            )
+        names = self.tensor_sensor_names
+        owner_sensors = set(read_plan.sensor_names.get(self.cfg.entity_name, ()))
+        if not set(names).issubset(owner_sensors):
+            missing = sorted(set(names) - owner_sensors)
+            raise NotImplementedError(f"G1WalkRewardPack requires device tensor sensors {missing}")
+        entity = env.scene[self.cfg.entity_name]
+        return cast(dict[str, torch.Tensor], read_plan.sensor_tensor_views(entity, names).values)
+
+    def __call__(self, env: _G1Env) -> torch.Tensor:
+        call_started = time.perf_counter()
+        values = self._read_sensors(env)
+        command = self._command
+        if not isinstance(command, torch.Tensor):
+            raise TypeError("G1WalkRewardPack requires a tensor command carrier")
+        linvel = values["pelvis_local_linvel"]
+        gyro = values["torso_gyro"]
+        upvector = values["torso_upvector"]
+        foot_quat = values[_FOOT_QUAT_SENSORS[0]]
+        for name in _FOOT_QUAT_SENSORS[1:]:
+            foot_quat = torch.cat((foot_quat, values[name]), dim=1)
+        foot_pos = values[_FOOT_POS_SENSORS[0]]
+        for name in _FOOT_POS_SENSORS[1:]:
+            foot_pos = torch.cat((foot_pos, values[name]), dim=1)
+        action_manager = cast(Any, self._env.action_manager)
+        joint_state = getattr(env.scene, "_tensor_read_plan", None)
+        if joint_state is None:
+            raise NotImplementedError("G1WalkRewardPack requires the tensor joint read plan")
+        joint_pos = joint_state.joint_tensor_view(self._entity).joint_pos
+        default = self._entity.data.default_joint_pos_torch(self._device)
+        phase = _cached_gait_phase(env, self._gait_context)
+        targets = compute_feet_phase_height_targets(phase, self.cfg.swing_height)
+        left_target = cast(torch.Tensor, targets[0])
+        right_target = cast(torch.Tensor, targets[1])
+
+        lin_error = torch.sum(torch.square(command[:, :2] - linvel[:, :2]), dim=1)
+        ang_error = torch.square(command[:, 2] - gyro[:, 2])
+        ang_xy_error = torch.sum(torch.square(gyro[:, :2]), dim=1)
+        ori_error = torch.sum(torch.square(upvector[:, :2]), dim=1)
+        action_delta = action_manager.action - action_manager.prev_action
+        action_error = torch.sum(torch.square(action_delta), dim=1)
+        pose_error = torch.sum(self._pose_weights * torch.square(joint_pos - default), dim=1)
+        foot_ori_error = (
+            torch.square(foot_quat[:, 1])
+            + torch.square(foot_quat[:, 2])
+            + torch.square(foot_quat[:, 5])
+            + torch.square(foot_quat[:, 6])
+        )
+        phase_error = torch.square(foot_pos[:, 2] - left_target) + torch.square(
+            foot_pos[:, 5] - right_target
+        )
+        forward_speed = linvel[:, 0]
+        gate = (torch.clamp(forward_speed, min=0.0) >= self.cfg.min_forward_speed).to(
+            dtype=torch.float32
+        )
+
+        outputs = [
+            torch.exp(-lin_error / self._tracking_lin_scale),
+            torch.exp(-ang_error / self._tracking_ang_scale),
+            ang_xy_error,
+            ori_error,
+            action_error,
+            pose_error,
+            foot_ori_error,
+            torch.exp(-phase_error / self._feet_phase_scale) * gate,
+            torch.ones_like(lin_error),
+        ]
+        result = torch.stack(outputs, dim=1)
+        self.last_step_timing_ms["update_state_reward_g1_walk_pack_call_ms"] = (
+            time.perf_counter() - call_started
+        ) * 1000.0
+        return result
+
+
 class G1WalkManagerBasedEnv(_ConcreteManagerBasedRlEnv):
     """Manager-Based G1 walk runtime."""
 
@@ -1235,6 +1394,8 @@ __all__ = [
     "G1WalkResetOwner",
     "G1WalkResetOwnerCfg",
     "G1WalkManagerBasedEnv",
+    "G1WalkRewardPack",
+    "G1WalkRewardPackCfg",
     "compute_feet_phase_contact_targets",
     "compute_feet_phase_height_targets",
     "feet_air_time",
