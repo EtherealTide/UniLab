@@ -88,6 +88,8 @@ UPDATE_STATE_DETAIL_TIMING_KEYS = (
     "update_state_reward_aggregation_ms",
     "update_state_reward_finite_validation_ms",
     "update_state_reward_manager_residual_ms",
+    "update_state_reward_motion_pack_call_ms",
+    "update_state_reward_penalty_pack_call_ms",
     "update_state_observation_term_dispatch_ms",
     "update_state_observation_validation_ms",
     "update_state_observation_noise_ms",

@@ -2640,6 +2640,7 @@ class MotionRewardPack(ManagerTermBase):
 
     cfg: MotionRewardPackCfg
     returns_transient_tensor = True
+    last_step_timing_ms: dict[str, float] = {}
 
     def __init__(self, cfg: MotionRewardPackCfg, env: ManagerBasedRlEnv):
         super().__init__(env)
@@ -2655,6 +2656,7 @@ class MotionRewardPack(ManagerTermBase):
         del env
         c = self.cfg
         command = self._command
+        call_started = time.perf_counter()
         _bind_compiled_motion_reward_pack()(
             cast(torch.Tensor, command.anchor_pos_w),
             cast(torch.Tensor, command.robot_anchor_pos_w),
@@ -2683,6 +2685,9 @@ class MotionRewardPack(ManagerTermBase):
             self._body_count,
             self._output,
         )
+        self.last_step_timing_ms["update_state_reward_motion_pack_call_ms"] = (
+            time.perf_counter() - call_started
+        ) * 1000.0
         return self._output
 
 
@@ -2691,6 +2696,7 @@ class MotionPenaltyRewardPack(ManagerTermBase):
 
     cfg: MotionPenaltyRewardPackCfg
     returns_transient_tensor = True
+    last_step_timing_ms: dict[str, float] = {}
 
     def __init__(self, cfg: MotionPenaltyRewardPackCfg, env: ManagerBasedRlEnv):
         super().__init__(env)
@@ -2725,6 +2731,7 @@ class MotionPenaltyRewardPack(ManagerTermBase):
         del env
         command = cast(TensorMotionCommand, self._command)
         action = cast(Any, self._env.action_manager)
+        call_started = time.perf_counter()
         _bind_compiled_motion_penalty_reward_pack()(
             cast(torch.Tensor, action.action),
             cast(torch.Tensor, action.prev_action),
@@ -2738,6 +2745,9 @@ class MotionPenaltyRewardPack(ManagerTermBase):
             self.cfg.undesired_contact_weight,
             self._output,
         )
+        self.last_step_timing_ms["update_state_reward_penalty_pack_call_ms"] = (
+            time.perf_counter() - call_started
+        ) * 1000.0
         return self._output
 
 

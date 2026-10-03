@@ -127,9 +127,14 @@ class RewardManager(ManagerBase):
             if term_cfg.weight == 0.0:
                 self._step_reward[:, term_idx] = 0.0
                 continue
+            term_timing = getattr(term_cfg.func, "last_step_timing_ms", None)
+            if term_timing is not None:
+                term_timing.clear()
             dispatch_started = time.perf_counter()
             value = self._compute_term(name, term_cfg, validate=False)
             dispatch_ms += time.perf_counter() - dispatch_started
+            if term_timing is not None:
+                timing.update(term_timing)
             aggregation_started = time.perf_counter()
             weighted = value * float(term_cfg.weight) * scale
             self._reward_buf += weighted
