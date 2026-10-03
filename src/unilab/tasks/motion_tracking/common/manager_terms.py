@@ -2639,6 +2639,7 @@ class MotionRewardPack(ManagerTermBase):
     """Evaluate the canonical motion reward family in one carrier read."""
 
     cfg: MotionRewardPackCfg
+    returns_transient_tensor = True
 
     def __init__(self, cfg: MotionRewardPackCfg, env: ManagerBasedRlEnv):
         super().__init__(env)
@@ -2689,6 +2690,7 @@ class MotionPenaltyRewardPack(ManagerTermBase):
     """Evaluate the canonical action, joint-limit, and contact penalties."""
 
     cfg: MotionPenaltyRewardPackCfg
+    returns_transient_tensor = True
 
     def __init__(self, cfg: MotionPenaltyRewardPackCfg, env: ManagerBasedRlEnv):
         super().__init__(env)

@@ -277,6 +277,33 @@ def test_reward_compute_publishes_phase_attribution(fake_env: FakeEnv) -> None:
     assert set(manager.last_step_timing_ms) == expected
 
 
+def test_transient_tensor_reward_opt_in_preserves_manager_buffers(fake_env: FakeEnv) -> None:
+    class TransientReward:
+        returns_transient_tensor = True
+        output: torch.Tensor | None = None
+
+        def __init__(self, cfg: RewardTermCfg, env: FakeEnv):
+            del cfg, env
+
+        def __call__(self, env: FakeEnv) -> torch.Tensor:
+            del env
+            self.output = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32)
+            return self.output
+
+    manager = RewardManager(
+        {"value": RewardTermCfg(func=TransientReward, weight=1.0)},
+        fake_env,
+        scale_by_dt=False,
+    )
+
+    manager.compute(dt=1.0)
+    original = manager.step_reward_means.clone()
+    assert manager.get_term_cfg("value").func.output is not None
+    manager.get_term_cfg("value").func.output.zero_()
+
+    torch.testing.assert_close(manager.step_reward_means, original)
+
+
 def test_tensor_manager_terms_require_declared_dtype(fake_env: FakeEnv) -> None:
     reward = RewardManager(
         {
