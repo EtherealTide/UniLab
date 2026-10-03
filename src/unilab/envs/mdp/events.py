@@ -1660,32 +1660,37 @@ def reset_root_state_uniform_tensor(
     origins_enabled = getattr(env, "_tensor_reset_env_origins_nonzero", None)
     pose_bounds_tensor = getattr(env, "_tensor_reset_pose_bounds", None)
     velocity_bounds_tensor = getattr(env, "_tensor_reset_velocity_bounds", None)
-    new_origins_tensor = torch.as_tensor(
-        np.array(env.scene.env_origins, dtype=np.float32, copy=True), device=device
+    bounds_key = getattr(env, "_tensor_reset_bounds_key", None)
+    origins_key = getattr(env, "_tensor_reset_env_origins_key", None)
+    new_origins_key = tuple(map(tuple, np.asarray(env.scene.env_origins, dtype=np.float32)))
+    new_bounds_key = (
+        (asset_cfg.name, tuple(sorted(pose_range.items())), tuple(sorted(velocity_range.items())))
+        if velocity_range is not None
+        else (asset_cfg.name, tuple(sorted(pose_range.items())), None)
     )
-    new_pose_bounds = _tensor_se3_bounds(pose_range).to(device=device)
-    new_velocity_bounds = _tensor_se3_bounds(velocity_range).to(device=device)
     if default_tensor is None or default_tensor.device != device:
         default_tensor = torch.as_tensor(
             np.array(default, copy=True, dtype=np.float32), device=device
         )
         env._tensor_reset_default_root_state = default_tensor
-    if origins_tensor is None or origins_tensor.device != device:
-        env._tensor_reset_env_origins = new_origins_tensor
-        origins_tensor = new_origins_tensor
+    if origins_tensor is None or origins_tensor.device != device or origins_key != new_origins_key:
+        origins_tensor = torch.as_tensor(
+            np.array(env.scene.env_origins, dtype=np.float32, copy=True), device=device
+        )
+        env._tensor_reset_env_origins = origins_tensor
+        setattr(env, "_tensor_reset_env_origins_key", new_origins_key)
         # Decide immutable origin applicability once on the cold path. A hot
         # ``max().item()`` would synchronize every selected reset.
         origins_enabled = bool(torch.not_equal(origins_tensor, 0.0).any().item())
         setattr(env, "_tensor_reset_env_origins_nonzero", origins_enabled)
-    if pose_bounds_tensor is None or not torch.equal(pose_bounds_tensor, new_pose_bounds):
+    if pose_bounds_tensor is None or bounds_key != new_bounds_key:
+        new_pose_bounds = _tensor_se3_bounds(pose_range).to(device=device)
+        new_velocity_bounds = _tensor_se3_bounds(velocity_range).to(device=device)
         env._tensor_reset_pose_bounds = new_pose_bounds
         pose_bounds_tensor = new_pose_bounds
-    if velocity_bounds_tensor is None or not torch.equal(
-        velocity_bounds_tensor, new_velocity_bounds
-    ):
         env._tensor_reset_velocity_bounds = new_velocity_bounds
         velocity_bounds_tensor = new_velocity_bounds
-
+        setattr(env, "_tensor_reset_bounds_key", new_bounds_key)
     reset_unit = torch.rand(
         (count, 2 * len(_SE3_KEYS)),
         dtype=torch.float32,
