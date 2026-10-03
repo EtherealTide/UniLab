@@ -1820,6 +1820,11 @@ class MotionJointPositionAction(JointPositionAction):
             return
         self._apply_affine(self._previous_raw_actions, self._processed_actions)
 
+    def validate_actions(self) -> None:
+        """Validate the current latency-adjusted raw input."""
+        if not bool(torch.isfinite(self._raw_actions).all()):
+            raise ValueError(f"{type(self).__name__} received NaN or Inf actions")
+
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         super().reset(env_ids)
         selector = (
