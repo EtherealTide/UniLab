@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import time
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -107,9 +108,18 @@ class RewardManager(ManagerBase):
         return {}
 
     def compute(self, dt: float) -> torch.Tensor:
+        timing = getattr(self, "last_step_timing_ms", None)
+        if timing is None:
+            timing = {}
+            self.last_step_timing_ms = timing
+        timing.clear()
         if not np.isfinite(dt) or (self._scale_by_dt and dt <= 0.0):
             raise ValueError(f"RewardManager received invalid dt {dt}.")
+        reset_started = time.perf_counter()
         self._reward_buf[:] = 0.0
+        reset_ms = time.perf_counter() - reset_started
+        dispatch_ms = 0.0
+        aggregation_ms = 0.0
         scale = dt if self._scale_by_dt else 1.0
         for term_idx, (name, term_cfg) in enumerate(
             zip(self._term_names, self._term_cfgs, strict=False)
@@ -117,11 +127,18 @@ class RewardManager(ManagerBase):
             if term_cfg.weight == 0.0:
                 self._step_reward[:, term_idx] = 0.0
                 continue
+            dispatch_started = time.perf_counter()
             value = self._compute_term(name, term_cfg, validate=False)
+            dispatch_ms += time.perf_counter() - dispatch_started
+            aggregation_started = time.perf_counter()
             weighted = value * float(term_cfg.weight) * scale
             self._reward_buf += weighted
             self._step_reward[:, term_idx] = weighted / scale
-        if not bool(torch.isfinite(self._reward_buf).all()):
+            aggregation_ms += time.perf_counter() - aggregation_started
+        finite_started = time.perf_counter()
+        finite = bool(torch.isfinite(self._reward_buf).all())
+        finite_ms = time.perf_counter() - finite_started
+        if not finite:
             finite = torch.isfinite(self._step_reward)
             for term_idx, name in enumerate(self._term_names):
                 if not bool(finite[:, term_idx].all()):
@@ -135,6 +152,10 @@ class RewardManager(ManagerBase):
                         f"environments {invalid_rows.tolist()}."
                     )
             raise ValueError("RewardManager returned a non-finite reward.")
+        timing["update_state_reward_term_dispatch_ms"] = dispatch_ms * 1000.0
+        timing["update_state_reward_aggregation_ms"] = aggregation_ms * 1000.0
+        timing["update_state_reward_finite_validation_ms"] = finite_ms * 1000.0
+        timing["update_state_reward_manager_residual_ms"] = reset_ms * 1000.0
         return self._reward_buf
 
     def step_reward_extras(self) -> dict[str, float]:
