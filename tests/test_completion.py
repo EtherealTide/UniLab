@@ -40,10 +40,10 @@ defaults:
 algo:
   algo_log_name: nodr_ppo
 """,
-        root / "conf" / "ppo" / "task" / "go1" / "genesis_lab.yaml": """
+        root / "conf" / "ppo" / "task" / "go1" / "mjwarp_lab.yaml": """
 training:
   task_name: Go1
-  sim_backend: genesis
+  sim_backend: mjwarp
 """,
         root / "conf" / "ppo" / "task" / "go2" / "mujoco_lab.yaml": """
 training:
@@ -251,7 +251,7 @@ def test_train_profile_value_position_completes_profile_names(tmp_path: Path) ->
             "--task",
             "go1",
             "--sim",
-            "genesis",
+            "mjwarp",
             "--profile",
             "",
         ],

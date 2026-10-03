@@ -423,6 +423,7 @@ def _build_sac_runner_with_dp_fakes(monkeypatch: pytest.MonkeyPatch, overrides: 
 
 def test_build_runner_single_rank_keeps_dp_sync_none(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv(UNILAB_DP_RANK, raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     kwargs = _build_sac_runner_with_dp_fakes(monkeypatch, [])
     assert kwargs["dp_sync"] is None
 
@@ -589,6 +590,7 @@ def _build_flashsac_runner_with_dp_fakes(monkeypatch: pytest.MonkeyPatch, overri
 
 def test_build_runner_single_rank_flashsac_keeps_dp_sync_none(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv(UNILAB_DP_RANK, raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     kwargs = _build_flashsac_runner_with_dp_fakes(monkeypatch, [])
     assert kwargs["dp_sync"] is None
     assert kwargs["collector_cpu_ids"] is None
