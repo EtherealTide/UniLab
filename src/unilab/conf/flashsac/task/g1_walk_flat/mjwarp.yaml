@@ -27,6 +27,10 @@ env:
   mjwarp_njmax: 256
   render_spacing: 2.0
   events:
+    reset_scene_to_default:
+      func: unilab.envs.mdp.reset_scene_to_default_tensor
+    reset_root_state_uniform:
+      func: unilab.envs.mdp.reset_root_state_uniform_tensor
     # Legacy mjwarp owners disable kp/kd and armature randomization.
     pd_gains: null
 reward:
