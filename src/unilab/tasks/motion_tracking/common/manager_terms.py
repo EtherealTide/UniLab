@@ -1382,6 +1382,7 @@ class TensorMotionCommand(MotionCommand):
             raise NotImplementedError("TensorMotionCommand reset requires the Manager Torch RNG")
         frames = self.tensor_sampler.sample_frames(rows, self._env.torch_rng.generator)
         sampler_ms = (time.perf_counter() - sampler_started) * 1000.0
+        sampler_dispatch_ms = getattr(self.tensor_sampler, "last_reset_dispatch_ms", 0.0)
         packet_started = time.perf_counter()
         packet = self._motion_packet(frames)
         packet_ms = (time.perf_counter() - packet_started) * 1000.0
@@ -1463,6 +1464,7 @@ class TensorMotionCommand(MotionCommand):
         self.last_reset_timing_ms.update(
             {
                 "reset_done_motion_sampler_ms": sampler_ms,
+                "reset_done_motion_sampler_dispatch_ms": sampler_dispatch_ms,
                 "reset_done_motion_packet_ms": packet_ms,
                 "reset_done_motion_reset_rng_ms": rng_ms,
                 "reset_done_motion_reset_values_ms": values_ms + root_values_ms,

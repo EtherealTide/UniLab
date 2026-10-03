@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 import torch
 
+from unilab.tasks.motion_tracking.common import tensor_sampler as mt
 from unilab.tasks.motion_tracking.common.motion_loader import MotionSampler
 from unilab.tasks.motion_tracking.common.tensor_sampler import TensorMotionSampler
 
@@ -142,3 +143,29 @@ def test_sampling_metrics_stay_device_scalars() -> None:
     assert sampler.sampling_top1_prob.device.type == "cpu"
     assert sampler.sampling_top1_bin.device.type == "cpu"
     assert bool(torch.isfinite(sampler.sampling_entropy))
+
+
+def test_sampling_dispatch_matches_eager_clip_lookup_and_publishes_timing() -> None:
+    sampler = _sampler(initial_frames=np.asarray([0, 1, 2, 3], dtype=np.int32))
+    rows = torch.tensor([1, 3], dtype=torch.int64)
+    frames = torch.tensor([31, 7], dtype=torch.int32)
+
+    mt._bind_compiled_sampling_dispatch()(
+        rows,
+        frames,
+        sampler._clip_offsets,
+        sampler._clip_end_frames,
+        sampler.current_frames,
+        sampler.current_clip_end_frames,
+    )
+
+    torch.testing.assert_close(
+        sampler.current_frames, torch.tensor([0, 31, 2, 7], dtype=torch.int32)
+    )
+    expected_ends = sampler._clip_end_frames[sampler._clip_indices(frames.to(dtype=torch.int64))]
+    torch.testing.assert_close(sampler.current_clip_end_frames[rows], expected_ends)
+
+    sampler.last_reset_dispatch_ms = 0.0
+    generator = torch.Generator(device="cpu").manual_seed(11)
+    sampler.sample_frames(rows, generator)
+    assert sampler.last_reset_dispatch_ms >= 0.0

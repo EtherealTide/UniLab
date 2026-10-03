@@ -8,10 +8,39 @@ on one Torch device and consume the Manager-owned Torch generator.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
 import torch
+
+_sampling_dispatch_compiled: Callable[..., None] | None = None
+
+
+def _sampling_dispatch_kernel(
+    rows: torch.Tensor,
+    frames: torch.Tensor,
+    clip_offsets: torch.Tensor,
+    clip_end_frames: torch.Tensor,
+    current_frames: torch.Tensor,
+    current_clip_end_frames: torch.Tensor,
+) -> None:
+    current_frames.index_copy_(0, rows, frames)
+    clip_indices = torch.searchsorted(clip_offsets, frames.to(dtype=torch.int64), right=True)
+    clip_indices.sub_(1).clamp_(min=0)
+    current_clip_end_frames.index_copy_(0, rows, clip_end_frames.index_select(0, clip_indices))
+
+
+def _bind_compiled_sampling_dispatch() -> Callable[..., None]:
+    global _sampling_dispatch_compiled
+    if _sampling_dispatch_compiled is not None:
+        return _sampling_dispatch_compiled
+    if not (hasattr(torch, "compile") and hasattr(torch.compiler, "is_compiling")):
+        _sampling_dispatch_compiled = _sampling_dispatch_kernel
+        return _sampling_dispatch_compiled
+    _sampling_dispatch_compiled = torch.compile(_sampling_dispatch_kernel, dynamic=True)
+    return _sampling_dispatch_compiled
 
 
 @dataclass
@@ -102,6 +131,7 @@ class TensorMotionSampler:
         return self._bin_failed
 
     def sample_frames(self, rows: torch.Tensor, torch_rng: torch.Generator | None) -> torch.Tensor:
+        dispatch_started = time.perf_counter()
         if rows.ndim != 1 or rows.dtype != torch.int64 or rows.device != self.device:
             raise ValueError("TensorMotionSampler rows must be one-dimensional int64 device rows")
         if torch_rng is None:
@@ -130,15 +160,19 @@ class TensorMotionSampler:
             )
             frames = torch.where(use_start, torch.zeros_like(uniform_frames), uniform_frames)
 
-        self.current_frames.index_copy_(0, rows, frames)
-        clip_indices = self._clip_indices(frames)
-        self.current_clip_end_frames.index_copy_(
-            0, rows, self._clip_end_frames.index_select(0, clip_indices)
+        _bind_compiled_sampling_dispatch()(
+            rows,
+            frames,
+            self._clip_offsets,
+            self._clip_end_frames,
+            self.current_frames,
+            self.current_clip_end_frames,
         )
         if probabilities is not None:
             self._publish_sampling_metrics(probabilities)
         elif self.mode == "mixed":
             self._publish_mixed_metrics()
+        self.last_reset_dispatch_ms = (time.perf_counter() - dispatch_started) * 1000.0
         return frames
 
     def update_failure_stats(self, terminated: torch.Tensor) -> None:

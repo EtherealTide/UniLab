@@ -140,6 +140,7 @@ ENV_STEP_TIMING_KEYS = (
     "reset_done_command_metrics_ms",
     "reset_done_command_resample_ms",
     "reset_done_motion_sampler_ms",
+    "reset_done_motion_sampler_dispatch_ms",
     "reset_done_motion_packet_ms",
     "reset_done_motion_reset_rng_ms",
     "reset_done_motion_reset_values_ms",
@@ -237,6 +238,10 @@ ENV_STEP_TIMING_CSV_FIELDS = (
     ("reset_done_command_metrics_ms", "reset_done_command_metrics_ms"),
     ("reset_done_command_resample_ms", "reset_done_command_resample_ms"),
     ("reset_done_motion_sampler_ms", "reset_done_motion_sampler_ms"),
+    (
+        "reset_done_motion_sampler_dispatch_ms",
+        "reset_done_motion_sampler_dispatch_ms",
+    ),
     ("reset_done_motion_packet_ms", "reset_done_motion_packet_ms"),
     ("reset_done_motion_reset_rng_ms", "reset_done_motion_reset_rng_ms"),
     ("reset_done_motion_reset_values_ms", "reset_done_motion_reset_values_ms"),
