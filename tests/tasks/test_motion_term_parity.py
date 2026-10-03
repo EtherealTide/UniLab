@@ -1354,3 +1354,17 @@ def test_motion_reward_packs_publish_owner_call_timing(
 
     assert set(term.last_step_timing_ms) == {"update_state_reward_motion_pack_call_ms"}
     assert term.last_step_timing_ms["update_state_reward_motion_pack_call_ms"] >= 0.0
+
+
+def test_motion_reset_owner_preserves_transaction_row_identity() -> None:
+    transaction_rows = torch.tensor([1, 3], dtype=torch.int64)
+    owner = mt.MotionResetOwner.__new__(mt.MotionResetOwner)
+    owner._device = torch.device("cpu")
+    owner._env = SimpleNamespace(_reset_state=SimpleNamespace(_tensor_rows=transaction_rows))
+
+    rows = owner._normalize_rows(transaction_rows)
+
+    assert rows is transaction_rows
+    assert rows.data_ptr() == transaction_rows.data_ptr()
+    distinct = torch.tensor([1, 3], dtype=torch.int64)
+    assert owner._normalize_rows(distinct) is distinct
