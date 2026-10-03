@@ -31,6 +31,7 @@ from unilab.envs.mdp.commands.velocity_command import (
     UniformVelocityCommandCfg,
 )
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
+from unilab.managers.reset_owner import ResetOwner, ResetOwnerCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
 from unilab.tasks.locomotion.common.manager_terms import SensorTermBase
 
@@ -1121,6 +1122,67 @@ class G1PenaltyCurriculum(ManagerTermBase):
 # ---------------------------------------------------------------------------
 
 
+class G1WalkResetOwnerCfg(ResetOwnerCfg):
+    """Fuse the selected-reset lifecycle for the canonical G1 walk command."""
+
+    command_name: str = "twist"
+
+
+class G1WalkResetOwner(ResetOwner):
+    """Own the tensor G1 command reset and skip redundant host validations.
+
+    The walk command is sampled from bounded Torch uniforms and the G1 dead-zone
+    write is bounded by construction. Re-running the generic full-command
+    finite synchronization after that device-resident transaction only adds a
+    device synchronization on the reset hot path.
+    """
+
+    def __init__(self, cfg: G1WalkResetOwnerCfg, env: _G1Env):
+        super().__init__(cfg, env)
+        command_manager = getattr(env, "command_manager", None)
+        if command_manager is None:
+            raise KeyError("G1WalkResetOwner requires a configured command manager")
+        try:
+            command = command_manager.get_term(cfg.command_name)
+        except (AttributeError, KeyError) as exc:
+            raise KeyError(
+                f"G1WalkResetOwner command term '{cfg.command_name}' is not configured"
+            ) from exc
+        if not isinstance(command, UniformVelocityCommand):
+            raise TypeError("G1WalkResetOwner requires a UniformVelocityCommand term")
+        if getattr(env, "torch_rng", None) is None:
+            raise NotImplementedError("G1WalkResetOwner requires the Manager Torch RNG")
+
+    def _rows(self, env_ids: torch.Tensor | slice | None) -> torch.Tensor:
+        device = torch.device(getattr(self._env, "device", torch.device("cpu")))
+        if isinstance(env_ids, torch.Tensor):
+            return env_ids.to(dtype=torch.int64, device=device)
+        num_envs = int(getattr(self._env, "num_envs", 0))
+        return torch.arange(num_envs, dtype=torch.int64, device=device)
+
+    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+        env = cast("_G1Env", self._env)
+        rows = self._rows(env_ids)
+        extras, _commands = cast(
+            Any,
+            env.command_manager,
+        ).reset_command_state(
+            rows,
+            publish_metrics=False,
+            validate_commands=False,
+        )
+        return cast(dict[str, float], extras)
+
+    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+        env = cast("_G1Env", self._env)
+        rows = self._rows(env_ids)
+        cast(Any, env.action_manager).clear_action_state(rows)
+        clear_metrics = getattr(env.metrics_manager, "clear_episode_state", None)
+        if callable(clear_metrics):
+            clear_metrics(rows)
+        return {}
+
+
 class G1WalkManagerBasedEnv(_ConcreteManagerBasedRlEnv):
     """Manager-Based G1 walk runtime."""
 
@@ -1170,6 +1232,8 @@ __all__ = [
     "G1PenaltyCurriculum",
     "G1VelocityCommand",
     "G1VelocityCommandCfg",
+    "G1WalkResetOwner",
+    "G1WalkResetOwnerCfg",
     "G1WalkManagerBasedEnv",
     "compute_feet_phase_contact_targets",
     "compute_feet_phase_height_targets",
