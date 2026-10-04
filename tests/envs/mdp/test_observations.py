@@ -298,6 +298,7 @@ def test_named_sensor_terms_bind_once_and_only_read_cached_views() -> None:
     assert isinstance(gravity_term, mdp.projected_gravity_from_sensor)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_cuda_manager_names_every_non_tensor_observation_term() -> None:
     env, _ = _env()
     cast(Any, env).device = torch.device("cuda", index=torch.cuda.current_device())
