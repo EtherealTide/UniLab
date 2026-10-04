@@ -11,7 +11,6 @@ from unilab.base.config_adapter import BackendAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
 from unilab.base.variants import FixedModelVariantCatalogCfg, FixedModelVariantCfg
 from unilab.envs import ManagerBasedRlEnvCfg
-from unilab.tasks.motion_tracking.common.manager_terms import TensorMotionCommandCfg
 from unilab.tasks.motion_tracking.g1 import flashsac_owner_contract as module
 
 ROOT_DIR = Path(__file__).parents[2]
@@ -50,12 +49,6 @@ def test_flashsac_motrix_owner_uses_generic_manager_runtime() -> None:
 def test_reusable_tensor_runtime_accepts_second_g1_manager_owner() -> None:
     cfg = _materialize_task("g1_motion_tracking/mjwarp_tensor", algo="sac")
     assert module._torch_g1_flashsac_owner_identity(cfg) == module._TORCH_G1_SAC_OWNER_IDENTITY_V2
-
-
-def test_reusable_tensor_runtime_accepts_second_manager_based_task() -> None:
-    cfg = _materialize_task("g1_flip_tracking/mjwarp_tensor", algo="sac")
-    assert cfg.commands["motion"].sampling_mode == "mixed"
-    assert isinstance(cfg.commands["motion"], TensorMotionCommandCfg)
 
 
 @pytest.mark.parametrize(

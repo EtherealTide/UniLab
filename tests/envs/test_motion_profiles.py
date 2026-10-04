@@ -24,8 +24,6 @@ _ROOT = Path(__file__).parents[2]
 
 _PROFILE_IDENTITIES = (
     "G1BoxTracking",
-    "G1FlipTracking",
-    "G1FlipTrackingSAC",
     "G1WBTObs",
     "X2WallFlipTracking",
 )
@@ -37,7 +35,6 @@ _PPO_PROFILES = (
         "scene_flat_with_largebox.xml",
         "sub3_largebox_003_boxconverted.npz",
     ),
-    ("g1_flip_tracking", "G1FlipTracking", "scene_flat.xml", "flip_360_001__A304.npz"),
     (
         "x2_wall_flip_tracking",
         "X2WallFlipTracking",
@@ -46,32 +43,15 @@ _PPO_PROFILES = (
     ),
 )
 
-_APPO_PROFILES = tuple(
-    profile
-    for profile in _PPO_PROFILES
-    if "box" not in profile[0] and not profile[0].startswith("x2")
-)
+_SAC_PROFILES = (("g1_wbt_obs", "G1WBTObs", "scene_flat.xml", "dance1_subject2_part.npz"),)
 
-_SAC_PROFILES = (
-    ("g1_flip_tracking", "G1FlipTrackingSAC", "scene_flat.xml", "flip_360_001__A304.npz"),
-    ("g1_wbt_obs", "G1WBTObs", "scene_flat.xml", "dance1_subject2_part.npz"),
-)
-
-_OWNER_CASES = (
-    tuple(
-        ("ppo", task, backend, identity, scene, motion)
-        for task, identity, scene, motion in _PPO_PROFILES
-        for backend in ("mujoco", "motrix")
-    )
-    + tuple(
-        ("appo", task, backend, identity, scene, motion)
-        for task, identity, scene, motion in _APPO_PROFILES
-        for backend in ("mujoco", "motrix")
-    )
-    + tuple(
-        ("sac", task, "mujoco", identity, scene, motion)
-        for task, identity, scene, motion in _SAC_PROFILES
-    )
+_OWNER_CASES = tuple(
+    ("ppo", task, backend, identity, scene, motion)
+    for task, identity, scene, motion in _PPO_PROFILES
+    for backend in ("mujoco", "motrix")
+) + tuple(
+    ("sac", task, "mujoco", identity, scene, motion)
+    for task, identity, scene, motion in _SAC_PROFILES
 )
 
 _LEGACY_G1_ACTION_SCALE = (
@@ -83,10 +63,6 @@ _LEGACY_G1_ACTION_SCALE = (
     (r".*_(shoulder_(pitch|roll|yaw)|elbow|wrist_roll)_joint", 0.43857731392336724),
     (r".*_wrist_(pitch|yaw)_joint", 0.07450087032950714),
 )
-
-_LEGACY_SCALAR_ACTION_SCALE = {
-    ("ppo", "g1_flip_tracking", "motrix"): 0.25,
-}
 
 
 def _compose_owner(config_root: str, task: str, backend: str) -> Any:
@@ -194,7 +170,7 @@ def test_motion_profile_action_scale_matches_legacy_runtime(
     _, cfg, _ = _materialize_profile(config_root, task, backend, identity)
     joint_names, actual = _resolved_action_scale(cfg)
 
-    scalar = _LEGACY_SCALAR_ACTION_SCALE.get((config_root, task, backend))
+    scalar: float | None = None
     if "box_tracking" in task or task == "x2_wall_flip_tracking":
         scalar = 0.25
     elif "wbt_obs" in task:
@@ -206,49 +182,6 @@ def test_motion_profile_action_scale_matches_legacy_runtime(
     )
 
     np.testing.assert_allclose(actual, expected)
-
-
-@pytest.mark.parametrize(
-    (
-        "task",
-        "backend",
-        "adaptive_kl_factor",
-        "adaptive_lr_factor",
-        "enable_compile",
-        "steps_per_env",
-        "replay_queue_size",
-    ),
-    (
-        ("g1_flip_tracking", "mujoco", 2.0, 1.5, True, 24, None),
-        ("g1_flip_tracking", "motrix", 2.0, 1.5, True, 24, None),
-    ),
-)
-def test_appo_profiles_preserve_training_owner_contract(
-    task: str,
-    backend: str,
-    adaptive_kl_factor: float,
-    adaptive_lr_factor: float,
-    enable_compile: bool,
-    steps_per_env: int,
-    replay_queue_size: int | None,
-) -> None:
-    owner = _compose_owner("appo", task, backend)
-
-    assert owner.algo.algorithm.adaptive_kl_factor == pytest.approx(adaptive_kl_factor)
-    assert owner.algo.algorithm.adaptive_lr_factor == pytest.approx(adaptive_lr_factor)
-    assert owner.algo.algorithm.enable_compile is enable_compile
-    assert owner.algo.steps_per_env == steps_per_env
-    assert owner.training.replay_queue_size == replay_queue_size
-
-
-@pytest.mark.parametrize("task", ("g1_flip_tracking",))
-def test_ppo_motrix_flip_profiles_keep_actor_normalization_disabled(task: str) -> None:
-    owner = _compose_owner("ppo", task, "motrix")
-
-    assert owner.algo.actor.obs_normalization is False
-    assert owner.algo.critic.obs_normalization is False
-    assert owner.algo.obs_groups.actor == ["actor"]
-    assert owner.algo.obs_groups.critic == ["critic"]
 
 
 @pytest.mark.parametrize(
@@ -278,11 +211,10 @@ def test_all_motion_profiles_have_one_manager_factory_and_both_backends() -> Non
         assert set(metadata[identity]["available_backends"]) >= {"mujoco", "motrix"}
 
 
-def test_box_flip_wbt_and_x2_profiles_keep_only_owner_differences() -> None:
+def test_box_wbt_and_x2_profiles_keep_only_owner_differences() -> None:
     from unilab.tasks.motion_tracking.g1.manager_terms import BoxMotionCommandCfg
 
     _, box, _ = _materialize_profile("ppo", "g1_box_tracking", "mujoco", "G1BoxTracking")
-    _, flip, _ = _materialize_profile("sac", "g1_flip_tracking", "mujoco", "G1FlipTrackingSAC")
     _, wbt, _ = _materialize_profile("sac", "g1_wbt_obs", "mujoco", "G1WBTObs")
     _, x2, _ = _materialize_profile("ppo", "x2_wall_flip_tracking", "mujoco", "X2WallFlipTracking")
 
@@ -292,9 +224,6 @@ def test_box_flip_wbt_and_x2_profiles_keep_only_owner_differences() -> None:
     assert box.observations["actor"].terms["base_ang_vel"].params == {"sensor_name": "pelvis_gyro"}
     assert box.observations["critic"].terms["base_ang_vel"].params == {"sensor_name": "pelvis_gyro"}
     assert box.observations["critic"].terms["object_state"] is not None
-
-    assert flip.commands["motion"].params.sampling_mode == "mixed"
-    assert flip.commands["motion"].params.sampling_start_ratio == pytest.approx(0.1)
 
     actor_terms = wbt.observations["actor"].terms
     critic_terms = wbt.observations["critic"].terms
