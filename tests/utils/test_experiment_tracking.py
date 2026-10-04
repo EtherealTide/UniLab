@@ -352,7 +352,7 @@ def test_experiment_tracker_writes_local_run_files(tmp_path, monkeypatch):
         task_name="G1MotionTracking",
         sim_backend="mujoco",
         training_cfg={"logger": "tensorboard"},
-        full_cfg={"training": {"logger": "tensorboard"}},
+        full_cfg={"training": {"logger": "tensorboard", "cuda_process_sharing": None}},
         device="cuda",
         collector_device="cpu",
         seed_info={
@@ -375,6 +375,7 @@ def test_experiment_tracker_writes_local_run_files(tmp_path, monkeypatch):
     assert run_config["run"]["configured_seed_source"] == "algo.seed"
     assert run_config["run"]["effective_seed"] == 5
     assert run_config["run"]["hardware"] == hardware
+    assert run_config["config"]["training"]["cuda_process_sharing"] is None
     assert run_summary["final_mean_reward"] == 12.3
     assert run_summary["completed_iterations"] == 10
     assert run_summary["configured_seed"] == 5

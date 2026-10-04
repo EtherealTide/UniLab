@@ -42,6 +42,7 @@ the MJWarp owner inherits the MuJoCo FlashSAC owner and resolves to:
 | Replay-ingress depth | `training.replay_ingress_depth=2` |
 | Replay-ingress slot rows | `null`, resolving to `algo.num_envs` |
 | Collector metric interval | `training.collector_metrics_interval=100` |
+| CUDA process sharing | `training.cuda_process_sharing=null` |
 | Scene | `src/unilab/assets/robots/g1/scene_flat.xml` |
 | Motion | `motions/g1/dance1_subject2_part.npz` |
 
@@ -86,6 +87,56 @@ export CUDA_VISIBLE_DEVICES=<single-host-cuda-ordinal>
 
 All CUDA ordinals inside trainer processes are relative to that mask. Do not
 add more devices: M11 is single-GPU only.
+
+## CUDA MPS Execution Sharing
+
+`training.cuda_process_sharing` is an explicit execution-sharing mode for the
+already-required rank-local topology. It is not a backend switch and does not
+replace `--sim mjwarp` or owner YAML selection.
+
+The default remains `null`: learner and collector keep independent CUDA contexts.
+For the supported single-host, single-rank MJWarp off-policy topology, request
+CUDA MPS with:
+
+```bash
+training.cuda_process_sharing=mps
+```
+
+Start an existing control daemon under user-owned directories before training:
+
+```bash
+export CUDA_MPS_PIPE_DIRECTORY=/absolute/path/mps/pipe
+export CUDA_MPS_LOG_DIRECTORY=/absolute/path/mps/log
+mkdir -p "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY"
+nvidia-cuda-mps-control -d
+```
+
+UniLab validates, but never starts or stops, that daemon. An `mps` request must
+be Linux/NVIDIA CUDA, use MJWarp, resolve one physical GPU by UUID for learner
+and collector, have `world_size=1`, and reach a live control socket/FIFO and
+control daemon. Any unmet prerequisite fails before environment probing,
+learner construction, or collector spawn; there is no silent multi-context
+fallback. The error names the first prerequisite and the daemon start command.
+
+`run_config.json` records the configured owner value. A valid run's
+`run_summary.json` embeds `runtime_manifest.cuda_process_sharing` with the
+configured/effective mode, learner and collector devices, physical UUID
+evidence, control pipe, server PID, and validation state. The section is a
+runtime-manifest v1 producer diagnostic, not a stable scalar contract.
+
+MPS changes only GPU execution sharing. It does not change `env_steps_per_sync`,
+learner/collector placement, or training semantics. Multi-GPU DP remains
+unsupported until the separate DP gate and daemon topology decision are
+completed. CUDA MPS is host- and deployment-dependent: in shared containers,
+multi-user hosts, or restricted runners, control may be unavailable, and an
+explicit request fails closed rather than silently degrading.
+
+Stop the daemon after use:
+
+```bash
+export CUDA_MPS_PIPE_DIRECTORY=/absolute/path/mps/pipe
+echo quit | nvidia-cuda-mps-control
+```
 
 Check the runtime that will execute the benchmark:
 

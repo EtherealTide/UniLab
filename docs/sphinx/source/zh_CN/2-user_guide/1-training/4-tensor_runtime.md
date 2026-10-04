@@ -17,10 +17,12 @@ SAC、FlashSAC 与 WarpSAC 会在探测环境或构造 learner 之前解析所�
 | `training.collector_metrics_interval` | `1` | 正整数，最大 `10000` |
 | `training.replay_ingress_depth` | `2` | 正整数，最大 `16` |
 | `training.replay_ingress_slot_rows` | `null` | `1` 到 `algo.num_envs`；`null` 表示 `algo.num_envs` |
+| `training.cuda_process_sharing` | `null` | `null` 或单 rank MJWarp 显式 `mps` |
 | Learner 每次同步的行数 | `algo.batch_size * algo.updates_per_step` | 受 CUDA 显存预算约束 |
 
-所有值必须是精确的正整数。布尔值、字符串、浮点数、零和负数都会 fail
-closed。G1 Motion Tracking / MJWarp owner 仅有意将
+除 `training.cuda_process_sharing` 外，所有值必须是精确的正整数。布尔值、字符串、
+浮点数、零和负数都会 fail closed。`training.cuda_process_sharing` 只接受 `null`
+或显式字符串 `mps`。G1 Motion Tracking / MJWarp owner 仅有意将
 `collector_metrics_interval` 覆盖为 `100`；其他 tensor-runtime 默认值仍保持
 上表所示。
 
@@ -64,6 +66,8 @@ Runtime manifest 记录审计 run 所需的有效证据：
 - `inference_memory_budget` 记录有边界的 CUDA inference-ring 预算。
 - `tensor_memory_budget` 记录 CUDA inference、replay storage、replay ingress、
   learner batch 与 workspace 的组合预算计算。
+- owner 显式请求 `mps` 时，`cuda_process_sharing` 记录已验证的
+  execution-sharing 证据；默认 `null` 模式下该字段不存在。
 
 预算决策在 spawn 前写入 manifest。如果不安全的组合被拒绝，错误会指出具体
 设置，且相关进程不会被启动。
