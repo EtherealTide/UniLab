@@ -1030,6 +1030,20 @@ def test_flashsac_g1_motion_mujoco_tensor_command_roll_out() -> None:
                 state = env.step(torch.zeros((2, 29), dtype=torch.float32))
             assert state.obs["obs"].shape == (2, 160)
             assert torch.isfinite(state.obs["obs"]).all()
+            # Selected-row autoreset drives the tensor motion command through
+            # the packed host-bridge commit; it must not raise or step physics.
+            original_step = env.backend.step_tensor
+            step_calls = []
+
+            def count_step(*args, **kwargs):
+                step_calls.append(1)
+                return original_step(*args, **kwargs)
+
+            env.backend.step_tensor = count_step
+            env.reset(env_indices=torch.tensor([1], dtype=torch.int64))
+            assert not step_calls
+            state = env.step(torch.zeros((2, 29), dtype=torch.float32))
+            assert torch.isfinite(state.obs["obs"]).all()
         finally:
             env.close()
         print("[mujoco tensor motion rollout] OK")

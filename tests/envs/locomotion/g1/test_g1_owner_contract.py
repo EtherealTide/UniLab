@@ -482,6 +482,9 @@ def test_g1_walk_registries_are_manager_only() -> None:
             98,
             101,
             id="sac-newton",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA is unavailable"
+            ),
         ),
     ),
 )
@@ -538,6 +541,7 @@ def test_g1_registry_executes_real_manager_runtime(
         env.close()
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_g1_walk_newton_selected_reset_preserves_rows_and_rng() -> None:
     """The canonical Newton walk owner keeps selected reset row-scoped."""
     registry.ensure_registries()
