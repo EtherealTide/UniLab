@@ -34,9 +34,25 @@ from unisim.dr.types import (
     ResetRandomizationPayload,
 )
 
+import unilab.base.backend_factory as backend_factory
 from unilab.base.backend_factory import create_backend, env_backend_kwargs
 from unilab.base.base import EnvCfg
 from unilab.base.scene import SceneCfg
+
+
+@pytest.fixture(autouse=True)
+def _bypass_cuda_only_platform_gate(monkeypatch: pytest.MonkeyPatch):
+    """Exercise the adapter below the factory's CUDA-only platform gate.
+
+    The fail-closed gate (issue #1811 platform matrix) has dedicated coverage
+    in ``tests/base/test_cuda_backend_platform_preflight.py``.  These
+    fake-runtime suites intentionally run on CUDA-less hosts, so the gate is
+    bypassed here to keep the adapter behavior under test reachable.
+    """
+    monkeypatch.setattr(
+        backend_factory, "_validate_cuda_only_backend_platform", lambda *args, **kwargs: None
+    )
+
 
 from .genesis_fake_runtime import ACTUATED_DOFS, N_LINKS, NQ, NV, make_fake_genesis
 

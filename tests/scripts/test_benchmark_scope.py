@@ -7,7 +7,6 @@ BENCHMARK_ROOT = ROOT / "scripts" / "benchmark"
 MARKER = "HISTORICAL SHELVED-BACKEND BENCHMARK (#1811)"
 HISTORICAL_BENCHMARKS = (
     "benchmark_drake_performance.py",
-    "outputs/velb_compare/micro_velb.py",
     "physics/benchmark_isaacgym_fixed_variants.py",
     "physics/benchmark_motrix_body_state_ab.py",
     "physics/benchmark_motrix_set_state_ab.py",

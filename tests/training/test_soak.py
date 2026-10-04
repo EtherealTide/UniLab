@@ -98,6 +98,10 @@ def _run_with_summary(tmp_path: Path, summary: object) -> dict[str, object]:
 
 
 def test_g1_flashsac_soak_command_uses_owner_route(tmp_path: Path) -> None:
+    from importlib.util import find_spec
+
+    if find_spec("mujoco_warp") is None or find_spec("warp") is None:
+        pytest.skip("mjwarp extra is not installed")
     command = build_g1_flashsac_mjwarp_command(
         num_envs=16,
         iterations=3,
@@ -123,6 +127,10 @@ def test_g1_flashsac_soak_command_rejects_owned_override(tmp_path: Path) -> None
         )
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="soak resource sampling reads the Linux /proc process tree",
+)
 def test_soak_monitor_accepts_completed_run(tmp_path: Path) -> None:
     summary = _completed_summary()
 

@@ -35,12 +35,28 @@ from unisim.backend.isaacsim.dependencies import (
 from unisim.backend.isaacsim.scene_worker import _rotate
 from unisim.backend.isaacsim.worker import _resolve_articulation_root_prim_path
 
+import unilab.base.backend_factory as backend_factory
 from unilab.base.backend_factory import (
     _validate_isaacsim_tensor_cuda_ipc_runtime,
     create_backend,
 )
 from unilab.base.base import EnvCfg
 from unilab.base.scene import SceneCfg
+
+
+@pytest.fixture(autouse=True)
+def _bypass_cuda_only_platform_gate(monkeypatch: pytest.MonkeyPatch):
+    """Exercise the adapter below the factory's CUDA-only platform gate.
+
+    The fail-closed gate (issue #1811 platform matrix) has dedicated coverage
+    in ``tests/base/test_cuda_backend_platform_preflight.py``.  These
+    mock-worker suites intentionally run on CUDA-less hosts, so the gate is
+    bypassed here to keep the adapter behavior under test reachable.
+    """
+    monkeypatch.setattr(
+        backend_factory, "_validate_cuda_only_backend_platform", lambda *args, **kwargs: None
+    )
+
 
 _MOCK_WORKER = str(Path(__file__).resolve().parent / "isaacgym_mock_worker.py")
 SIM_DT = 0.005
