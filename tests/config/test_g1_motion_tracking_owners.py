@@ -225,11 +225,6 @@ def test_sac_g1_motion_tracking_genesis_inherits_mujoco_parity() -> None:
     assert cfg.algo.updates_per_step == mujoco_cfg.algo.updates_per_step
 
 
-def test_sac_g1_flip_tracking_stays_dr_free() -> None:
-    cfg = _compose_sac("g1_flip_tracking/mujoco")
-    assert all(term is None for term in cfg.env.events.values())
-
-
 def test_warpsac_g1_motion_tracking_owners_share_policy_contract() -> None:
     mujoco_cfg = _compose_warpsac("g1_motion_tracking/mujoco")
     mjwarp_cfg = _compose_warpsac("g1_motion_tracking/mjwarp")

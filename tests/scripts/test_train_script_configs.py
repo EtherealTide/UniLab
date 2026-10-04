@@ -27,12 +27,10 @@ APPO_MUJOCO_SMOKE_TASKS = [
     "go2_joystick_flat/mujoco",
     "g1_walk_flat/mujoco",
     "g1_motion_tracking/mujoco",
-    "g1_flip_tracking/mujoco",
 ]
 
 APPO_MOTION_SMOKE_TASKS = {
     "g1_motion_tracking/mujoco",
-    "g1_flip_tracking/mujoco",
     "g1_box_tracking/mujoco",
 }
 

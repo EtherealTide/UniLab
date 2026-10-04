@@ -18,7 +18,6 @@ runtime 执行。
 | CLI Task | Registered Env | 默认 motion | Owner Evidence |
 | --- | --- | --- | --- |
 | `g1_motion_tracking` | `G1MotionTracking` | `dance1_subject2_part.npz` | `src/unilab/conf/ppo/task/g1_motion_tracking/`, `src/unilab/conf/appo/task/g1_motion_tracking/` |
-| `g1_flip_tracking` | `G1FlipTracking` | `flip_360_001__A304.npz` | `src/unilab/conf/ppo/task/g1_flip_tracking/`, `src/unilab/conf/appo/task/g1_flip_tracking/` |
 | `x2_wall_flip_tracking` | `X2WallFlipTracking` | `tictacflip_6-3_g1format.npz` | `src/unilab/conf/ppo/task/x2_wall_flip_tracking/` |
 | `g1_box_tracking` | `G1BoxTracking` | `sub3_largebox_003_boxconverted.npz` | `src/unilab/conf/ppo/task/g1_box_tracking/` |
 | `g1_wbt_obs` | `G1WBTObs` | `dance1_subject2_part.npz` | `src/unilab/conf/sac/task/g1_wbt_obs/mujoco.yaml` |
@@ -30,13 +29,10 @@ deploy 与 23-DoF motion production profile 现在位于 `unitree_rl_unilab`。
 ## PPO 与 APPO
 
 PPO owner 迭代预算（`--sim mujoco` owner YAML）：`g1_motion_tracking` 为
-`algo.max_iterations=15000`；`g1_flip_tracking` 为 `20000`；
-`x2_wall_flip_tracking` 为 `9500`。（`g1_flip_tracking` 的 Motrix owner
-YAML 将其提到 `30000`。）
+`algo.max_iterations=15000`，`x2_wall_flip_tracking` 为 `9500`。
 
 ```bash
 uv run train --algo ppo --task g1_motion_tracking --sim mujoco
-uv run train --algo ppo --task g1_flip_tracking --sim mujoco
 uv run train --algo ppo --task x2_wall_flip_tracking --sim mujoco
 uv run train --algo ppo --task g1_motion_tracking --sim mujoco
 uv run train --algo appo --task g1_motion_tracking --sim mujoco training.no_play=true

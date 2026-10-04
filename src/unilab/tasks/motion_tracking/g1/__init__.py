@@ -9,8 +9,6 @@ G1_MOTION_TASKS = (
     "G1MotionTracking",
     "G1MotionTrackingSAC",
     "G1BoxTracking",
-    "G1FlipTracking",
-    "G1FlipTrackingSAC",
     "G1WBTObs",
 )
 
@@ -44,11 +42,5 @@ registry.register_env(
     "G1MotionTrackingSAC",
     make_manager_based_rl_env,
     sim_backend="motrix",
-)
-# G1 flip tracking is the second scoped Manager tensor task owner.
-registry.register_env(
-    "G1FlipTrackingSAC",
-    make_manager_based_rl_env,
-    sim_backend="mjwarp",
 )
 __all__ = ["BoxMotionData", "BoxMotionLoader", "G1_MOTION_TASKS"]

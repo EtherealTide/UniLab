@@ -31,10 +31,7 @@ from unilab.tasks.motion_tracking.g1.manager_terms import BoxMotionCommand
 
 _ROOT = Path(__file__).parents[2]
 
-_CASES = (
-    ("ppo", "g1_flip_tracking", "G1FlipTracking"),
-    ("ppo", "g1_box_tracking", "G1BoxTracking"),
-)
+_CASES = (("ppo", "g1_box_tracking", "G1BoxTracking"),)
 
 _SAMPLER_STAT_METRICS = ("sampling_entropy", "sampling_top1_prob", "sampling_top1_bin")
 

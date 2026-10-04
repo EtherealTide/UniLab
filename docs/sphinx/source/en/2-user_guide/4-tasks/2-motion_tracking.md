@@ -20,7 +20,6 @@ configuration entry point; the selected owner is materialized into the shared
 | CLI Task | Registered Env | Default Motion | Owner Evidence |
 | --- | --- | --- | --- |
 | `g1_motion_tracking` | `G1MotionTracking` | `dance1_subject2_part.npz` | `src/unilab/conf/ppo/task/g1_motion_tracking/`, `src/unilab/conf/appo/task/g1_motion_tracking/` |
-| `g1_flip_tracking` | `G1FlipTracking` | `flip_360_001__A304.npz` | `src/unilab/conf/ppo/task/g1_flip_tracking/`, `src/unilab/conf/appo/task/g1_flip_tracking/` |
 | `x2_wall_flip_tracking` | `X2WallFlipTracking` | `tictacflip_6-3_g1format.npz` | `src/unilab/conf/ppo/task/x2_wall_flip_tracking/` |
 | `g1_box_tracking` | `G1BoxTracking` | `sub3_largebox_003_boxconverted.npz` | `src/unilab/conf/ppo/task/g1_box_tracking/` |
 | `g1_wbt_obs` | `G1WBTObs` | `dance1_subject2_part.npz` | `src/unilab/conf/sac/task/g1_wbt_obs/mujoco.yaml` |
@@ -33,13 +32,10 @@ profiles now live in `unitree_rl_unilab`.
 ## PPO And APPO
 
 PPO owner iteration budgets (the `--sim mujoco` owner YAMLs): `g1_motion_tracking`
-runs `algo.max_iterations=15000`; `g1_flip_tracking` runs `20000`; and
-`x2_wall_flip_tracking` runs `9500`. (The Motrix owner YAML for
-`g1_flip_tracking` raises this to `30000`.)
+runs `algo.max_iterations=15000` and `x2_wall_flip_tracking` runs `9500`.
 
 ```bash
 uv run train --algo ppo --task g1_motion_tracking --sim mujoco
-uv run train --algo ppo --task g1_flip_tracking --sim mujoco
 uv run train --algo ppo --task x2_wall_flip_tracking --sim mujoco
 uv run train --algo ppo --task g1_motion_tracking --sim mujoco
 uv run train --algo appo --task g1_motion_tracking --sim mujoco training.no_play=true

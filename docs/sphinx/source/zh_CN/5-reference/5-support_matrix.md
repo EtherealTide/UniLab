@@ -74,7 +74,6 @@ uv run scripts/generate_support_matrix.py --write
 | PPO (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | - | - | - | - |
 | PPO (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Registered | Tested | Registered | Configured |
 | PPO (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | - | - | - | - |
-| PPO (torch) | `g1_flip_tracking` (G1 flip tracking) | Tested | - | - | - | - |
 | PPO (torch) | `x2_wall_flip_tracking` (X2 wall flip tracking) | Tested | - | - | - | - |
 | PPO (torch) | `allegro_inhand` (Allegro in-hand) | Tested | - | - | - | - |
 | PPO (torch) | `allegro_inhand_grasp` (allegro inhand grasp) | Tested | - | - | - | - |
@@ -83,11 +82,9 @@ uv run scripts/generate_support_matrix.py --write
 | APPO (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | - | - | - | - |
 | APPO (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Registered | Registered | Registered | Registered |
 | APPO (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | - | - | - | - |
-| APPO (torch) | `g1_flip_tracking` (G1 flip tracking) | Tested | - | - | - | - |
 | APPO (torch) | `allegro_inhand` (Allegro in-hand) | Tested | - | - | - | - |
 | SAC (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Tested | Tested | Tested | Tested |
 | SAC (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Registered | Configured | Registered | Configured |
-| SAC (torch) | `g1_flip_tracking` (G1 flip tracking) | Tested | - | Configured | - | - |
 | SAC (torch) | `g1_wbt_obs` (g1 wbt obs) | Tested | - | - | - | - |
 | FlashSAC (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | - | - | - | - |
 | FlashSAC (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Registered | Configured | Registered | Registered |
