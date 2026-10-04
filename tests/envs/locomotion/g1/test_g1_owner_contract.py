@@ -482,9 +482,7 @@ def test_g1_walk_registries_are_manager_only() -> None:
             98,
             101,
             id="sac-newton",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA is unavailable"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable"),
         ),
     ),
 )
