@@ -1,15 +1,15 @@
 # Simulation Backends
 
 The tensor-only Manager runtime currently exposes `mujoco`, `mjwarp`, `genesis`,
-`newton`, and `motrix`. User commands select one with `--sim`, which routes to
-the matching task owner YAML; do not switch a run by overriding
-`training.sim_backend` alone.
+`newton`, `motrix`, and the scoped Drake owner described below. User commands
+select one with `--sim`, which routes to the matching task owner YAML; do not
+switch a run by overriding `training.sim_backend` alone.
 
-The `drake`, `isaacgym`, `isaacsim`, and `superdex` adapters remain temporarily
-shelved by `unisim-core` during issue #1811. Their historical pages are retained
-for adapter context only and are not production support claims. The train/eval
-CLI rejects these names until new capability, parity, and support-matrix
-evidence is provided.
+The `isaacgym`, `isaacsim`, and `superdex` adapters remain temporarily shelved
+by `unisim-core` during issue #1811. Their historical pages are retained for
+adapter context only and are not production support claims. The train/eval CLI
+rejects these names until new capability, parity, and support-matrix evidence is
+provided.
 
 ## Runtime Prerequisites
 
@@ -24,6 +24,10 @@ evidence is provided.
 - Motrix requires the `motrix` extra and provides a CPU-authoritative packed
   HOST_BRIDGE; the current canonical support scope is SAC `g1_walk_flat` and
   FlashSAC `g1_motion_tracking`.
+- Drake requires the locally built DrakeUni batch extension. Its scoped PPO
+  `go2_joystick_flat` owner uses CPU physics and the packed HOST_BRIDGE
+  lifecycle; floating-root and reset-randomization events remain disabled until
+  the backend contract supports them.
 
 ## OS and GPU Support
 
@@ -34,6 +38,7 @@ evidence is provided.
 | Genesis | Linux x86_64 | Required: NVIDIA GPU and driver; only the `gs.gpu` channel is validated |
 | Newton | Linux | Required: NVIDIA CUDA; the selected-reset lane is device-resident |
 | Motrix | Linux / macOS / Windows | CPU-authoritative physics; Torch CUDA buffers are optional |
+| Drake | Linux x86_64 / Apple Silicon macOS | CPU-authoritative physics; Torch CUDA buffers are optional |
 
 Backend device requirements are independent of the learner device: MuJoCo can
 still train with its learner on CUDA, ROCm, MPS, or XPU. See the platform

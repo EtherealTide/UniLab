@@ -89,3 +89,7 @@ clean:
 	find src/unilab/assets/caches -type f ! -name '.gitkeep' -delete 2>/dev/null || true
 	find src/unilab/assets/checkpoints -type f ! -name '.gitkeep' -delete 2>/dev/null || true
 	find src/unilab/assets/scenes -type f ! -name '.gitkeep' -delete 2>/dev/null || true
+
+.PHONY: setup-drake
+setup-drake:
+	uv run --no-sync bash scripts/tools/setup_drake_env.sh --download-drake

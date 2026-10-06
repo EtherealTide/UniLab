@@ -26,14 +26,13 @@ def _drake_batch_available() -> bool:
     not _drake_batch_available(),
     reason="optional DrakeUni batch extension has not been built",
 )
-@pytest.mark.parametrize("task", ["go2_joystick_flat/drake", "go2_joystick_flat/drake"])
-def test_drake_ppo_one_iteration_training_smoke(task: str, tmp_path: Path) -> None:
+def test_drake_ppo_one_iteration_training_smoke(tmp_path: Path) -> None:
     """Drake task configs can run the real RSL-RL training entry point."""
     result = subprocess.run(
         [
             sys.executable,
             "src/unilab/scripts/train_rsl_rl.py",
-            f"task={task}",
+            "task=go2_joystick_flat/drake",
             "training.no_play=true",
             f"training.log_root={tmp_path / 'logs'}",
             "algo.num_envs=4",
@@ -49,6 +48,6 @@ def test_drake_ppo_one_iteration_training_smoke(task: str, tmp_path: Path) -> No
     )
 
     assert result.returncode == 0, (
-        f"Drake PPO smoke failed for {task}:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        f"Drake PPO smoke failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     assert "Learning iteration 0/1" in result.stdout

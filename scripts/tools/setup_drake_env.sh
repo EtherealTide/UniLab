@@ -1,8 +1,6 @@
-# HISTORICAL SHELVED-BACKEND TOOL (#1811)
-# Retained only as adapter migration context. This tool does not install a
-# UniLab production runtime backend and must not be treated as a support
-# claim. The scoped tensor Manager runtime currently exposes mujoco, mjwarp,
-# and genesis.
+# Local setup for the scoped Drake tensor Manager owner (#1811). Drake C++ and
+# the DrakeUni native extension remain optional local dependencies; installing
+# them does not publish a package or claim support for any additional task.
 
 #!/usr/bin/env bash
 # Set up the UniLab Drake batch runtime on Linux or Apple Silicon macOS.
@@ -333,6 +331,6 @@ export UNILAB_DRAKE_UNI_SOURCE="$DRAKE_UNI_SOURCE"
 export $LIBRARY_PATH_VAR="$RUNTIME_LIBRARY_PATH"
 
 然后在 UniLab 根目录运行：
-uv run --no-sync pytest tests/base/backend/test_drake_batch_pool.py \
-  tests/scripts/test_drake_training_smoke.py -q
+uv run --no-sync pytest tests/base/backend/test_drake_batch_pool.py -q
+uv run --no-sync pytest -m slow tests/scripts/test_drake_training_smoke.py -q
 EOF

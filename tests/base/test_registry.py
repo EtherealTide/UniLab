@@ -258,7 +258,7 @@ def test_register_env_invalid_backend_raises():
         registry_mod.register_env(_name, _TestEnvA, "not_a_backend")
 
 
-@pytest.mark.parametrize("backend", ["drake", "isaacgym", "isaacsim", "superdex"])
+@pytest.mark.parametrize("backend", ["isaacgym", "isaacsim", "superdex"])
 def test_register_env_rejects_shelved_backend(backend):
     """Shelved adapters fail closed instead of registering a runtime path."""
     _name = "_TestShelvedBackendEnv"
@@ -279,6 +279,13 @@ def test_default_backend_order_is_tensor_manager_scope():
         "newton",
         "motrix",
     )
+
+
+def test_drake_is_registered_without_changing_default_backend_order():
+    """Drake is explicit-select only; absent owners still reject it."""
+    assert "drake" in registry_mod._TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS
+    assert "drake" not in registry_mod._DEFAULT_SIM_BACKEND_ORDER
+    assert "drake" not in registry_mod._envs[_TEST_ENV_A].env_factory_dict
 
 
 def test_register_env_without_config_raises():
@@ -379,7 +386,7 @@ def test_make_unsupported_backend_raises():
 
 def test_make_rejects_shelved_backend_registration():
     with pytest.raises(ValueError, match="temporarily out of the tensor-only"):
-        registry_mod.register_env(_TEST_ENV_A, lambda *args, **kwargs: None, "drake")
+        registry_mod.register_env(_TEST_ENV_A, lambda *args, **kwargs: None, "isaacgym")
 
 
 def test_make_no_env_factory_raises():

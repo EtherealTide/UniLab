@@ -87,6 +87,11 @@ _OWNER_CASES = (
         id="flashsac-mujoco",
     ),
 )
+_DRAKE_OWNER_CASE = (
+    "ppo",
+    ("task=go2_joystick_flat/drake",),
+    "drake",
+)
 
 
 def _compose(config_group: str, overrides: Sequence[str]) -> DictConfig:
@@ -223,8 +228,31 @@ def test_go2_flat_registry_is_manager_only() -> None:
     assert bare_cfg.rewards == {}
     assert registry.list_registered_envs()["Go2JoystickFlat"] == {
         "config_factory": "ManagerBasedRlEnvCfg",
-        "available_backends": ["mujoco"],
+        "available_backends": ["mujoco", "drake"],
     }
+
+
+def test_go2_flat_drake_owner_keeps_policy_io_and_disables_unsupported_dr() -> None:
+    registry.ensure_registries()
+    _, env_cfg, _ = _materialize(*_DRAKE_OWNER_CASE[:2])
+
+    assert env_cfg.events["reset_root_state_uniform"] is None
+    assert env_cfg.events["pd_gains"] is None
+    assert env_cfg.rewards["contact"] is None
+    assert env_cfg.actions["joint_pos"].scale == pytest.approx(0.25)
+    assert list(env_cfg.observations["policy"].terms) == [
+        "base_ang_vel",
+        "projected_gravity",
+        "joint_pos",
+        "joint_vel",
+        "actions",
+        "command",
+        "gait_phase",
+    ]
+    assert list(env_cfg.observations["critic"].terms) == [
+        *(list(env_cfg.observations["policy"].terms)),
+        "base_lin_vel",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -319,13 +347,17 @@ def test_go2_flat_flashsac_uses_canonical_manager_events_and_numpy_noise() -> No
     assert env_cfg.rewards["contact"].weight == pytest.approx(1.5)
 
 
-def test_go2_flat_drake_is_out_of_tensor_manager_scope() -> None:
+def test_go2_flat_drake_factory_is_registered_before_optional_runtime_load() -> None:
     registry.ensure_registries()
-    hydra_cfg, _, env_override = _materialize("ppo", ("task=go2_joystick_flat/mujoco",))
-    with pytest.raises(ValueError, match="does not support simulation backend 'drake'"):
+    hydra_cfg, _, env_override = _materialize("ppo", ("task=go2_joystick_flat/drake",))
+    assert "drake" in registry.list_registered_envs()["Go2JoystickFlat"]["available_backends"]
+    try:
         registry.make(
             str(hydra_cfg.training.task_name),
             sim_backend="drake",
             env_cfg_override=env_override,
             num_envs=1,
         )
+    except (ImportError, NotImplementedError, RuntimeError, TypeError, ValueError) as exc:
+        # Registration must not bypass the optional native runtime boundary.
+        assert "drakeuni batch runtime" in str(exc).lower()

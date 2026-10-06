@@ -120,9 +120,9 @@ is unreachable.
 
 ## Backend Extras
 
-The tensor-only Manager runtime currently exposes five production backends:
-`mujoco`, `mjwarp`, `genesis`, `newton`, and `motrix`. Their simulator
-dependencies are optional.
+The tensor-only Manager runtime currently exposes five production backends
+(`mujoco`, `mjwarp`, `genesis`, `newton`, and `motrix`) plus the scoped Drake
+owner. Their simulator dependencies are optional.
 
 ```bash
 # All scoped backends together.
@@ -136,11 +136,12 @@ uv sync --extra mujoco --extra mjwarp --extra genesis --extra newton --extra mot
 | Genesis | `uv sync --extra genesis` | The validated path uses Linux x86_64, an NVIDIA GPU, and the pinned torch/Genesis versions |
 | Newton | `uv sync --extra newton` | Linux CUDA with the pinned newton / MuJoCo-Warp / Warp versions |
 | Motrix | `uv sync --extra motrix` | CPU-authoritative MotrixSim with packed Torch HOST_BRIDGE transfers |
+| Drake | `make setup-drake` | Local Drake C++ prefix plus the DrakeUni native batch extension; currently scoped to PPO `go2_joystick_flat` |
 
-The `drake`, `isaacgym`, `isaacsim`, and `superdex` adapters remain temporarily
-shelved by `unisim-core` during issue #1811. Their extras and historical backend
-pages are not production support claims and the UniLab train/eval CLI rejects
-them until new capability, parity, and support-matrix evidence is provided.
+The `isaacgym`, `isaacsim`, and `superdex` adapters remain temporarily shelved
+by `unisim-core` during issue #1811. Their extras and historical backend pages
+are not production support claims and the UniLab train/eval CLI rejects them
+until new capability, parity, and support-matrix evidence is provided.
 
 Read the scoped backend pages for runtime variables, renderer requirements, and
 verification commands:
@@ -150,6 +151,7 @@ verification commands:
 - {doc}`Genesis <../2-user_guide/3-backends/5-genesis>`
 - {doc}`Newton <../2-user_guide/3-backends/7-newton>`
 - {doc}`Motrix <../2-user_guide/3-backends/2-motrix>`
+- {doc}`Drake <../2-user_guide/3-backends/6-drake>`
 
 ## Algorithm Extras
 
