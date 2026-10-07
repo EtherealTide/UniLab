@@ -22,6 +22,7 @@ SUPPORTED_SIMS = (
     "genesis",
     "newton",
     "motrix",
+    "superdex",
 )
 # Adapters retained by UniSim but temporarily outside the tensor-only Manager
 # runtime during issue #1811. They must remain unroutable through public CLI.
@@ -29,7 +30,6 @@ _SHELVED_SIMS = (
     "drake",
     "isaacgym",
     "isaacsim",
-    "superdex",
 )
 SUPPORTED_RENDER_MODES = ("auto", "interactive", "record", "viser", "none")
 OFFPOLICY_ALGOS = {"sac", "flashsac", "warpsac"}
@@ -159,6 +159,16 @@ def _check_runtime_requirements(algo: str, sim: str) -> None:
             "`pip install unilab[motrix]` (or `uv sync --extra motrix` in a source "
             "checkout)."
         )
+    if sim == "superdex":
+        from unisim.backend.superdex.dependencies import superdex_dependencies_available
+
+        if not superdex_dependencies_available():
+            raise SystemExit(
+                "sim=superdex requires Python 3.12 or 3.13 on Linux x86_64 and the "
+                "SuperDex Physics/Robotics runtime. Install it with "
+                "`uv sync --extra superdex` in a source checkout "
+                "(or `pip install unilab[superdex]`)."
+            )
 
 
 def _override_bool(overrides: Sequence[str], key: str) -> bool | None:

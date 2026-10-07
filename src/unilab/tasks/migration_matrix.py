@@ -28,6 +28,7 @@ _MBA_TASKS = frozenset(
     {
         "AllegroInhandRotation",
         "AllegroInhandRotationGrasp",
+        "FR3JointTarget",
         "Go2JoystickFlat",
         "StewartBalance",
     }

@@ -1,0 +1,35 @@
+# @package _global_
+defaults:
+  - /task/fr3_joint_target/base
+  - _self_
+
+training:
+  task_name: FR3JointTarget
+  sim_backend: superdex
+  device: cpu
+  play_render_mode: interactive
+  play_env_num: 1
+
+algo:
+  num_envs: 2
+  num_steps_per_env: 32
+  max_iterations: 100
+  obs_groups:
+    actor: [actor]
+    critic: [actor]
+  actor:
+    hidden_dims: [64, 64]
+    distribution_cfg:
+      init_std: 0.25
+  critic:
+    hidden_dims: [64, 64]
+  algorithm:
+    num_mini_batches: 1
+
+env:
+  superdex_num_workers: 0
+  superdex_assets_root: null
+  superdex_effort_limits: [20.0, 20.0, 20.0, 20.0, 5.0, 5.0, 5.0]
+
+play_profile:
+  enabled: false

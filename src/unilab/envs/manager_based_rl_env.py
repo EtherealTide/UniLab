@@ -445,6 +445,7 @@ class ManagerBasedRlEnv(TorchEnv):
         specs: list[SceneTensorReadSpec] = []
         specs.extend(self._action_tensor_read_specs())
         specs.extend(self._observation_tensor_read_specs())
+        specs.extend(self._task_tensor_state_read_specs())
         specs.extend(self._manager_term_tensor_read_specs())
         specs.extend(self._command_tensor_read_specs())
         self.scene._tensor_read_plan = (
@@ -574,6 +575,52 @@ class ManagerBasedRlEnv(TorchEnv):
                     term = manager.get_term_cfg(name).func
                     specs.extend(self._manager_term_body_read_specs(manager_name, name, term))
         return specs
+
+    def _task_tensor_state_read_specs(self) -> list[SceneTensorReadSpec]:
+        """Collect explicit task-owned state-only packed reads."""
+        specs: list[SceneTensorReadSpec] = []
+        seen: set[str] = set()
+        for group_name, terms in self.observation_manager.active_terms.items():
+            for name in terms:
+                term_cfg = self.observation_manager.get_term_cfg(group_name, name)
+                entity_name = self._declared_tensor_state_entity(
+                    term_cfg.func, f"observation/{group_name}/{name}"
+                )
+                if entity_name is None:
+                    continue
+                self._append_tensor_state_spec(specs, seen, entity_name)
+        for manager_name, manager in (
+            ("reward", self.reward_manager),
+            ("termination", self.termination_manager),
+        ):
+            for name in manager.active_terms:
+                term = manager.get_term_cfg(name).func
+                entity_name = self._declared_tensor_state_entity(term, f"{manager_name}/{name}")
+                if entity_name is None:
+                    continue
+                self._append_tensor_state_spec(specs, seen, entity_name)
+        return specs
+
+    @staticmethod
+    def _declared_tensor_state_entity(term: Any, label: str) -> str | None:
+        entity_name = getattr(term, "tensor_state_entity", None)
+        if entity_name is None:
+            return None
+        if not isinstance(entity_name, str) or not entity_name:
+            raise TypeError(
+                f"Manager tensor state declaration for term '{label}' requires a "
+                "non-empty entity_name"
+            )
+        return entity_name
+
+    @staticmethod
+    def _append_tensor_state_spec(
+        specs: list[SceneTensorReadSpec], seen: set[str], entity_name: str
+    ) -> None:
+        if entity_name in seen:
+            return
+        seen.add(entity_name)
+        specs.append(SceneTensorReadSpec(entity=entity_name))
 
     @staticmethod
     def _manager_term_body_read_specs(

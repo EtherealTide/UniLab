@@ -327,6 +327,19 @@ def test_backend_adapter_env_cfg_override_for_sac_g1_walk_flat():
     assert cfg.algo.max_iterations == 5000
 
 
+def test_backend_adapter_injects_superdex_serial_mode_only_for_interactive_play():
+    interactive = _ppo_cfg(
+        ["task=go2_joystick_flat/superdex", "training.play_render_mode=interactive"]
+    )
+    adapter = BackendAdapter(interactive, root_dir=_ROOT_DIR, algo_name="ppo")
+    assert "superdex_execution_mode" not in adapter.build_task_env_cfg_override()
+    assert adapter.build_play_env_cfg_override()["superdex_execution_mode"] == "serial"
+
+    record = _ppo_cfg(["task=go2_joystick_flat/superdex", "training.play_render_mode=record"])
+    record_override = BackendAdapter(record, root_dir=_ROOT_DIR, algo_name="ppo")
+    assert "superdex_execution_mode" not in record_override.build_play_env_cfg_override()
+
+
 def test_backend_adapter_keeps_motion_manager_scene_during_play():
     cfg = _ppo_cfg(["task=g1_motion_tracking/mujoco", "training.play_only=true"])
     captured: dict[str, object] = {}

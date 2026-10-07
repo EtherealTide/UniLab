@@ -48,4 +48,11 @@ def test_check_runtime_requirements_requires_motrix_extra(
 
 
 def test_cli_backend_choices_are_tensor_manager_scope() -> None:
-    assert cli.SUPPORTED_SIMS == ("mujoco", "mjwarp", "genesis", "newton", "motrix")
+    assert cli.SUPPORTED_SIMS == (
+        "mujoco",
+        "mjwarp",
+        "genesis",
+        "newton",
+        "motrix",
+        "superdex",
+    )

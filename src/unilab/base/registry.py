@@ -47,12 +47,12 @@ _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS = (
     "genesis",
     "newton",
     "motrix",
+    "superdex",
 )
 _SHELVED_SIM_BACKENDS = (
     "drake",
     "isaacgym",
     "isaacsim",
-    "superdex",
 )
 _SUPPORTED_SIM_BACKENDS = _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS + _SHELVED_SIM_BACKENDS
 _DEFAULT_SIM_BACKEND_ORDER: tuple[str, ...] = _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS
