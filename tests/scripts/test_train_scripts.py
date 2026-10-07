@@ -1132,6 +1132,50 @@ def _offpolicy():
     return _load_script("train_offpolicy")
 
 
+def test_offpolicy_parent_visibility_infers_world_size(monkeypatch: pytest.MonkeyPatch):
+    mod = _offpolicy()
+    monkeypatch.delenv("UNILAB_DP_RANK", raising=False)
+    monkeypatch.delenv("UNILAB_DP_WORLD_SIZE", raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,MIG-b,2")
+
+    assert mod._requested_dp_world_size() == 3
+
+
+def test_offpolicy_parent_visibility_preserves_rank_zero_slice(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    mod = _offpolicy()
+    monkeypatch.setenv("UNILAB_DP_RANK", "0")
+    monkeypatch.setenv("UNILAB_DP_WORLD_SIZE", "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
+
+    mod._prepare_rank_zero_dp_visibility(2)
+
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "GPU-a"
+    assert mod._DP_PARENT_VISIBLE_ENTRIES == ("GPU-a", "GPU-b")
+
+
+def test_offpolicy_supervisor_constructor_sees_parent_mask(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    mod = _offpolicy()
+    monkeypatch.setenv("UNILAB_DP_RANK", "0")
+    monkeypatch.setenv("UNILAB_DP_WORLD_SIZE", "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a")
+    mod._DP_PARENT_VISIBLE_ENTRIES = ("GPU-a", "GPU-b")
+    observed: list[str] = []
+
+    class Supervisor:
+        def __init__(self, *, world_size: int, log_dir: str):
+            observed.extend((str(world_size), log_dir, os.environ["CUDA_VISIBLE_DEVICES"]))
+
+    monkeypatch.setattr(mod, "DpRankSupervisor", Supervisor)
+    mod._build_dp_rank_supervisor(2, "/tmp/unilab-dp")
+
+    assert observed == ["2", "/tmp/unilab-dp", "GPU-a,GPU-b"]
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "GPU-a"
+
+
 def test_offpolicy_default_device_preferred_cpu():
     mock_torch = MagicMock()
     assert _offpolicy().default_device(mock_torch, preferred="cpu") == "cpu"

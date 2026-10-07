@@ -88,6 +88,8 @@ def test_disabled_default_does_not_probe_host(monkeypatch: pytest.MonkeyPatch) -
         "collector_gpu_uuid": None,
         "control_pipe": None,
         "server_pid": None,
+        "rank": 0,
+        "world_size": 1,
     }
 
 
@@ -113,6 +115,8 @@ def test_valid_single_rank_request_records_server_evidence(linux_mps: Any) -> No
         "collector_gpu_uuid": "A",
         "control_pipe": str(linux_mps),
         "server_pid": 2768293,
+        "rank": 0,
+        "world_size": 1,
     }
 
 
@@ -132,12 +136,31 @@ def test_valid_identity_compares_physical_uuid_not_ordinal(linux_mps: Any) -> No
     assert evidence.learner_gpu_uuid == evidence.collector_gpu_uuid
 
 
+def test_single_host_dp_rank_records_rank_scoped_evidence(linux_mps: Any) -> None:
+    _socket_control(linux_mps)
+
+    evidence = probe_cuda_process_sharing(
+        "mps",
+        "cuda:0",
+        "cuda:0",
+        backend="mjwarp",
+        rank=1,
+        world_size=2,
+        torch_module=_torch("GPU-a"),
+        run_command=_fake_commands(),
+    )
+
+    assert evidence.rank == 1
+    assert evidence.world_size == 2
+    assert evidence.validated
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
         ({"requested": "invalid"}, "expected null or 'mps'"),
         ({"backend": "mujoco"}, "only the mjwarp backend"),
-        ({"world_size": 2}, "single-host, single-rank"),
+        ({"rank": 2, "world_size": 2}, "valid rank in"),
         ({"collector_device": None}, "requires a CUDA collector"),
         ({"learner_device": "cpu"}, "requires CUDA learner and collector"),
     ],
