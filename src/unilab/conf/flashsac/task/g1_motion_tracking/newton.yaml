@@ -11,7 +11,7 @@ defaults:
   - _self_
 
 training:
-  task_name: G1MotionTrackingSAC
+  task_name: G1MotionTracking
   sim_backend: newton
   play_render_mode: record
   # First tick includes collector env construction and Newton warmup.

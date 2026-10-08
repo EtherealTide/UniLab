@@ -8,7 +8,7 @@
 # IPC arena. The static backend matrix remains unsupported until #1675 closes.
 
 training:
-  task_name: G1MotionTrackingSAC
+  task_name: G1MotionTracking
   sim_backend: isaacsim
   play_render_mode: auto
 env:

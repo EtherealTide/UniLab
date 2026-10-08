@@ -58,7 +58,7 @@ def test_observation_partial_reset_row_contract() -> None:
     )
 
     num_envs = 4
-    env = _make_env("sac", "g1_motion_tracking", "mujoco", "G1MotionTrackingSAC", num_envs)
+    env = _make_env("sac", "g1_motion_tracking", "mujoco", "G1MotionTracking", num_envs)
     try:
         env.init_state()
         action_dim = 29

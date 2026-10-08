@@ -77,7 +77,7 @@ def test_tensor_runtime_switch_is_absent_from_source_and_owner_configs() -> None
 
 def test_flashsac_motion_owner_uses_generic_manager_runtime() -> None:
     registry.ensure_registries()
-    assert "motrix" in registry._envs["G1MotionTrackingSAC"].env_factory_dict
+    assert "motrix" in registry._envs["G1MotionTracking"].env_factory_dict
 
 
 def test_motion_direct_runtime_is_removed() -> None:

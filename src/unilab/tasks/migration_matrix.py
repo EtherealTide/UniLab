@@ -39,7 +39,6 @@ _G1_LOCOMOTION_TASKS = frozenset(
 _MOTION_CORE_TASKS = frozenset(
     {
         "G1MotionTracking",
-        "G1MotionTrackingSAC",
     }
 )
 
