@@ -41,6 +41,7 @@ MJWarp owner 继承 FlashSAC MuJoCo owner，并解析为：
 | Replay-ingress depth | `training.replay_ingress_depth=2` |
 | Replay-ingress slot rows | `null`，解析为 `algo.num_envs` |
 | Collector metric interval | `training.collector_metrics_interval=100` |
+| CUDA 进程共享 | `training.cuda_process_sharing=null` |
 | Scene | `src/unilab/assets/robots/g1/scene_flat.xml` |
 | Motion | `motions/g1/dance1_subject2_part.npz` |
 
@@ -81,6 +82,51 @@ export CUDA_VISIBLE_DEVICES=<single-host-cuda-ordinal>
 
 trainer 进程内所有 CUDA ordinal 都相对于该 mask。不要添加更多设备：M11 仅
 覆盖单 GPU。
+
+## CUDA MPS 执行共享
+
+`training.cuda_process_sharing` 是针对既有 rank-local 拓扑的显式
+execution-sharing 模式。它不是 backend 开关，也不替代 `--sim mjwarp` 或 owner
+YAML 选择。
+
+默认 `null` 表示 learner 与 collector 保持独立 CUDA context。对受支持的单主机、
+单 rank MJWarp off-policy 拓扑，使用以下设置请求 CUDA MPS：
+
+```bash
+training.cuda_process_sharing=mps
+```
+
+训练前在用户拥有的目录中启动既有 control daemon：
+
+```bash
+export CUDA_MPS_PIPE_DIRECTORY=/absolute/path/mps/pipe
+export CUDA_MPS_LOG_DIRECTORY=/absolute/path/mps/log
+mkdir -p "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY"
+nvidia-cuda-mps-control -d
+```
+
+UniLab 只验证、绝不 start/stop 该 daemon。`mps` 请求必须是 Linux/NVIDIA CUDA、
+使用 MJWarp、learner 与 collector 按 UUID 解析到同一张物理 GPU、`world_size=1`，
+且能访问 live control socket/FIFO 与 control daemon。任一条件不满足都会在
+environment probe、learner construction 或 collector spawn 之前失败；没有静默
+multi-context fallback。错误会指出第一个未满足条件以及 daemon 启动命令。
+
+`run_config.json` 记录配置值。有效 run 的 `run_summary.json` 内嵌
+`runtime_manifest.cuda_process_sharing`，包含 configured/effective 模式、learner
+与 collector device、物理 UUID 证据、control pipe、server PID 和 validation 状态。
+该 section 是 runtime-manifest v1 的 producer diagnostic，不是稳定标量契约。
+
+MPS 只改变 GPU execution sharing，不改变 `env_steps_per_sync`、
+learner/collector placement 或训练语义。多 GPU DP 在独立的 DP gate 与 daemon
+拓扑决策完成前保持不支持。CUDA MPS 依赖 host 与部署方式：在共享容器、多用户
+主机或受限 runner 中 control 可能不可用，显式请求会 fail closed，不会静默降级。
+
+使用后停止 daemon：
+
+```bash
+export CUDA_MPS_PIPE_DIRECTORY=/absolute/path/mps/pipe
+echo quit | nvidia-cuda-mps-control
+```
 
 检查实际执行 benchmark 的 runtime：
 

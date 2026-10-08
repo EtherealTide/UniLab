@@ -1,15 +1,15 @@
 # Simulation Backends
 
 The tensor-only Manager runtime currently exposes `mujoco`, `mjwarp`, `genesis`,
-`newton`, `motrix`, and `superdex`. User commands select one with `--sim`, which
-routes to the matching task owner YAML; do not switch a run by overriding
-`training.sim_backend` alone.
+`newton`, `motrix`, `superdex`, and the scoped Drake owner described below.
+User commands select one with `--sim`, which routes to the matching task owner
+YAML; do not switch a run by overriding `training.sim_backend` alone.
 
-The `drake`, `isaacgym`, and `isaacsim` adapters remain temporarily
-shelved by `unisim-core` during issue #1811. Their historical pages are retained
-for adapter context only and are not production support claims. The train/eval
-CLI rejects these names until new capability, parity, and support-matrix
-evidence is provided.
+The `isaacgym` and `isaacsim` adapters remain temporarily shelved
+by `unisim-core` during issue #1811. Their historical pages are retained for
+adapter context only and are not production support claims. The train/eval CLI
+rejects these names until new capability, parity, and support-matrix evidence is
+provided.
 
 ## Runtime Prerequisites
 
@@ -27,6 +27,10 @@ evidence is provided.
 - SuperDex requires the `superdex` extra on CPython 3.12/3.13 Linux x86_64 and
   provides a CPU-authoritative packed HOST_BRIDGE; the current scope is the
   configured Go2 and FR3 research owners.
+- Drake requires the locally built DrakeUni batch extension. Its scoped PPO
+  `go2_joystick_flat` owner uses CPU physics and the packed HOST_BRIDGE
+  lifecycle; floating-root and reset-randomization events remain disabled until
+  the backend contract supports them.
 
 ## OS and GPU Support
 
@@ -38,6 +42,7 @@ evidence is provided.
 | Newton | Linux | Required: NVIDIA CUDA; the selected-reset lane is device-resident |
 | Motrix | Linux / macOS / Windows | CPU-authoritative physics; Torch CUDA buffers are optional |
 | SuperDex | Linux x86_64 (CPython 3.12/3.13) | CPU-authoritative physics; Torch CUDA buffers are optional |
+| Drake | Linux x86_64 / Apple Silicon macOS | CPU-authoritative physics; Torch CUDA buffers are optional |
 
 Backend device requirements are independent of the learner device: MuJoCo can
 still train with its learner on CUDA, ROCm, MPS, or XPU. See the platform
@@ -56,7 +61,7 @@ the algorithm in `--algo`, not in `--task`.
 | Default path or broadest owner coverage | MuJoCo |
 | MuJoCo-only tools such as `scripts/play_viser.py` | MuJoCo |
 | Device-resident tensor owner | MJWarp, Genesis, or Newton, when the task support matrix marks the combination supported |
-| CPU-authoritative packed HOST_BRIDGE | Motrix, or SuperDex for its configured research owners |
+| CPU-authoritative packed HOST_BRIDGE | Motrix; SuperDex or scoped Drake for their configured research owners |
 
 The support matrix is generated from registry, owner YAML, and tests; use it as
 the current evidence source: {doc}`../../5-reference/5-support_matrix`.

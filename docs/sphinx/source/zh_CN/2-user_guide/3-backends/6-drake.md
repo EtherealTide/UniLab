@@ -1,6 +1,8 @@
 # Drake 后端
 
-> **Drake 暂时搁置。** 该适配器在 #1811 期间不属于 tensor-only Manager runtime，也不构成生产支持声明。在提供新的 capability、parity 与支持矩阵证据之前，train/eval CLI 会直接拒绝该后端。
+> **Scoped runtime 支持。** Drake 当前只有一个 Manager-runtime owner：PPO
+> `go2_joystick_flat`。本页不构成更广泛的生产支持声明；任务支持范围以生成的
+> 支持矩阵为准。
 
 
 Drake 是实验性的 CPU 批量物理后端；task、reward、observation 和训练循环仍由
@@ -89,8 +91,9 @@ uv run train --algo ppo --task go2_joystick_flat --sim drake
 ```
 
 该命令使用 Drake owner 配置中的 1024 个环境、151 次迭代，并固定使用 CPU 训练
-（Drake 暴露的是 float64 NumPy buffer）。Drake owner 使用场景 keyframe 重置；当前
-backend contract 尚未提供浮动根状态随机化。只想验证安装时，可临时追加
+（Drake 暴露的是 CPU-authoritative packed host bridge）。Drake owner 使用场景默认
+/keyframe 重置；当前 backend contract 尚未提供浮动根状态与 PD reset
+randomization。只想验证安装时，可临时追加
 `algo.max_iterations=1 algo.num_envs=4 algo.num_steps_per_env=4 training.no_play=true
 env.drake_nthread=1`；这些不是生产参数。
 

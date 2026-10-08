@@ -23,7 +23,7 @@ _ALL_BACKENDS: tuple[str, ...] = tuple(get_tensor_platform_profiles())
 BACKENDS: tuple[str, ...] = tuple(
     backend
     for backend in _ALL_BACKENDS
-    if backend in {"mujoco", "mjwarp", "genesis", "newton", "motrix", "superdex"}
+    if backend in {"mujoco", "mjwarp", "genesis", "newton", "motrix", "superdex", "drake"}
 )
 SHELVED_BACKENDS = frozenset(_ALL_BACKENDS) - frozenset(BACKENDS)
 
@@ -290,6 +290,10 @@ def _is_tested(spec: EntrypointSpec, task_slug: str, backend: str, root: Path) -
             spec.entrypoint_id,
             task_slug,
         ) in _MAINTAINER_VALIDATED_NEWTON_ENTRYPOINT_TASKS
+    if backend == "drake":
+        # This scoped owner has config/contract/lifecycle coverage, but full
+        # cross-platform training parity evidence has not been checked in.
+        return False
     return spec.generic_tested
 
 

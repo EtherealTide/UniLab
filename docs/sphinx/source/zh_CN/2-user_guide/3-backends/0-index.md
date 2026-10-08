@@ -1,10 +1,11 @@
 # 仿真后端
 
 当前 tensor-only Manager runtime 暴露 `mujoco`、`mjwarp`、`genesis`、
-`newton`、`motrix` 与 `superdex`。用户命令通过 `--sim` 选择后端，并组合对应的
-task owner YAML；不要单独覆盖 `training.sim_backend`。
+`newton`、`motrix`、`superdex`，以及下文描述的 scoped Drake owner。用户命令
+通过 `--sim` 选择后端，并组合对应的 task owner YAML；不要单独覆盖
+`training.sim_backend`。
 
-`drake`、`isaacgym` 与 `isaacsim` 适配器在 issue #1811 期间由
+`isaacgym` 与 `isaacsim` 适配器在 issue #1811 期间由
 `unisim-core` 暂时搁置。历史页面仅用于 adapter 背景，不构成生产支持声明。
 在提供新的 capability、parity 与支持矩阵证据之前，train/eval CLI 会直接
 拒绝这些后端。
@@ -23,6 +24,10 @@ task owner YAML；不要单独覆盖 `training.sim_backend`。
 - SuperDex 在 CPython 3.12/3.13 Linux x86_64 上需要 `superdex` extra，提供
   CPU-authoritative packed HOST_BRIDGE；当前范围为 Go2 与 FR3 configured
   research owner。
+- Drake 需要本地编译的 DrakeUni batch extension。其 scoped PPO
+  `go2_joystick_flat` owner 使用 CPU physics 与 packed HOST_BRIDGE
+  lifecycle；在 backend contract 补齐前，浮动根重置与 reset randomization
+  事件保持禁用。
 
 ## OS 与 GPU 支持
 
@@ -34,6 +39,7 @@ task owner YAML；不要单独覆盖 `training.sim_backend`。
 | Newton | Linux | 要求：NVIDIA CUDA；selected-reset 通道为 device-resident |
 | Motrix | Linux / macOS / Windows | CPU-authoritative physics；Torch CUDA buffer 可选 |
 | SuperDex | Linux x86_64（CPython 3.12/3.13） | CPU-authoritative physics；Torch CUDA buffer 可选 |
+| Drake | Linux x86_64 / Apple Silicon macOS | CPU-authoritative physics；Torch CUDA buffer 可选 |
 
 后端设备要求与 learner 设备独立：MuJoCo 仍可以让 learner 使用 CUDA、ROCm、MPS
 或 XPU。平台配置见 {doc}`../../1-getting_started/2-installation`。
@@ -50,7 +56,7 @@ UniLab 通过 task owner config 选择仿真后端。常规用法通过 `--task`
 | 默认路径或 owner 覆盖最广 | MuJoCo |
 | `scripts/play_viser.py` 等 MuJoCo 专属工具 | MuJoCo |
 | Device-resident tensor owner | MJWarp、Genesis 或 Newton，且支持矩阵标记该组合为 supported |
-| CPU-authoritative packed HOST_BRIDGE | Motrix，或其 configured research owner 内的 SuperDex |
+| CPU-authoritative packed HOST_BRIDGE | Motrix；SuperDex 或 scoped Drake 的 configured research owner |
 
 支持矩阵由 registry、owner YAML 与测试生成；当前证据源见
 {doc}`../../5-reference/5-support_matrix`。

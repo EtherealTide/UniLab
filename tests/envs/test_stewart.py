@@ -17,7 +17,7 @@ from omegaconf import DictConfig, OmegaConf
 from unilab.base import registry
 from unilab.base.config_adapter import BackendAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
-from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg, make_manager_based_rl_env
+from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from unilab.managers import ObservationTermCfg, RewardTermCfg, TerminationTermCfg
 from unilab.tasks.manipulation.stewart.balance import (
     StewartBalanceState,
@@ -354,13 +354,11 @@ def test_stewart_state_machine_and_fall_reward_are_exact() -> None:
         env.close()
 
 
-def test_stewart_drake_materializes_or_fails_at_optional_runtime_boundary() -> None:
-    with pytest.raises(ValueError, match="temporarily out of the tensor-only Manager runtime"):
-        make_manager_based_rl_env(
-            _materialize("ppo", ("task=stewart_balance/mujoco",))[1],
-            num_envs=1,
-            backend_type="drake",
-        )
+def test_stewart_drake_remains_owner_scoped() -> None:
+    """Only tasks with a Drake owner registration may select the backend."""
+    registry.ensure_registries()
+    backends = registry.list_registered_envs()["StewartBalance"]["available_backends"]
+    assert "drake" not in backends
 
 
 @pytest.mark.slow

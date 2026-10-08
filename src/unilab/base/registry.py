@@ -48,14 +48,18 @@ _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS = (
     "newton",
     "motrix",
     "superdex",
+    "drake",
 )
 _SHELVED_SIM_BACKENDS = (
-    "drake",
     "isaacgym",
     "isaacsim",
 )
 _SUPPORTED_SIM_BACKENDS = _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS + _SHELVED_SIM_BACKENDS
-_DEFAULT_SIM_BACKEND_ORDER: tuple[str, ...] = _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS
+# Drake is an explicit owner-selected CPU host bridge during its scoped
+# reintroduction; never use it as an implicit fallback backend.
+_DEFAULT_SIM_BACKEND_ORDER: tuple[str, ...] = tuple(
+    backend for backend in _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS if backend != "drake"
+)
 _TENSOR_MANAGER_BACKEND_SCOPE_ERROR = (
     "Simulation backend '{backend}' is temporarily out of the tensor-only "
     "Manager runtime scope. Active backends: "

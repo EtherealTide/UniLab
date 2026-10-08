@@ -65,6 +65,9 @@ training:
   wandb_notes: null
   wandb_mode: null
   sim_backend: mujoco
+  # null preserves independent CUDA contexts; 'mps' explicitly requests CUDA
+  # process sharing and fails closed if the host daemon is not already valid.
+  cuda_process_sharing: null
   nan_guard:
     enabled: true
     buffer_size: 100

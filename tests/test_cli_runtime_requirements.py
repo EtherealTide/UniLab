@@ -47,6 +47,31 @@ def test_check_runtime_requirements_requires_motrix_extra(
         cli._check_runtime_requirements("sac", "motrix")
 
 
+def test_check_runtime_requirements_requires_drake_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "find_spec", lambda name: None if name == "drake_uni" else object())
+
+    with pytest.raises(SystemExit, match="sim=drake requires the Drake extra"):
+        cli._check_runtime_requirements("ppo", "drake")
+
+
+def test_check_runtime_requirements_rejects_unusable_drake_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_find_spec(name: str):
+        return object() if name == "drake_uni" else None
+
+    def unavailable() -> tuple[bool, ImportError | None]:
+        return False, ImportError("native extension unavailable")
+
+    monkeypatch.setattr(cli, "find_spec", fake_find_spec)
+    monkeypatch.setattr("unisim.backend.drake.backend.ensure_drake_batch_available", unavailable)
+
+    with pytest.raises(SystemExit, match="could not load the DrakeUni batch extension"):
+        cli._check_runtime_requirements("ppo", "drake")
+
+
 def test_cli_backend_choices_are_tensor_manager_scope() -> None:
     assert cli.SUPPORTED_SIMS == (
         "mujoco",
@@ -55,4 +80,5 @@ def test_cli_backend_choices_are_tensor_manager_scope() -> None:
         "newton",
         "motrix",
         "superdex",
+        "drake",
     )
