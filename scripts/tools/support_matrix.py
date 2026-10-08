@@ -23,7 +23,7 @@ _ALL_BACKENDS: tuple[str, ...] = tuple(get_tensor_platform_profiles())
 BACKENDS: tuple[str, ...] = tuple(
     backend
     for backend in _ALL_BACKENDS
-    if backend in {"mujoco", "mjwarp", "genesis", "newton", "motrix", "drake"}
+    if backend in {"mujoco", "mjwarp", "genesis", "newton", "motrix", "superdex", "drake"}
 )
 SHELVED_BACKENDS = frozenset(_ALL_BACKENDS) - frozenset(BACKENDS)
 

@@ -22,6 +22,7 @@ SUPPORTED_SIMS = (
     "genesis",
     "newton",
     "motrix",
+    "superdex",
     "drake",
 )
 # Adapters retained by UniSim but outside the scoped tensor Manager runtime
@@ -29,7 +30,6 @@ SUPPORTED_SIMS = (
 _SHELVED_SIMS = (
     "isaacgym",
     "isaacsim",
-    "superdex",
 )
 SUPPORTED_RENDER_MODES = ("auto", "interactive", "record", "viser", "none")
 OFFPOLICY_ALGOS = {"sac", "flashsac", "warpsac"}
@@ -159,6 +159,16 @@ def _check_runtime_requirements(algo: str, sim: str) -> None:
             "`pip install unilab[motrix]` (or `uv sync --extra motrix` in a source "
             "checkout)."
         )
+    if sim == "superdex":
+        from unisim.backend.superdex.dependencies import superdex_dependencies_available
+
+        if not superdex_dependencies_available():
+            raise SystemExit(
+                "sim=superdex requires Python 3.12 or 3.13 on Linux x86_64 and the "
+                "SuperDex Physics/Robotics runtime. Install it with "
+                "`uv sync --extra superdex` in a source checkout "
+                "(or `pip install unilab[superdex]`)."
+            )
     if sim == "drake":
         if find_spec("drake_uni") is None:
             raise SystemExit(

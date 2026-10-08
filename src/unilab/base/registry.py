@@ -47,12 +47,12 @@ _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS = (
     "genesis",
     "newton",
     "motrix",
+    "superdex",
     "drake",
 )
 _SHELVED_SIM_BACKENDS = (
     "isaacgym",
     "isaacsim",
-    "superdex",
 )
 _SUPPORTED_SIM_BACKENDS = _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS + _SHELVED_SIM_BACKENDS
 # Drake is an explicit owner-selected CPU host bridge during its scoped

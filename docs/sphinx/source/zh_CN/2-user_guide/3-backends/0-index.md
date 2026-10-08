@@ -1,11 +1,11 @@
 # 仿真后端
 
 当前 tensor-only Manager runtime 暴露 `mujoco`、`mjwarp`、`genesis`、
-`newton`、`motrix`，以及下文描述的 scoped Drake owner。用户命令通过 `--sim`
-选择后端，并组合对应的 task owner YAML；不要单独覆盖
+`newton`、`motrix`、`superdex`，以及下文描述的 scoped Drake owner。用户命令
+通过 `--sim` 选择后端，并组合对应的 task owner YAML；不要单独覆盖
 `training.sim_backend`。
 
-`isaacgym`、`isaacsim` 与 `superdex` 适配器在 issue #1811 期间由
+`isaacgym` 与 `isaacsim` 适配器在 issue #1811 期间由
 `unisim-core` 暂时搁置。历史页面仅用于 adapter 背景，不构成生产支持声明。
 在提供新的 capability、parity 与支持矩阵证据之前，train/eval CLI 会直接
 拒绝这些后端。
@@ -21,6 +21,9 @@
   为 SAC `g1_walk_flat` 和 FlashSAC `g1_motion_tracking`。
 - Motrix 需要 `motrix` extra，提供 CPU-authoritative packed HOST_BRIDGE；当前
   canonical 支持范围为 SAC `g1_walk_flat` 和 FlashSAC `g1_motion_tracking`。
+- SuperDex 在 CPython 3.12/3.13 Linux x86_64 上需要 `superdex` extra，提供
+  CPU-authoritative packed HOST_BRIDGE；当前范围为 Go2 与 FR3 configured
+  research owner。
 - Drake 需要本地编译的 DrakeUni batch extension。其 scoped PPO
   `go2_joystick_flat` owner 使用 CPU physics 与 packed HOST_BRIDGE
   lifecycle；在 backend contract 补齐前，浮动根重置与 reset randomization
@@ -35,6 +38,7 @@
 | Genesis | Linux x86_64 | 要求：NVIDIA GPU 与 driver；仅验证 `gs.gpu` channel |
 | Newton | Linux | 要求：NVIDIA CUDA；selected-reset 通道为 device-resident |
 | Motrix | Linux / macOS / Windows | CPU-authoritative physics；Torch CUDA buffer 可选 |
+| SuperDex | Linux x86_64（CPython 3.12/3.13） | CPU-authoritative physics；Torch CUDA buffer 可选 |
 | Drake | Linux x86_64 / Apple Silicon macOS | CPU-authoritative physics；Torch CUDA buffer 可选 |
 
 后端设备要求与 learner 设备独立：MuJoCo 仍可以让 learner 使用 CUDA、ROCm、MPS
@@ -52,7 +56,7 @@ UniLab 通过 task owner config 选择仿真后端。常规用法通过 `--task`
 | 默认路径或 owner 覆盖最广 | MuJoCo |
 | `scripts/play_viser.py` 等 MuJoCo 专属工具 | MuJoCo |
 | Device-resident tensor owner | MJWarp、Genesis 或 Newton，且支持矩阵标记该组合为 supported |
-| CPU-authoritative packed HOST_BRIDGE | Motrix |
+| CPU-authoritative packed HOST_BRIDGE | Motrix；SuperDex 或 scoped Drake 的 configured research owner |
 
 支持矩阵由 registry、owner YAML 与测试生成；当前证据源见
 {doc}`../../5-reference/5-support_matrix`。
@@ -104,7 +108,7 @@ uv run python -c "import unisim; print(unisim.ADAPTER_SPECS)"
 ```
 
 `unisim` 不依赖 UniLab、Hydra 或训练组件。scoped
-MuJoCo/MJWarp/Genesis/Newton/Motrix 适配器与暂时搁置的适配器使用同一个
+MuJoCo/MJWarp/Genesis/Newton/Motrix/SuperDex 适配器与暂时搁置的适配器使用同一个
 public contract。缺失 proprietary SDK 或 GPU worker 时会产生明确的
 cold-path diagnostic；不会静默切换到另一个引擎。
 
@@ -115,4 +119,5 @@ cold-path diagnostic；不会静默切换到另一个引擎。
 5-genesis
 7-newton
 2-motrix
+8-superdex
 ```

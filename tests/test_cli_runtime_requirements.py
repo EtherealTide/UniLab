@@ -73,4 +73,12 @@ def test_check_runtime_requirements_rejects_unusable_drake_batch(
 
 
 def test_cli_backend_choices_are_tensor_manager_scope() -> None:
-    assert cli.SUPPORTED_SIMS == ("mujoco", "mjwarp", "genesis", "newton", "motrix", "drake")
+    assert cli.SUPPORTED_SIMS == (
+        "mujoco",
+        "mjwarp",
+        "genesis",
+        "newton",
+        "motrix",
+        "superdex",
+        "drake",
+    )

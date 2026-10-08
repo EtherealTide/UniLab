@@ -70,32 +70,34 @@ uv run scripts/generate_support_matrix.py --write
 | `drake` | Host bridge / in-process / host bridge | CPU / CUDA | Required only when the learner requests CUDA state/control buffers | Supported: CPU-authoritative physics with optional CUDA Torch buffers | CPU-authoritative host bridge only; no CUDA physics claim | CPU-authoritative host bridge only; no ROCm CUDA-only fallback | In-process; no external Python worker | 不支持 | 不支持 | 不支持 | 支持 |
 | `mjwarp` | Device-resident / in-process / direct | CUDA | Required for the entire tensor lifecycle | Supported: Linux CUDA only | Unsupported; no CPU, MPS, or ROCm fallback | Unsupported; no CPU, MPS, or ROCm fallback | In-process; no external Python worker | 不支持 | 不支持 | 不支持 | 不支持 |
 | `newton` | Device-resident / in-process / direct | CUDA | Required for the entire tensor lifecycle | Supported: Linux CUDA only | Unsupported; no CPU, MPS, or ROCm fallback | Unsupported; no CPU, MPS, or ROCm fallback | In-process; no external Python worker | 不支持 | 不支持 | 不支持 | 不支持 |
+| `superdex` | Host bridge / in-process / host bridge | CPU / CUDA | Required only when the learner requests CUDA state/control buffers | Supported: CPU-authoritative physics with optional CUDA Torch buffers | CPU-authoritative host bridge only; no CUDA physics claim | CPU-authoritative host bridge only; no ROCm CUDA-only fallback | In-process; no external Python worker | 不支持 | 不支持 | 不支持 | 支持 |
 | `genesis` | Device-resident / in-process / direct | CUDA | Required for the entire tensor lifecycle | Supported: Linux CUDA only | Unsupported; no CPU, MPS, or ROCm fallback | Unsupported; no CPU, MPS, or ROCm fallback | In-process; no external Python worker | 不支持 | 不支持 | 不支持 | 不支持 |
 
 ### Entrypoint x Task Owner
 
-| Entrypoint | Task owner | MuJoCo | Motrix | Drake | mjwarp | Newton | Genesis |
-|------------|------------|---|---|---|---|---|---|
-| PPO (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | - | Configured | - | - | - |
-| PPO (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Registered | - | Tested | Registered | Configured |
-| PPO (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | - | - | - | - | - |
-| PPO (torch) | `x2_wall_flip_tracking` (X2 wall flip tracking) | Tested | - | - | - | - | - |
-| PPO (torch) | `allegro_inhand` (Allegro in-hand) | Tested | - | - | - | - | - |
-| PPO (torch) | `allegro_inhand_grasp` (allegro inhand grasp) | Tested | - | - | - | - | - |
-| PPO (torch) | `g1_box_tracking` (g1 box tracking) | Tested | - | - | - | - | - |
-| PPO (torch) | `stewart_balance` (stewart balance) | Tested | - | - | - | - | - |
-| APPO (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | - | Registered | - | - | - |
-| APPO (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Registered | - | Registered | Registered | Registered |
-| APPO (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | - | - | - | - | - |
-| APPO (torch) | `allegro_inhand` (Allegro in-hand) | Tested | - | - | - | - | - |
-| SAC (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Tested | - | Tested | Tested | Tested |
-| SAC (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Registered | - | Configured | Registered | Configured |
-| SAC (torch) | `g1_wbt_obs` (g1 wbt obs) | Tested | - | - | - | - | - |
-| FlashSAC (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | - | Registered | - | - | - |
-| FlashSAC (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Registered | - | Configured | Registered | Registered |
-| FlashSAC (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Tested | - | Configured | Configured | Configured |
-| WarpSAC (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Registered | - | Tested | Registered | Registered |
-| WarpSAC (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Registered | - | Tested | Registered | Registered |
+| Entrypoint | Task owner | MuJoCo | Motrix | Drake | mjwarp | Newton | SuperDex | Genesis |
+|------------|------------|---|---|---|---|---|---|---|
+| PPO (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | - | Configured | - | - | Configured | - |
+| PPO (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Registered | - | Tested | Registered | - | Configured |
+| PPO (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | - | - | - | - | - | - |
+| PPO (torch) | `x2_wall_flip_tracking` (X2 wall flip tracking) | Tested | - | - | - | - | - | - |
+| PPO (torch) | `allegro_inhand` (Allegro in-hand) | Tested | - | - | - | - | - | - |
+| PPO (torch) | `allegro_inhand_grasp` (allegro inhand grasp) | Tested | - | - | - | - | - | - |
+| PPO (torch) | `fr3_joint_target` (fr3 joint target) | - | - | - | - | - | Configured | - |
+| PPO (torch) | `g1_box_tracking` (g1 box tracking) | Tested | - | - | - | - | - | - |
+| PPO (torch) | `stewart_balance` (stewart balance) | Tested | - | - | - | - | - | - |
+| APPO (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | - | Registered | - | - | Registered | - |
+| APPO (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Registered | - | Registered | Registered | - | Registered |
+| APPO (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | - | - | - | - | - | - |
+| APPO (torch) | `allegro_inhand` (Allegro in-hand) | Tested | - | - | - | - | - | - |
+| SAC (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Tested | - | Tested | Tested | - | Tested |
+| SAC (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Registered | - | Configured | Registered | - | Configured |
+| SAC (torch) | `g1_wbt_obs` (g1 wbt obs) | Tested | - | - | - | - | - | - |
+| FlashSAC (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | - | Registered | - | - | Registered | - |
+| FlashSAC (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Registered | - | Configured | Registered | - | Registered |
+| FlashSAC (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Tested | - | Configured | Configured | - | Configured |
+| WarpSAC (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Registered | - | Tested | Registered | - | Registered |
+| WarpSAC (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Registered | - | Tested | Registered | - | Registered |
 
 ### Source Index
 

@@ -1,12 +1,14 @@
 # SuperDex 后端
 
-> **SuperDex 暂时搁置。** 该适配器在 #1811 期间不属于 tensor-only Manager runtime，也不构成生产支持声明。在提供新的 capability、parity 与支持矩阵证据之前，train/eval CLI 会直接拒绝该后端。
+> SuperDex 已作为 packed CPU `HOST_BRIDGE` 后端加入 tensor-only Manager
+> runtime。Go2 与 FR3 owner 仍是 **Configured** 研究配置，不构成完整训练或
+> 跨平台生产支持声明。
 
 
 SuperDex 是由 `unisim.backend.superdex` 拥有的可选 CPU 物理后端。UniLab 首个
 owner 为固定基 `FR3JointTarget`，配置位于
 `src/unilab/conf/ppo/task/fr3_joint_target/superdex.yaml`。任务使用 7 维力矩动作、
-21 维观测、关节状态 reset 和标准 NumPy manager。当前支持等级为 **Configured**；
+21 维观测、selected tensor 关节 reset 和 `TorchEnv`。当前支持等级为 **Configured**；
 短 rollout 或少量训练迭代不能证明完整训练效果、性能或跨平台支持。
 实施见 [#1534](https://github.com/Motphys/UniLab/issues/1534)，所属
 roadmap 为 [#1533](https://github.com/Motphys/UniLab/issues/1533)。
