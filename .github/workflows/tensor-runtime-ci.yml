@@ -60,7 +60,7 @@ jobs:
             --no-install-package nvidia-nvjitlink-cu12 \
             --no-install-package nvidia-nvtx-cu12 \
             --no-install-package triton
-          uv pip install torch==2.7.0 --index-url https://download.pytorch.org/whl/cpu
+          uv pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cpu
       - name: Focused contract tests
         run: >
           uv run --no-sync pytest -q
