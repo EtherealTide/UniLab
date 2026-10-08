@@ -484,6 +484,36 @@ def _demo_completions(
     return _matching(available_flags, current)
 
 
+_CUDA_MPS_SUBCOMMANDS: tuple[str, ...] = ("status", "doctor", "start", "stop", "env")
+_CUDA_MPS_FLAGS: dict[str, tuple[str, ...]] = {
+    "status": ("--json",),
+    "doctor": ("--gpus", "--json"),
+    "start": ("--gpus", "--name", "--pipe-dir", "--log-dir", "--daemon", "--foreground"),
+    "stop": ("--name", "--all"),
+    "env": ("--name", "--shell", "--json"),
+}
+
+
+def _uni_cumps_completions(
+    *,
+    words: Sequence[str],
+    cword: int,
+    current: str,
+    previous: str,
+    used_options: set[str],
+) -> list[str]:
+    tokens = [word for word in words[3:cword] if word != ""]
+    subcommand = tokens[0] if tokens else ""
+    if subcommand not in _CUDA_MPS_SUBCOMMANDS:
+        return _matching(_CUDA_MPS_SUBCOMMANDS, current)
+    if previous == "--shell":
+        return _matching(("posix",), current)
+    if current == "" or current.startswith("-"):
+        available = tuple(flag for flag in _CUDA_MPS_FLAGS[subcommand] if flag not in used_options)
+        return _matching(available, current)
+    return []
+
+
 def complete_words(
     words: Sequence[str],
     cword: int,
@@ -538,6 +568,14 @@ def complete_words(
         )
     if command == "demo":
         return _demo_completions(
+            words=words,
+            cword=cword,
+            current=current,
+            previous=previous,
+            used_options=used_options,
+        )
+    if command == "uni-cumps":
+        return _uni_cumps_completions(
             words=words,
             cword=cword,
             current=current,

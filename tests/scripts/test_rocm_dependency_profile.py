@@ -19,6 +19,11 @@ def _dependencies(path: Path) -> dict[str, Requirement]:
     return {requirement.name: requirement for requirement in requirements}
 
 
+def _project_scripts(path: Path) -> dict[str, str]:
+    project = tomllib.loads(path.read_text(encoding="utf-8"))
+    return dict(project["project"]["scripts"])
+
+
 def test_rocm_profile_preserves_non_substituted_runtime_dependencies() -> None:
     default_dependencies = _dependencies(ROOT / "pyproject.toml")
     rocm_dependencies = _dependencies(ROOT / "pyproject.rocm.toml")
@@ -30,6 +35,14 @@ def test_rocm_profile_preserves_non_substituted_runtime_dependencies() -> None:
     assert not missing
     assert "numba" in rocm_dependencies
     assert "prettytable" in rocm_dependencies
+
+
+def test_rocm_profile_preserves_project_scripts() -> None:
+    default_scripts = _project_scripts(ROOT / "pyproject.toml")
+    rocm_scripts = _project_scripts(ROOT / "pyproject.rocm.toml")
+
+    assert rocm_scripts == default_scripts
+    assert rocm_scripts["uni-cumps"] == "unilab.training.cuda_mps_cli:main"
 
 
 def test_rocm_lock_contains_profile_runtime_dependencies() -> None:

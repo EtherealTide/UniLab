@@ -56,6 +56,7 @@ training:
   sim_backend: mujoco
   # null preserves independent CUDA contexts; 'mps' explicitly requests CUDA
   # process sharing and fails closed if the host daemon is not already valid.
+  # Manage an explicit user-owned daemon with `uni-cumps`.
   cuda_process_sharing: null
   nan_guard:
     enabled: true
