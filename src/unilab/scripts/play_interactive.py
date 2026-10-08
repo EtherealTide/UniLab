@@ -127,15 +127,14 @@ def _algo_config_dict(cfg: DictConfig | None) -> dict[str, Any]:
     return algo_config_dict(cfg)
 
 
-SUPPORTED_INTERACTIVE_ALGOS = ("ppo", "appo", "sac", "flashsac", "warpsac")
+SUPPORTED_INTERACTIVE_ALGOS = ("ppo", "appo", "sac", "flashsac")
 _CONFIG_ROOT_BY_ALGO = {
     "ppo": "ppo",
     "appo": "appo",
     "sac": "sac",
     "flashsac": "flashsac",
-    "warpsac": "warpsac",
 }
-_OFFPOLICY_INTERACTIVE_ALGOS = {"sac", "flashsac", "warpsac"}
+_OFFPOLICY_INTERACTIVE_ALGOS = {"sac", "flashsac"}
 
 
 @dataclass(frozen=True)

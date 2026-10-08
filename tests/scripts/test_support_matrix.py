@@ -308,18 +308,9 @@ def test_support_matrix_does_not_promote_unvalidated_mjwarp_entries():
     assert tested == {
         ("PPO (torch)", "g1_walk_flat"),
         ("SAC (torch)", "g1_walk_flat"),
-        ("WarpSAC (torch)", "g1_walk_flat"),
-        ("WarpSAC (torch)", "g1_motion_tracking"),
     }
     appo_row = _row("APPO (torch)", "g1_walk_flat")
     assert appo_row.cells["mjwarp"].level == EvidenceLevel.REGISTERED
-
-
-def test_support_matrix_marks_allegro_appo_backends_as_tested():
-    allegro_appo_row = _row("APPO (torch)", "allegro_inhand")
-
-    assert allegro_appo_row.cells["mujoco"].level == EvidenceLevel.TESTED
-    assert allegro_appo_row.cells["motrix"].level is EvidenceLevel.MISSING
 
 
 def test_generated_support_matrix_exposes_only_tensor_manager_backends() -> None:

@@ -31,7 +31,6 @@ APPO_MUJOCO_SMOKE_TASKS = [
 
 APPO_MOTION_SMOKE_TASKS = {
     "g1_motion_tracking/mujoco",
-    "g1_box_tracking/mujoco",
 }
 
 

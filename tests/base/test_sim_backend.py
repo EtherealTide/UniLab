@@ -28,7 +28,6 @@ BASIC_ROBOTS = [
 ]
 
 _G1 = dict(model_file=_xml("g1"), base_name="pelvis")
-_ALLEGRO = dict(model_file=_xml("allegro_hand", "scene.xml"), base_name="palm")
 
 NUM_ENVS = 2
 SIM_DT = 0.005
@@ -72,17 +71,6 @@ def _mujoco_expected_dof_dims(model) -> tuple[int, int]:
     if model.njnt > 0 and int(model.jnt_type[0]) == int(mujoco.mjtJoint.mjJNT_FREE):
         return model.nq - 7, model.nv - 6
     return model.nq, model.nv
-
-
-def _allegro_state() -> tuple[np.ndarray, np.ndarray]:
-    qpos = np.zeros((1, 23), dtype=np.float64)
-    qvel = np.zeros((1, 22), dtype=np.float64)
-    qpos[0, :16] = np.linspace(-0.2, 0.2, 16)
-    qpos[0, 16:19] = np.array([-0.01, 0.02, 0.16])
-    qpos[0, 19:23] = np.array([0.92387953, 0.0, 0.38268343, 0.0])
-    qvel[0, :16] = np.linspace(-0.15, 0.15, 16)
-    qvel[0, 16:22] = np.array([0.1, -0.2, 0.05, 0.3, -0.1, 0.2])
-    return qpos, qvel
 
 
 # Base-motion state used by the get_body_*_vel_b semantic tests: a 30-degree
@@ -388,53 +376,6 @@ def test_mujoco_backend_discards_visual_assets():
     assert trimmed.model.nmesh == 0
     assert trimmed.model.ntex == 0
     assert trimmed.model.nmat == 0
-
-
-@pytest.mark.slow
-def test_motrix_backend_fixed_base_set_state_matches_mujoco_for_hand_and_ball():
-    from unisim.backend.motrix.backend import MotrixBackend
-    from unisim.backend.mujoco.backend import MuJoCoBackend
-
-    pytest.importorskip("motrixsim")
-    mj = MuJoCoBackend(
-        SceneCfg(model_file=_ALLEGRO["model_file"]),
-        NUM_ENVS,
-        SIM_DT,
-        base_name=_ALLEGRO["base_name"],
-        add_body_sensors=True,
-    )
-    mj.materialize()
-    mx = MotrixBackend(
-        SceneCfg(model_file=_ALLEGRO["model_file"]),
-        NUM_ENVS,
-        SIM_DT,
-        base_name=_ALLEGRO["base_name"],
-        add_body_sensors=True,
-    )
-    qpos, qvel = _allegro_state()
-    env_idx = np.array([0])
-
-    mj.set_state(env_idx, qpos, qvel)
-    mx.set_state(env_idx, qpos, qvel)
-
-    np.testing.assert_allclose(mx.get_dof_pos()[0], qpos[0, :16], atol=1e-6)
-    np.testing.assert_allclose(mx.get_dof_vel()[0], qvel[0, :16], atol=1e-6)
-    np.testing.assert_allclose(np.asarray(mx.data.actuator_ctrls[0]), qpos[0, :16], atol=1e-6)
-    np.testing.assert_allclose(mx.get_base_pos(), mj.get_base_pos(), atol=2e-3)
-    np.testing.assert_allclose(np.abs(mx.get_base_quat()), np.abs(mj.get_base_quat()), atol=2e-3)
-
-    mj_ball_id = _mj_body_id(mj.model, "ball")
-    mx_ball_id = _mx_link_id(mx.model, "ball")
-    np.testing.assert_allclose(
-        mx.get_body_pos_w(np.array([mx_ball_id])),
-        mj.get_body_pos_w(np.array([mj_ball_id])),
-        atol=2e-3,
-    )
-    np.testing.assert_allclose(
-        mx.get_body_quat_w(np.array([mx_ball_id])),
-        mj.get_body_quat_w(np.array([mj_ball_id])),
-        atol=2e-3,
-    )
 
 
 # ---------------------------------------------------------------------------

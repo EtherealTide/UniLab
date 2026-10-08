@@ -35,9 +35,6 @@ CANONICAL_MANAGER_RUNTIME_FACTORIES = (
     # Approved wrapper: G1WalkManagerBasedEnv subclass owning the G1 walk
     # manager-based production runtime.
     ("unilab.tasks.locomotion.g1.manager_terms", "make_g1_walk_env"),
-    # Approved wrapper: cold-path untracked X2 mesh resolution before
-    # delegating to the generic factory.
-    ("unilab.tasks.motion_tracking.x2", "make_x2_wall_flip_env"),
 )
 
 _SNAPSHOT_CODE = textwrap.dedent(

@@ -51,7 +51,7 @@ def test_replay_shape_packed_width_includes_critic_fields() -> None:
     assert shape.packed_width == 2 * 45 + 29 + 3 + 2 * 48
 
 
-def test_wbt_owner_config_is_only_included_when_present() -> None:
+def test_owner_config_existence_is_owner_scoped() -> None:
     assert bench._owner_config_exists("sac", "g1_motion_tracking", "mujoco")
     assert bench._owner_config_exists("flashsac", "g1_motion_tracking", "mujoco")
 

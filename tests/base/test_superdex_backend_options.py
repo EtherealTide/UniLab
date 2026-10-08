@@ -16,7 +16,7 @@ def test_superdex_native_factory_resolves_assets_without_mutating_owner(
 
     def resolve(model_file: str, *, assets_root: str | None) -> str:
         calls["asset"] = (model_file, assets_root)
-        return "/registered/assets/fr3.superdex_bot"
+        return "/registered/assets/demo.superdex_bot"
 
     def create(name: str, scene: SceneCfg, n: int, dt: float, **kwargs: Any) -> object:
         calls["backend"] = (name, scene, n, dt, kwargs)
@@ -26,7 +26,7 @@ def test_superdex_native_factory_resolves_assets_without_mutating_owner(
     monkeypatch.setattr(backend_factory, "ensure_robot_assets_for_paths", lambda *_: None)
     monkeypatch.setattr(backend_factory.unisim, "create_backend", create)
     cfg = EnvCfg(superdex_assets_root="/registered/assets", superdex_effort_limits=[20.0])
-    scene = SceneCfg(model_file="bots/arms/fr3_v2/fr3_v2.superdex_bot")
+    scene = SceneCfg(model_file="bots/demo/demo.superdex_bot")
     backend_factory.create_backend(
         "superdex",
         scene,
@@ -37,8 +37,8 @@ def test_superdex_native_factory_resolves_assets_without_mutating_owner(
     )
     name, resolved_scene, n, dt, kwargs = calls["backend"]
     assert (name, n, dt) == ("superdex", 2, 0.002)
-    assert resolved_scene.model_file == "/registered/assets/fr3.superdex_bot"
-    assert scene.model_file == "bots/arms/fr3_v2/fr3_v2.superdex_bot"
+    assert resolved_scene.model_file == "/registered/assets/demo.superdex_bot"
+    assert scene.model_file == "bots/demo/demo.superdex_bot"
     assert calls["asset"] == (scene.model_file, "/registered/assets")
     assert kwargs["superdex_effort_limits"] == [20.0]
     assert kwargs["superdex_num_workers"] == 0

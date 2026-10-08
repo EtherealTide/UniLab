@@ -280,65 +280,6 @@ def update_motion_relative_state_kernel(
 
 
 @njit(cache=True, nogil=True, parallel=True)
-def update_object_relative_state_kernel(
-    env_ids: np.ndarray,
-    robot_anchor_pos_w: np.ndarray,
-    robot_anchor_quat_w: np.ndarray,
-    object_pos_w: np.ndarray,
-    object_quat_w: np.ndarray,
-    object_lin_vel_w: np.ndarray,
-    object_state_b: np.ndarray,
-) -> None:
-    """Write BoxMotionCommand object pose and velocity for selected rows."""
-    for row in prange(env_ids.shape[0]):
-        env_idx = env_ids[row]
-        anchor_x = robot_anchor_pos_w[env_idx, 0]
-        anchor_y = robot_anchor_pos_w[env_idx, 1]
-        anchor_z = robot_anchor_pos_w[env_idx, 2]
-        anchor_w = robot_anchor_quat_w[env_idx, 0]
-        anchor_qx = robot_anchor_quat_w[env_idx, 1]
-        anchor_qy = robot_anchor_quat_w[env_idx, 2]
-        anchor_qz = robot_anchor_quat_w[env_idx, 3]
-        pos_x, pos_y, pos_z = _quat_apply_inverse_components(
-            anchor_w,
-            anchor_qx,
-            anchor_qy,
-            anchor_qz,
-            object_pos_w[env_idx, 0] - anchor_x,
-            object_pos_w[env_idx, 1] - anchor_y,
-            object_pos_w[env_idx, 2] - anchor_z,
-        )
-        object_state_b[env_idx, 0] = pos_x
-        object_state_b[env_idx, 1] = pos_y
-        object_state_b[env_idx, 2] = pos_z
-        rel_w, rel_x, rel_y, rel_z = _quat_mul_components(
-            anchor_w,
-            -anchor_qx,
-            -anchor_qy,
-            -anchor_qz,
-            object_quat_w[env_idx, 0],
-            object_quat_w[env_idx, 1],
-            object_quat_w[env_idx, 2],
-            object_quat_w[env_idx, 3],
-        )
-        rot6d = _quat_to_rot6d_components(rel_w, rel_x, rel_y, rel_z)
-        for component in range(6):
-            object_state_b[env_idx, 3 + component] = rot6d[component]
-        vel_x, vel_y, vel_z = _quat_apply_inverse_components(
-            anchor_w,
-            anchor_qx,
-            anchor_qy,
-            anchor_qz,
-            object_lin_vel_w[env_idx, 0],
-            object_lin_vel_w[env_idx, 1],
-            object_lin_vel_w[env_idx, 2],
-        )
-        object_state_b[env_idx, 9] = vel_x
-        object_state_b[env_idx, 10] = vel_y
-        object_state_b[env_idx, 11] = vel_z
-
-
-@njit(cache=True, nogil=True, parallel=True)
 def update_motion_metrics_kernel(
     env_ids: np.ndarray,
     anchor_body_idx: int,
@@ -616,5 +557,4 @@ __all__ = [
     "termination_anchor_pos_kernel",
     "update_motion_metrics_kernel",
     "update_motion_relative_state_kernel",
-    "update_object_relative_state_kernel",
 ]

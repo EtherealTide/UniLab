@@ -15,7 +15,7 @@ from typing import Sequence
 
 from unilab.demo import run_demo
 
-SUPPORTED_ALGOS = ("ppo", "appo", "sac", "flashsac", "warpsac")
+SUPPORTED_ALGOS = ("ppo", "appo", "sac", "flashsac")
 SUPPORTED_SIMS = (
     "mujoco",
     "mjwarp",
@@ -32,11 +32,11 @@ _SHELVED_SIMS = (
     "isaacsim",
 )
 SUPPORTED_RENDER_MODES = ("auto", "interactive", "record", "viser", "none")
-OFFPOLICY_ALGOS = {"sac", "flashsac", "warpsac"}
+OFFPOLICY_ALGOS = {"sac", "flashsac"}
 # Built-in algos whose entrypoint script does not follow the train_<algo>.py
 # naming convention.
 SPECIAL_SCRIPT_NAMES = {"ppo": "train_rsl_rl.py", "appo": "train_appo.py"}
-INTERACTIVE_PLAY_ALGOS = {"ppo", "appo", "sac", "flashsac", "warpsac"}
+INTERACTIVE_PLAY_ALGOS = {"ppo", "appo", "sac", "flashsac"}
 # Physics backends whose interactive eval runs through the dedicated MuJoCo
 # viewer script: the selected backend owns the rollout while MuJoCo renders.
 MUJOCO_VIEWER_PHYSICS_SIMS = frozenset({"mujoco", "mjwarp"})

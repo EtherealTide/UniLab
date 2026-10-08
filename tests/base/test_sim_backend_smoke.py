@@ -33,7 +33,6 @@ BASIC_ROBOTS = [
 ]
 
 _G1 = dict(model_file=_xml("g1"), base_name="pelvis")
-_ALLEGRO = dict(model_file=_xml("allegro_hand", "scene.xml"), base_name="palm")
 
 NUM_ENVS = 2
 SIM_DT = 0.005
@@ -114,28 +113,6 @@ def test_mujoco_backend_smoke_contract(robot):
     assert caps.supports_interval_body_angular_velocity_delta
     assert caps.supports_interval_body_force
     assert caps.supports_interval_body_torque
-
-
-def test_mujoco_backend_fixed_base_dof_views_do_not_skip_first_joint():
-    mujoco = _mujoco_module()
-
-    from unisim.backend.mujoco.backend import MuJoCoBackend
-
-    bkd = MuJoCoBackend(
-        SceneCfg(model_file=_ALLEGRO["model_file"]),
-        NUM_ENVS,
-        SIM_DT,
-        base_name=_ALLEGRO["base_name"],
-    )
-    assert int(bkd.model.jnt_type[0]) != int(mujoco.mjtJoint.mjJNT_FREE)
-    _shape(bkd.get_dof_pos(), NUM_ENVS, bkd.model.nq)
-    _shape(bkd.get_dof_vel(), NUM_ENVS, bkd.model.nv)
-    _shape(bkd.get_base_pos(), NUM_ENVS, 3)
-    _shape(bkd.get_base_quat(), NUM_ENVS, 4)
-    np.testing.assert_allclose(bkd.get_base_lin_vel(), 0.0, atol=1e-8)
-    np.testing.assert_allclose(bkd.get_base_ang_vel(), 0.0, atol=1e-8)
-    _unit_quat(bkd.get_base_quat(), "MuJoCo fixed-base smoke")
-    assert not bkd.get_dr_capabilities().supports_interval_body_velocity_delta
 
 
 def test_mujoco_interval_root_velocity_kick_is_row_selective_and_refreshes_sensors():
@@ -416,24 +393,6 @@ def test_motrix_backend_smoke_contract(robot):
     play_caps = bkd.get_play_capabilities()
     assert play_caps.supports_native_interactive_renderer
     assert play_caps.supports_native_video_capture
-
-
-def test_motrix_backend_fixed_base_base_views_are_available():
-    pytest.importorskip("motrixsim")
-
-    from unisim.backend.motrix.backend import MotrixBackend
-
-    bkd = MotrixBackend(
-        SceneCfg(model_file=_ALLEGRO["model_file"]),
-        NUM_ENVS,
-        SIM_DT,
-        base_name=_ALLEGRO["base_name"],
-    )
-    _shape(bkd.get_base_pos(), NUM_ENVS, 3)
-    _shape(bkd.get_base_quat(), NUM_ENVS, 4)
-    np.testing.assert_allclose(bkd.get_base_lin_vel(), 0.0, atol=1e-8)
-    np.testing.assert_allclose(bkd.get_base_ang_vel(), 0.0, atol=1e-8)
-    _unit_quat(bkd.get_base_quat(), "Motrix fixed-base smoke")
 
 
 @pytest.mark.parametrize(
