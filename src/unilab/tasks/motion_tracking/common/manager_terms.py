@@ -237,17 +237,11 @@ def _motion_reward_pack_kernel(
     robot_body_lin_vel_w: torch.Tensor,
     body_ang_vel_w: torch.Tensor,
     robot_body_ang_vel_w: torch.Tensor,
-    root_pos_weight: float,
     root_pos_std: float,
-    root_ori_weight: float,
     root_ori_std: float,
-    body_pos_weight: float,
     body_pos_std: float,
-    body_ori_weight: float,
     body_ori_std: float,
-    body_lin_vel_weight: float,
     body_lin_vel_std: float,
-    body_ang_vel_weight: float,
     body_ang_vel_std: float,
     body_count: int,
     output: torch.Tensor,
@@ -273,12 +267,9 @@ def _motion_reward_pack_kernel(
     ang_error = (body_ang_vel_w - robot_body_ang_vel_w).square().sum(dim=(-1, -2))
     body_ang = torch.exp(-ang_error / (body_count * body_ang_vel_std**2))
 
-    torch.mul(root_pos, root_pos_weight, out=output)
-    output.add_(root_ori * root_ori_weight)
-    output.add_(body_pos * body_pos_weight)
-    output.add_(body_ori * body_ori_weight)
-    output.add_(body_lin * body_lin_vel_weight)
-    output.add_(body_ang * body_ang_vel_weight)
+    # Packed outputs are raw component values. RewardManager owns weights and
+    # maps each column to the canonical per-term reward log slot.
+    torch.stack((root_pos, root_ori, body_pos, body_ori, body_lin, body_ang), dim=1, out=output)
 
 
 def _bind_compiled_motion_reward_pack() -> _MotionRelativeStateFn:
@@ -300,9 +291,6 @@ def _motion_penalty_reward_pack_kernel(
     robot_body_pos_w: torch.Tensor,
     contact_body_ids: torch.Tensor,
     contact_threshold: float,
-    action_rate_weight: float,
-    joint_limit_weight: float,
-    undesired_contact_weight: float,
     output: torch.Tensor,
 ) -> None:
     action_delta = action - prev_action
@@ -315,9 +303,7 @@ def _motion_penalty_reward_pack_kernel(
     contact_heights = robot_body_pos_w.index_select(1, contact_body_ids)[..., 2]
     contacts = (contact_heights < contact_threshold).sum(dim=-1).to(dtype=torch.float32)
 
-    torch.mul(action_rate, action_rate_weight, out=output)
-    output.add_(joint_limit * joint_limit_weight)
-    output.add_(contacts * undesired_contact_weight)
+    torch.stack((action_rate, joint_limit, contacts), dim=1, out=output)
 
 
 def _motion_reset_values_kernel(
@@ -2588,17 +2574,11 @@ class MotionRewardPackCfg(RewardTermCfg):
     """Fused motion reward pack owned by the tensor motion command."""
 
     command_name: str = "motion"
-    root_pos_weight: float = 1.0
     root_pos_std: float = 0.3
-    root_ori_weight: float = 0.5
     root_ori_std: float = 0.4
-    body_pos_weight: float = 2.0
     body_pos_std: float = 0.3
-    body_ori_weight: float = 1.0
     body_ori_std: float = 0.4
-    body_lin_vel_weight: float = 1.0
     body_lin_vel_std: float = 1.0
-    body_ang_vel_weight: float = 1.0
     body_ang_vel_std: float = 3.14
 
 
@@ -2608,9 +2588,6 @@ class MotionPenaltyRewardPackCfg(RewardTermCfg):
 
     command_name: str = "motion"
     entity_name: str = "robot"
-    action_rate_weight: float = -0.1
-    joint_limit_weight: float = -2.0
-    undesired_contact_weight: float = -0.1
     contact_threshold: float = 0.05
     contact_body_names: tuple[str, ...] = (
         "pelvis",
@@ -2746,7 +2723,11 @@ class MotionRewardPack(ManagerTermBase):
         if not bool(getattr(self._command, "tensor_carrier", False)):
             raise TypeError("MotionRewardPack requires TensorMotionCommand")
         self._body_count = len(self._command.cfg.body_names)
-        self._output = torch.empty(self.num_envs, dtype=torch.float32, device=self._device)
+        self._output = torch.empty(
+            (self.num_envs, len(self.cfg.reward_pack_names)),
+            dtype=torch.float32,
+            device=self._device,
+        )
 
     def __call__(self, env: ManagerBasedRlEnv) -> torch.Tensor:
         del env
@@ -2766,17 +2747,11 @@ class MotionRewardPack(ManagerTermBase):
             cast(torch.Tensor, command.robot_body_lin_vel_w),
             cast(torch.Tensor, command.body_ang_vel_w),
             cast(torch.Tensor, command.robot_body_ang_vel_w),
-            c.root_pos_weight,
             c.root_pos_std,
-            c.root_ori_weight,
             c.root_ori_std,
-            c.body_pos_weight,
             c.body_pos_std,
-            c.body_ori_weight,
             c.body_ori_std,
-            c.body_lin_vel_weight,
             c.body_lin_vel_std,
-            c.body_ang_vel_weight,
             c.body_ang_vel_std,
             self._body_count,
             self._output,
@@ -2804,7 +2779,11 @@ class MotionPenaltyRewardPack(ManagerTermBase):
         if not bool(getattr(self._command, "tensor_carrier", False)):
             raise TypeError("MotionPenaltyRewardPack requires TensorMotionCommand")
         self._entity = cast("Entity", env.scene[cfg.entity_name])
-        self._output = torch.empty(self.num_envs, dtype=torch.float32, device=self._device)
+        self._output = torch.empty(
+            (self.num_envs, len(self.cfg.reward_pack_names)),
+            dtype=torch.float32,
+            device=self._device,
+        )
         tracked_bodies = tuple(self._command.cfg.body_names)
         missing = [name for name in cfg.contact_body_names if name not in tracked_bodies]
         if missing:
@@ -2836,9 +2815,6 @@ class MotionPenaltyRewardPack(ManagerTermBase):
             cast(torch.Tensor, command.robot_body_pos_w),
             self._contact_body_ids,
             self.cfg.contact_threshold,
-            self.cfg.action_rate_weight,
-            self.cfg.joint_limit_weight,
-            self.cfg.undesired_contact_weight,
             self._output,
         )
         self.last_step_timing_ms["update_state_reward_penalty_pack_call_ms"] = (

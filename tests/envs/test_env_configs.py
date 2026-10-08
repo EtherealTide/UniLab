@@ -286,14 +286,10 @@ def test_g1_motion_core_registrations_are_manager_only() -> None:
 
     ensure_registries()
     metadata = registry.list_registered_envs()
-    for task_name in ("G1MotionTracking",):
-        assert metadata[task_name] == {
-            "config_factory": "ManagerBasedRlEnvCfg",
-            "available_backends": ["mujoco"],
-        }
-    # MJWarp and Genesis are the scoped DEVICE_RESIDENT tensor owners.
-    assert metadata["G1MotionTrackingSAC"]["config_factory"] == "ManagerBasedRlEnvCfg"
-    assert set(metadata["G1MotionTrackingSAC"]["available_backends"]) >= {
+    # PPO/APPO use the MuJoCo owner, while SAC/FlashSAC may select the scoped
+    # device-resident tensor owners through their Hydra task leaves.
+    assert metadata["G1MotionTracking"]["config_factory"] == "ManagerBasedRlEnvCfg"
+    assert set(metadata["G1MotionTracking"]["available_backends"]) >= {
         "mujoco",
         "mjwarp",
         "genesis",
@@ -371,7 +367,7 @@ def test_g1_motion_manager_sac_clip_end_is_truncation() -> None:
     )
     override["auto_reset"] = False
     env = registry.make(
-        "G1MotionTrackingSAC",
+        "G1MotionTracking",
         num_envs=2,
         sim_backend="mujoco",
         env_cfg_override=override,
@@ -403,7 +399,7 @@ def test_sac_g1_motion_mjwarp_dr_runtime_applies_reset_and_interval_dr() -> None
     push_robot = override["events"]["push_robot"]
     push_robot["interval_range_s"] = [0.0, 0.0]
     env = registry.make(
-        "G1MotionTrackingSAC",
+        "G1MotionTracking",
         num_envs=2,
         sim_backend="mjwarp",
         env_cfg_override=override,
@@ -440,7 +436,7 @@ def test_flashsac_g1_motion_mjwarp_tensor_anchor_observations_roll_out() -> None
         config_root="flashsac",
     )
     env = registry.make(
-        "G1MotionTrackingSAC",
+        "G1MotionTracking",
         num_envs=2,
         sim_backend="mjwarp",
         env_cfg_override=override,
@@ -506,7 +502,7 @@ def test_flashsac_g1_motion_mujoco_tensor_command_roll_out() -> None:
             owner, root_dir=root, algo_name="flashsac"
         ).build_task_env_cfg_override()
         env = registry.make(
-            "G1MotionTrackingSAC",
+            "G1MotionTracking",
             num_envs=2,
             sim_backend="mujoco",
             env_cfg_override=override,
@@ -564,7 +560,7 @@ def test_flashsac_g1_motion_genesis_manager_tensor_command_roll_out() -> None:
         config_root="flashsac",
     )
     env = registry.make(
-        "G1MotionTrackingSAC",
+        "G1MotionTracking",
         num_envs=2,
         sim_backend="genesis",
         env_cfg_override=override,
@@ -602,7 +598,7 @@ def test_flashsac_g1_motion_newton_manager_tensor_command_roll_out() -> None:
         config_root="flashsac",
     )
     env = registry.make(
-        "G1MotionTrackingSAC",
+        "G1MotionTracking",
         num_envs=2,
         sim_backend="newton",
         env_cfg_override=override,
@@ -640,7 +636,7 @@ def test_flashsac_g1_motion_motrix_manager_tensor_command_roll_out() -> None:
         config_root="flashsac",
     )
     env = registry.make(
-        "G1MotionTrackingSAC",
+        "G1MotionTracking",
         num_envs=2,
         sim_backend="motrix",
         env_cfg_override=override,
@@ -689,7 +685,7 @@ def test_selected_reset_publication_requires_no_manager_readiness_step(
         config_root="flashsac",
     )
     env = registry.make(
-        "G1MotionTrackingSAC",
+        "G1MotionTracking",
         num_envs=2,
         sim_backend=backend,
         env_cfg_override=override,
@@ -736,7 +732,7 @@ def test_newton_backend_close_disables_graphs_and_fails_closed() -> None:
         config_root="flashsac",
     )
     env = registry.make(
-        "G1MotionTrackingSAC",
+        "G1MotionTracking",
         num_envs=2,
         sim_backend="newton",
         env_cfg_override=override,
@@ -836,7 +832,7 @@ def test_flashsac_motion_reset_publishes_call_graph_counts() -> None:
         config_root="flashsac",
     )
     env = registry.make(
-        "G1MotionTrackingSAC",
+        "G1MotionTracking",
         num_envs=4,
         sim_backend="mjwarp",
         env_cfg_override=override,
@@ -882,7 +878,7 @@ def test_flashsac_motion_reset_owner_matches_generic_command_and_action_state() 
         if not owner:
             override["reset_owners"] = {}
         env = registry.make(
-            "G1MotionTrackingSAC",
+            "G1MotionTracking",
             num_envs=8,
             sim_backend="mjwarp",
             env_cfg_override=override,

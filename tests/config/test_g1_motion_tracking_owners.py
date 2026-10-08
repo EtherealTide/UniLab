@@ -94,6 +94,14 @@ def test_flashsac_g1_motion_tracking_uses_comparable_dr_free_owner() -> None:
     assert mjwarp_cfg.reward.motion_penalty_pack._target_ == (
         "unilab.tasks.motion_tracking.common.manager_terms.MotionPenaltyRewardPackCfg"
     )
+    assert mjwarp_cfg.reward.motion_penalty_pack.reward_pack_names == [
+        "action_rate_l2",
+        "joint_limit",
+        "undesired_contacts",
+    ]
+    assert mjwarp_cfg.reward.motion_penalty_pack.weight == 0.0
+    for name in mjwarp_cfg.reward.motion_penalty_pack.reward_pack_names:
+        assert mjwarp_cfg.reward[name] is not None
     # Anchor term execution, the MJWARP-only tensor command implementation, and
     # its fused selected-reset owner are intended cross-backend differences;
     # the semantic owner remains DR-free.
@@ -118,11 +126,34 @@ def test_flashsac_g1_motion_tracking_uses_comparable_dr_free_owner() -> None:
     assert mjwarp_reward == mujoco_reward
 
 
+def test_flashsac_fused_rewards_publish_canonical_component_names() -> None:
+    cfg = _compose_flashsac("g1_motion_tracking/mujoco")
+
+    assert cfg.reward.motion_reward_pack.reward_pack_names == [
+        "motion_global_root_pos",
+        "motion_global_root_ori",
+        "motion_body_pos",
+        "motion_body_ori",
+        "motion_body_lin_vel",
+        "motion_body_ang_vel",
+    ]
+    assert cfg.reward.motion_reward_pack.weight == 0.0
+    for name, weight in (
+        ("motion_global_root_pos", 1.0),
+        ("motion_global_root_ori", 0.5),
+        ("motion_body_pos", 2.0),
+        ("motion_body_ori", 1.0),
+        ("motion_body_lin_vel", 1.0),
+        ("motion_body_ang_vel", 1.0),
+    ):
+        assert cfg.reward[name].weight == pytest.approx(weight)
+
+
 def test_flashsac_g1_motion_tracking_newton_keeps_mujoco_parity() -> None:
     mujoco_cfg = _compose_flashsac("g1_motion_tracking/mujoco")
     cfg = _compose_flashsac("g1_motion_tracking/newton")
 
-    assert cfg.training.task_name == "G1MotionTrackingSAC"
+    assert cfg.training.task_name == "G1MotionTracking"
     assert cfg.training.sim_backend == "newton"
     assert cfg.training.play_render_mode == "record"
     assert cfg.env.commands.motion._target_ == (
@@ -153,7 +184,7 @@ def test_flashsac_g1_motion_tracking_motrix_uses_packed_tensor_owner() -> None:
     mujoco_cfg = _compose_flashsac("g1_motion_tracking/mujoco")
     cfg = _compose_flashsac("g1_motion_tracking/motrix")
 
-    assert cfg.training.task_name == "G1MotionTrackingSAC"
+    assert cfg.training.task_name == "G1MotionTracking"
     assert cfg.training.sim_backend == "motrix"
     assert cfg.training.play_render_mode == "record"
     assert cfg.env.commands.motion._target_ == (
@@ -200,7 +231,7 @@ def test_sac_g1_motion_tracking_mjwarp_inherits_full_dr() -> None:
 def test_sac_g1_motion_tracking_genesis_inherits_mujoco_parity() -> None:
     mujoco_cfg = _compose_sac("g1_motion_tracking/mujoco")
     cfg = _compose_sac("g1_motion_tracking/genesis")
-    assert cfg.training.task_name == "G1MotionTrackingSAC"
+    assert cfg.training.task_name == "G1MotionTracking"
     assert cfg.training.sim_backend == "genesis"
     assert cfg.training.play_render_mode == "auto"
     assert cfg.env.genesis_device_id == 0

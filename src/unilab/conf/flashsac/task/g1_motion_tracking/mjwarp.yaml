@@ -6,16 +6,17 @@ defaults:
   - _self_
 
 reward:
-  action_rate_l2: null
-  joint_limit: null
-  undesired_contacts: null
   motion_penalty_pack:
     _target_: unilab.tasks.motion_tracking.common.manager_terms.MotionPenaltyRewardPackCfg
     func: unilab.tasks.motion_tracking.common.manager_terms.MotionPenaltyRewardPack
-    weight: 1.0
+    weight: 0.0
+    reward_pack_names:
+      - action_rate_l2
+      - joint_limit
+      - undesired_contacts
 
 training:
-  task_name: G1MotionTrackingSAC
+  task_name: G1MotionTracking
   sim_backend: mjwarp
   play_render_mode: record
   # Reduce metric D2H frequency for the scoped tensor benchmark; capacity

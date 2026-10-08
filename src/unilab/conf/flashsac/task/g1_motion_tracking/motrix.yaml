@@ -10,7 +10,7 @@ defaults:
   - _self_
 
 training:
-  task_name: G1MotionTrackingSAC
+  task_name: G1MotionTracking
   sim_backend: motrix
   play_render_mode: record
 env:
