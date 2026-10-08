@@ -75,9 +75,11 @@ def test_tensor_runtime_switch_is_absent_from_source_and_owner_configs() -> None
     assert offenders == [], f"tensor-runtime switch references remain: {offenders}"
 
 
-def test_motion_direct_runtime_is_removed() -> None:
-    import unilab.tasks.motion_tracking.g1.flashsac_owner_contract as module
+def test_flashsac_motion_owner_uses_generic_manager_runtime() -> None:
+    registry.ensure_registries()
+    assert "motrix" in registry._envs["G1MotionTrackingSAC"].env_factory_dict
 
-    assert not hasattr(module, "TorchG1MotionTrackingFlashSACEnv")
-    assert not hasattr(module, "make_torch_g1_motion_tracking_flashsac_env")
-    assert not hasattr(module, "_TorchG1MotionTrackingFlashSACEnv")
+
+def test_motion_direct_runtime_is_removed() -> None:
+    direct_runtime = _REPO_ROOT / "src/unilab/tasks/motion_tracking/g1/torch_flashsac_env.py"
+    assert not direct_runtime.exists()
