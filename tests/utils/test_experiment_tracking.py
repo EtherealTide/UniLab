@@ -179,6 +179,9 @@ def test_onpolicy_logger_uses_offpolicy_terminal_layout():
 
 
 def test_offpolicy_logger_terminal_keeps_core_bottleneck_timing_rows():
+    # uni_rl 1.4.9 selects its terminal layout from the logger console width.
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setenv("COLUMNS", "120")
     logger = OffPolicyLogger(
         algo_name="SAC",
         env_name="G1WalkFlat",
@@ -242,6 +245,7 @@ def test_offpolicy_logger_terminal_keeps_core_bottleneck_timing_rows():
     assert "Rows/s" in output
 
     logger.close()
+    monkeypatch.undo()
 
 
 def test_offpolicy_logger_terminal_shows_material_blocking_phases():
@@ -275,6 +279,9 @@ def test_offpolicy_logger_terminal_shows_material_blocking_phases():
 
 
 def test_offpolicy_logger_terminal_shows_replay_rows_and_effective_batch():
+    # Keep the wide System column visible independent of the test runner TTY.
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setenv("COLUMNS", "120")
     logger = OffPolicyLogger(
         algo_name="SAC",
         env_name="G1WalkFlat",
@@ -309,6 +316,7 @@ def test_offpolicy_logger_terminal_shows_replay_rows_and_effective_batch():
     assert "Other Loop" not in output
 
     logger.close()
+    monkeypatch.undo()
 
 
 def test_build_wandb_settings_defaults_for_shared_workspace():
@@ -606,6 +614,7 @@ def test_offpolicy_logger_logs_collector_phase_timing_to_backends(monkeypatch):
 def test_offpolicy_logger_uses_same_canonical_timing_names_in_terminal_and_backends(
     monkeypatch,
 ):
+    monkeypatch.setenv("COLUMNS", "120")
     fake_wandb = _FakeWandb()
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
     logger = OffPolicyLogger(
