@@ -18,6 +18,7 @@ from typing import Any, cast
 from omegaconf import DictConfig, OmegaConf
 from uni_rl.ipc.dp_launcher import (
     UNILAB_DP_LOG_DIR,
+    UNILAB_DP_WORLD_SIZE,
     DpRankSupervisor,
     apply_dp_rank_config,
     current_dp_rank,
@@ -75,6 +76,71 @@ def _rank_local_cuda_device() -> str | None:
         return None
     entries = tuple(entry.strip() for entry in raw.split(",") if entry.strip())
     return "cuda:0" if len(entries) == 1 else None
+
+
+def _prepare_rank_zero_dp_visibility(world_size: int) -> None:
+    """Give rank 0 its one-entry slice of a multi-entry parent CUDA mask.
+
+    ``DpRankSupervisor`` spawns ranks 1..N-1 with one opaque parent entry each.
+    Rank 0 previously retained the whole mask, so ``resolve_dp_rank_device``
+    rejected the multi-GPU launch before the supervisor could start. This is a
+    pre-CUDA, rank-0-only remap: child environments are derived from the parent
+    entries before this function changes the current process namespace.
+    """
+
+    if world_size <= 1 or current_dp_rank() != 0:
+        return
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    entries = tuple(entry.strip() for entry in (raw or "").split(",") if entry.strip())
+    if len(entries) != world_size:
+        return
+    if len(entries) <= 1:
+        return
+    global _DP_PARENT_VISIBLE_ENTRIES
+    _DP_PARENT_VISIBLE_ENTRIES = entries
+    os.environ["CUDA_VISIBLE_DEVICES"] = entries[0]
+
+
+_DP_PARENT_VISIBLE_ENTRIES: tuple[str, ...] | None = None
+
+
+def _build_dp_rank_supervisor(world_size: int, log_dir: str) -> DpRankSupervisor:
+    """Build the rank supervisor while preserving the original parent mask."""
+
+    previous = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if _DP_PARENT_VISIBLE_ENTRIES is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(_DP_PARENT_VISIBLE_ENTRIES)
+    try:
+        return DpRankSupervisor(world_size=world_size, log_dir=log_dir)
+    finally:
+        if previous is None:
+            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = previous
+
+
+def _export_inferred_dp_world_size(world_size: int) -> None:
+    """Make an inferred parent launch visible to runner assembly and children."""
+
+    if world_size > 1 and current_dp_rank() == 0 and not os.environ.get(UNILAB_DP_WORLD_SIZE):
+        os.environ[UNILAB_DP_WORLD_SIZE] = str(world_size)
+
+
+def _requested_dp_world_size() -> int:
+    """Infer a parent off-policy DP request from opaque CUDA visibility.
+
+    A parent with one entry is an ordinary single-rank launch. A parent with
+    multiple opaque entries requests one rank per entry, matching the
+    documented off-policy topology. Spawned ranks carry the authoritative
+    ``UNILAB_DP_*`` environment and have one-entry visibility, so they never
+    enter this inference path.
+    """
+
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None or not raw.strip() or raw.strip() == "-1":
+        return 1
+    entries = tuple(entry.strip() for entry in raw.split(",") if entry.strip())
+    return len(entries) or 1
 
 
 from unilab.visualization.interactive_playback import (
@@ -188,6 +254,7 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
         rank_device,
         collector_device,
         backend=str(cfg.training.sim_backend),
+        rank=dp_rank,
         world_size=dp_world_size,
     )
 
@@ -443,6 +510,13 @@ def main(cfg: DictConfig) -> None:
     reject_removed_device_config(OmegaConf.select(cfg, "training.devices", default=None))
     rank = current_dp_rank()
     world_size = current_dp_world_size()
+    if world_size == 1 and rank == 0:
+        world_size = _requested_dp_world_size()
+    if world_size > 1:
+        if rank == 0:
+            selected_visible_entries(world_size=world_size)
+        _export_inferred_dp_world_size(world_size)
+    _prepare_rank_zero_dp_visibility(world_size)
     # Genesis/Quadrants binds the first CUDA_VISIBLE_DEVICES entry, and even
     # torch.cuda.is_available() latches the variable in the CUDA runtime, so
     # the pin must precede registry bootstrap and device auto-detection
@@ -490,7 +564,7 @@ def main(cfg: DictConfig) -> None:
 
     supervisor: DpRankSupervisor | None = None
     if rank == 0 and world_size > 1:
-        supervisor = DpRankSupervisor(world_size=world_size, log_dir=log_dir)
+        supervisor = _build_dp_rank_supervisor(world_size=world_size, log_dir=log_dir)
 
     tracker = None
     if not cfg.training.play_only and rank == 0:

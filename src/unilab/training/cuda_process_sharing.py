@@ -36,6 +36,8 @@ class CudaProcessSharingEvidence:
     configured: str | None
     effective: str | None
     validated: bool
+    rank: int = 0
+    world_size: int = 1
     learner_device: str | None = None
     collector_device: str | None = None
     learner_gpu_uuid: str | None = None
@@ -49,6 +51,8 @@ class CudaProcessSharingEvidence:
             "configured": self.configured,
             "effective": self.effective,
             "validated": self.validated,
+            "rank": self.rank,
+            "world_size": self.world_size,
             "learner_device": self.learner_device,
             "collector_device": self.collector_device,
             "learner_gpu_uuid": self.learner_gpu_uuid,
@@ -233,6 +237,7 @@ def probe_cuda_process_sharing(
     collector_device: str | None,
     *,
     backend: str,
+    rank: int = 0,
     world_size: int = 1,
     torch_module: Any | None = None,
     run_command: Callable[..., Any] = subprocess.run,
@@ -244,7 +249,8 @@ def probe_cuda_process_sharing(
         learner_device: Rank-local learner CUDA device.
         collector_device: Backend-bound collector CUDA device, when applicable.
         backend: Configured owner backend identity.
-        world_size: Current off-policy DP world size.  MPS is single-rank only.
+        rank: Current off-policy DP rank.
+        world_size: Current single-host off-policy DP world size.
         torch_module: Injectable Torch module for deterministic tests.
         run_command: Injectable subprocess runner for deterministic tests.
 
@@ -261,6 +267,8 @@ def probe_cuda_process_sharing(
             configured=None,
             effective=None,
             validated=False,
+            rank=rank,
+            world_size=world_size,
             learner_device=str(learner_device),
             collector_device=str(collector_device) if collector_device is not None else None,
         )
@@ -276,10 +284,18 @@ def probe_cuda_process_sharing(
             "training.cuda_process_sharing='mps' requires Linux; "
             f"got platform.system()={platform.system()!r}."
         )
-    if isinstance(world_size, bool) or not isinstance(world_size, int) or world_size != 1:
+    if (
+        isinstance(rank, bool)
+        or not isinstance(rank, int)
+        or rank < 0
+        or isinstance(world_size, bool)
+        or not isinstance(world_size, int)
+        or world_size < 1
+        or rank >= world_size
+    ):
         raise ValueError(
-            "training.cuda_process_sharing='mps' supports single-host, "
-            f"single-rank training only; got world_size={world_size!r}."
+            "training.cuda_process_sharing='mps' requires a valid rank in "
+            f"[0, world_size); got rank={rank!r}, world_size={world_size!r}."
         )
     if collector_device is None:
         raise ValueError(
@@ -297,6 +313,8 @@ def probe_cuda_process_sharing(
         configured=configured,
         effective=configured,
         validated=True,
+        rank=rank,
+        world_size=world_size,
         learner_device=f"cuda:{learner_index}",
         collector_device=f"cuda:{collector_index}",
         control_pipe=str(control_pipe),
