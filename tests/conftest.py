@@ -23,6 +23,9 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -89,3 +92,10 @@ def _isolate_training_logs_for_tests(tmp_path_factory: pytest.TempPathFactory):
 @pytest.fixture
 def mock_env_name() -> str:
     return _DUMMY_ENV_NAME
+
+
+@pytest.fixture
+def short_unix_socket_root() -> Iterator[Path]:
+    """Provide a temporary path that fits macOS' AF_UNIX path limit."""
+    with tempfile.TemporaryDirectory(prefix="unilab-socket-", dir="/tmp") as directory:
+        yield Path(directory)
