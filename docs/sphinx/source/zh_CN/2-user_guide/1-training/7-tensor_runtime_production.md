@@ -54,22 +54,18 @@ MJWarp task 也是 DR-free lifecycle baseline：其 selected-row tensor reset
 `Recommended`；支持等级提升必须通过 support-matrix generator 及其
 validation inventory 单独决策。
 
-## 可复现 Workspace
+## 可复现 Runtime
 
-集成分支通过 `tensor_runtime_workspace.json` 固定的相对 editable sibling
-checkout 解析 UniSim、unilab-rl 与 MJBatch。请从干净的 UniLab checkout
-开始并物化 sibling：
+gated profile 通过已提交的 registry lock 文件解析 UniSim、unilab-rl 与
+MJBatch：
 
 ```bash
-make sync-workspace
-export UNILAB_LOCAL_UNISIM="$PWD/../unisim"
 UV_FROZEN=1 uv sync --extra mujoco --extra mjwarp --extra uni_rl
-make check-workspace
 ```
 
 `make setup` 适合日常仓库开发，但不安装 `mjwarp` extra。上面的命令与 gated
-CUDA CI profile 一致。CI 使用 Python 3.11 与 uv 0.12.5 物化同一组 sibling；
-虽然包支持更宽的 Python 范围，这两个版本是参考版本。
+CUDA CI profile 一致。虽然包支持更宽的 Python 范围，CI 以 Python 3.11 作为
+参考版本。
 
 只可见一块 GPU 的主机无需设置 `CUDA_VISIBLE_DEVICES`。自动单设备拓扑会把
 learner、collector、MJWarp 物理后端、inference ring 与 replay ingress 绑定到
@@ -230,9 +226,8 @@ shared-memory FD、replay high-water occupancy、inference event count 与最大
 in-flight request 的峰值。出现峰值是正常的；需要关注的是 post-startup
 样本中的无界或持续增长，而不是非零最大值本身。
 
-artifact 的 `context` 记录 UniLab commit 与 dirty 状态、workspace manifest、
-sibling commit、GPU UUID/名称/驱动、Python/Torch 元数据、
-`CUDA_VISIBLE_DEVICES` 与 `UNILAB_LOCAL_UNISIM`。JSON 与 run 目录需要一起
+artifact 的 `context` 记录 UniLab commit 与 dirty 状态、GPU UUID/名称/驱动、
+Python/Torch 元数据与 `CUDA_VISIBLE_DEVICES`。JSON 与 run 目录需要一起
 保留。仓库有意不跟踪这些机器生成 artifact。
 
 运行后提取最后 20 个 schema-v1 TensorBoard 窗口：
@@ -290,13 +285,12 @@ transfer counter。
 
 | 现象 | 首要处理 |
 | --- | --- |
-| sibling 缺失或 commit 错误 | 运行 `make sync-workspace` 与 `make check-workspace`；切换 pinned commit 前先 commit 或 stash sibling 的脏工作。 |
 | MJWarp import 失败 | 重新执行显式 `uv sync --extra mujoco --extra mjwarp --extra uni_rl`；仅 `make setup` 不足以覆盖该 profile。 |
 | CUDA 不可用 | 检查 driver/container runtime 与 Torch sanity 命令；不要修改 task owner 强制 fallback。 |
 | 物理 GPU 错误 | 在启动 `uv run` 的 shell 中设置 `CUDA_VISIBLE_DEVICES`；backend ordinal `0` 相对该 mask。 |
 | CUDA IPC 或 worker 不匹配 | 保持 learner、collector 与 payload 在同一物理 GPU。外部 Isaac worker 继承可见性，但不继承 host Python path。 |
 | 资产启动失败 | 预取 G1 资产，确认 motion NPZ 存在；首次下载完成前移除 `HF_HUB_OFFLINE=1`。 |
-| startup timeout | 查看 `soak-console.log` 与第一条 monitor sample；区分资产下载、sibling setup、backend startup 与进程失败。 |
+| startup timeout | 查看 `soak-console.log` 与第一条 monitor sample；区分资产下载、依赖安装、backend startup 与进程失败。 |
 | stale progress | 打开最新 run 文件与 console log；超过 `stale-progress-seconds` 没有文件变化会显式失败，而不是无限等待。 |
 | replay backpressure 或 drop | 读取 occupancy、high-water、wait、early return 与 dropped batch；未做 workload benchmark 前不要缩小 ingress slot rows。 |
 | 最终 replay occupancy 非零 | 保留 artifact 与 console log；即使 trainer 看似完成，这也是 lifecycle/finalize 失败。 |

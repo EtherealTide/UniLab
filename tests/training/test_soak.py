@@ -14,7 +14,7 @@ from unilab.training.soak import (
     _tree_snapshot,
     build_g1_flashsac_mjwarp_command,
     run_soak,
-    workspace_snapshot,
+    runtime_snapshot,
 )
 
 
@@ -155,8 +155,8 @@ def test_soak_monitor_accepts_completed_run(tmp_path: Path) -> None:
     assert saved["monitor"]["sample_count"] >= 1
 
 
-def test_workspace_snapshot_records_software_provenance(tmp_path: Path) -> None:
-    context = workspace_snapshot(tmp_path)
+def test_runtime_snapshot_records_software_provenance(tmp_path: Path) -> None:
+    context = runtime_snapshot(tmp_path)
 
     assert context["software"]["python"] == platform.python_version()
     assert isinstance(context["software"]["torch"], (str, type(None)))

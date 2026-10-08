@@ -97,11 +97,10 @@ publishes tagged builds through PyPI trusted publishing. A code change after a
 failed release requires a new version and tag; never replace an already published
 version.
 
-### Tensor-runtime sibling dependency transition
+### Tensor-runtime published dependency transition
 
-The `develop/tensor-runtime` integration profile deliberately uses relative
-editable siblings and does not publish packages. Before replacing those paths
-with published dependencies, all of the following must be true:
+Before replacing the published dependency versions, all of the following must
+be true:
 
 1. M11's long-duration soak, leak, shutdown, schema, platform fail-closed, and
    documentation acceptance items are complete.
@@ -112,9 +111,7 @@ with published dependencies, all of the following must be true:
    `unilab-rl` version with its complete repository gate.
 4. The required MJBatch executor API is available in a published `mjbatch-uni`
    version supported by the UniSim adapter contract.
-5. The default and ROCm lock profiles resolve only registry packages, and
-   `tensor_runtime_workspace.json` plus `UNILAB_LOCAL_UNISIM` remain only as an
-   explicit developer override.
+5. The default and ROCm lock profiles resolve only registry packages.
 6. Focused CPU CI and the manually gated single-GPU CUDA profile pass on the
    exact transition commit.
 

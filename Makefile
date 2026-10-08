@@ -1,20 +1,5 @@
-# The tensor-runtime integration profile resolves unisim-core from the relative
-# sibling checkout. Repository-owned test entrypoints therefore provide the
-# explicit approved-source sentinel. `make check-workspace` verifies the pinned
-# commits; direct uv users can run scripts/tools/sync_tensor_workspace.py.
-UNILAB_LOCAL_UNISIM ?= $(abspath ../unisim)
-export UNILAB_LOCAL_UNISIM
-
-.PHONY: sync-workspace
-sync-workspace:
-	uv run --no-project python scripts/tools/sync_tensor_workspace.py --sync
-
-.PHONY: check-workspace
-check-workspace:
-	uv run --no-project python scripts/tools/sync_tensor_workspace.py
-
 .PHONY: sync
-sync: sync-workspace
+sync:
 	uv sync --extra mujoco --extra uni_rl
 
 .PHONY: setup
@@ -33,7 +18,7 @@ sync-rocm:
 	cp uv.lock uv.rocm.lock
 
 .PHONY: sync-xpu
-sync-xpu: sync-workspace
+sync-xpu:
 	uv sync --extra mujoco --extra uni_rl --no-install-package torch
 	uv pip install torch==2.7.0 --torch-backend xpu
 

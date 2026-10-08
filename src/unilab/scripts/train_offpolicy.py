@@ -359,11 +359,14 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
 
             runner = build_flashsac_double_buffer_runner(cfg, **builder_kwargs)
         elif algo_name == "warpsac":
-            from uni_rl.algos.warp_sac.double_buffer import (
-                build_warpsac_double_buffer_runner,
+            # unilab-rl 1.5.0 folded the age-biased runtime into FlashSAC.
+            # Keep the public UniLab task/config identity while dispatching to
+            # the maintained owner implementation.
+            from uni_rl.algos.flash_sac.double_buffer import (
+                build_flashsac_double_buffer_runner,
             )
 
-            runner = build_warpsac_double_buffer_runner(cfg, **builder_kwargs)
+            runner = build_flashsac_double_buffer_runner(cfg, **builder_kwargs)
         else:
             raise ValueError(f"Unsupported algo: {algo_name}")
 

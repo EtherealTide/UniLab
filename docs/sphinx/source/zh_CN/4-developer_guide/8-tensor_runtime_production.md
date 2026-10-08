@@ -53,7 +53,7 @@ task 文档中形成第二事实源。
 producer schema 或 lifecycle 契约变化后，它不能替代当前 head 运行。
 
 保留 benchmark 证据时，应同时保存 soak JSON、console log、run 目录、
-revision/workspace 来源、GPU 身份与 checksum。仓库不跟踪机器生成的 benchmark
+revision 与包来源、GPU 身份与 checksum。仓库不跟踪机器生成的 benchmark
 输出。
 
 ## Support-Matrix 提升
@@ -69,8 +69,7 @@ backend 声明。
 
 ## Release Transition
 
-集成 workspace 有意使用相对 editable sibling；这不是发布流程。把这些路径替换为
-registry 依赖前，必须完成 {doc}`5-contributing_workflow` 中的 checklist：已发布
+推进已发布依赖版本前，必须完成 {doc}`5-contributing_workflow` 中的 checklist：已发布
 的 UniSim tensor 契约与 adapter、已发布的 `uni_rl` runner 行为、已发布且受支持的
 MJBatch、在确切 transition commit 上通过的 focused CPU 与 gated CUDA profile，
 以及完整的 M11 soak、泄漏、shutdown、schema、平台与文档验收。

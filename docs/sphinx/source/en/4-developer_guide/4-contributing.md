@@ -14,12 +14,6 @@ optional simulator extras used by the repository's checks:
   return to the default CUDA / macOS profile, `git restore -- pyproject.toml
   uv.lock` and re-run `make setup`.
 - Linux Intel XPU: `make sync-xpu`
-- Tensor-runtime integration profile: `make sync-workspace` first materializes
-  the sibling repositories pinned by `tensor_runtime_workspace.json`; `make
-  setup` does this automatically. The default `uv.lock` intentionally resolves
-  `unisim-core`, `unilab-rl`, and `mjbatch-uni` from those relative editable
-  checkouts. Repository Make targets export `UNILAB_LOCAL_UNISIM` for the
-  dependency-source sentinel; direct `uv run` commands must export it explicitly.
 - If you prefer direct uv commands, the full default setup is
   `uv sync --extra mujoco --extra uni_rl`; use `uv sync --extra mujoco` for a
   MuJoCo-only environment.
@@ -29,14 +23,7 @@ optional simulator extras used by the repository's checks:
 make setup
 make sync-rocm
 make sync-xpu
-make check-workspace
 ```
-
-`make check-workspace` verifies that every sibling is clean and at the commit
-recorded in `tensor_runtime_workspace.json`. It never discards or resets local
-work. If a sibling is dirty, commit or stash that repository before changing the
-pinned workspace. The ROCm profile is different: `make sync-rocm` activates the
-committed PyPI/ROCm lock files rather than the local editable sibling profile.
 
 Use `uv run` for commands. Do not invoke `python` directly outside `uv run`.
 

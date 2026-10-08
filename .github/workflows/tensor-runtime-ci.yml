@@ -25,7 +25,6 @@ permissions:
 
 env:
   UV_FROZEN: "1"
-  UNILAB_LOCAL_UNISIM: ${{ github.workspace }}/../unisim
 
 jobs:
   focused-cpu:
@@ -42,8 +41,6 @@ jobs:
         with:
           enable-cache: true
           python-version: "3.11"
-      - name: Materialize pinned sibling workspace
-        run: uv run --no-project python scripts/tools/sync_tensor_workspace.py --sync
       - name: Install CPU runtime
         run: |
           uv sync --extra mujoco \
@@ -68,7 +65,6 @@ jobs:
         run: >
           uv run --no-sync pytest -q
           tests/base/test_backend_imports.py::test_unisim_dependency_uses_an_approved_source
-          tests/scripts/test_tensor_workspace.py
           tests/tasks/test_tensor_runtime_components.py
           tests/tasks/test_go2_tensor_runtime.py
           tests/scripts/test_g1_flashsac_backend.py
@@ -92,8 +88,6 @@ jobs:
           # avoid setup-uv's save/prune hooks on it.
           enable-cache: false
           python-version: "3.11"
-      - name: Materialize pinned sibling workspace
-        run: uv run --no-project python scripts/tools/sync_tensor_workspace.py --sync
       - name: Install tensor runtime
         run: uv sync --extra mujoco --extra mjwarp --extra newton --extra motrix --extra uni_rl
       - name: CUDA task contract tests

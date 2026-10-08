@@ -2251,32 +2251,31 @@ wheels = [
 
 [[package]]
 name = "mjbatch-uni"
-version = "0.2.4"
-source = { editable = "../mjbatch_uni" }
+version = "0.2.5"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mujoco" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "mujoco", specifier = "==3.11.0" },
-    { name = "numpy" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "nanobind", specifier = ">=2.2.0" },
-    { name = "pyright" },
-    { name = "pytest" },
-    { name = "ruff" },
-]
-examples = [
-    { name = "mediapy" },
-    { name = "mujoco-menagerie", marker = "python_full_version >= '3.10.12'", specifier = ">=2026.9.0" },
-    { name = "torch", marker = "sys_platform != 'linux'", specifier = "==2.9.0" },
-    { name = "torch", marker = "sys_platform == 'linux'", specifier = "==2.9.0", index = "https://download.pytorch.org/whl/cu128" },
+sdist = { url = "https://files.pythonhosted.org/packages/96/36/a9ab3bb98b1ac05a41a931d359da60d72356060ab7f894122467679ac386/mjbatch_uni-0.2.5.tar.gz", hash = "sha256:fdef14cbe01db4509ac40feb739d11af4a962bfc1394a96f6cd221f6ba8daa07", size = 48410, upload-time = "2026-10-08T05:34:21.722Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e5/44/e403142665638bc02b4662c690d146d880cf8fbb4160991876a42321ec8c/mjbatch_uni-0.2.5-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:6bd24276b2c5f8d741a73e7ceffe2d6bb8aee988372d459b1178be4499542bab", size = 165776, upload-time = "2026-10-08T05:34:00.97Z" },
+    { url = "https://files.pythonhosted.org/packages/b0/8e/04eeed2816f891fc708bef6f17c2ff7f1e560ac75b9397ec0e7383c93f26/mjbatch_uni-0.2.5-cp310-cp310-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:f092ecdf3be31928d8b5c94af5dcec172f5bb21975343ef62de11b580fa514d1", size = 195655, upload-time = "2026-10-08T05:34:02.402Z" },
+    { url = "https://files.pythonhosted.org/packages/70/c2/00958dec618fe3240f5bc4c1e02d1e424d38ad4298cef71c480c98c9a10a/mjbatch_uni-0.2.5-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:045adb40db5f637e7f25a803c2125a2d125890cb9f7b0ba25cb968bb4e27d4b6", size = 205720, upload-time = "2026-10-08T05:34:03.687Z" },
+    { url = "https://files.pythonhosted.org/packages/b1/cf/eeb5b23f8df8693164afa65e5d4c01d282109e24ae043ad2c79ee3380c70/mjbatch_uni-0.2.5-cp310-cp310-win_amd64.whl", hash = "sha256:27c0ee4c897ad520916de73f0ece073737fc517e62d665627fc586668a423958", size = 201963, upload-time = "2026-10-08T05:34:05.132Z" },
+    { url = "https://files.pythonhosted.org/packages/a5/75/a73308203fe91db8a00c7283fe1701e34ec20bc3f6111c716a2ee94769d6/mjbatch_uni-0.2.5-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:6b108db5cda84daa180d33541b40e89c2eeeee5d43011bb57eb5735de332d03b", size = 165354, upload-time = "2026-10-08T05:34:06.285Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/7b/c7773d3e6946f430f7c765fa37396a6ef63bff510b1548a7d8b28c0baef4/mjbatch_uni-0.2.5-cp311-cp311-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:19d257bae128f836659005068b10146a2883e2c987dad29b7f62065913bba6fe", size = 195307, upload-time = "2026-10-08T05:34:07.572Z" },
+    { url = "https://files.pythonhosted.org/packages/83/73/3a267ef6711be6344279ce4b0ba4ec5695f4e368b9fa8a929ac3cf8357b3/mjbatch_uni-0.2.5-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7dd60d02a4a9847de6dea1171db8c657699ecb1f36816550b6e904abaded940e", size = 205233, upload-time = "2026-10-08T05:34:08.804Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/2a/68fcf9120a7a2d94b17eee4ba541b95abab633ee6ec44ad21d569236b5c9/mjbatch_uni-0.2.5-cp311-cp311-win_amd64.whl", hash = "sha256:8c4df17eb9e74b1b505b860d60a1ba3f77c218110019267b8a87d04119557954", size = 202246, upload-time = "2026-10-08T05:34:10.065Z" },
+    { url = "https://files.pythonhosted.org/packages/50/b5/aacf7d69b4f4ff03e853c4827a210753c52e2b8aeef24871cac9cd21801d/mjbatch_uni-0.2.5-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:9371169f5ddcfa54f7b1323439895aceeaf0c359784a3ebf7c4e65d736ded08f", size = 164826, upload-time = "2026-10-08T05:34:11.494Z" },
+    { url = "https://files.pythonhosted.org/packages/08/5f/c4ad4b65f7f431eca9ef7950ed60a580eab34a0cd04da965fb81c728e41f/mjbatch_uni-0.2.5-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:5171b76d2505e36a960da3fda2e0bfb6006586a09e49bfeba965bc481065f1b9", size = 194466, upload-time = "2026-10-08T05:34:12.684Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/ab/bc4a95b1500994248350b05463e5d734b033149e706e9219cd79053c4680/mjbatch_uni-0.2.5-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:143a819d860bbceda580e1a3bf1af844c0df4cc7d6898ae4f5a60cc5a1ce3399", size = 204855, upload-time = "2026-10-08T05:34:13.929Z" },
+    { url = "https://files.pythonhosted.org/packages/15/52/969400ff1dcd02bb54a8aac661bc40cf55e61ca819d666dbf2dfdeedefbf/mjbatch_uni-0.2.5-cp312-cp312-win_amd64.whl", hash = "sha256:55889ffb6b9ad7a9977de7bdd7ee6732459f5770c4ba08858151c3254dca43c9", size = 202175, upload-time = "2026-10-08T05:34:15.25Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/49/9a8ee16cb1bd9c218271c9ee22c5dcc10abed1d7f73c59a31e2ad79f275a/mjbatch_uni-0.2.5-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:5ad03913a2666f8571e2ccda177a27e1990d731b134c73584427710e0054d851", size = 164831, upload-time = "2026-10-08T05:34:16.664Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/d9/a5e2ec385b9d27fccf0b295c2cba024949c272b6bb119001f0ddac25434a/mjbatch_uni-0.2.5-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:204c3ab5f0dcc55a76c5b0b6cdd1a322dd2b8ac87860d99f95a120138cfe7d41", size = 194378, upload-time = "2026-10-08T05:34:17.922Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/27/1189d50703fa5ba5ff6d6d1a748b63113125338d0d73305aab5a28511077/mjbatch_uni-0.2.5-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:956a20db708a9e902cab1d96d458d2e5bc671ddb938a6aad809a78040f37df53", size = 204746, upload-time = "2026-10-08T05:34:19.153Z" },
+    { url = "https://files.pythonhosted.org/packages/a7/cf/589af1d34d693a623635ec3947485a679ca3d5329fd9b413996f6a0cc3f6/mjbatch_uni-0.2.5-cp313-cp313-win_amd64.whl", hash = "sha256:8bf6fcf199b9eade29feb11de3a0f0cc3328d484903c1d0aa98ebebc2f07ba02", size = 202174, upload-time = "2026-10-08T05:34:20.48Z" },
 ]
 
 [[package]]
@@ -5248,7 +5247,7 @@ requires-dist = [
     { name = "imgui-bundle", marker = "extra == 'newton'", specifier = ">=1.92.0" },
     { name = "lark", specifier = ">=1.3.1" },
     { name = "mediapy" },
-    { name = "mjbatch-uni", marker = "extra == 'mujoco'", editable = "../mjbatch_uni" },
+    { name = "mjbatch-uni", marker = "extra == 'mujoco'", specifier = "~=0.2.5" },
     { name = "mujoco", marker = "extra == 'drake'", specifier = ">=3.5" },
     { name = "mujoco", marker = "extra == 'mujoco'", specifier = "~=3.11.0" },
     { name = "mujoco", marker = "extra == 'newton'", specifier = "==3.11.0" },
@@ -5273,10 +5272,10 @@ requires-dist = [
     { name = "tqdm" },
     { name = "trimesh", specifier = ">=3.21.7" },
     { name = "typing-extensions" },
-    { name = "unilab-rl", marker = "extra == 'uni-rl'", editable = "../unilab_rl" },
-    { name = "unisim-core", editable = "../unisim" },
-    { name = "unisim-core", extras = ["motrix"], marker = "extra == 'motrix'", editable = "../unisim" },
-    { name = "unisim-core", extras = ["superdex"], marker = "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'superdex'", editable = "../unisim" },
+    { name = "unilab-rl", marker = "extra == 'uni-rl'", specifier = "==1.4.5" },
+    { name = "unisim-core", specifier = ">=1.7.11" },
+    { name = "unisim-core", extras = ["motrix"], marker = "extra == 'motrix'", specifier = ">=1.7.11" },
+    { name = "unisim-core", extras = ["superdex"], marker = "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'superdex'", specifier = ">=1.7.11" },
     { name = "viser", specifier = ">=1.0.26" },
     { name = "wandb" },
     { name = "warp-lang", marker = "extra == 'mjwarp'", specifier = "==1.16.0" },
@@ -5291,13 +5290,13 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
-    { name = "unilab-rl", editable = "../unilab_rl" },
+    { name = "unilab-rl", specifier = "==1.4.5" },
 ]
 
 [[package]]
 name = "unilab-rl"
-version = "1.4.2"
-source = { editable = "../unilab_rl" }
+version = "1.4.5"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "hydra-core" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -5312,38 +5311,20 @@ dependencies = [
     { name = "torch", version = "2.14.0+cu130", source = { registry = "https://download-r2.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "wandb" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "hydra-core" },
-    { name = "numpy" },
-    { name = "omegaconf" },
-    { name = "packaging" },
-    { name = "rich" },
-    { name = "rsl-rl-lib", specifier = ">=5.0.0" },
-    { name = "tensorboard" },
-    { name = "tensordict" },
-    { name = "torch", specifier = ">=2.7.0" },
-    { name = "wandb", specifier = ">=0.22.3" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "mypy" },
-    { name = "pyright", specifier = "==1.1.408" },
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
+sdist = { url = "https://files.pythonhosted.org/packages/df/f7/16bb5517569e40105e452ee5d2bb91c1c4c0278732436c92e2d596a8a8f1/unilab_rl-1.4.5.tar.gz", hash = "sha256:70ddbba93a787b4c062ad5966128f783adeaf66d1dfe4b8bbaeeb549d37fcafa", size = 178526, upload-time = "2026-10-08T07:51:07.132Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b7/c1/5180096ea709d0dca1a8f7bc8370b083191acd569bd56c4e713d2ccff41c/unilab_rl-1.4.5-py3-none-any.whl", hash = "sha256:3e9170a89561290549587db2a55071cd9d9c0ea75a8a95c4c16ae7423fb6cf1e", size = 213320, upload-time = "2026-10-08T07:51:05.858Z" },
 ]
 
 [[package]]
 name = "unisim-core"
-version = "1.7.10"
-source = { editable = "../unisim" }
+version = "1.7.11"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/3a/d6/fe0c26a5be1258dff7843be76ea0487dc7bc2e9ba4f6399178b4e11442c7/unisim_core-1.7.11.tar.gz", hash = "sha256:3757ae06c6468296ce88b0b57047a5244caddaeb5371ca1ed5f8d5e208a2bca0", size = 650399, upload-time = "2026-10-08T05:57:58.972Z" }
 
 [package.optional-dependencies]
 motrix = [
@@ -5353,37 +5334,6 @@ superdex = [
     { name = "mujoco" },
     { name = "superdex-physics-uni" },
     { name = "superdex-robotics-uni" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "drake-uni", marker = "extra == 'drake'", specifier = "==0.1.0" },
-    { name = "genesis-world", marker = "extra == 'genesis'", specifier = "==1.3.3" },
-    { name = "imgui-bundle", marker = "extra == 'newton'", specifier = ">=1.92.0" },
-    { name = "mjbatch-uni", marker = "extra == 'mujoco'", specifier = "~=0.2.4" },
-    { name = "motrixsim-core", marker = "extra == 'motrix'", specifier = "==0.10.1" },
-    { name = "mujoco", marker = "python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'superdex'", specifier = "~=3.11.0" },
-    { name = "mujoco", marker = "extra == 'mujoco'", specifier = "~=3.11.0" },
-    { name = "mujoco", marker = "extra == 'newton'", specifier = "==3.11.0" },
-    { name = "mujoco", marker = "extra == 'scene-compiler'", specifier = "~=3.11.0" },
-    { name = "mujoco-warp", marker = "extra == 'mjwarp'", specifier = "~=3.11.0" },
-    { name = "mujoco-warp", marker = "extra == 'newton'", specifier = "==3.11.0" },
-    { name = "newton", marker = "extra == 'newton'", specifier = "==1.5.1" },
-    { name = "numpy" },
-    { name = "pyglet", marker = "extra == 'newton'", specifier = ">=2.1.6,<3" },
-    { name = "superdex-physics-uni", marker = "python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'superdex'", specifier = "==1.3.0" },
-    { name = "superdex-robotics-uni", marker = "python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'superdex'", specifier = "==1.3.0" },
-    { name = "warp-lang", marker = "extra == 'mjwarp'", specifier = "==1.16.0" },
-    { name = "warp-lang", marker = "extra == 'newton'", specifier = "==1.16.0" },
-]
-provides-extras = ["scene-compiler", "mujoco", "motrix", "drake", "mjwarp", "genesis", "superdex", "newton", "isaacgym", "isaacsim"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "mypy" },
-    { name = "pyright", specifier = "==1.1.408" },
-    { name = "pytest" },
-    { name = "ruff" },
 ]
 
 [[package]]

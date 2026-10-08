@@ -1,9 +1,8 @@
 # WarpSAC
 
 WarpSAC runs through `src/unilab/scripts/train_warpsac.py` and is implemented
-by `uni_rl.algos.warp_sac` from unilab-rl 1.4.0. It keeps the FlashSAC actor,
-distributional critic, learner, and asynchronous double-buffer runtime, while
-replacing uniform replay sampling with a bucketed linear age-bias sampler.
+by `uni_rl.algos.flash_sac` from unilab-rl 1.5.0. It keeps the public WarpSAC
+configuration identity while selecting FlashSAC's age-biased replay options.
 
 ```bash
 uv run train --algo warpsac --task g1_walk_flat --sim mujoco

@@ -278,12 +278,10 @@ def test_nvidia_smi_snapshot_records_query_failures_instead_of_empty_success(
 def test_benchmark_environment_records_runtime_and_profiler_boundaries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("UNILAB_LOCAL_UNISIM", "/unisim")
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
     environment = g1_backend._benchmark_environment()
 
-    assert environment["UNILAB_LOCAL_UNISIM"] == "/unisim"
     assert environment["CUDA_VISIBLE_DEVICES"] is None
     assert set(g1_backend._PROFILER_ENV_KEYS) <= set(environment)
 

@@ -57,7 +57,7 @@ recorded commits and schema. It cannot substitute for a current-head run after
 producer schema or lifecycle contracts change.
 
 When retaining benchmark evidence, store the soak JSON, console log, run
-directory, revision/workspace provenance, GPU identity, and checksum together.
+directory, revision and package provenance, GPU identity, and checksum together.
 The repository does not track machine-generated benchmark outputs.
 
 ## Support-Matrix Promotion
@@ -74,9 +74,7 @@ multi-GPU, macOS, ROCm, PyPI-release, or universal-backend claim.
 
 ## Release Transition
 
-The integration workspace intentionally uses relative editable siblings; this is
-not a publication workflow. Before replacing those paths with registry
-dependencies, complete the checklist in
+Before advancing the published dependency versions, complete the checklist in
 {doc}`5-contributing_workflow`: released UniSim tensor contracts and adapters,
 released `uni_rl` runner behavior, published MJBatch support, passing focused
 CPU and gated CUDA profiles on the exact transition commit, and completed M11

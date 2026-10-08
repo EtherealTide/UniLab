@@ -377,26 +377,13 @@ def _software_snapshot() -> dict[str, str | None]:
     }
 
 
-def workspace_snapshot(root: Path) -> dict[str, Any]:
-    """Record source, pinned-sibling, GPU, and environment provenance."""
-    manifest_path = root / "tensor_runtime_workspace.json"
-    manifest = _load_json(manifest_path) or {}
-    siblings: dict[str, Any] = {}
-    for item in manifest.get("siblings", []):
-        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
-            continue
-        path_value = item.get("path")
-        if isinstance(path_value, str):
-            siblings[item["name"]] = _git_snapshot((root / path_value).resolve())
+def runtime_snapshot(root: Path) -> dict[str, Any]:
+    """Record source, GPU, software, and environment provenance."""
     return {
         "source": _git_snapshot(root),
-        "workspace_manifest": manifest,
-        "siblings": siblings,
         "gpu_devices": _gpu_device_snapshot(),
         "software": _software_snapshot(),
-        "environment": {
-            key: os.environ.get(key) for key in ("CUDA_VISIBLE_DEVICES", "UNILAB_LOCAL_UNISIM")
-        },
+        "environment": {"CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES")},
     }
 
 

@@ -10,7 +10,7 @@ from pathlib import Path
 from unilab.training.soak import (
     build_g1_flashsac_mjwarp_command,
     run_soak,
-    workspace_snapshot,
+    runtime_snapshot,
 )
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
@@ -59,7 +59,7 @@ def main() -> None:
         post_shutdown_grace_seconds=args.post_shutdown_grace_seconds,
         min_duration_seconds=args.min_duration_seconds,
         cwd=ROOT_DIR,
-        metadata=workspace_snapshot(ROOT_DIR),
+        metadata=runtime_snapshot(ROOT_DIR),
     )
     print(json.dumps(artifact["monitor"], indent=2))
 

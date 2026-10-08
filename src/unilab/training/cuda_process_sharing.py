@@ -154,7 +154,10 @@ def _nvidia_uuid(
         )
     except Exception:
         return None
-    rows = [_parse_csv_row(row) for row in str(result.stdout).splitlines() if row.strip()]
+    stdout = getattr(result, "stdout", None)
+    if stdout is None:
+        return None
+    rows = [_parse_csv_row(row) for row in str(stdout).splitlines() if row.strip()]
     if not rows or any(len(row) != 2 for row in rows):
         return None
     by_host_index = {row[0]: _canonical_gpu_uuid(row[1]) for row in rows if row[0].isdigit()}

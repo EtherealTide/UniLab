@@ -57,23 +57,19 @@ silently promote it to `Benchmarked` or `Recommended`; support promotion is a
 separate repository decision made through the support-matrix generator and its
 validation inventory.
 
-## Reproducible Workspace
+## Reproducible Runtime
 
-The integration branch resolves UniSim, unilab-rl, and MJBatch from relative
-editable sibling checkouts pinned by `tensor_runtime_workspace.json`. Start
-from a clean UniLab checkout and materialize those siblings:
+The gated profile resolves UniSim, unilab-rl, and MJBatch from the committed
+registry lock files:
 
 ```bash
-make sync-workspace
-export UNILAB_LOCAL_UNISIM="$PWD/../unisim"
 UV_FROZEN=1 uv sync --extra mujoco --extra mjwarp --extra uni_rl
-make check-workspace
 ```
 
 `make setup` is useful for broad repository development, but it does not install
 the `mjwarp` extra. The command above matches the gated CUDA CI profile. CI
-materializes the same siblings with Python 3.11 and uv 0.12.5; those are the
-reference versions even though the package supports a wider Python range.
+uses Python 3.11 as the reference version even though the package supports a
+wider Python range.
 
 On a host with one visible GPU, no `CUDA_VISIBLE_DEVICES` mask is required.
 The automatic single-device topology binds the learner, collector, MJWarp
@@ -248,11 +244,10 @@ shared-memory FDs, replay high-water occupancy, inference event count, and
 maximum in-flight requests. Peaks are expected; look for unbounded or sustained
 growth across post-startup samples, not merely a nonzero maximum.
 
-The artifact `context` records the UniLab commit and dirty state, workspace
-manifest, sibling commits, GPU UUID/name/driver, Python/Torch metadata,
-`CUDA_VISIBLE_DEVICES`, and `UNILAB_LOCAL_UNISIM`. Preserve the JSON and run
-directory together. The repository intentionally does not track these
-machine-generated artifacts.
+The artifact `context` records the UniLab commit and dirty state, GPU
+UUID/name/driver, Python/Torch metadata, and `CUDA_VISIBLE_DEVICES`. Preserve
+the JSON and run directory together. The repository intentionally does not
+track these machine-generated artifacts.
 
 Extract the last 20 schema-v1 TensorBoard windows after the run:
 
@@ -311,13 +306,12 @@ MuJoCo results also include the packed H2D/D2H inventory and transfer counters.
 
 | Symptom | First action |
 | --- | --- |
-| Missing sibling or wrong commit | Run `make sync-workspace`, then `make check-workspace`; commit or stash dirty sibling work before changing pins. |
 | MJWarp import fails | Re-run the explicit `uv sync --extra mujoco --extra mjwarp --extra uni_rl`; `make setup` alone is insufficient for this profile. |
 | CUDA unavailable | Check the driver/container runtime and the Torch sanity command; do not change the task owner to force a fallback. |
 | Wrong physical GPU | Set `CUDA_VISIBLE_DEVICES` in the shell that launches `uv run`; backend ordinal `0` is relative to that mask. |
 | CUDA IPC or worker mismatch | Keep learner, collector, and payload on the same physical GPU. External Isaac workers inherit visibility but not host Python paths. |
 | Asset startup failure | Pre-fetch G1 assets, verify the motion NPZ exists, and remove `HF_HUB_OFFLINE=1` until first download completes. |
-| Startup timeout | Inspect `soak-console.log` and the first monitor sample; distinguish asset download, sibling setup, backend startup, and process failure. |
+| Startup timeout | Inspect `soak-console.log` and the first monitor sample; distinguish asset download, dependency installation, backend startup, and process failure. |
 | Stale progress | Open the latest run files and console log; no file change for `stale-progress-seconds` intentionally fails rather than waiting forever. |
 | Replay backpressure or drops | Read occupancy, high-water, waits, early returns, and dropped batches; do not shrink ingress slot rows without a workload benchmark. |
 | Nonzero final replay occupancy | Keep the artifact and console log; this is a lifecycle/finalize failure even if the trainer otherwise appeared to finish. |

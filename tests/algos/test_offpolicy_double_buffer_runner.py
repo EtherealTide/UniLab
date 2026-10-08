@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import queue
+import socket
 from pathlib import Path
+from subprocess import CompletedProcess
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -166,6 +168,7 @@ def test_warpsac_declares_public_tensor_runtime_knobs():
 @pytest.mark.parametrize("algo", ["sac", "flashsac", "warpsac"])
 def test_cuda_process_sharing_request_fails_before_env_materialization(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     algo: str,
 ):
     module = _offpolicy()
@@ -185,7 +188,32 @@ def test_cuda_process_sharing_request_fails_before_env_materialization(
         "configure_backend_process_device",
         lambda _backend, device: device,
     )
+    monkeypatch.setattr(
+        module,
+        "probe_cuda_process_sharing",
+        lambda *_args, **kwargs: cuda_process_sharing.probe_cuda_process_sharing(
+            *_args,
+            **kwargs,
+            run_command=lambda *_command, **_run_kwargs: CompletedProcess(
+                [], 0, stdout="0,GPU-a\n"
+            ),
+        ),
+    )
     monkeypatch.setattr(cuda_process_sharing, "_nvidia_uuid", lambda *_args, **_kwargs: "A")
+    # Keep the host daemon discovery deterministic: point at a real Unix socket
+    # that has no daemon behind it.
+    control = tmp_path / "nvidia-mps" / "control"
+    control.parent.mkdir(parents=True)
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(control))
+    control.chmod(0o666)
+    monkeypatch.setenv("CUDA_MPS_PIPE_DIRECTORY", str(control.parent))
+    monkeypatch.setenv("CUDA_MPS_LOG_DIRECTORY", str(tmp_path / "nvidia-mps-log"))
+    monkeypatch.setattr(
+        cuda_process_sharing.subprocess,
+        "run",
+        lambda *_args, **_kwargs: CompletedProcess([], 0, stdout="2768293\n"),
+    )
     with pytest.raises(
         ValueError,
         match="could not reach the control daemon|found no control pipe",
@@ -423,15 +451,15 @@ def test_warpsac_dispatch_constructs_regime_aware_runner(
         algo="warpsac",
     )
 
-    import uni_rl.algos.warp_sac.double_buffer as warp_module
+    import uni_rl.algos.flash_sac.double_buffer as warp_module
 
     monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
-    monkeypatch.setattr(warp_module, "WarpSACLearner", _FakeLearner)
+    monkeypatch.setattr(warp_module, "FlashSACLearner", _FakeLearner)
     monkeypatch.setattr(warp_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
 
     runner = module.build_runner("warpsac", cfg)
     assert isinstance(runner, _FakeRunner)
-    assert runner.kwargs["algo_type"] == "warpsac"
+    assert runner.kwargs["algo_type"] == "flashsac"
     settings = runner.kwargs["tensor_runtime_settings"]
     assert isinstance(settings, TensorRuntimeSettings)
     assert settings.inference_slot_capacity == 3

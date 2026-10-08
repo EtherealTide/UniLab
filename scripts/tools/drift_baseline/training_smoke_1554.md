@@ -17,8 +17,7 @@ uv run train --algo ppo --task go2_joystick_flat --sim mujoco -- \
 ```
 
 (Executed with `UV_NO_SYNC=1` and the local mjbatch/unisim checkouts
-installed editable; `UNILAB_LOCAL_UNISIM` set for the dependency-source
-sentinel.)
+installed editable.)
 
 ## Go2JoystickFlat (logs/rsl_rl_ppo/Go2JoystickFlat/2026-09-12_01-44-50_mujoco)
 
