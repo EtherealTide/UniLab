@@ -20,6 +20,8 @@ from uni_rl.utils.tensor_runtime import (
     TensorRuntimeSettings,
 )
 
+from unilab.training import cuda_process_sharing
+
 _ROOT = Path(__file__).parent.parent.parent
 _CONF_DIR = _ROOT / "src" / "unilab" / "conf"
 
@@ -88,6 +90,41 @@ def _fake_env_factory(num_envs, env_cfg_override):
     return _FakeEnv()
 
 
+def _cuda_torch_module(monkeypatch: pytest.MonkeyPatch, uuid: str = "GPU-a"):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda _index: SimpleNamespace(uuid=uuid),
+    )
+
+
+class _FakeCudaProcessSharingEvidence:
+    configured = "mps"
+    effective = "mps"
+    validated = True
+    learner_device = "cuda:0"
+    collector_device = "cuda:0"
+    learner_gpu_uuid = None
+    collector_gpu_uuid = None
+    control_pipe = "/tmp/unilab-mps/control"
+    server_pid = 2768293
+
+    def manifest(self):
+        return {
+            "configured": self.configured,
+            "effective": self.effective,
+            "validated": self.validated,
+            "learner_device": self.learner_device,
+            "collector_device": self.collector_device,
+            "learner_gpu_uuid": self.learner_gpu_uuid,
+            "collector_gpu_uuid": self.collector_gpu_uuid,
+            "control_pipe": self.control_pipe,
+            "server_pid": self.server_pid,
+        }
+
+
 def test_offpolicy_config_has_one_replay_path():
     cfg = _offpolicy_cfg()
     assert cfg.training.replay_prefetch_mode == "one_tick"
@@ -96,6 +133,13 @@ def test_offpolicy_config_has_one_replay_path():
     assert cfg.training.collector_metrics_interval == 1
     assert cfg.training.replay_ingress_depth == 2
     assert cfg.training.replay_ingress_slot_rows is None
+
+
+@pytest.mark.parametrize("algo", ["sac", "flashsac", "warpsac"])
+def test_offpolicy_owners_default_cuda_process_sharing_off(algo: str):
+    cfg = _offpolicy_cfg(algo=algo)
+
+    assert cfg.training.cuda_process_sharing is None
 
 
 def test_flashsac_scoped_tensor_benchmark_reduces_metric_flush_frequency():
@@ -117,6 +161,65 @@ def test_warpsac_declares_public_tensor_runtime_knobs():
     assert cfg.training.collector_metrics_interval == 1
     assert cfg.training.replay_ingress_depth == 2
     assert cfg.training.replay_ingress_slot_rows is None
+
+
+@pytest.mark.parametrize("algo", ["sac", "flashsac", "warpsac"])
+def test_cuda_process_sharing_request_fails_before_env_materialization(
+    monkeypatch: pytest.MonkeyPatch,
+    algo: str,
+):
+    module = _offpolicy()
+    _cuda_torch_module(monkeypatch)
+    cfg = _offpolicy_cfg(
+        ["task=g1_walk_flat/mjwarp", "training.cuda_process_sharing=mps"],
+        algo=algo,
+    )
+
+    def reject_factory(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("invalid MPS topology must fail before env creation")
+
+    monkeypatch.setattr(module, "registry_env_factory", reject_factory)
+    monkeypatch.setattr(
+        module,
+        "configure_backend_process_device",
+        lambda _backend, device: device,
+    )
+    monkeypatch.setattr(cuda_process_sharing, "_nvidia_uuid", lambda *_args, **_kwargs: "A")
+    with pytest.raises(
+        ValueError,
+        match="could not reach the control daemon|found no control pipe",
+    ):
+        module.build_runner(algo, cfg)
+
+
+def test_valid_cuda_process_sharing_evidence_enters_runner_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    module = _offpolicy()
+    _cuda_torch_module(monkeypatch)
+    cfg = _offpolicy_cfg(["task=g1_walk_flat/mjwarp", "training.cuda_process_sharing=mps"])
+    evidence = _FakeCudaProcessSharingEvidence()
+    monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
+    monkeypatch.setattr(
+        module,
+        "configure_backend_process_device",
+        lambda _backend, device: device,
+    )
+    monkeypatch.setattr(
+        module,
+        "probe_cuda_process_sharing",
+        lambda *args, **kwargs: evidence,
+    )
+
+    import uni_rl.algos.fast_sac.double_buffer as owner_module
+
+    monkeypatch.setattr(owner_module, "FastSACLearner", _FakeLearner)
+    monkeypatch.setattr(owner_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
+
+    runner = module.build_runner("sac", cfg)
+
+    assert runner.runtime_manifest["cuda_process_sharing"] == evidence.manifest()
 
 
 @pytest.mark.parametrize("mode", ["invalid_mode", "same_tick"])

@@ -17,12 +17,15 @@ autotuner and does not add multi-GPU scaling.
 | `training.collector_metrics_interval` | `1` | Positive integer, at most `10000` |
 | `training.replay_ingress_depth` | `2` | Positive integer, at most `16` |
 | `training.replay_ingress_slot_rows` | `null` | `1` through `algo.num_envs`; `null` means `algo.num_envs` |
+| `training.cuda_process_sharing` | `null` | `null` or explicit `mps` for single-rank MJWarp |
 | Learner rows per synchronization | `algo.batch_size * algo.updates_per_step` | Constrained by the CUDA memory budget |
 
-Values must be exact positive integers. Booleans, strings, floating-point
-numbers, zero, and negative values fail closed. The G1 Motion Tracking / MJWarp
-owner intentionally overrides only `collector_metrics_interval` to `100`; all
-other tensor-runtime defaults remain as listed above.
+Values other than `training.cuda_process_sharing` must be exact positive
+integers. Booleans, strings, floating-point numbers, zero, and negative values
+fail closed. `training.cuda_process_sharing` accepts only `null` or the explicit
+string `mps`. The G1 Motion Tracking / MJWarp owner intentionally overrides only
+`collector_metrics_interval` to `100`; all other tensor-runtime defaults remain
+as listed above.
 
 ## Replay ingress tradeoffs
 
@@ -68,6 +71,8 @@ The runtime manifest records the effective evidence needed to audit a run:
 - `inference_memory_budget` records the bounded CUDA inference-ring budget.
 - `tensor_memory_budget` records the combined CUDA inference, replay storage,
   replay ingress, learner batch, and workspace budget calculation.
+- `cuda_process_sharing` records validated execution-sharing evidence when the
+  owner explicitly requests `mps`; it is absent for the default `null` mode.
 
 The manifest is written before spawn when a budget decision is made. If an
 unsafe combination is rejected, the error identifies the offending setting and

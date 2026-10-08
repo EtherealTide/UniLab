@@ -38,6 +38,7 @@ from unilab.base.process_device import (
     configure_backend_process_device,
     pin_genesis_device_before_cuda_init,
     resolve_backend_env_device_id,
+    resolve_backend_process_device,
 )
 from unilab.training import (
     assert_offpolicy_task_choice_matches_algo,
@@ -48,6 +49,10 @@ from unilab.training import (
     nonfatal_play_step,
     resolve_nan_guard_cfg,
     should_run_playback,
+)
+from unilab.training.cuda_process_sharing import (
+    CudaProcessSharingEvidence,
+    probe_cuda_process_sharing,
 )
 from unilab.training.experiment import ExperimentTracker
 from unilab.training.onnx_export import export_policy_onnx, verify_policy_onnx
@@ -151,12 +156,6 @@ def build_offpolicy_play_env_cfg_override(algo_name: str, cfg: DictConfig) -> di
 
 def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
     """Build algorithm runner from unified Hydra config."""
-    env_factory = registry_env_factory(str(cfg.training.task_name), str(cfg.training.sim_backend))
-    from uni_rl.offpolicy.thread_budget import (
-        apply_torch_thread_runtime,
-        resolve_torch_thread_runtime,
-    )
-
     # Cold-path DP CPU partition: each rank's collector owns one contiguous
     # CPU block (single rank keeps the legacy unset behavior). The ids only
     # reach the collector env override — never the num_envs=1 probe envs,
@@ -180,6 +179,24 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
     )
     if bound_device is not None:
         rank_device = bound_device
+    collector_device = resolve_backend_process_device(
+        str(cfg.training.sim_backend),
+        rank_device,
+    )
+    cuda_process_sharing = probe_cuda_process_sharing(
+        getattr(cfg.training, "cuda_process_sharing", None),
+        rank_device,
+        collector_device,
+        backend=str(cfg.training.sim_backend),
+        world_size=dp_world_size,
+    )
+
+    env_factory = registry_env_factory(str(cfg.training.task_name), str(cfg.training.sim_backend))
+    from uni_rl.offpolicy.thread_budget import (
+        apply_torch_thread_runtime,
+        resolve_torch_thread_runtime,
+    )
+
     # Every rank is single-GPU; rank-local visibility routes the backend payload.
     env_cfg_override = apply_backend_env_device_override(
         build_offpolicy_env_cfg_override(algo_name, cfg),
@@ -283,7 +300,21 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
         else:
             raise ValueError(f"Unsupported algo: {algo_name}")
 
+    _attach_cuda_process_sharing_manifest(runner, cuda_process_sharing)
     return runner
+
+
+def _attach_cuda_process_sharing_manifest(
+    runner: Any,
+    evidence: CudaProcessSharingEvidence,
+) -> None:
+    """Merge validated mode evidence into the producer-owned manifest."""
+
+    runtime_manifest = getattr(runner, "runtime_manifest", None)
+    if isinstance(runtime_manifest, dict):
+        runtime_manifest["cuda_process_sharing"] = evidence.manifest()
+        return
+    runner.runtime_manifest = {"cuda_process_sharing": evidence.manifest()}
 
 
 def play_offpolicy(
@@ -407,6 +438,7 @@ def play_offpolicy(
 
 def main(cfg: DictConfig) -> None:
     enable_faulthandler()
+    import torch
 
     reject_removed_device_config(OmegaConf.select(cfg, "training.devices", default=None))
     rank = current_dp_rank()
@@ -459,8 +491,6 @@ def main(cfg: DictConfig) -> None:
     supervisor: DpRankSupervisor | None = None
     if rank == 0 and world_size > 1:
         supervisor = DpRankSupervisor(world_size=world_size, log_dir=log_dir)
-
-    import torch
 
     tracker = None
     if not cfg.training.play_only and rank == 0:
