@@ -40,7 +40,6 @@ ensure_registries()
     [
         "Go2JoystickFlat",
         "G1WalkFlat",
-        "AllegroInhandRotation",
     ],
 )
 def test_rsl_rl_ppo_one_iteration(
@@ -53,11 +52,8 @@ def test_rsl_rl_ppo_one_iteration(
     root_dir = Path(__file__).parents[2]
     if "Go2" in env_name:
         task = "go2_joystick_flat/mujoco"
-    elif "G1" in env_name:
-        task = "g1_walk_flat/mujoco"
     else:
-        num_envs = 128
-        task = "allegro_inhand/mujoco"
+        task = "g1_walk_flat/mujoco"
     GlobalHydra.instance().clear()
     with initialize_config_dir(
         config_dir=str(root_dir / "src" / "unilab" / "conf" / "ppo"), version_base="1.3"

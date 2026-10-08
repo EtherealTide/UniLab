@@ -26,11 +26,7 @@ class TaskMigrationRecord:
 
 _MBA_TASKS = frozenset(
     {
-        "AllegroInhandRotation",
-        "AllegroInhandRotationGrasp",
-        "FR3JointTarget",
         "Go2JoystickFlat",
-        "StewartBalance",
     }
 )
 
@@ -47,13 +43,7 @@ _MOTION_CORE_TASKS = frozenset(
     }
 )
 
-_MOTION_TASKS = frozenset(
-    {
-        "G1BoxTracking",
-        "G1WBTObs",
-        "X2WallFlipTracking",
-    }
-)
+_MOTION_TASKS: frozenset[str] = frozenset()
 
 PRODUCTION_TASK_NAMES = frozenset(
     _MBA_TASKS | _G1_LOCOMOTION_TASKS | _MOTION_CORE_TASKS | _MOTION_TASKS

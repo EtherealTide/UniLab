@@ -75,16 +75,12 @@ src/unilab/assets/motions/g1/**/*.npz
 src/unilab/assets/motions/g1/**/*.csv
 src/unilab/assets/motions/g1/flip
 src/unilab/assets/motions/g1/flip_npz
-src/unilab/assets/motions/x2/*.npz
-src/unilab/assets/motions/x2/*.csv
 
 # Robot mesh assets (downloaded from HF at runtime)
 src/unilab/assets/bots/
-src/unilab/assets/robots/x2/meshes/*.STL
 src/unilab/assets/robots/g1/assets/
 src/unilab/assets/robots/g1/textures/
 src/unilab/assets/robots/go2/assets/
-src/unilab/assets/robots/allegro_hand/assets/
 src/unilab/assets/robots/sharpa_wave/meshes/
 
 # Grasp cache assets (downloaded from HF at runtime)

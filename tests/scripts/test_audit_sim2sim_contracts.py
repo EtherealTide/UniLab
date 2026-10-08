@@ -30,11 +30,9 @@ def test_discover_offpolicy_trees_group_by_task() -> None:
 
     sac = audit._discover("sac")
     flashsac = audit._discover("flashsac")
-    warpsac = audit._discover("warpsac")
 
     assert {"mujoco", "mjwarp"}.issubset(sac["g1_walk_flat"])
     assert {"mujoco", "mjwarp"}.issubset(flashsac["g1_walk_flat"])
-    assert {"mujoco", "mjwarp"}.issubset(warpsac["g1_walk_flat"])
 
 
 def test_g1_genesis_pair_is_audited_and_transferable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -52,7 +50,6 @@ def test_g1_genesis_pair_is_audited_and_transferable(monkeypatch: pytest.MonkeyP
     [
         ("sac", "g1_walk_flat/mujoco", "sac"),
         ("flashsac", "g1_walk_flat/mujoco", "flashsac"),
-        ("warpsac", "g1_walk_flat/mujoco", "warpsac"),
     ],
 )
 def test_compose_resolves_tree_algo(tree: str, task_variant: str, expected_algo: str) -> None:

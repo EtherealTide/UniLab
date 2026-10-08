@@ -132,7 +132,7 @@ def _reload_render_many_with_geom_enums(monkeypatch):
 
 
 def test_replicable_terrain_geom_indices_selects_worldbody_box(monkeypatch) -> None:
-    # The x2 wall-flip render twin declares the wall as a group-0 worldbody box
+    # A render twin may declare a wall as a group-0 worldbody box
     # geom precisely so this selector picks it up and the grid renderer
     # replicates one wall per env cell. Lock that contract in.
     render_many = _reload_render_many_with_geom_enums(monkeypatch)

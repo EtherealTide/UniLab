@@ -50,7 +50,7 @@ def _normalize_overrides(algo_dir: str, overrides: list[str] | None) -> list[str
         normalized.append(override)
 
     if not task_selected:
-        if algo_dir in ("sac", "flashsac", "warpsac"):
+        if algo_dir in ("sac", "flashsac"):
             normalized.append("task=g1_walk_flat/mujoco")
         else:
             normalized.append("task=go2_joystick_flat/mujoco")
@@ -95,7 +95,7 @@ def _supported_task_cases() -> list[tuple[str, str, str, str, str, list[str]]]:
                     )
                 )
 
-    for algo_dir in ["sac", "flashsac", "warpsac"]:
+    for algo_dir in ["sac", "flashsac"]:
         root = CONF_DIR / algo_dir / "task"
         for task_dir in sorted(path for path in root.iterdir() if path.is_dir()):
             for backend_file in sorted(task_dir.glob("*.yaml")):
@@ -121,7 +121,6 @@ def _supported_task_cases() -> list[tuple[str, str, str, str, str, list[str]]]:
     [
         ("sac", "config"),
         ("flashsac", "config"),
-        ("warpsac", "config"),
         ("appo", "config"),
         ("ppo", "config"),
     ],
@@ -193,13 +192,10 @@ def test_ppo_g1_mjwarp_inherits_enabled_playback_default():
 
 
 def test_appo_adaptive_lr_factors_are_overridden_only_by_dex_hand_owners():
-    g1_cfg = _compose("appo", overrides=["task=g1_walk_flat/mujoco"])
-    allegro_cfg = _compose("appo", overrides=["task=allegro_inhand/mujoco"])
+    cfg = _compose("appo", overrides=["task=g1_walk_flat/mujoco"])
 
-    assert g1_cfg.algo.algorithm.adaptive_kl_factor == pytest.approx(1.2)
-    assert g1_cfg.algo.algorithm.adaptive_lr_factor == pytest.approx(1.1)
-    assert allegro_cfg.algo.algorithm.adaptive_kl_factor == pytest.approx(2.0)
-    assert allegro_cfg.algo.algorithm.adaptive_lr_factor == pytest.approx(1.5)
+    assert cfg.algo.algorithm.adaptive_kl_factor == pytest.approx(1.2)
+    assert cfg.algo.algorithm.adaptive_lr_factor == pytest.approx(1.1)
 
 
 def test_offpolicy_flashsac_go2_joystick_mujoco_enables_full_dr_stack():

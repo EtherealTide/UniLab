@@ -728,11 +728,10 @@ def _register_play_interactive_demo(monkeypatch: pytest.MonkeyPatch) -> str:
 def test_demo_registry_contains_expected_entries() -> None:
     assert set(demo.DEMO_REGISTRY) == {
         "dance",
-        "boxtracking",
         "teaser",
     }
     assert demo.DEMO_REGISTRY["teaser"].entry == "teaser"
-    for name in ("dance", "boxtracking"):
+    for name in ("dance",):
         spec = demo.DEMO_REGISTRY[name]
         assert spec.entry == "eval"
         assert spec.sim == "mujoco"
@@ -1196,7 +1195,7 @@ def test_unknown_algo_error_lists_builtin_and_discovered_algos(tmp_path: Path) -
 
     message = str(excinfo.value)
     assert "Unsupported algo='dqn'" in message
-    for builtin in ("ppo", "appo", "sac", "flashsac", "warpsac"):
+    for builtin in ("ppo", "appo", "sac", "flashsac"):
         assert builtin in message
     assert "dreamer" in message
 

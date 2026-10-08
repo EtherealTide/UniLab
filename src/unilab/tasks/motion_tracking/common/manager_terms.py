@@ -741,7 +741,7 @@ class MotionCommand(CommandTerm):
         # gather (issue #1355).
         self._resample_ingested_ids: np.ndarray | None = None
         # Motion rows gathered by the in-flight `_resample_command`, exposed so
-        # subclasses (e.g. BoxMotionCommand) reuse the same gather instead of
+        # callers reuse the same gather instead of
         # re-reading the same frames.
         self._resample_motion: MotionData | None = None
         self._robot_body_pos_w = np.empty_like(self._body_pos_w)
