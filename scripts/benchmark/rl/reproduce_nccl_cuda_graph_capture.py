@@ -9,7 +9,7 @@ Verified on 2 x RTX 6000D, PyTorch 2.7.0+cu128, CUDA 12.8 and NCCL
 - both collective modes pass on the default and a side stream.
 
 Every invocation has a parent-enforced timeout, including the intentionally
-hanging/error variants. The production FastSAC/FlashSAC path keeps synchronous
+hanging/error variants. The production SAC/FlashSAC path keeps synchronous
 all-reduce and performs the required eager warmup before its first capture.
 
 Run:

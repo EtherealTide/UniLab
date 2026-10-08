@@ -1,5 +1,5 @@
 # @package _global_
-# Canonical G1 Whole-Body Tracking (WBT) task declaration for FastSAC owners.
+# Canonical G1 Whole-Body Tracking (WBT) task declaration for SAC owners.
 # Backend owners inherit this contract and override only backend/algo tuning.
 
 env:

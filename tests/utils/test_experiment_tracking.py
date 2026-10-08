@@ -180,7 +180,7 @@ def test_onpolicy_logger_uses_offpolicy_terminal_layout():
 
 def test_offpolicy_logger_terminal_keeps_core_bottleneck_timing_rows():
     logger = OffPolicyLogger(
-        algo_name="FastSAC",
+        algo_name="SAC",
         env_name="G1WalkFlat",
         max_iterations=10,
         num_envs=4,
@@ -276,7 +276,7 @@ def test_offpolicy_logger_terminal_shows_material_blocking_phases():
 
 def test_offpolicy_logger_terminal_shows_replay_rows_and_effective_batch():
     logger = OffPolicyLogger(
-        algo_name="FastSAC",
+        algo_name="SAC",
         env_name="G1WalkFlat",
         max_iterations=10,
         num_envs=4,
@@ -407,7 +407,7 @@ def test_offpolicy_logger_reuses_existing_wandb_run(monkeypatch):
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
 
     logger = OffPolicyLogger(
-        algo_name="FastSAC",
+        algo_name="SAC",
         env_name="Go2JoystickFlat",
         log_backend="wandb",
     )
@@ -459,7 +459,7 @@ def test_offpolicy_logger_creates_and_finishes_owned_wandb_run(monkeypatch):
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
 
     logger = OffPolicyLogger(
-        algo_name="FastSAC",
+        algo_name="SAC",
         env_name="Go2JoystickFlat",
         log_backend="wandb",
         obs_dim=48,
@@ -484,7 +484,7 @@ def test_offpolicy_logger_creates_and_finishes_owned_wandb_run(monkeypatch):
     assert init_call["job_type"] == "train"
     assert init_call["tags"] == ["sac", "go2"]
     assert init_call["notes"] == "notes"
-    assert init_call["config"]["algo"] == "FastSAC"
+    assert init_call["config"]["algo"] == "SAC"
     assert init_call["config"]["env"] == "Go2JoystickFlat"
     assert init_call["config"]["num_envs"] == 4096
     assert init_call["config"]["obs_dim"] == 48
@@ -500,7 +500,7 @@ def test_offpolicy_logger_close_releases_owned_wandb_run_once(monkeypatch):
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
 
     logger = OffPolicyLogger(
-        algo_name="FastSAC",
+        algo_name="SAC",
         env_name="Go2JoystickFlat",
         log_backend="wandb",
     )
@@ -578,7 +578,7 @@ def test_offpolicy_logger_logs_collector_phase_timing_to_backends(monkeypatch):
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
 
     wandb_logger = OffPolicyLogger(
-        algo_name="FastSAC",
+        algo_name="SAC",
         env_name="Go2JoystickFlat",
         log_backend="wandb",
     )
@@ -591,7 +591,7 @@ def test_offpolicy_logger_logs_collector_phase_timing_to_backends(monkeypatch):
 
     tb_writer = _FakeTensorBoardWriter()
     tb_logger = OffPolicyLogger(
-        algo_name="FastSAC",
+        algo_name="SAC",
         env_name="Go2JoystickFlat",
         log_backend="none",
     )
@@ -609,7 +609,7 @@ def test_offpolicy_logger_uses_same_canonical_timing_names_in_terminal_and_backe
     fake_wandb = _FakeWandb()
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
     logger = OffPolicyLogger(
-        algo_name="FastSAC",
+        algo_name="SAC",
         env_name="G1WalkFlat",
         log_backend="wandb",
     )
@@ -681,7 +681,7 @@ def test_offpolicy_logger_uses_same_canonical_timing_names_in_terminal_and_backe
 def test_offpolicy_logger_tensorboard_logs_wall_clock_without_axis_scalars():
     tb_writer = _FakeTensorBoardWriter()
     logger = OffPolicyLogger(
-        algo_name="FastSAC",
+        algo_name="SAC",
         env_name="G1WalkFlat",
         log_backend="none",
     )
@@ -742,7 +742,7 @@ def test_offpolicy_logger_logs_episode_return_and_reward_terms(monkeypatch):
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
 
     logger = OffPolicyLogger(
-        algo_name="FastSAC",
+        algo_name="SAC",
         env_name="G1WalkFlat",
         log_backend="wandb",
     )
@@ -770,7 +770,7 @@ def test_offpolicy_logger_omits_iteration_extra_fields_when_not_supplied(monkeyp
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
 
     logger = OffPolicyLogger(
-        algo_name="FastSAC",
+        algo_name="SAC",
         env_name="Go2JoystickFlat",
         log_backend="wandb",
     )

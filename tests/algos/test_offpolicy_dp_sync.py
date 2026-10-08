@@ -313,13 +313,13 @@ def test_learn_source_orders_sync_around_collector_and_logging():
     )
 
 
-# ---- FastSACLearner distributed contracts ----
+# ---- SACLearner distributed contracts ----
 
 
-def test_fast_sac_initial_sync_tensors_return_live_references():
-    from uni_rl.algos.fast_sac.learner import FastSACLearner
+def test_sac_initial_sync_tensors_return_live_references():
+    from uni_rl.algos.sac.learner import SACLearner
 
-    learner = FastSACLearner(
+    learner = SACLearner(
         obs_dim=4,
         action_dim=2,
         critic_obs_dim=5,
@@ -355,10 +355,10 @@ def test_fast_sac_initial_sync_tensors_return_live_references():
     assert torch.all(tensors[probe_key] == 0.0)
 
 
-def test_fast_sac_syncs_each_optimizer_gradient_before_step():
-    from uni_rl.algos.fast_sac.learner import FastSACLearner
+def test_sac_syncs_each_optimizer_gradient_before_step():
+    from uni_rl.algos.sac.learner import SACLearner
 
-    learner = FastSACLearner(
+    learner = SACLearner(
         obs_dim=4,
         action_dim=2,
         critic_obs_dim=5,
@@ -408,14 +408,14 @@ def _build_sac_runner_with_dp_fakes(monkeypatch: pytest.MonkeyPatch, overrides: 
         dp_launcher.os, "sched_getaffinity", lambda _: set(range(128)), raising=False
     )
 
-    import uni_rl.algos.fast_sac.double_buffer as owner_module
+    import uni_rl.algos.sac.double_buffer as owner_module
 
     class _Learner:
         def __init__(self, *args, **kwargs):
             del args, kwargs
 
     monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
-    monkeypatch.setattr(owner_module, "FastSACLearner", _Learner)
+    monkeypatch.setattr(owner_module, "SACLearner", _Learner)
     monkeypatch.setattr(owner_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
     runner = module.build_runner("sac", cfg, log_dir="/tmp/dp_sync_test_run")
     return runner.kwargs

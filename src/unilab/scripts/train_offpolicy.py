@@ -347,7 +347,7 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
     }
     with _genesis_probe_para_level(str(cfg.training.sim_backend)):
         if algo_name == "sac":
-            from uni_rl.algos.fast_sac.double_buffer import (
+            from uni_rl.algos.sac.double_buffer import (
                 build_sac_double_buffer_runner,
             )
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import platform
 import queue
 import socket
 from pathlib import Path
@@ -172,6 +173,7 @@ def test_cuda_process_sharing_request_fails_before_env_materialization(
     algo: str,
 ):
     module = _offpolicy()
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
     _cuda_torch_module(monkeypatch)
     cfg = _offpolicy_cfg(
         ["task=g1_walk_flat/mjwarp", "training.cuda_process_sharing=mps"],
@@ -240,9 +242,9 @@ def test_valid_cuda_process_sharing_evidence_enters_runner_manifest(
         lambda *args, **kwargs: evidence,
     )
 
-    import uni_rl.algos.fast_sac.double_buffer as owner_module
+    import uni_rl.algos.sac.double_buffer as owner_module
 
-    monkeypatch.setattr(owner_module, "FastSACLearner", _FakeLearner)
+    monkeypatch.setattr(owner_module, "SACLearner", _FakeLearner)
     monkeypatch.setattr(owner_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
 
     runner = module.build_runner("sac", cfg)
@@ -319,10 +321,10 @@ def test_sac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPatch):
     module = _offpolicy()
     cfg = _offpolicy_cfg([])
 
-    import uni_rl.algos.fast_sac.double_buffer as owner_module
+    import uni_rl.algos.sac.double_buffer as owner_module
 
     monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
-    monkeypatch.setattr(owner_module, "FastSACLearner", _FakeLearner)
+    monkeypatch.setattr(owner_module, "SACLearner", _FakeLearner)
     monkeypatch.setattr(owner_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
 
     runner = module.build_runner("sac", cfg)
@@ -374,7 +376,7 @@ def test_sac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPatch):
 def test_sac_owner_custom_runtime_can_override_base_learner_kwargs(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    from uni_rl.algos.fast_sac import double_buffer as owner_module
+    from uni_rl.algos.sac import double_buffer as owner_module
     from uni_rl.offpolicy.runtime import OffPolicyRuntime
 
     cfg = _offpolicy_cfg([])
@@ -555,12 +557,12 @@ def _build_sac_runner_with_fakes(
             lambda backend, device: backend_binding_calls.append((str(backend), str(device))),
         )
 
-    import uni_rl.algos.fast_sac.double_buffer as owner_module
+    import uni_rl.algos.sac.double_buffer as owner_module
 
     monkeypatch.setattr(
         module, "registry_env_factory", lambda *args, **kwargs: fake_probe_env_factory
     )
-    monkeypatch.setattr(owner_module, "FastSACLearner", _FakeLearner)
+    monkeypatch.setattr(owner_module, "SACLearner", _FakeLearner)
     monkeypatch.setattr(owner_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
 
     runner = module.build_runner("sac", cfg, log_dir="/tmp/offpolicy_test_run")

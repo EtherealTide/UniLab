@@ -1,6 +1,6 @@
 # @package _global_
-# MuJoCo owner for G1 WBT with FastSAC. Hyperparameters are aligned with
-# holosoma g1-29dof-wbt-fast-sac; model-field DR follows mjlab Motion Imitation.
+# MuJoCo owner for G1 WBT with SAC. Hyperparameters are aligned with
+# holosoma g1-29dof-wbt-sac; model-field DR follows mjlab Motion Imitation.
 defaults:
   - /task/g1_motion_tracking/base
   - _self_

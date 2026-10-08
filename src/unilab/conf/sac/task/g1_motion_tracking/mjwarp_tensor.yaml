@@ -1,5 +1,5 @@
 # @package _global_
-# DR-free FastSAC owner used to exercise the reusable G1 tensor runtime with
+# DR-free SAC owner used to exercise the reusable G1 tensor runtime with
 # the canonical biased-actor/clean-critic Manager-Based observation contract.
 # It intentionally does not inherit the MuJoCo reset/interval randomization
 # owner because the scoped tensor reset lifecycle remains DR-free.

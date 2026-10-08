@@ -1,6 +1,6 @@
 # @package _global_
 # WarpSAC MuJoCo owner for G1 whole-body tracking. It shares the FlashSAC task
-# declaration and training budget for direct FastSAC/FlashSAC/WarpSAC curves.
+# declaration and training budget for direct SAC/FlashSAC/WarpSAC curves.
 defaults:
   - /task/g1_motion_tracking/base
   - _self_
