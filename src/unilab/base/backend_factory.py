@@ -67,7 +67,10 @@ def _torch_cuda_runtime_state() -> tuple[dict[str, Any], int | None]:
             "visible_count": count,
             "current": current,
             "torch": torch.__version__,
-            "torch_hip": torch.version.hip,
+            # torch.version is absent from the old CPU wheels used by the
+            # CPU-only pyright job; diagnostics still record the build kind
+            # whenever the runtime exposes it.
+            "torch_hip": getattr(getattr(torch, "version", None), "hip", None),
             "platform": sys.platform,
         }
         return state, current
