@@ -86,7 +86,9 @@ def test_support_matrix_marks_go2_ppo_backends_as_tested():
 
     assert row.cells["mujoco"].level == EvidenceLevel.TESTED
     assert row.cells["mjwarp"].level == EvidenceLevel.MISSING
-    assert row.cells["motrix"].level is EvidenceLevel.REGISTERED
+    # Restoring the pre-shelving owner restores its prior generated grade:
+    # generic config coverage promotes configured Motrix owners to Tested.
+    assert row.cells["motrix"].level is EvidenceLevel.TESTED
     appo_row = _row("APPO (torch)", "go2_joystick_flat")
     assert appo_row.cells["motrix"].level is EvidenceLevel.TESTED
 
