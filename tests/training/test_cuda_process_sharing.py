@@ -5,6 +5,7 @@ from __future__ import annotations
 import platform
 import socket
 import stat
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -44,12 +45,12 @@ def _fake_commands(gpu_uuid: str = "GPU-a", *, server_pid: int = 2768293) -> Any
 
 
 @pytest.fixture
-def linux_mps(monkeypatch: pytest.MonkeyPatch, tmp_path: Any):
+def linux_mps(monkeypatch: pytest.MonkeyPatch, short_unix_socket_root: Path):
     monkeypatch.setattr(platform, "system", lambda: "Linux")
-    monkeypatch.setenv("CUDA_MPS_PIPE_DIRECTORY", str(tmp_path / "pipe"))
-    monkeypatch.setenv("CUDA_MPS_LOG_DIRECTORY", str(tmp_path / "log"))
+    monkeypatch.setenv("CUDA_MPS_PIPE_DIRECTORY", str(short_unix_socket_root / "pipe"))
+    monkeypatch.setenv("CUDA_MPS_LOG_DIRECTORY", str(short_unix_socket_root / "log"))
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a")
-    control = tmp_path / "pipe" / "control"
+    control = short_unix_socket_root / "pipe" / "control"
     control.parent.mkdir(parents=True)
     control.touch()
     control.chmod(0o666)

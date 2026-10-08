@@ -161,7 +161,7 @@ def test_flashsac_scoped_tensor_benchmark_reduces_metric_flush_frequency():
 @pytest.mark.parametrize("algo", ["sac", "flashsac"])
 def test_cuda_process_sharing_request_fails_before_env_materialization(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    short_unix_socket_root: Path,
     algo: str,
 ):
     module = _offpolicy()
@@ -196,13 +196,13 @@ def test_cuda_process_sharing_request_fails_before_env_materialization(
     monkeypatch.setattr(cuda_process_sharing, "_nvidia_uuid", lambda *_args, **_kwargs: "A")
     # Keep the host daemon discovery deterministic: point at a real Unix socket
     # that has no daemon behind it.
-    control = tmp_path / "nvidia-mps" / "control"
+    control = short_unix_socket_root / "nvidia-mps" / "control"
     control.parent.mkdir(parents=True)
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind(str(control))
     control.chmod(0o666)
     monkeypatch.setenv("CUDA_MPS_PIPE_DIRECTORY", str(control.parent))
-    monkeypatch.setenv("CUDA_MPS_LOG_DIRECTORY", str(tmp_path / "nvidia-mps-log"))
+    monkeypatch.setenv("CUDA_MPS_LOG_DIRECTORY", str(short_unix_socket_root / "nvidia-mps-log"))
     monkeypatch.setattr(
         cuda_process_sharing.subprocess,
         "run",
