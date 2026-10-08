@@ -1,10 +1,11 @@
 # 仿真后端
 
 当前 tensor-only Manager runtime 暴露 `mujoco`、`mjwarp`、`genesis`、
-`newton` 与 `motrix`。用户命令通过 `--sim` 选择后端，并组合对应的 task owner
-YAML；不要单独覆盖 `training.sim_backend`。
+`newton`、`motrix`，以及下文描述的 scoped Drake owner。用户命令通过 `--sim`
+选择后端，并组合对应的 task owner YAML；不要单独覆盖
+`training.sim_backend`。
 
-`drake`、`isaacgym`、`isaacsim` 与 `superdex` 适配器在 issue #1811 期间由
+`isaacgym`、`isaacsim` 与 `superdex` 适配器在 issue #1811 期间由
 `unisim-core` 暂时搁置。历史页面仅用于 adapter 背景，不构成生产支持声明。
 在提供新的 capability、parity 与支持矩阵证据之前，train/eval CLI 会直接
 拒绝这些后端。
@@ -20,6 +21,10 @@ YAML；不要单独覆盖 `training.sim_backend`。
   为 SAC `g1_walk_flat` 和 FlashSAC `g1_motion_tracking`。
 - Motrix 需要 `motrix` extra，提供 CPU-authoritative packed HOST_BRIDGE；当前
   canonical 支持范围为 SAC `g1_walk_flat` 和 FlashSAC `g1_motion_tracking`。
+- Drake 需要本地编译的 DrakeUni batch extension。其 scoped PPO
+  `go2_joystick_flat` owner 使用 CPU physics 与 packed HOST_BRIDGE
+  lifecycle；在 backend contract 补齐前，浮动根重置与 reset randomization
+  事件保持禁用。
 
 ## OS 与 GPU 支持
 
@@ -30,6 +35,7 @@ YAML；不要单独覆盖 `training.sim_backend`。
 | Genesis | Linux x86_64 | 要求：NVIDIA GPU 与 driver；仅验证 `gs.gpu` channel |
 | Newton | Linux | 要求：NVIDIA CUDA；selected-reset 通道为 device-resident |
 | Motrix | Linux / macOS / Windows | CPU-authoritative physics；Torch CUDA buffer 可选 |
+| Drake | Linux x86_64 / Apple Silicon macOS | CPU-authoritative physics；Torch CUDA buffer 可选 |
 
 后端设备要求与 learner 设备独立：MuJoCo 仍可以让 learner 使用 CUDA、ROCm、MPS
 或 XPU。平台配置见 {doc}`../../1-getting_started/2-installation`。

@@ -22,11 +22,11 @@ SUPPORTED_SIMS = (
     "genesis",
     "newton",
     "motrix",
-)
-# Adapters retained by UniSim but temporarily outside the tensor-only Manager
-# runtime during issue #1811. They must remain unroutable through public CLI.
-_SHELVED_SIMS = (
     "drake",
+)
+# Adapters retained by UniSim but outside the scoped tensor Manager runtime
+# during issue #1811. They must remain unroutable through public CLI.
+_SHELVED_SIMS = (
     "isaacgym",
     "isaacsim",
     "superdex",
@@ -159,6 +159,22 @@ def _check_runtime_requirements(algo: str, sim: str) -> None:
             "`pip install unilab[motrix]` (or `uv sync --extra motrix` in a source "
             "checkout)."
         )
+    if sim == "drake":
+        if find_spec("drake_uni") is None:
+            raise SystemExit(
+                "sim=drake requires the Drake extra and a built DrakeUni batch extension. "
+                "Run scripts/tools/setup_drake_env.sh --download-drake in a source checkout."
+            )
+        from unisim.backend.drake.backend import ensure_drake_batch_available
+
+        available, error = ensure_drake_batch_available()
+        if not available:
+            detail = str(error) if error is not None else "unknown import error"
+            raise SystemExit(
+                "sim=drake could not load the DrakeUni batch extension. Set DRAKE_HOME and "
+                "the platform library path (LD_LIBRARY_PATH on Linux, DYLD_LIBRARY_PATH on "
+                f"macOS); details: {detail}"
+            )
 
 
 def _override_bool(overrides: Sequence[str], key: str) -> bool | None:

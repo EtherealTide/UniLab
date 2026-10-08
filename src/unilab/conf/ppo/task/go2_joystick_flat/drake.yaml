@@ -1,0 +1,44 @@
+# @package _global_
+defaults:
+  - /task/go2_joystick_flat/base
+  - _self_
+
+training:
+  task_name: Go2JoystickFlat
+  sim_backend: drake
+  # Drake is an in-process CPU-authoritative host bridge. Keep this scoped
+  # owner on the CPU learner path while its packed reset profile is validated.
+  device: cpu
+
+algo:
+  num_envs: 1024
+  max_iterations: 151
+  obs_groups:
+    actor:
+      - actor
+    critic:
+      - critic
+  actor:
+    obs_normalization: true
+    distribution_cfg:
+      init_std: 0.5
+  critic:
+    obs_normalization: true
+  algorithm:
+    learning_rate: 3.0e-4
+    entropy_coef: 1.0e-3
+
+env:
+  drake_backend_mode: batch
+  drake_nthread: 0
+  events:
+    # Drake's current public profile has no floating-root reset layout or reset
+    # randomization; retain the keyframe/default reset and fail closed rather
+    # than silently approximating these terms.
+    reset_root_state_uniform: null
+    pd_gains: null
+
+reward:
+  # DrakeUni reports per-body net contact force in world coordinates, while the
+  # Go2 gait term expects MuJoCo's contact-frame force (normal first).
+  contact: null
