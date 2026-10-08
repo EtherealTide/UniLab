@@ -2124,7 +2124,7 @@ def test_appo_hydra_default_algo_log_name():
 def test_offpolicy_sac_hydra_default_algo_log_name():
     """Verify SAC config has algo_log_name in algo section."""
     cfg = _offpolicy_cfg()
-    assert cfg.algo.algo_log_name == "fast_sac"
+    assert cfg.algo.algo_log_name == "sac"
     assert cfg.algo.load_run == "-1"
 
 

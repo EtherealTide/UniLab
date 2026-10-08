@@ -24,7 +24,7 @@ SCRIPT_ASSIGNMENT_PATTERN = re.compile(r'^([A-Za-z0-9_.-]+)\s*=\s*"([^"]+)"\s*(?
 DEFAULT_ALGO_LOG_NAMES = {
     "ppo": "rsl_rl_ppo",
     "appo": "appo",
-    "sac": "fast_sac",
+    "sac": "sac",
     "flashsac": "flash_sac",
 }
 COMPLETION_BLOCK_START = "# >>> unilab completion >>>"

@@ -4,7 +4,7 @@ defaults:
 
 algo:
   algo: sac
-  algo_log_name: fast_sac
+  algo_log_name: sac
   runtime_impl: null
   runtime_resolver: null
   load_run: "-1"

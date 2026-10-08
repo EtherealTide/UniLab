@@ -32,7 +32,7 @@ class SACAlgoParams:
 @dataclass
 class SACConfig(BaseConfig):
     algo: str = "sac"
-    algo_log_name: str = "fast_sac"
+    algo_log_name: str = "sac"
     runtime_impl: Optional[str] = None
     runtime_resolver: Optional[str] = None
     seed: int = 1

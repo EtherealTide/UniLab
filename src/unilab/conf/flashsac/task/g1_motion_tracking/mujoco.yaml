@@ -1,6 +1,6 @@
 # @package _global_
 # FlashSAC MuJoCo owner for G1 WBT. Carries the FlashSAC training budget
-# aligned with the FastSAC owner (2048 envs x 25000 iterations, gamma 0.99)
+# aligned with the SAC owner (2048 envs x 25000 iterations, gamma 0.99)
 # so run metrics are directly comparable across algos; FlashSAC algo-specific
 # knobs (batch_size, num_atoms, temp/n_step params) stay at the
 # conf/flashsac/config.yaml defaults.
