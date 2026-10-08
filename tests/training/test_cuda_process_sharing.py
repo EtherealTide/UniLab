@@ -37,7 +37,7 @@ def _fake_commands(gpu_uuid: str = "GPU-a", *, server_pid: int = 2768293) -> Any
         del kwargs
         if command[0] == "nvidia-smi":
             return _Completed(f"0, {gpu_uuid}\n")
-        if command == ["nvidia-cuda-mps-control", "get-server-list"]:
+        if command == ["nvidia-cuda-mps-control", "get_server_list"]:
             return _Completed(f"{server_pid}\n")
         raise AssertionError(f"unexpected command: {command}")
 

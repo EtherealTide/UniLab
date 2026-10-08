@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import platform
 import queue
 import socket
@@ -215,6 +216,65 @@ def test_cuda_process_sharing_request_fails_before_env_materialization(
         module.build_runner(algo, cfg)
 
 
+def test_cuda_process_sharing_selects_sole_recorded_daemon_before_probe(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    module = _offpolicy()
+    _cuda_torch_module(monkeypatch)
+    cfg = _offpolicy_cfg(["task=g1_walk_flat/mjwarp", "training.cuda_process_sharing=mps"])
+    monkeypatch.delenv("CUDA_MPS_PIPE_DIRECTORY", raising=False)
+    monkeypatch.delenv("CUDA_MPS_LOG_DIRECTORY", raising=False)
+    selected: dict[str, str] = {}
+
+    def fake_selector(requested, backend, learner_device):
+        selected.update(
+            {
+                "requested": requested,
+                "backend": backend,
+                "learner_device": learner_device,
+                "pipe": "/tmp/unilab-recorded/pipe",
+                "log": "/tmp/unilab-recorded/log",
+            }
+        )
+        os.environ["CUDA_MPS_PIPE_DIRECTORY"] = selected["pipe"]
+        os.environ["CUDA_MPS_LOG_DIRECTORY"] = selected["log"]
+
+    def reject_selector(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("explicit environment must skip daemon selection")
+
+    monkeypatch.setattr(module, "_select_cuda_mps_daemon_environment", fake_selector)
+    monkeypatch.setattr(
+        module,
+        "probe_cuda_process_sharing",
+        lambda *_args, **kwargs: _FakeCudaProcessSharingEvidence(),
+    )
+    monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
+    monkeypatch.setattr(
+        module,
+        "configure_backend_process_device",
+        lambda _backend, device: device,
+    )
+    import uni_rl.algos.sac.double_buffer as owner_module
+
+    monkeypatch.setattr(owner_module, "SACLearner", _FakeLearner)
+    monkeypatch.setattr(owner_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
+    module.build_runner("sac", cfg)
+
+    assert selected == {
+        "requested": "mps",
+        "backend": "mjwarp",
+        "learner_device": "cuda:0",
+        "pipe": "/tmp/unilab-recorded/pipe",
+        "log": "/tmp/unilab-recorded/log",
+    }
+
+    # Direct helper test documents explicit-environment precedence: deployment
+    # provided a pipe, so a selector that would otherwise reject is never used.
+    monkeypatch.setattr(module, "select_environment_for_gpu", reject_selector)
+    module._select_cuda_mps_daemon_environment("mps", "mjwarp", "cuda:0")
+
+
 def test_valid_cuda_process_sharing_evidence_enters_runner_manifest(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -232,6 +292,11 @@ def test_valid_cuda_process_sharing_evidence_enters_runner_manifest(
         module,
         "probe_cuda_process_sharing",
         lambda *args, **kwargs: evidence,
+    )
+    monkeypatch.setattr(
+        module,
+        "_select_cuda_mps_daemon_environment",
+        lambda *_args, **_kwargs: None,
     )
 
     import uni_rl.algos.sac.double_buffer as owner_module

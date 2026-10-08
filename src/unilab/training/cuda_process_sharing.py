@@ -179,7 +179,7 @@ def _server_evidence(
     environment["CUDA_MPS_PIPE_DIRECTORY"] = str(control_pipe.parent)
     try:
         result = run_command(
-            ["nvidia-cuda-mps-control", "get-server-list"],
+            ["nvidia-cuda-mps-control", "get_server_list"],
             text=True,
             capture_output=True,
             timeout=_MPS_CONTROL_QUERY_TIMEOUT_SEC,

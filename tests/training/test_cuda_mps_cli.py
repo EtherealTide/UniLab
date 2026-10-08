@@ -103,6 +103,10 @@ def test_visible_gpus_canonicalizes_uuids_and_visibility() -> None:
     assert [(gpu.index, gpu.uuid) for gpu in gpus] == [(0, GPU_A)]
 
 
+def test_bare_torch_gpu_uuid_is_canonicalized() -> None:
+    assert mps._canonical_uuid("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") == GPU_A
+
+
 def test_mig_selectors_are_explicitly_rejected() -> None:
     with pytest.raises(mps.CudaMpsCliError, match="MIG device"):
         mps.resolve_topology("MIG-abc", run_command=fake_run())
@@ -244,6 +248,8 @@ def test_start_daemon_uses_explicit_directories_and_records_identity(
             (pipe_dir / "nvidia-cuda-mps-control.pid").write_text("4242\n")
             monkeypatch.setattr(mps, "_proc_stat", live_proc_stat())
             return Completed("")
+        if command == list(mps._SERVER_LIST_QUERY_COMMAND):
+            return Completed("")
         raise AssertionError(f"unexpected command {command}")
 
     record = mps.start_daemon(
@@ -262,6 +268,91 @@ def test_start_daemon_uses_explicit_directories_and_records_identity(
     assert started[1][1]["env"]["CUDA_VISIBLE_DEVICES"] == GPU_A
     assert started[1][1]["env"]["CUDA_MPS_PIPE_DIRECTORY"] == str(pipe_dir)
     assert (linux_host / "prod" / "daemon.json").is_file()
+
+
+def test_start_daemon_waits_until_control_answers_query(
+    linux_host: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mps.shutil, "which", lambda _name: "/fake/bin/nvidia-cuda-mps-control")
+    pipe_dir = linux_host / "ready-pipe"
+    log_dir = linux_host / "ready-log"
+    queries: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: Any) -> Completed:
+        if command[0] == "nvidia-smi":
+            return Completed(f"0, {GPU_A}, Default\n")
+        if command == list(mps._DEFAULT_CONTROL_COMMAND):
+            make_control(pipe_dir)
+            (pipe_dir / "nvidia-cuda-mps-control.pid").write_text("4242\n")
+            monkeypatch.setattr(mps, "_proc_stat", live_proc_stat())
+            return Completed("")
+        if command == list(mps._SERVER_LIST_QUERY_COMMAND):
+            queries.append(command)
+            assert kwargs["env"]["CUDA_MPS_PIPE_DIRECTORY"] == str(pipe_dir)
+            assert kwargs["timeout"] > 0.25
+            if len(queries) == 1:
+                return Completed("control is starting", returncode=1)
+            return Completed("")
+        raise AssertionError(f"unexpected command {command}")
+
+    record = mps.start_daemon(
+        GPU_A,
+        name="ready",
+        pipe_dir=str(pipe_dir),
+        log_dir=str(log_dir),
+        root=linux_host,
+        run_command=run,
+    )
+
+    assert len(queries) == 2
+    assert record.pid == 4242
+
+
+def test_start_daemon_cleans_up_unrecorded_control_after_readiness_failure(
+    linux_host: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mps.shutil, "which", lambda _name: "/fake/bin/nvidia-cuda-mps-control")
+    pipe_dir = linux_host / "failed-pipe"
+    log_dir = linux_host / "failed-log"
+    quit_commands = 0
+
+    def run(command: list[str], **kwargs: Any) -> Completed:
+        nonlocal quit_commands
+        if command[0] == "nvidia-smi":
+            return Completed(f"0, {GPU_A}, Default\n")
+        if command == list(mps._DEFAULT_CONTROL_COMMAND):
+            make_control(pipe_dir)
+            (pipe_dir / "nvidia-cuda-mps-control.pid").write_text("4242\n")
+            monkeypatch.setattr(mps, "_proc_stat", lambda _pid: None)
+            return Completed("")
+        if command == list(mps._SERVER_LIST_QUERY_COMMAND):
+            assert kwargs["timeout"] > 0.25
+            return Completed("control is not ready", returncode=1)
+        if command == list(mps._QUIT_COMMAND):
+            quit_commands += 1
+            assert kwargs["env"]["CUDA_MPS_PIPE_DIRECTORY"] == str(pipe_dir)
+            return Completed("")
+        raise AssertionError(f"unexpected command {command}")
+
+    monkeypatch.setattr(mps, "_wait_for_control_query", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        mps,
+        "_remove_orphan_default_control_sockets",
+        lambda pipe_directory: pipe_directory.mkdir(parents=True, exist_ok=True),
+    )
+
+    with pytest.raises(mps.CudaMpsCliError, match="did not answer a readiness query"):
+        mps.start_daemon(
+            GPU_A,
+            name="failed",
+            pipe_dir=str(pipe_dir),
+            log_dir=str(log_dir),
+            root=linux_host,
+            run_command=run,
+        )
+
+    assert quit_commands == 1
+    assert not (linux_host / "failed" / "daemon.json").exists()
 
 
 def test_default_daemon_name_uses_complete_uuid() -> None:
@@ -460,6 +551,8 @@ def test_start_daemon_quarantines_stale_record(
             (pipe_dir / "nvidia-cuda-mps-control.pid").write_text("4242\n")
             monkeypatch.setattr(mps, "_proc_stat", live_proc_stat())
             return Completed("")
+        if command == list(mps._SERVER_LIST_QUERY_COMMAND):
+            return Completed("")
         raise AssertionError(f"unexpected command {command}")
 
     record = mps.start_daemon(
@@ -473,6 +566,37 @@ def test_start_daemon_quarantines_stale_record(
 
     assert record.pid == 4242
     assert list((linux_host / ".stale").iterdir())
+
+
+def test_select_environment_for_gpu_requires_sole_live_matching_record(
+    linux_host: Path,
+) -> None:
+    record = daemon_record(linux_host, name="prod")
+    write_record(linux_host, record)
+
+    with pytest.raises(mps.CudaMpsCliError, match="No live UniLab-recorded CUDA MPS daemon"):
+        mps.select_environment_for_gpu(GPU_A, root=linux_host, proc_stat=lambda _pid: None)
+
+    values = mps.select_environment_for_gpu(
+        GPU_A, root=linux_host, proc_stat=live_proc_stat(record.pid)
+    )
+    assert values["CUDA_MPS_PIPE_DIRECTORY"] == record.pipe_directory
+    assert values["CUDA_MPS_LOG_DIRECTORY"] == record.log_directory
+
+    other = daemon_record(
+        linux_host,
+        name="other",
+        pid=4243,
+        process_start_ticks=778,
+        gpu_uuids=(GPU_A,),
+    )
+    write_record(linux_host, other)
+    with pytest.raises(mps.CudaMpsCliError, match="Multiple live UniLab-recorded daemons"):
+        mps.select_environment_for_gpu(
+            GPU_A,
+            root=linux_host,
+            proc_stat=lambda pid: (pid, 777 if pid == record.pid else 778),
+        )
 
 
 def test_environment_for_daemon_does_not_mutate_process_environment(
@@ -562,7 +686,7 @@ def test_doctor_uses_sole_live_managed_daemon_pipe(
             if "--query-gpu=index,uuid" in command:
                 return Completed(f"0, {GPU_A}\n")
             return Completed(f"0, {GPU_A}, Default\n")
-        if command == ["nvidia-cuda-mps-control", "get-server-list"]:
+        if command == ["nvidia-cuda-mps-control", "get_server_list"]:
             return Completed("4242\n")
         raise AssertionError(f"unexpected command {command}")
 
@@ -581,7 +705,7 @@ def test_doctor_uses_sole_live_managed_daemon_pipe(
         Path(record.pipe_directory) / "control"
     )
     daemon_query = commands[-1]
-    assert daemon_query[0] == ["nvidia-cuda-mps-control", "get-server-list"]
+    assert daemon_query[0] == ["nvidia-cuda-mps-control", "get_server_list"]
     assert daemon_query[1]["env"]["CUDA_MPS_PIPE_DIRECTORY"] == record.pipe_directory
 
 
@@ -601,7 +725,7 @@ def test_doctor_reports_missing_control_daemon_and_exits_invalid(
             if "--query-gpu=index,uuid" in command:
                 return Completed(f"0, {GPU_A}\n")
             return Completed(f"0, {GPU_A}, Default\n")
-        if command == ["nvidia-cuda-mps-control", "get-server-list"]:
+        if command == ["nvidia-cuda-mps-control", "get_server_list"]:
             return Completed("Cannot find MPS control daemon process", returncode=1)
         raise AssertionError(f"unexpected command {command}")
 
