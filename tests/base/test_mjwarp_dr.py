@@ -13,6 +13,7 @@ MuJoCo backend on identical sampled payloads rather than bitwise state.
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import numpy as np
@@ -49,6 +50,8 @@ _SIM_DT = 0.02 / 3.0
 
 
 def _require_cuda_mjwarp() -> None:
+    if sys.platform == "darwin":
+        pytest.skip("mjwarp is a CUDA-only backend; macOS has no supported CUDA runtime")
     dependencies = load_mjwarp_dependencies()
     if not bool(dependencies.warp.get_device().is_cuda):
         pytest.fail("mjwarp DR tests require an active CUDA Warp device")

@@ -32,6 +32,8 @@ def _require_mujoco_runtime() -> None:
 
 
 def _require_mjwarp_runtime() -> None:
+    if sys.platform == "darwin":
+        pytest.skip("mjwarp is a CUDA-only backend; macOS has no supported CUDA runtime")
     from unisim.backend.mjwarp.dependencies import load_mjwarp_dependencies
 
     dependencies = load_mjwarp_dependencies()
@@ -49,6 +51,8 @@ def _require_genesis_runtime() -> None:
 
 
 def _require_newton_runtime() -> None:
+    if sys.platform == "darwin":
+        pytest.skip("newton is a CUDA-only backend; macOS has no supported CUDA runtime")
     from unisim.backend.newton.dependencies import load_newton_dependencies
 
     dependencies = load_newton_dependencies()

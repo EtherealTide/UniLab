@@ -8,6 +8,7 @@ path, so an indexing/control/cache error must be visible at the public
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import numpy as np
@@ -26,6 +27,8 @@ _SENSOR_NAMES = ("torso_upvector", "pelvis_local_linvel", "torso_gyro")
 
 
 def _require_cuda_mjwarp() -> None:
+    if sys.platform == "darwin":
+        pytest.skip("mjwarp is a CUDA-only backend; macOS has no supported CUDA runtime")
     dependencies = load_mjwarp_dependencies()
     if not bool(dependencies.warp.get_device().is_cuda):
         pytest.fail("mjwarp trajectory differential requires an active CUDA Warp device")

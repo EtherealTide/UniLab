@@ -1,12 +1,15 @@
 """Real-CUDA correctness tests for the production ``mjwarp`` host profile.
 
 These are slow by design.  They fail when explicitly invoked without the
-``mjwarp`` extra or CUDA; the normal optional-backend unit lane deselects them
-instead of treating an unavailable fake implementation as evidence.
+``mjwarp`` extra or CUDA on platforms where CUDA is supported; the normal
+optional-backend unit lane deselects them instead of treating an unavailable
+fake implementation as evidence.  On macOS they skip: the factory's CUDA-only
+platform gate fail-closes there, so the lane can never run.
 """
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +30,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _require_cuda_mjwarp() -> None:
+    if sys.platform == "darwin":
+        pytest.skip("mjwarp is a CUDA-only backend; macOS has no supported CUDA runtime")
     dependencies = load_mjwarp_dependencies()
     if not bool(dependencies.warp.get_device().is_cuda):
         pytest.fail("mjwarp correctness tests require an active CUDA Warp device")
@@ -128,6 +133,7 @@ def test_large_batch_sparse_reset_matches_full_forward(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The bounded reset graph preserves reset sensors and the following step."""
+    _require_cuda_mjwarp()
     num_envs = 1024
     backend = create_backend(
         "mjwarp",

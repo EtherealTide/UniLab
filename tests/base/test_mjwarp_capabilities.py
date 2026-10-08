@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -16,10 +17,16 @@ from unilab.base.scene import SceneCfg
 pytestmark = pytest.mark.slow
 
 
-def _backend() -> Any:
+def _require_cuda_mjwarp() -> None:
+    if sys.platform == "darwin":
+        pytest.skip("mjwarp is a CUDA-only backend; macOS has no supported CUDA runtime")
     dependencies = load_mjwarp_dependencies()
     if not bool(dependencies.warp.get_device().is_cuda):
         pytest.fail("mjwarp capability tests require an active CUDA Warp device")
+
+
+def _backend() -> Any:
+    _require_cuda_mjwarp()
 
     from unilab.assets import ASSETS_ROOT_PATH
 
@@ -49,9 +56,7 @@ def test_unsupported_matrix_fails_before_step() -> None:
 
 def test_interval_push_and_velocity_require_named_bodies() -> None:
     """Without base/push body names the interval capabilities stay fail-closed."""
-    dependencies = load_mjwarp_dependencies()
-    if not bool(dependencies.warp.get_device().is_cuda):
-        pytest.fail("mjwarp capability tests require an active CUDA Warp device")
+    _require_cuda_mjwarp()
 
     from unilab.assets import ASSETS_ROOT_PATH
 
