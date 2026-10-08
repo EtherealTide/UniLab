@@ -94,6 +94,7 @@ def _fake_env_factory(num_envs, env_cfg_override):
 
 
 def _cuda_torch_module(monkeypatch: pytest.MonkeyPatch, uuid: str = "GPU-a"):
+    monkeypatch.setattr(torch.version, "hip", None)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
     monkeypatch.setattr(

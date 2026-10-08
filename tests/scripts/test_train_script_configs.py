@@ -29,6 +29,10 @@ APPO_MUJOCO_SMOKE_TASKS = [
     "g1_motion_tracking/mujoco",
 ]
 
+APPO_MOTRIX_SMOKE_TASKS = [
+    "go2_joystick_flat/motrix",
+]
+
 APPO_MOTION_SMOKE_TASKS = {
     "g1_motion_tracking/mujoco",
 }
@@ -95,6 +99,32 @@ def test_appo_task_configs_load(task, tmp_path):
         timeout=120,
     )
     assert result.returncode == 0, f"APPO {task} failed:\n{result.stderr}"
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("task", APPO_MOTRIX_SMOKE_TASKS)
+def test_appo_motrix_task_configs_load(task, tmp_path):
+    """APPO can complete a bounded Motrix training smoke."""
+    pytest.importorskip("motrixsim", reason="motrix extra not available")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "src/unilab/scripts/train_appo.py",
+            f"task={task}",
+            "algo.num_envs=16",
+            "algo.steps_per_env=4",
+            "algo.max_iterations=1",
+            "algo.save_interval=100",
+            "training.no_play=true",
+            f"training.log_root={tmp_path}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, f"APPO {task} failed:\n{result.stderr}"
+    checkpoints = list(tmp_path.glob("Go2JoystickFlat/*/model_1.pt"))
+    assert len(checkpoints) == 1, checkpoints
 
 
 @pytest.mark.slow

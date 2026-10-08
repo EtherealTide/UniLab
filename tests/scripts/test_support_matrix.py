@@ -86,7 +86,11 @@ def test_support_matrix_marks_go2_ppo_backends_as_tested():
 
     assert row.cells["mujoco"].level == EvidenceLevel.TESTED
     assert row.cells["mjwarp"].level == EvidenceLevel.MISSING
-    assert row.cells["motrix"].level is EvidenceLevel.MISSING
+    # Restoring the pre-shelving owner restores its prior generated grade:
+    # generic config coverage promotes configured Motrix owners to Tested.
+    assert row.cells["motrix"].level is EvidenceLevel.TESTED
+    appo_row = _row("APPO (torch)", "go2_joystick_flat")
+    assert appo_row.cells["motrix"].level is EvidenceLevel.TESTED
 
 
 def test_support_matrix_marks_validated_g1_mjwarp_entrypoints_as_tested():
@@ -134,6 +138,7 @@ def test_generator_renders_hardened_support_levels_without_enum_leakage():
     mujoco_zh = next(line for line in zh_block.splitlines() if line.startswith("| `mujoco` |"))
     assert mujoco_en.endswith("| unknown | unknown | Unsupported | Exact |")
     assert mujoco_zh.endswith("| unknown | unknown | 不支持 | 支持 |")
+    assert "Supported: CPU-authoritative physics with ROCm Torch buffers (`cuda`)" in mujoco_en
 
 
 def test_owner_backend_identity_comes_from_training_sim_backend(

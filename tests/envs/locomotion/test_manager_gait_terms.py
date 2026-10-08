@@ -93,11 +93,12 @@ class _Commands:
         return self.command
 
 
-def _env(counter: int = 0, scene: _Scene | None = None) -> ManagerBasedRlEnv:
+def _env(counter: int = 0, scene: _Scene | None = None, device: str = "cpu") -> ManagerBasedRlEnv:
     return cast(
         ManagerBasedRlEnv,
         SimpleNamespace(
             num_envs=2,
+            device=torch.device(device),
             common_step_counter=counter,
             episode_length_buf=np.array([counter, 0]),
             step_dt=0.02,
@@ -165,24 +166,35 @@ def test_gait_phase_matches_global_legacy_clock_and_ignores_episode_reset() -> N
     )
 
 
-def test_standing_aware_gait_freezes_only_standing_environments() -> None:
-    env = _env()
-    cast(Any, env).command_manager.command[:] = [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]]
+@pytest.mark.parametrize("device", ["cpu", "cuda:0"])
+def test_standing_aware_gait_freezes_only_standing_environments(device: str) -> None:
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        pytest.skip("CUDA or ROCm GPU is unavailable")
+    env = _env(device=device)
+    cast(Any, env).command_manager.command = torch.tensor(
+        [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]], dtype=torch.float32, device=device
+    )
     manager = _observations(env, command_name="twist", command_threshold=0.1)
 
     cast(Any, env).common_step_counter = 1
     phase = manager.compute_group("policy")
     assert isinstance(phase, torch.Tensor)
+    assert phase.device == env.device
     np.testing.assert_allclose(
-        phase,
+        phase.cpu(),
         [[0.0, 0.5, 0.5, 0.0], [0.04, 0.54, 0.54, 0.04]],
         atol=1e-7,
     )
 
 
-def test_standing_aware_foot_rewards_gate_swing_and_expect_planted_feet() -> None:
-    env = _env(counter=5)
-    cast(Any, env).command_manager.command[:] = [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]]
+@pytest.mark.parametrize("device", ["cpu", "cuda:0"])
+def test_standing_aware_foot_rewards_gate_swing_and_expect_planted_feet(device: str) -> None:
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        pytest.skip("CUDA or ROCm GPU is unavailable")
+    env = _env(counter=5, device=device)
+    cast(Any, env).command_manager.command = torch.tensor(
+        [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]], dtype=torch.float32, device=device
+    )
     params = {"frequency": 2.0, "command_name": "twist", "command_threshold": 0.1}
     manager = RewardManager(
         {
@@ -202,8 +214,9 @@ def test_standing_aware_foot_rewards_gate_swing_and_expect_planted_feet() -> Non
     )
 
     value = manager.compute(dt=0.02)
+    assert value.device == env.device
     expected_moving_swing = (1.0 + np.exp(-1.0)) / 4.0
-    np.testing.assert_allclose(value, [0.5, expected_moving_swing], atol=1e-7)
+    np.testing.assert_allclose(value.cpu(), [0.5, expected_moving_swing], atol=1e-7)
 
 
 def test_standing_penalties_match_a2_legacy_gates() -> None:
@@ -235,8 +248,10 @@ def test_standing_penalties_match_a2_legacy_gates() -> None:
     np.testing.assert_array_equal(feet_air, [2.0, 0.0])
 
 
-def test_foot_rewards_match_legacy_equations_and_read_only_bound_views() -> None:
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_foot_rewards_match_legacy_equations_and_read_only_bound_views(dtype) -> None:
     scene = _Scene()
+    scene.values = {name: values.astype(dtype) for name, values in scene.values.items()}
     manager = _rewards(_env(5, scene))
     assert scene.calls == {"bind": 2, "read": 2}
     result = manager.compute(dt=0.02)
@@ -250,6 +265,27 @@ def test_foot_rewards_match_legacy_equations_and_read_only_bound_views() -> None
     np.testing.assert_allclose(result, expected, atol=1e-7)
     manager.compute(dt=0.02)
     assert scene.calls == {"bind": 2, "read": 6}
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda:0"])
+def test_foot_rewards_use_compiled_tensor_sensors_without_host_reads(device: str) -> None:
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        pytest.skip("CUDA or ROCm GPU is unavailable")
+    scene = _Scene()
+    manager = _rewards(_env(5, scene, device=device))
+    expected = manager.compute(dt=0.02).clone()
+    calls = scene.calls.copy()
+    values = {name: torch.as_tensor(value, device=device) for name, value in scene.values.items()}
+    requests = []
+
+    def sensor_tensor_views(entity, names):
+        requests.append((entity, names))
+        return SimpleNamespace(values={name: values[name] for name in names})
+
+    cast(Any, scene)._tensor_read_plan = SimpleNamespace(sensor_tensor_views=sensor_tensor_views)
+    torch.testing.assert_close(manager.compute(dt=0.02), expected)
+    assert scene.calls == calls
+    assert requests == [("robot", CONTACTS), ("robot", POSITIONS)]
 
 
 @pytest.mark.parametrize(

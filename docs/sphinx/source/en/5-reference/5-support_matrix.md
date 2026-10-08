@@ -74,28 +74,28 @@ This table is derived from UniSim's SDK-free public static inventory. It describ
 
 | Backend | Execution / process / data plane | Torch devices | CUDA runtime | Linux+CUDA | macOS | ROCm | Worker | Reset randomization | Fixed variants | Host callbacks | Packed bridge |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| `mujoco` | Host bridge / in-process / host bridge | CPU / CUDA | Required only when the learner requests CUDA state/control buffers | Supported: CPU-authoritative physics with optional CUDA Torch buffers | CPU-authoritative host bridge only; no CUDA physics claim | CPU-authoritative host bridge only; no ROCm CUDA-only fallback | In-process; no external Python worker | unknown | unknown | Unsupported | Exact |
-| `motrix` | Host bridge / in-process / host bridge | CPU / CUDA | Required only when the learner requests CUDA state/control buffers | Supported: CPU-authoritative physics with optional CUDA Torch buffers | CPU-authoritative host bridge only; no CUDA physics claim | CPU-authoritative host bridge only; no ROCm CUDA-only fallback | In-process; no external Python worker | Unsupported | Unsupported | Unsupported | Exact |
-| `drake` | Host bridge / in-process / host bridge | CPU / CUDA | Required only when the learner requests CUDA state/control buffers | Supported: CPU-authoritative physics with optional CUDA Torch buffers | CPU-authoritative host bridge only; no CUDA physics claim | CPU-authoritative host bridge only; no ROCm CUDA-only fallback | In-process; no external Python worker | Unsupported | Unsupported | Unsupported | Exact |
+| `mujoco` | Host bridge / in-process / host bridge | CPU / CUDA | Required only when the learner requests CUDA state/control buffers | Supported: CPU-authoritative physics with optional CUDA Torch buffers | CPU-authoritative host bridge only; no CUDA physics claim | Supported: CPU-authoritative physics with ROCm Torch buffers (`cuda`) | In-process; no external Python worker | unknown | unknown | Unsupported | Exact |
+| `motrix` | Host bridge / in-process / host bridge | CPU / CUDA | Required only when the learner requests CUDA state/control buffers | Supported: CPU-authoritative physics with optional CUDA Torch buffers | CPU-authoritative host bridge only; no CUDA physics claim | Supported: CPU-authoritative physics with ROCm Torch buffers (`cuda`) | In-process; no external Python worker | Unsupported | Unsupported | Unsupported | Exact |
+| `drake` | Host bridge / in-process / host bridge | CPU / CUDA | Required only when the learner requests CUDA state/control buffers | Supported: CPU-authoritative physics with optional CUDA Torch buffers | CPU-authoritative host bridge only; no CUDA physics claim | Supported: CPU-authoritative physics with ROCm Torch buffers (`cuda`) | In-process; no external Python worker | Unsupported | Unsupported | Unsupported | Exact |
 | `mjwarp` | Device-resident / in-process / direct | CUDA | Required for the entire tensor lifecycle | Supported: Linux CUDA only | Unsupported; no CPU, MPS, or ROCm fallback | Unsupported; no CPU, MPS, or ROCm fallback | In-process; no external Python worker | Unsupported | Unsupported | Unsupported | Unsupported |
 | `newton` | Device-resident / in-process / direct | CUDA | Required for the entire tensor lifecycle | Supported: Linux CUDA only | Unsupported; no CPU, MPS, or ROCm fallback | Unsupported; no CPU, MPS, or ROCm fallback | In-process; no external Python worker | Unsupported | Unsupported | Unsupported | Unsupported |
-| `superdex` | Host bridge / in-process / host bridge | CPU / CUDA | Required only when the learner requests CUDA state/control buffers | Supported: CPU-authoritative physics with optional CUDA Torch buffers | CPU-authoritative host bridge only; no CUDA physics claim | CPU-authoritative host bridge only; no ROCm CUDA-only fallback | In-process; no external Python worker | Unsupported | Unsupported | Unsupported | Exact |
+| `superdex` | Host bridge / in-process / host bridge | CPU / CUDA | Required only when the learner requests CUDA state/control buffers | Supported: CPU-authoritative physics with optional CUDA Torch buffers | CPU-authoritative host bridge only; no CUDA physics claim | Supported: CPU-authoritative physics with ROCm Torch buffers (`cuda`) | In-process; no external Python worker | Unsupported | Unsupported | Unsupported | Exact |
 | `genesis` | Device-resident / in-process / direct | CUDA | Required for the entire tensor lifecycle | Supported: Linux CUDA only | Unsupported; no CPU, MPS, or ROCm fallback | Unsupported; no CPU, MPS, or ROCm fallback | In-process; no external Python worker | Unsupported | Unsupported | Unsupported | Unsupported |
 
 ### Entrypoint x Task Owner
 
 | Entrypoint | Task owner | MuJoCo | Motrix | Drake | mjwarp | Newton | SuperDex | Genesis |
 |------------|------------|---|---|---|---|---|---|---|
-| PPO (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | - | Configured | - | - | Configured | - |
-| PPO (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Registered | - | Tested | Registered | - | Configured |
-| PPO (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Registered | - | Registered | Registered | - | Registered |
-| APPO (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | - | Registered | - | - | Registered | - |
+| PPO (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | Tested | Configured | - | - | Configured | - |
+| PPO (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Tested | - | Tested | Registered | - | Configured |
+| PPO (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Tested | - | Registered | Registered | - | Registered |
+| APPO (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | Tested | Registered | - | - | Registered | - |
 | APPO (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Registered | - | Registered | Registered | - | Registered |
-| APPO (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Registered | - | Registered | Registered | - | Registered |
+| APPO (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Tested | - | Registered | Registered | - | Registered |
 | SAC (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Tested | - | Tested | Tested | - | Tested |
-| SAC (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Registered | - | Configured | Registered | - | Configured |
-| FlashSAC (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | - | Registered | - | - | Registered | - |
-| FlashSAC (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Registered | - | Configured | Registered | - | Registered |
+| SAC (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Tested | - | Configured | Registered | - | Configured |
+| FlashSAC (torch) | `go2_joystick_flat` (Go2 joystick) | Tested | Registered | Registered | - | - | Registered | - |
+| FlashSAC (torch) | `g1_walk_flat` (G1 walk flat) | Tested | Tested | - | Configured | Registered | - | Registered |
 | FlashSAC (torch) | `g1_motion_tracking` (G1 motion tracking) | Tested | Tested | - | Configured | Configured | - | Configured |
 
 ### Source Index
@@ -124,6 +124,8 @@ unavailable, check the NVIDIA driver/container mismatch before changing task
 configuration. If `CUDA_VISIBLE_DEVICES` is set, backend ordinals address that
 remapped namespace, not host-global physical indices.
 
-On macOS and ROCm, use a CPU-authoritative host-bridge backend. A CUDA Torch
-buffer on a host-bridge backend is not a CUDA physics or device-resident
-lifecycle claim.
+On macOS and ROCm, use a CPU-authoritative host-bridge backend. On ROCm,
+Manager/TorchEnv uses the current GPU when ROCm PyTorch is available and the
+backend accepts that `cuda` device; CPU physics does not require CPU Manager
+tensors. GPU Torch buffers on a host bridge do not imply GPU physics or a
+device-resident backend lifecycle.

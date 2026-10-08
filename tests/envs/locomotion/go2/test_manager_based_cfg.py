@@ -77,6 +77,16 @@ _OWNER_CASES = (
         id="appo-mujoco",
     ),
     pytest.param(
+        "appo",
+        ("task=go2_joystick_flat/motrix",),
+        "motrix",
+        0.25,
+        False,
+        True,
+        False,
+        id="appo-motrix",
+    ),
+    pytest.param(
         "flashsac",
         ("task=go2_joystick_flat/mujoco",),
         "mujoco",
@@ -228,7 +238,7 @@ def test_go2_flat_registry_is_manager_only() -> None:
     assert bare_cfg.rewards == {}
     assert registry.list_registered_envs()["Go2JoystickFlat"] == {
         "config_factory": "ManagerBasedRlEnvCfg",
-        "available_backends": ["mujoco", "superdex", "drake"],
+        "available_backends": ["mujoco", "motrix", "superdex", "drake"],
     }
 
 
@@ -255,6 +265,15 @@ def test_go2_flat_drake_owner_keeps_policy_io_and_disables_unsupported_dr() -> N
     ]
 
 
+def test_go2_flat_motrix_owner_uses_tensor_reset_events() -> None:
+    registry.ensure_registries()
+    _, env_cfg, _ = _materialize("appo", ("task=go2_joystick_flat/motrix",))
+
+    assert env_cfg.events["reset_scene_to_default"].func is mdp.reset_scene_to_default_tensor
+    assert env_cfg.events["reset_root_state_uniform"].func is mdp.reset_root_state_uniform_tensor
+    assert env_cfg.events["pd_gains"] is None
+
+
 @pytest.mark.parametrize(
     ("backend", "owner"),
     (("mujoco", "task=go2_joystick_flat/mujoco"),),
@@ -279,7 +298,7 @@ def test_go2_flat_registry_executes_real_manager_runtime(backend: str, owner: st
         assert env.action_space.shape == (12,)
         action = env.action_manager.get_term("joint_pos")
         assert action.target_names == list(_JOINT_NAMES)
-        np.testing.assert_allclose(action.offset, np.broadcast_to(_HOME_JOINT_POS, (2, 12)))
+        np.testing.assert_allclose(action.offset.cpu(), np.broadcast_to(_HOME_JOINT_POS, (2, 12)))
 
         obs, info = env.reset(seed=7)
         assert {name: value.shape for name, value in obs.items()} == {
@@ -296,7 +315,7 @@ def test_go2_flat_registry_executes_real_manager_runtime(backend: str, owner: st
             np.broadcast_to(_HOME_JOINT_POS, (2, 12)),
         )
 
-        state = env.step(torch.zeros((2, 12), dtype=torch.float32))
+        state = env.step(torch.zeros((2, 12), dtype=torch.float32, device=env.device))
         assert {name: value.shape for name, value in state.obs.items()} == {
             "obs": (2, 49),
             "critic": (2, 52),
@@ -360,4 +379,5 @@ def test_go2_flat_drake_factory_is_registered_before_optional_runtime_load() -> 
         )
     except (ImportError, NotImplementedError, RuntimeError, TypeError, ValueError) as exc:
         # Registration must not bypass the optional native runtime boundary.
-        assert "drakeuni batch runtime" in str(exc).lower()
+        message = str(exc).lower()
+        assert "drakeuni batch runtime" in message or "drakeenvpool batch" in message

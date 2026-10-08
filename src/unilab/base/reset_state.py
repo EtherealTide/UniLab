@@ -259,10 +259,15 @@ class ResetStateTransaction:
             assert self._tensor_qpos is not None
             assert self._tensor_qvel is not None
             rows = self._tensor_rows
-            qpos = self._tensor_qpos.index_select(0, rows).detach().cpu()
-            qvel = self._tensor_qvel.index_select(0, rows).detach().cpu()
+            qpos = self._tensor_qpos.index_select(0, rows).detach()
+            qvel = self._tensor_qvel.index_select(0, rows).detach()
+            packed_reset_device = self._packed_reset_device
+            if packed_reset_device is not None:
+                rows = rows.to(device=packed_reset_device, non_blocking=False)
+                qpos = qpos.to(device=packed_reset_device, non_blocking=False)
+                qvel = qvel.to(device=packed_reset_device, non_blocking=False)
             started = time.perf_counter()
-            result = host_plan.apply_reset(rows.detach().cpu(), qpos, qvel, randomization=None)
+            result = host_plan.apply_reset(rows, qpos, qvel, randomization=None)
             self._last_set_state_timing_ms = {
                 "dr_reset_set_state_ms": (time.perf_counter() - started) * 1000.0
             }

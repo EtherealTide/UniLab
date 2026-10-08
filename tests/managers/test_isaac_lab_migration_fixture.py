@@ -103,14 +103,16 @@ def test_fixture_real_mujoco_reset_step_and_partial_reset() -> None:
 
         before = env.scene["robot"].data.joint_pos.copy()
         reset_ids = np.asarray([1, 6], dtype=np.int32)
-        reset_obs, _ = env.reset(env_indices=torch.tensor(reset_ids, dtype=torch.int64))
+        reset_obs, _ = env.reset(
+            env_indices=torch.tensor(reset_ids, dtype=torch.int64, device=env.device)
+        )
         after = env.scene["robot"].data.joint_pos.copy()
         assert reset_obs["obs"].shape == (2, 4)
         np.testing.assert_array_equal(after[[0, 2, 3, 4, 5, 7]], before[[0, 2, 3, 4, 5, 7]])
         assert np.all(np.abs(after[reset_ids, 0]) <= 1.0)
         assert np.all(np.abs(after[reset_ids, 1]) <= 0.25 * np.pi)
 
-        state = env.step(torch.zeros((8, 1), dtype=torch.float32))
+        state = env.step(torch.zeros((8, 1), dtype=torch.float32, device=env.device))
         assert state.obs["obs"].shape == (8, 4)
         assert state.reward.shape == (8,)
         assert state.terminated.shape == (8,)
@@ -123,7 +125,7 @@ def test_fixture_real_mujoco_reset_step_and_partial_reset() -> None:
         expected = 1.0 - np.square(np.remainder(pole_pos + np.pi, 2.0 * np.pi) - np.pi)
         expected -= 0.01 * np.abs(robot.data.joint_vel[:, 0])
         expected -= 0.005 * np.abs(robot.data.joint_vel[:, 1])
-        np.testing.assert_allclose(state.reward, expected * env.step_dt, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(state.reward.cpu(), expected * env.step_dt, rtol=1e-5, atol=1e-6)
     finally:
         env.close()
 
