@@ -35,6 +35,7 @@ from unilab.base.config_adapter import create_env
 from unilab.base.env_factory import registry_env_factory
 from unilab.base.process_device import (
     apply_backend_env_device_override,
+    apply_manager_torch_device_override,
     bind_backend_process_device_for_backend,
     configure_backend_process_device,
     pin_genesis_device_before_cuda_init,
@@ -200,8 +201,13 @@ def build_offpolicy_env_cfg_override(algo_name: str, cfg: DictConfig) -> dict[st
     from unilab.utils.device import get_default_device
 
     rank_device = resolve_dp_rank_device(rank) or get_default_device()
-    return apply_backend_env_device_override(
+    routed = apply_backend_env_device_override(
         base,
+        str(cfg.training.sim_backend),
+        learner_device=rank_device,
+    )
+    return apply_manager_torch_device_override(
+        routed,
         str(cfg.training.sim_backend),
         learner_device=rank_device,
     )
@@ -213,8 +219,13 @@ def build_offpolicy_play_env_cfg_override(algo_name: str, cfg: DictConfig) -> di
     from unilab.utils.device import get_default_device
 
     rank_device = resolve_dp_rank_device(rank) or get_default_device()
-    return apply_backend_env_device_override(
+    routed = apply_backend_env_device_override(
         base,
+        str(cfg.training.sim_backend),
+        learner_device=rank_device,
+    )
+    return apply_manager_torch_device_override(
+        routed,
         str(cfg.training.sim_backend),
         learner_device=rank_device,
     )

@@ -25,7 +25,6 @@ from unisim.backend.base import (
     TensorExecution,
     TensorLifecycleCapabilities,
     TensorProcessTopology,
-    tensor_device_matches,
 )
 
 from unilab.base.backend_factory import create_backend, env_backend_kwargs
@@ -163,6 +162,11 @@ class ManagerBasedRlEnvCfg(EnvCfg):
     recorders: dict[str, RecorderTermCfg | None] = _manager_terms_field()
     reset_owners: dict[str, ResetOwnerCfg | None] = _manager_terms_field()
 
+    # HOST_BRIDGE physics remains CPU-authoritative. CPU is therefore the default;
+    # a training process may request accelerator Torch carriers shared with its
+    # learner. This selects public-manager carrier placement only; it is neither a
+    # physics-device claim nor a tensor/NumPy runtime compatibility switch.
+    manager_torch_device: str | None = None
     seed: int | None = None
     is_finite_horizon: bool = False
     auto_reset: bool = True
@@ -171,6 +175,27 @@ class ManagerBasedRlEnvCfg(EnvCfg):
     critic_observation_group: str | None = None
 
     def validate(self) -> None:
+        if self.manager_torch_device is not None:
+            if (
+                not isinstance(self.manager_torch_device, str)
+                or not self.manager_torch_device.strip()
+            ):
+                raise TypeError(
+                    "ManagerBasedRlEnvCfg manager_torch_device must be 'cpu', "
+                    f"'cuda', or 'cuda:<index>', or None; got {self.manager_torch_device!r}"
+                )
+            try:
+                requested_device = torch.device(self.manager_torch_device)
+            except (RuntimeError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    "ManagerBasedRlEnvCfg manager_torch_device is not a valid Torch "
+                    f"device: {self.manager_torch_device!r}"
+                ) from exc
+            if requested_device.type not in {"cpu", "cuda"}:
+                raise ValueError(
+                    "ManagerBasedRlEnvCfg manager_torch_device must be cpu, cuda, or "
+                    f"None; got {self.manager_torch_device!r}"
+                )
         for name, value in (("sim_dt", self.sim_dt), ("ctrl_dt", self.ctrl_dt)):
             if isinstance(value, bool) or not isinstance(value, (int, float, np.number)):
                 raise TypeError(f"ManagerBasedRlEnvCfg {name} must be a real number")
@@ -371,17 +396,9 @@ class ManagerBasedRlEnv(TorchEnv):
             )
 
         initial_capabilities = backend.get_tensor_capabilities()
-        runtime_device = torch.device("cpu")
-        if initial_capabilities.execution is TensorExecution.DEVICE_RESIDENT:
-            runtime_device = torch.device("cuda", index=torch.cuda.current_device())
-        elif (
-            initial_capabilities.execution is TensorExecution.HOST_BRIDGE
-            and torch.cuda.is_available()
-        ):
-            # PyTorch uses the CUDA device namespace for both NVIDIA and ROCm GPUs.
-            accelerator = torch.device("cuda", index=torch.cuda.current_device())
-            if tensor_device_matches(initial_capabilities.torch_devices, accelerator):
-                runtime_device = accelerator
+        runtime_device = self._resolve_runtime_device(
+            initial_capabilities, cfg.manager_torch_device
+        )
         super().__init__(cfg, backend, num_envs, device=runtime_device)
         actual_seed = cfg.seed if cfg.seed is not None else secrets.randbits(63)
         cfg.seed = actual_seed
@@ -880,6 +897,41 @@ class ManagerBasedRlEnv(TorchEnv):
     def _validate_manager_tensor_runtime(self) -> None:
         """Bind the tensor lifecycle after backend materialization."""
         self._bind_tensor_runtime()
+
+    @staticmethod
+    def _resolve_runtime_device(
+        capabilities: TensorLifecycleCapabilities, requested_device: str | None
+    ) -> torch.device:
+        """Resolve authoritative Manager carrier placement.
+
+        ``DEVICE_RESIDENT`` owns accelerator storage and has no CPU public
+        carrier. For ``HOST_BRIDGE``, capability inventory says which device
+        families are possible, while the caller's request chooses whether this
+        process pays the packed H2D/D2H boundary. CPU is the default; explicit
+        ``cuda`` resolves to the current Torch ordinal (including ROCm/HIP's
+        CUDA namespace). Final capability validation remains fail-closed in
+        ``TorchEnv._bind_tensor_runtime``.
+        """
+
+        if capabilities.execution is TensorExecution.DEVICE_RESIDENT:
+            return torch.device("cuda", index=torch.cuda.current_device())
+        if capabilities.execution is not TensorExecution.HOST_BRIDGE:
+            raise ValueError(
+                "TorchEnv got a non-tensor backend capability "
+                f"{capabilities.execution!r}; expected HOST_BRIDGE or DEVICE_RESIDENT"
+            )
+        if requested_device is None:
+            return torch.device("cpu")
+        try:
+            device = torch.device(requested_device)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "Manager HOST_BRIDGE runtime device is not a valid Torch device: "
+                f"{requested_device!r}"
+            ) from exc
+        if device.type == "cuda" and device.index is None:
+            return torch.device("cuda", index=torch.cuda.current_device())
+        return device
 
     def _materialize_backend(self) -> None:
         """Finalize backend runtime resources before the first reset or step."""

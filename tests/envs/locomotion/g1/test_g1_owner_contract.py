@@ -657,7 +657,7 @@ def test_g1_walk_profile_runtime_obs_scaling_matches_legacy_layout() -> None:
 
     try:
         env.reset(seed=3)
-        state = env.step(torch.zeros((2, 29), dtype=torch.float32))
+        state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
         gyro = env._backend.get_sensor_data("torso_gyro")
         upvector = env._backend.get_sensor_data("torso_upvector")
         dof_vel = env._backend.get_dof_vel()
@@ -693,7 +693,7 @@ def test_g1_legacy_profile_runtime_obs_scaling_matches_legacy_layout() -> None:
 
     try:
         env.reset(seed=3)
-        state = env.step(torch.zeros((2, 29), dtype=torch.float32))
+        state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
         gyro = env._backend.get_sensor_data("torso_gyro")
         dof_vel = env._backend.get_dof_vel()
         linvel = env._backend.get_sensor_data("pelvis_local_linvel")
@@ -821,6 +821,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
@@ -871,7 +872,7 @@ try:
         "critic": (2, 101),
     }
     for _ in range(12):
-        state = env.step(torch.zeros((2, 29), dtype=torch.float32))
+        state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
         assert set(state.obs) == {"obs", "critic"}
         assert state.obs["obs"].shape == (2, 98)
         assert state.obs["critic"].shape == (2, 101)
@@ -931,5 +932,5 @@ def test_g1_walk_flat_genesis_owner_real_runtime_smoke(config_group: str) -> Non
         timeout=600,
     )
 
-    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\n--- stderr ---\n{result.stderr}"
     assert f"[genesis env smoke:{config_group}]" in result.stdout

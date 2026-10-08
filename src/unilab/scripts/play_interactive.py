@@ -47,6 +47,7 @@ _PACKAGE_CONF_ROOT = Path(__file__).resolve().parents[1] / "conf"
 
 from unilab.base.process_device import (
     apply_backend_env_device_override,
+    apply_manager_torch_device_override,
     configure_backend_process_device,
     resolve_backend_env_device_id,
 )
@@ -846,6 +847,11 @@ def create_playback_session(
                 sim_backend,
                 learner_device=device,
             )
+            legacy_env_cfg_override = apply_manager_torch_device_override(
+                legacy_env_cfg_override,
+                sim_backend,
+                learner_device=device,
+            )
             return registry.make(
                 args.task,
                 num_envs=num_envs,
@@ -862,6 +868,11 @@ def create_playback_session(
                 cfg, root_dir=Path.cwd(), algo_name=algo
             ).build_task_env_cfg_override()
         env_cfg_override = apply_backend_env_device_override(
+            env_cfg_override,
+            sim_backend,
+            learner_device=device,
+        )
+        env_cfg_override = apply_manager_torch_device_override(
             env_cfg_override,
             sim_backend,
             learner_device=device,

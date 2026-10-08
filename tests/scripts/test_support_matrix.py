@@ -138,7 +138,7 @@ def test_generator_renders_hardened_support_levels_without_enum_leakage():
     mujoco_zh = next(line for line in zh_block.splitlines() if line.startswith("| `mujoco` |"))
     assert mujoco_en.endswith("| unknown | unknown | Unsupported | Exact |")
     assert mujoco_zh.endswith("| unknown | unknown | 不支持 | 支持 |")
-    assert "Supported: CPU-authoritative physics with ROCm Torch buffers (`cuda`)" in mujoco_en
+    assert "CPU-authoritative host bridge with explicit ROCm Torch buffers (`cuda`)" in mujoco_en
 
 
 def test_owner_backend_identity_comes_from_training_sim_backend(

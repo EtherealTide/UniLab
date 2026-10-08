@@ -16,6 +16,7 @@ from unisim.backend.mujoco.xml import materialize_scene_visual_override
 from unilab.base.config_adapter import BackendAdapter, create_env
 from unilab.base.process_device import (
     apply_backend_env_device_override,
+    apply_manager_torch_device_override,
     configure_backend_process_device,
     pin_genesis_device_before_cuda_init,
     resolve_backend_env_device_id,
@@ -102,6 +103,11 @@ def build_ppo_env_cfg_override(cfg: DictConfig) -> dict[str, Any]:
         str(cfg.training.sim_backend),
         learner_device=learner_device,
     )
+    result = apply_manager_torch_device_override(
+        result,
+        str(cfg.training.sim_backend),
+        learner_device=learner_device,
+    )
     if world_size > 1:
         explicit = OmegaConf.select(cfg, "training.dp_collector_cpu_ids", default=None)
         explicit = OmegaConf.to_container(explicit, resolve=True) if explicit is not None else None
@@ -124,8 +130,13 @@ def build_ppo_play_env_cfg_override(cfg: DictConfig) -> dict[str, Any]:
         local_rank=local_rank,
         default_device="cpu",
     )
-    return apply_backend_env_device_override(
+    result = apply_backend_env_device_override(
         base,
+        str(cfg.training.sim_backend),
+        learner_device=learner_device,
+    )
+    return apply_manager_torch_device_override(
+        result,
         str(cfg.training.sim_backend),
         learner_device=learner_device,
     )
@@ -320,6 +331,11 @@ def play_rsl_rl(cfg: DictConfig, device: str) -> str | None:
         str(cfg.training.sim_backend),
         learner_device=device,
     )
+    play_env_cfg_override = apply_manager_torch_device_override(
+        play_env_cfg_override,
+        str(cfg.training.sim_backend),
+        learner_device=device,
+    )
     session, _policy_obs_mode, _checkpoint_path = create_rsl_rl_playback_session(
         playback_cfg=playback_cfg,
         env_factory=lambda n: create_env(
@@ -475,6 +491,11 @@ def main(cfg: DictConfig) -> None:
     print(f"[rank {rank}/{world_size}] Using device: {device}")
     env_cfg_override = apply_backend_env_device_override(
         build_ppo_env_cfg_override(cfg),
+        str(cfg.training.sim_backend),
+        learner_device=device,
+    )
+    env_cfg_override = apply_manager_torch_device_override(
+        env_cfg_override,
         str(cfg.training.sim_backend),
         learner_device=device,
     )

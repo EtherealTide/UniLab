@@ -21,6 +21,7 @@ from unilab.base.config_adapter import (
 from unilab.base.env_factory import registry_env_factory
 from unilab.base.process_device import (
     apply_backend_env_device_override,
+    apply_manager_torch_device_override,
     configure_backend_process_device,
     pin_genesis_device_before_cuda_init,
 )
@@ -70,6 +71,15 @@ def build_appo_runner_kwargs(
 
     routed_env_cfg_override = apply_backend_env_device_override(
         env_cfg_override,
+        str(cfg.training.sim_backend),
+        learner_device=(
+            collector_device
+            if collector_device is not None and _is_cuda_device(collector_device)
+            else OmegaConf.select(cfg, "training.device", default=None)
+        ),
+    )
+    routed_env_cfg_override = apply_manager_torch_device_override(
+        routed_env_cfg_override,
         str(cfg.training.sim_backend),
         learner_device=(
             collector_device
@@ -258,6 +268,11 @@ def play_appo(
         str(cfg.training.sim_backend),
         learner_device=device,
     )
+    play_env_cfg_override = apply_manager_torch_device_override(
+        play_env_cfg_override,
+        str(cfg.training.sim_backend),
+        learner_device=device,
+    )
     session, _policy_obs_mode, _checkpoint_path = create_appo_playback_session(
         playback_cfg=playback_cfg,
         cfg=cfg,
@@ -393,6 +408,15 @@ def main(cfg: DictConfig) -> None:
 
     env_cfg_override = apply_backend_env_device_override(
         BackendAdapter(cfg, root_dir=Path.cwd(), algo_name="appo").build_task_env_cfg_override(),
+        str(cfg.training.sim_backend),
+        learner_device=(
+            collector_device
+            if collector_device is not None and _is_cuda_device(collector_device)
+            else learner_device
+        ),
+    )
+    env_cfg_override = apply_manager_torch_device_override(
+        env_cfg_override,
         str(cfg.training.sim_backend),
         learner_device=(
             collector_device
