@@ -83,7 +83,7 @@ def test_stage_curriculum_demo_runtime_ramps_with_step_counter() -> None:
         assert weight_cfg.weight == pytest.approx(1.0)
         assert tilt_cfg.params["limit_angle"] == pytest.approx(0.4)
 
-        actions = torch.zeros((4, 1), dtype=torch.float32)
+        actions = torch.zeros((4, 1), dtype=torch.float32, device=env.device)
         for _ in range(2):
             env.step(actions)
         env.reset()

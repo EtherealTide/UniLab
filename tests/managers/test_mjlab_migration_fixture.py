@@ -91,7 +91,9 @@ def test_mjlab_fixture_real_mujoco_reset_step_and_reward() -> None:
 
         before = env.scene["cartpole"].data.joint_pos.copy()
         ids = np.asarray([1, 6], dtype=np.int32)
-        reset_obs, _ = env.reset(env_indices=torch.tensor(ids, dtype=torch.int64))
+        reset_obs, _ = env.reset(
+            env_indices=torch.tensor(ids, dtype=torch.int64, device=env.device)
+        )
         after = env.scene["cartpole"].data.joint_pos.copy()
         np.testing.assert_array_equal(after[[0, 2, 3, 4, 5, 7]], before[[0, 2, 3, 4, 5, 7]])
         assert reset_obs["obs"].shape == reset_obs["critic"].shape == (2, 5)
@@ -99,7 +101,7 @@ def test_mjlab_fixture_real_mujoco_reset_step_and_reward() -> None:
         assert np.all(np.abs(after[ids, 1]) <= 0.034)
         assert np.all(np.abs(env.scene["cartpole"].data.joint_vel[ids]) <= 0.01)
 
-        actions = torch.full((8, 1), 0.25, dtype=torch.float32)
+        actions = torch.full((8, 1), 0.25, dtype=torch.float32, device=env.device)
         state = env.step(actions)
         entity = env.scene["cartpole"]
         hinge = entity.data.joint_pos[:, 1]
@@ -111,7 +113,7 @@ def test_mjlab_fixture_real_mujoco_reset_step_and_reward() -> None:
         expected *= (1.0 + np.exp(-0.5 * np.square(cart / 2.0 * gaussian_scale))) / 2.0
         expected *= (4.0 + np.maximum(1.0 - np.square(0.25 * quadratic_scale), 0.0)) / 5.0
         expected *= (1.0 + np.exp(-0.5 * np.square(hinge_vel / 5.0 * gaussian_scale))) / 2.0
-        np.testing.assert_allclose(state.reward, expected * 0.05, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(state.reward.cpu(), expected * 0.05, rtol=1e-5, atol=1e-6)
     finally:
         env.close()
 

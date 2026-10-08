@@ -315,7 +315,12 @@ class _GaitTerm(ManagerTermBase):
         self._frequency = _real(
             self.name, "frequency", cfg.params.get("frequency", 2.0), minimum=0.0
         )
-        self._offsets = _offsets(self.name, cfg.params.get("phase_offsets", _OFFSETS))
+        self._device = torch.device(getattr(env, "device", "cpu"))
+        self._offsets = torch.tensor(
+            _offsets(self.name, cfg.params.get("phase_offsets", _OFFSETS)),
+            dtype=torch.float32,
+            device=self._device,
+        )
         self._step_dt = _real(self.name, "step_dt", env.step_dt, minimum=0.0, strict_minimum=True)
         command_name = cfg.params.get("command_name")
         if command_name is not None and (not isinstance(command_name, str) or not command_name):
@@ -327,7 +332,7 @@ class _GaitTerm(ManagerTermBase):
             cfg.params.get("command_threshold", 0.0),
             minimum=0.0,
         )
-        self._phase_value = np.zeros(env.num_envs, dtype=get_global_dtype())
+        self._phase_value = torch.zeros(env.num_envs, dtype=torch.float32, device=self._device)
         self._last_counter = 0
         self._advance_to(env, self._counter(env))
 
@@ -339,39 +344,36 @@ class _GaitTerm(ManagerTermBase):
             raise ValueError(f"{self.name} common_step_counter must be non-negative")
         return int(counter)
 
-    def _moving(self, env: _GaitEnv) -> np.ndarray:
+    def _moving(self, env: _GaitEnv) -> torch.Tensor:
         if self._command_name is None:
-            return np.ones(env.num_envs, dtype=np.bool_)
-        command = _command(env, self.name, self._command_name)
-        return np.linalg.norm(command, axis=1) > self._command_threshold
+            return torch.ones(env.num_envs, dtype=torch.bool, device=self._device)
+        command = torch.as_tensor(_command(env, self.name, self._command_name), device=self._device)
+        return torch.linalg.vector_norm(command, dim=1) > self._command_threshold
 
     def _advance_to(self, env: _GaitEnv, counter: int) -> None:
         delta = counter - self._last_counter
         if delta < 0:
             raise ValueError(f"{self.name} common_step_counter cannot move backwards")
-        increment = np.asarray(self._step_dt * self._frequency, dtype=get_global_dtype())
+        increment = self._step_dt * self._frequency
         if delta == 1:  # Hot path: preserve the legacy float32 iterative phase exactly.
-            self._phase_value = np.fmod(self._phase_value + increment * self._moving(env), 1.0)
+            self._phase_value = torch.fmod(self._phase_value + increment * self._moving(env), 1.0)
         elif delta > 1:  # Cold catch-up for a term constructed or inspected between steps.
             for _ in range(delta):
-                self._phase_value = np.fmod(
+                self._phase_value = torch.fmod(
                     self._phase_value + increment * self._moving(env),
                     1.0,
                 )
         self._last_counter = counter
 
-    def _phase(self, env: _GaitEnv) -> np.ndarray:
+    def _phase(self, env: _GaitEnv) -> torch.Tensor:
         self._advance_to(env, self._counter(env))
-        phase = np.remainder(self._phase_value[:, None] + self._offsets[None, :], 1.0).astype(
-            get_global_dtype(), copy=False
-        )
-        return phase
+        return torch.remainder(self._phase_value[:, None] + self._offsets[None, :], 1.0)
 
 
 class quadruped_gait_phase(_GaitTerm):
     """Four-foot phase observation with the legacy diagonal-trot ordering."""
 
-    def __call__(self, env: _GaitEnv, **params: Any) -> np.ndarray:
+    def __call__(self, env: _GaitEnv, **params: Any) -> torch.Tensor:
         del params
         return self._phase(env)
 
@@ -380,6 +382,7 @@ class _FootSensorTerm(_GaitTerm):
     def __init__(self, cfg: ManagerTermBaseCfg, env: _GaitEnv):
         super().__init__(cfg, env)
         sensor_names = _names(self.name, cfg.params.get("sensor_names"))
+        self._sensor_names = sensor_names
         try:
             self._view = env.scene.bind_sensor_data(sensor_names)
         except (KeyError, TypeError, ValueError, NotImplementedError) as exc:
@@ -388,9 +391,17 @@ class _FootSensorTerm(_GaitTerm):
                 f"materialized for {sensor_names}: {exc}"
             ) from exc
 
-    def _read(self) -> np.ndarray:
+    @property
+    def tensor_sensor_names(self) -> tuple[str, ...]:
+        return self._sensor_names
+
+    def _read(self) -> torch.Tensor:
+        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        if read_plan is not None:
+            values = read_plan.sensor_tensor_views("robot", self._sensor_names).values
+            return torch.cat([values[name] for name in self._sensor_names], dim=1)
         try:
-            return self._view.read()
+            return torch.as_tensor(self._view.read(), device=self._device)
         except (KeyError, TypeError, ValueError, NotImplementedError) as exc:
             raise type(exc)(
                 f"Manager term '{self.name}' named-foot-sensor capability failed on "
@@ -432,15 +443,15 @@ class feet_phase_contact(_FootSensorTerm):
         # are outside this contract.
         self._columns = starts
 
-    def __call__(self, env: _GaitEnv, **params: Any) -> np.ndarray:
+    def __call__(self, env: _GaitEnv, **params: Any) -> torch.Tensor:
         del params
         contact = self._read()[:, self._columns] > self._contact_threshold
         expected = self._phase(env) < self._stance_threshold
         if self._frequency < 1.0e-8:
-            expected.fill(True)
+            expected.fill_(True)
         elif self._command_name is not None:
             expected |= ~self._moving(env)[:, None]
-        return np.mean(contact == expected, axis=1).astype(get_global_dtype(), copy=False)
+        return (contact == expected).to(torch.float32).mean(dim=1)
 
 
 class feet_phase_swing_height(_FootSensorTerm):
@@ -478,14 +489,14 @@ class feet_phase_swing_height(_FootSensorTerm):
                 f"{self._view.dimensions} on backend '{self._view.backend_type}'"
             )
 
-    def __call__(self, env: _GaitEnv, **params: Any) -> np.ndarray:
+    def __call__(self, env: _GaitEnv, **params: Any) -> torch.Tensor:
         del params
         heights = self._read()[:, (2, 5, 8, 11)]
         swing = self._phase(env) >= self._swing_start
         if self._command_name is not None:
             swing &= self._moving(env)[:, None]
-        reward = np.exp(-np.square(heights - self._target) / self._kernel) * swing
-        return np.mean(reward, axis=1).astype(get_global_dtype(), copy=False)
+        reward = torch.exp(-(heights - self._target).square() / self._kernel) * swing
+        return reward.mean(dim=1).to(torch.float32)
 
 
 class feet_air_while_standing(ManagerTermBase):

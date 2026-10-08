@@ -25,6 +25,7 @@ from unisim.backend.base import (
     TensorExecution,
     TensorLifecycleCapabilities,
     TensorProcessTopology,
+    tensor_device_matches,
 )
 
 from unilab.base.backend_factory import create_backend, env_backend_kwargs
@@ -370,11 +371,17 @@ class ManagerBasedRlEnv(TorchEnv):
             )
 
         initial_capabilities = backend.get_tensor_capabilities()
-        runtime_device = (
-            torch.device("cuda", index=torch.cuda.current_device())
-            if initial_capabilities.execution is TensorExecution.DEVICE_RESIDENT
-            else torch.device("cpu")
-        )
+        runtime_device = torch.device("cpu")
+        if initial_capabilities.execution is TensorExecution.DEVICE_RESIDENT:
+            runtime_device = torch.device("cuda", index=torch.cuda.current_device())
+        elif (
+            initial_capabilities.execution is TensorExecution.HOST_BRIDGE
+            and torch.cuda.is_available()
+        ):
+            # PyTorch uses the CUDA device namespace for both NVIDIA and ROCm GPUs.
+            accelerator = torch.device("cuda", index=torch.cuda.current_device())
+            if tensor_device_matches(initial_capabilities.torch_devices, accelerator):
+                runtime_device = accelerator
         super().__init__(cfg, backend, num_envs, device=runtime_device)
         actual_seed = cfg.seed if cfg.seed is not None else secrets.randbits(63)
         cfg.seed = actual_seed
@@ -837,7 +844,7 @@ class ManagerBasedRlEnv(TorchEnv):
         """Return mapped-scene initial control without assuming a ctrl state view."""
 
         try:
-            return self._backend.get_state_views(("ctrl",))["ctrl"]
+            return self._backend.get_state_views(("ctrl",))["ctrl"].to(device=self.device)
         except KeyError:
             # IsaacSim's mapped CUDA IPC arena owns a control tensor, but state
             # views remain deliberately limited to qpos/qvel. Zero is the
