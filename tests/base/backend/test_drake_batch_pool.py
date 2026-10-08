@@ -24,10 +24,6 @@ def _batch_extension_built() -> bool:
     return _module_available("drake_uni.compiled._drake_env_pool")
 
 
-def _mujoco_available() -> bool:
-    return _module_available("mujoco")
-
-
 def _run_clean_python(code: str) -> str:
     result = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(code)],
@@ -386,90 +382,6 @@ def test_drake_batch_pool_worker_exception_reaches_python() -> None:
     summary = json.loads(output.strip().splitlines()[-1])
     assert summary["error_type"] == "ValueError"
     assert "non-finite" in summary["message"]
-
-
-@pytest.mark.skipif(
-    not _batch_extension_built(),
-    reason="optional Drake batch extension has not been built",
-)
-@pytest.mark.skipif(
-    not _mujoco_available(),
-    reason="MuJoCo is required for the cross-backend qpos-order assertion",
-)
-def test_drake_runtime_stewart_compact_state_matches_mujoco_qpos_order() -> None:
-    output = _run_clean_python(
-        """
-        import json
-
-        import mujoco
-        import numpy as np
-
-        from unilab.assets import ASSETS_ROOT_PATH
-        from drake_uni.runtime import DrakeBatchConfig, create_runtime
-
-        model = ASSETS_ROOT_PATH / "robots/stewart/scene.xml"
-        runtime = create_runtime(
-            DrakeBatchConfig(model_file=str(model), num_envs=1, sim_dt=0.005, nthread=1)
-        )
-        drake_home = runtime.model_info().home_qpos
-        mujoco_home = mujoco.MjModel.from_xml_path(str(model)).qpos0
-        summary = {
-            "shape": list(drake_home.shape),
-            "matches_mujoco": bool(np.allclose(drake_home, mujoco_home)),
-            "ball_z": float(drake_home[2]),
-            "top_z": float(drake_home[9]),
-            "max_abs_diff": float(np.max(np.abs(drake_home - mujoco_home))),
-        }
-        print(json.dumps(summary, sort_keys=True))
-        """
-    )
-    assert json.loads(output.strip().splitlines()[-1]) == {
-        "ball_z": 1.18,
-        "matches_mujoco": True,
-        "max_abs_diff": 0.0,
-        "shape": [32],
-        "top_z": 1.0,
-    }
-
-
-@pytest.mark.skipif(
-    not _batch_extension_built(),
-    reason="optional Drake batch extension has not been built",
-)
-def test_drake_runtime_stewart_ball_collides_with_top_plate() -> None:
-    output = _run_clean_python(
-        """
-        import json
-
-        import numpy as np
-
-        from unilab.assets import ASSETS_ROOT_PATH
-        from drake_uni.runtime import DrakeBatchConfig, create_runtime
-
-        model = ASSETS_ROOT_PATH / "robots/stewart/scene.xml"
-        runtime = create_runtime(
-            DrakeBatchConfig(model_file=str(model), num_envs=1, sim_dt=0.005, nthread=1)
-        )
-        info = runtime.model_info()
-        ball_id, top_id = runtime.body_ids(["ball", "top"])
-        control = np.zeros((1, info.nu), dtype=np.float64)
-        runtime.step(control, 720)
-        body_state = runtime.compute_body_state([int(ball_id), int(top_id)])
-        ball_z = float(body_state["pos"][0, 0, 2])
-        top_z = float(body_state["pos"][0, 1, 2])
-        summary = {
-            "ball_z": round(ball_z, 6),
-            "top_z": round(top_z, 6),
-            "gap": round(ball_z - top_z, 6),
-            "num_filtered_geometries": runtime.diagnostics().num_filtered_geometries,
-        }
-        print(json.dumps(summary, sort_keys=True))
-        """
-    )
-    summary = json.loads(output.strip().splitlines()[-1])
-    assert summary["num_filtered_geometries"] == 0
-    assert summary["gap"] > 0.15
-    assert summary["ball_z"] > 1.1
 
 
 @pytest.mark.skipif(

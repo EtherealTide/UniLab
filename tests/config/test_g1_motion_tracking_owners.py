@@ -17,12 +17,6 @@ def _compose_sac(task: str):
         return compose("config", overrides=[f"task={task}"])
 
 
-def _compose_warpsac(task: str):
-    GlobalHydra.instance().clear()
-    with initialize_config_dir(config_dir=str(CONF_DIR / "warpsac"), version_base="1.3"):
-        return compose("config", overrides=[f"task={task}"])
-
-
 def _compose_flashsac(task: str):
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=str(CONF_DIR / "flashsac"), version_base="1.3"):
@@ -223,30 +217,6 @@ def test_sac_g1_motion_tracking_genesis_inherits_mujoco_parity() -> None:
     assert cfg.algo.num_envs == mujoco_cfg.algo.num_envs
     assert cfg.algo.max_iterations == mujoco_cfg.algo.max_iterations
     assert cfg.algo.updates_per_step == mujoco_cfg.algo.updates_per_step
-
-
-def test_warpsac_g1_motion_tracking_owners_share_policy_contract() -> None:
-    mujoco_cfg = _compose_warpsac("g1_motion_tracking/mujoco")
-    mjwarp_cfg = _compose_warpsac("g1_motion_tracking/mjwarp")
-
-    assert mujoco_cfg.training.task_name == "G1MotionTrackingSAC"
-    assert mujoco_cfg.training.sim_backend == "mujoco"
-    assert mjwarp_cfg.training.sim_backend == "mjwarp"
-    assert mjwarp_cfg.training.play_render_mode == "record"
-    assert mujoco_cfg.algo.num_envs == 2048
-    assert mujoco_cfg.algo.max_iterations == 25000
-    assert mujoco_cfg.algo.updates_per_step == 4
-    assert mujoco_cfg.algo.gamma == 0.99
-    assert mujoco_cfg.algo.tau == 0.05
-    assert mujoco_cfg.algo.decay_step == 0
-    assert mujoco_cfg.algo.replay_min_weight == 0.05
-    assert mujoco_cfg.algo.algo_params.n_step == 1
-    assert mujoco_cfg.training.replay_prefetch_mode == "one_tick"
-
-    for section in ("env", "reward", "algo"):
-        assert OmegaConf.to_container(mjwarp_cfg[section]) == OmegaConf.to_container(
-            mujoco_cfg[section]
-        )
 
 
 def test_sac_g1_motion_tracking_mjwarp_uses_tensor_motion_owner() -> None:

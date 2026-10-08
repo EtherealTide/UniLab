@@ -305,7 +305,6 @@ def test_demo_positional_completes_all_demo_names(tmp_path: Path) -> None:
 
     choices = complete_words(["uv", "run", "demo", ""], 3, metadata)
     assert choices == [
-        "boxtracking",
         "dance",
         "teaser",
     ]

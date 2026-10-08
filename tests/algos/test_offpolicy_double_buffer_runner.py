@@ -137,7 +137,7 @@ def test_offpolicy_config_has_one_replay_path():
     assert cfg.training.replay_ingress_slot_rows is None
 
 
-@pytest.mark.parametrize("algo", ["sac", "flashsac", "warpsac"])
+@pytest.mark.parametrize("algo", ["sac", "flashsac"])
 def test_offpolicy_owners_default_cuda_process_sharing_off(algo: str):
     cfg = _offpolicy_cfg(algo=algo)
 
@@ -156,16 +156,7 @@ def test_flashsac_scoped_tensor_benchmark_reduces_metric_flush_frequency():
     assert cfg.training.replay_ingress_slot_rows is None
 
 
-def test_warpsac_declares_public_tensor_runtime_knobs():
-    cfg = _offpolicy_cfg(algo="warpsac")
-
-    assert cfg.training.inference_slot_capacity == 1
-    assert cfg.training.collector_metrics_interval == 1
-    assert cfg.training.replay_ingress_depth == 2
-    assert cfg.training.replay_ingress_slot_rows is None
-
-
-@pytest.mark.parametrize("algo", ["sac", "flashsac", "warpsac"])
+@pytest.mark.parametrize("algo", ["sac", "flashsac"])
 def test_cuda_process_sharing_request_fails_before_env_materialization(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -265,7 +256,7 @@ def test_non_one_tick_prefetch_is_rejected_before_dispatch(mode: str):
         ("replay_ingress_depth", 17, 16),
     ],
 )
-@pytest.mark.parametrize("algo", ["sac", "flashsac", "warpsac"])
+@pytest.mark.parametrize("algo", ["sac", "flashsac"])
 def test_tensor_runtime_bounds_fail_before_env_materialization(
     monkeypatch: pytest.MonkeyPatch,
     algo: str,
@@ -290,7 +281,7 @@ def test_tensor_runtime_bounds_fail_before_env_materialization(
     assert env_calls == 0
 
 
-@pytest.mark.parametrize("algo", ["sac", "flashsac", "warpsac"])
+@pytest.mark.parametrize("algo", ["sac", "flashsac"])
 def test_replay_ingress_rows_fail_before_env_materialization_when_above_num_envs(
     monkeypatch: pytest.MonkeyPatch,
     algo: str,
@@ -435,64 +426,6 @@ def test_flashsac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPa
     assert settings.configured_collector_metrics_interval == 1
     assert settings.configured_replay_ingress_depth == 2
     assert settings.configured_replay_ingress_slot_rows is None
-
-
-def test_warpsac_dispatch_constructs_regime_aware_runner(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    module = _offpolicy()
-    cfg = _offpolicy_cfg(
-        [
-            "training.inference_slot_capacity=3",
-            "training.collector_metrics_interval=7",
-            "training.replay_ingress_depth=4",
-            "training.replay_ingress_slot_rows=2",
-        ],
-        algo="warpsac",
-    )
-
-    import uni_rl.algos.flash_sac.double_buffer as warp_module
-
-    monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
-    monkeypatch.setattr(warp_module, "FlashSACLearner", _FakeLearner)
-    monkeypatch.setattr(warp_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
-
-    runner = module.build_runner("warpsac", cfg)
-    assert isinstance(runner, _FakeRunner)
-    assert runner.kwargs["algo_type"] == "flashsac"
-    settings = runner.kwargs["tensor_runtime_settings"]
-    assert isinstance(settings, TensorRuntimeSettings)
-    assert settings.inference_slot_capacity == 3
-    assert settings.collector_metrics_interval == 7
-    assert settings.replay_ingress_depth == 4
-    assert settings.replay_ingress_slot_rows == 2
-    assert settings.num_envs == cfg.algo.num_envs
-    assert settings.batch_size == cfg.algo.batch_size
-    assert settings.updates_per_step == cfg.algo.updates_per_step
-    assert settings.learner_sample_count == (cfg.algo.batch_size * cfg.algo.updates_per_step)
-    assert runner.kwargs["batch_size"] == settings.batch_size
-    assert runner.kwargs["updates_per_step"] == settings.updates_per_step
-    assert settings.configured_inference_slot_capacity == 3
-    assert settings.configured_collector_metrics_interval == 7
-    assert settings.configured_replay_ingress_depth == 4
-    assert settings.configured_replay_ingress_slot_rows == 2
-    assert "inference_slot_capacity" not in runner.kwargs
-    assert "collector_metrics_interval" not in runner.kwargs
-    manifest = settings.manifest()
-    assert manifest["replay_ingress_depth"]["default"] == 2
-    assert manifest["replay_ingress_depth"]["effective"] == 4
-    assert manifest["replay_ingress_depth"]["maximum"] == 16
-    assert manifest["replay_ingress_slot_rows"]["default"] == "algo.num_envs"
-    assert manifest["replay_ingress_slot_rows"]["effective"] == 2
-    assert manifest["replay_ingress_slot_rows"]["maximum"] == cfg.algo.num_envs
-    assert manifest["learner_sampling"]["effective_rows_per_sync"] == (
-        settings.learner_sample_count
-    )
-    assert runner.kwargs["replay_pipeline_factory"].keywords == {
-        "decay_step": cfg.algo.decay_step,
-        "min_weight": cfg.algo.replay_min_weight,
-        "num_buckets": cfg.algo.replay_num_buckets,
-    }
 
 
 def test_flashsac_n_step_is_rejected():

@@ -220,13 +220,13 @@ def test_resolve_robot_asset_dir_can_disable_snapshot_progress(tmp_path: Path):
 
     with patch("unilab.assets.hub.ASSETS_ROOT_PATH", tmp_path):
         with patch.dict("sys.modules", {"huggingface_hub": fake_module}):
-            resolve_robot_asset_dir("robots/x2/meshes", marker="pelvis.STL", show_progress=False)
+            resolve_robot_asset_dir("robots/g1/assets", marker="head_link.STL", show_progress=False)
 
     fake_snapshot.assert_called_once()
     kwargs = fake_snapshot.call_args.kwargs
     assert kwargs["repo_id"] == "unilabsim/unilab-robots"
     assert kwargs["repo_type"] == "dataset"
-    assert kwargs["allow_patterns"] == "robots/x2/meshes/**"
+    assert kwargs["allow_patterns"] == "robots/g1/assets/**"
     assert kwargs["local_dir"] == str(tmp_path)
     tqdm_class = kwargs["tqdm_class"]
     progress = tqdm_class(range(1))
@@ -246,10 +246,8 @@ def test_robot_asset_specs_cover_hf_hosted_robots():
     from unilab.assets.hub import ROBOT_ASSET_SPECS
 
     expected = {
-        "allegro_hand",
         "g1",
         "go2",
-        "x2",
     }
     assert set(ROBOT_ASSET_SPECS) == expected
     for robot, specs in ROBOT_ASSET_SPECS.items():
@@ -293,13 +291,14 @@ def test_ensure_robot_assets_handles_absolute_and_windows_paths(
     hub.ensure_robot_assets_for_paths(
         [
             "/home/user/project/src/unilab/assets/robots/go2/go2.xml",
-            r"src\unilab\assets\robots\x2\x2.xml",
+            r"src\unilab\assets\robots\g1\g1.xml",
         ]
     )
 
     assert calls == [
         ("robots/go2/assets", "base_0.obj"),
-        ("robots/x2/meshes", "pelvis.STL"),
+        ("robots/g1/assets", "head_link.STL"),
+        ("robots/g1/textures", "floor.png"),
     ]
 
 

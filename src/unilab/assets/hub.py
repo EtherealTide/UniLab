@@ -37,13 +37,11 @@ _HF_OFFICIAL_ENDPOINT = "https://huggingface.co"
 # label only feed the ``unilab-pull-assets`` summary line; resolution keys
 # off the marker file.
 ROBOT_ASSET_SPECS: dict[str, tuple[tuple[str, str, str, str], ...]] = {
-    "allegro_hand": (("robots/allegro_hand/assets", "base_link.stl", "**/*", "asset"),),
     "g1": (
         ("robots/g1/assets", "head_link.STL", "**/*", "asset"),
         ("robots/g1/textures", "floor.png", "*.png", "PNG"),
     ),
     "go2": (("robots/go2/assets", "base_0.obj", "**/*", "asset"),),
-    "x2": (("robots/x2/meshes", "pelvis.STL", "*.STL", "STL"),),
 }
 
 # Native SuperDex robots. When env.superdex_assets_root / SUPERDEX_ASSETS_PATH
@@ -52,14 +50,7 @@ ROBOT_ASSET_SPECS: dict[str, tuple[tuple[str, str, str, str], ...]] = {
 # HF robot repo into ASSETS_ROOT_PATH on first use, like every other robot
 # asset. Each entry lists the collision, render and license files that must
 # exist before physics construction.
-SUPERDEX_ROBOT_ASSET_SPECS: dict[str, tuple[str, ...]] = {
-    "bots/arms/fr3_v2/fr3_v2.superdex_bot": (
-        "LICENSE",
-        "NOTICE",
-        *(f"collision/fr3_link{i}_collision.mochi.h5" for i in range(8)),
-        *(f"render/fr3_link{i}_render.glb" for i in range(8)),
-    ),
-}
+SUPERDEX_ROBOT_ASSET_SPECS: dict[str, tuple[str, ...]] = {}
 
 
 def resolve_superdex_robot_asset(model_file: str, *, assets_root: str | None = None) -> str:
@@ -326,7 +317,7 @@ def _resolve_snapshot_dir(
 
     Args:
         directory: ``ASSETS_ROOT_PATH``-relative directory path
-            (e.g. ``"scenes/teaser"`` or ``"robots/x2/meshes"``).
+            (e.g. ``"scenes/teaser"`` or ``"robots/g1/assets"``).
         repo_id: HF dataset repo to pull from.
         marker: A file inside the directory used to check completeness.
 
@@ -402,9 +393,9 @@ def resolve_robot_asset_dir(directory: str, *, marker: str, show_progress: bool 
 
     Args:
         directory: ``ASSETS_ROOT_PATH``-relative directory path
-            (e.g. ``"robots/x2/meshes"``).
+            (e.g. ``"robots/g1/assets"``).
         marker: A file inside the directory used to check completeness
-            (e.g. ``"pelvis.STL"``).
+            (e.g. ``"head_link.STL"``).
         show_progress: Whether Hugging Face snapshot downloads may render progress bars.
 
     Returns:

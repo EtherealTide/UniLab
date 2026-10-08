@@ -102,8 +102,8 @@ except ImportError:
     _HAS_MUJOCO = False
 
 # ---------------------------------------------------------------------------
-# train_sac.py / train_flashsac.py / train_warpsac.py — Hydra config defaults
-# (composed from the per-algo trees conf/sac, conf/flashsac, conf/warpsac)
+# train_sac.py / train_flashsac.py — Hydra config defaults
+# (composed from the per-algo trees conf/sac, conf/flashsac)
 # ---------------------------------------------------------------------------
 
 
@@ -173,7 +173,7 @@ def test_appo_runner_kwargs_default_load_run_does_not_resume(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mod = _train_appo()
-    cfg = _appo_cfg(["task=allegro_inhand/mujoco", "algo.load_run=-1"])
+    cfg = _appo_cfg(["task=g1_walk_flat/mujoco", "algo.load_run=-1"])
 
     def fail_resolve(*args, **kwargs):
         del args, kwargs
@@ -195,7 +195,7 @@ def test_appo_runner_kwargs_explicit_load_run_sets_resume_path(
     tmp_path: Path,
 ) -> None:
     mod = _train_appo()
-    cfg = _appo_cfg(["task=allegro_inhand/mujoco", "algo.load_run=run1"])
+    cfg = _appo_cfg(["task=g1_walk_flat/mujoco", "algo.load_run=run1"])
     log_root = tmp_path / "logs" / "appo"
     run_dir = log_root / cfg.training.task_name / "run1"
     run_dir.mkdir(parents=True)
@@ -217,7 +217,7 @@ def test_appo_runner_kwargs_missing_explicit_load_run_fails(
     tmp_path: Path,
 ) -> None:
     mod = _train_appo()
-    cfg = _appo_cfg(["task=allegro_inhand/mujoco", "algo.load_run=missing_run"])
+    cfg = _appo_cfg(["task=g1_walk_flat/mujoco", "algo.load_run=missing_run"])
     monkeypatch.setattr(mod, "_get_log_root", lambda _cfg: str(tmp_path / "logs" / "appo"))
 
     with pytest.raises(FileNotFoundError, match="missing_run"):
@@ -395,102 +395,6 @@ def test_ppo_task_go2_training_defaults():
     assert cfg.algo.algorithm.entropy_coef == pytest.approx(1.0e-3)
 
 
-def test_build_ppo_env_cfg_override_allegro_mujoco(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=allegro_inhand/mujoco"])
-    appo_cfg = _appo_cfg(["task=allegro_inhand/mujoco"])
-
-    env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
-
-    assert cfg.training.task_name == "AllegroInhandRotation"
-    assert cfg.algo.actor.obs_normalization is True
-    assert cfg.algo.critic.obs_normalization is True
-    assert env_cfg_override["rewards"]["rotate"]["weight"] == pytest.approx(1.25)
-    assert env_cfg_override["terminations"]["dropped"]["params"][
-        "minimum_ball_height"
-    ] == pytest.approx(0.125)
-    assert env_cfg_override["max_episode_seconds"] == pytest.approx(20.0)
-    reset_params = env_cfg_override["events"]["reset_hand_ball"]["params"]
-    assert reset_params["grasp_cache_path"] is None
-    assert reset_params["joint_noise"] == pytest.approx(0.0)
-    assert reset_params["ball_velocity_noise"] == pytest.approx(0.0)
-    assert reset_params["ball_z_offset"] == pytest.approx(0.0)
-    assert env_cfg_override["observations"]["policy"]["history_length"] == 3
-    assert env_cfg_override["actions"]["hand"]["action_scale"] == pytest.approx(1.0 / 24.0)
-    assert "reward_config" not in env_cfg_override
-    assert "domain_rand" not in env_cfg_override
-    assert appo_cfg.algo.steps_per_env == cfg.algo.num_steps_per_env
-    assert list(appo_cfg.algo.actor.hidden_dims) == list(cfg.algo.actor.hidden_dims)
-    assert appo_cfg.algo.actor.activation == cfg.algo.actor.activation
-    assert appo_cfg.algo.actor.obs_normalization is True
-    assert list(appo_cfg.algo.critic.hidden_dims) == list(cfg.algo.critic.hidden_dims)
-    assert appo_cfg.algo.critic.activation == cfg.algo.critic.activation
-    assert appo_cfg.algo.critic.obs_normalization is True
-    assert appo_cfg.algo.algorithm.value_loss_coef == pytest.approx(
-        cfg.algo.algorithm.value_loss_coef
-    )
-    assert appo_cfg.algo.algorithm.entropy_coef == pytest.approx(cfg.algo.algorithm.entropy_coef)
-    assert appo_cfg.algo.algorithm.num_learning_epochs == cfg.algo.algorithm.num_learning_epochs
-    assert appo_cfg.algo.algorithm.num_mini_batches == cfg.algo.algorithm.num_mini_batches
-    assert appo_cfg.algo.algorithm.clip_param == pytest.approx(cfg.algo.algorithm.clip_param)
-    assert appo_cfg.algo.algorithm.gamma == pytest.approx(cfg.algo.algorithm.gamma)
-    assert appo_cfg.algo.algorithm.lam == pytest.approx(cfg.algo.algorithm.lam)
-    assert appo_cfg.algo.algorithm.max_grad_norm == pytest.approx(cfg.algo.algorithm.max_grad_norm)
-    assert (
-        appo_cfg.algo.algorithm.use_clipped_value_loss is cfg.algo.algorithm.use_clipped_value_loss
-    )
-    assert appo_cfg.algo.algorithm.schedule == cfg.algo.algorithm.schedule
-
-
-def test_build_ppo_env_cfg_override_allegro_grasp_mujoco(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=allegro_inhand_grasp/mujoco", "+env.grasp_collection_target=1"])
-
-    env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
-
-    assert cfg.training.task_name == "AllegroInhandRotationGrasp"
-    assert cfg.algo.actor.obs_normalization is True
-    assert cfg.algo.critic.obs_normalization is True
-    assert env_cfg_override["rewards"]["rotate"]["weight"] == pytest.approx(0.0)
-    assert env_cfg_override["actions"]["hand"]["action_scale"] == pytest.approx(0.0)
-    reset = env_cfg_override["events"]["reset_hand_ball"]["params"]
-    assert reset["grasp_cache_path"] is None
-    assert reset["ball_velocity_noise"] == pytest.approx(0.0)
-    assert reset["joint_noise"] == pytest.approx(0.25)
-    quality = env_cfg_override["terminations"]["invalid_grasp"]["params"]
-    assert quality["enabled"] is True
-    assert quality["minimum_contacts"] == 2
-    recorder = env_cfg_override["recorders"]["grasp_cache"]["params"]
-    assert recorder["collection_target"] == 50000
-    assert recorder["auto_save"] is True
-    assert "reward_config" not in env_cfg_override
-    assert "domain_rand" not in env_cfg_override
-
-
-def test_build_ppo_env_cfg_override_allegro_grasp_cli_override_wins(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(
-        [
-            "task=allegro_inhand_grasp/mujoco",
-            "algo.max_iterations=1",
-            "env.recorders.grasp_cache.params.collection_target=128",
-            "reward.rotate.weight=0.3",
-        ]
-    )
-
-    env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
-
-    assert cfg.algo.max_iterations == 1
-    assert env_cfg_override["recorders"]["grasp_cache"]["params"]["collection_target"] == 128
-    assert env_cfg_override["rewards"]["rotate"]["weight"] == pytest.approx(0.3)
-
-
 @pytest.mark.parametrize("std_type", ["scalar", "log"])
 @pytest.mark.parametrize("state_dependent", [False, True])
 def test_rsl_action_std_logging_patch_delegates_with_detached_clone(
@@ -556,12 +460,12 @@ def _build_rsl_lifecycle_case(
     if run_complete:
         assert learn_exception is None
         learn_exception = mod.RunComplete(
-            reason="grasp_collection_target_reached",
-            summary={"collected_grasps": 12, "status": "payload_must_not_override"},
+            reason="target_reached",
+            summary={"collected_rows": 12, "status": "payload_must_not_override"},
         )
     cfg = _ppo_cfg(
         [
-            "task=allegro_inhand_grasp/mujoco",
+            "task=g1_walk_flat/mujoco",
             f"training.log_dir={tmp_path}",
             "training.logger=none",
             "training.nan_guard.enabled=false",
@@ -681,9 +585,9 @@ def test_train_rsl_rl_run_complete_closes_resources_and_skips_playback(
     assert captured["playback"] == 0
     assert captured["summaries"] == [
         {
-            "collected_grasps": 12,
+            "collected_rows": 12,
             "status": "collection_completed",
-            "completion_reason": "grasp_collection_target_reached",
+            "completion_reason": "target_reached",
         }
     ]
 
@@ -763,11 +667,11 @@ def test_train_rsl_rl_play_only_keeps_single_cleanup_and_runs_playback(
     assert captured["summaries"] == []
 
 
-def test_train_rsl_rl_grasp_collection_rejects_multi_rank_before_launch(
+def test_train_rsl_rl_explicit_collection_target_rejects_multi_rank_before_launch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=allegro_inhand_grasp/mujoco", "+env.grasp_collection_target=1"])
+    cfg = _ppo_cfg(["task=g1_walk_flat/mujoco", "+env.grasp_collection_target=1"])
     monkeypatch.setattr(mod, "current_torch_distributed_rank", lambda: 0)
     monkeypatch.setattr(mod, "current_torch_distributed_local_rank", lambda: 0)
     monkeypatch.setattr(mod, "current_torch_distributed_world_size", lambda: 2)
@@ -1572,7 +1476,7 @@ def test_offpolicy_build_play_actor_preserves_flashsac_model_kwargs(
     assert captured["actor_eval"] is True
 
 
-@pytest.mark.parametrize("algo_name", ["sac", "flashsac", "warpsac"])
+@pytest.mark.parametrize("algo_name", ["sac", "flashsac"])
 def test_offpolicy_load_play_actor_keeps_sac_state_dict_strict(algo_name: str):
     from unilab.visualization.interactive_playback import load_play_actor
 
@@ -2252,17 +2156,6 @@ def test_offpolicy_flashsac_g1_motion_tracking_task_composes(backend: str) -> No
     assert cfg.algo.max_iterations == 25000
 
 
-@pytest.mark.parametrize("backend", ["mujoco", "mjwarp"])
-@pytest.mark.parametrize("task", ["g1_walk_flat", "g1_motion_tracking"])
-def test_offpolicy_warpsac_g1_task_owner_composes(task: str, backend: str) -> None:
-    cfg = _offpolicy_cfg([f"task={task}/{backend}"], algo="warpsac")
-    expected_task = "G1WalkFlat" if task == "g1_walk_flat" else "G1MotionTrackingSAC"
-    assert cfg.algo.algo == "warpsac"
-    assert cfg.training.task_name == expected_task
-    assert cfg.training.sim_backend == backend
-    assert cfg.algo.algo_params.n_step == 1
-
-
 def test_offpolicy_rejects_algo_argument_mismatch():
     """build_runner must reject an algo argument inconsistent with cfg.algo.algo."""
     cfg = _offpolicy_cfg(["task=g1_walk_flat/mujoco"])
@@ -2604,11 +2497,11 @@ def test_play_interactive_parses_feature_algo_flags(algo: str):
     mod = _play_interactive()
 
     parsed = mod._parse_interactive_cli(
-        [f"--algo={algo}", "--task", "allegro_inhand", "--sim", "mujoco"]
+        [f"--algo={algo}", "--task", "g1_walk_flat", "--sim", "mujoco"]
     )
 
     assert parsed.algo == algo
-    assert parsed.overrides == ["task=allegro_inhand/mujoco"]
+    assert parsed.overrides == ["task=g1_walk_flat/mujoco"]
 
 
 def test_play_interactive_cli_respects_owner_action_mode_and_user_override():
@@ -2654,7 +2547,7 @@ def test_play_interactive_dynamic_compose_supports_algo_roots():
     mod = _play_interactive()
 
     ppo_cfg = mod._compose_interactive_config("ppo", ["task=go2_joystick_flat/mujoco"])
-    appo_cfg = mod._compose_interactive_config("appo", ["task=allegro_inhand/mujoco"])
+    appo_cfg = mod._compose_interactive_config("appo", ["task=g1_walk_flat/mujoco"])
     sac_cfg = mod._compose_interactive_config("sac", ["task=g1_walk_flat/mujoco"])
 
     assert ppo_cfg.algo.algo == "ppo"

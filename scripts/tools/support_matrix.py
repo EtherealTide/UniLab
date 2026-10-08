@@ -45,8 +45,6 @@ _MAINTAINER_VALIDATED_MJWARP_ENTRYPOINT_TASKS = frozenset(
     {
         ("ppo_torch", "g1_walk_flat"),
         ("sac_torch", "g1_walk_flat"),
-        ("warpsac_torch", "g1_walk_flat"),
-        ("warpsac_torch", "g1_motion_tracking"),
     }
 )
 
@@ -98,17 +96,11 @@ _TASK_ORDER = {
     "go2_joystick_flat": 0,
     "g1_walk_flat": 1,
     "g1_motion_tracking": 2,
-    "x2_wall_flip_tracking": 4,
-    "allegro_inhand": 5,
-    "allegro_sac": 6,
 }
 _TASK_LABELS = {
     "go2_joystick_flat": "Go2 joystick",
     "g1_walk_flat": "G1 walk flat",
     "g1_motion_tracking": "G1 motion tracking",
-    "x2_wall_flip_tracking": "X2 wall flip tracking",
-    "allegro_inhand": "Allegro in-hand",
-    "allegro_sac": "Allegro SAC in-hand",
 }
 
 
@@ -181,13 +173,6 @@ ENTRYPOINT_SPECS: tuple[EntrypointSpec, ...] = (
         entrypoint_id="flashsac_torch",
         label="FlashSAC (torch)",
         config_dir="src/unilab/conf/flashsac/task",
-        task_glob="*/*.yaml",
-        generic_tested=True,
-    ),
-    EntrypointSpec(
-        entrypoint_id="warpsac_torch",
-        label="WarpSAC (torch)",
-        config_dir="src/unilab/conf/warpsac/task",
         task_glob="*/*.yaml",
         generic_tested=True,
     ),
@@ -485,7 +470,7 @@ def render_support_matrix(root: Path | None = None, language: str = "zh") -> str
             "### Source Index",
             "",
             "- Registry bootstrap: `src/unilab/envs/**` decorators via `unilab.base.registry.ensure_registries()`.",
-            "- Owner backend identity: `training.sim_backend` in `src/unilab/conf/{ppo,appo,sac,flashsac,warpsac}/task/**`.",
+            "- Owner backend identity: `training.sim_backend` in `src/unilab/conf/{ppo,appo,sac,flashsac}/task/**`.",
             "- Platform/capability source: `unisim.support.get_tensor_platform_profiles()`.",
             "- Unsupported platform/device requests are guarded before backend construction in `src/unilab/base/backend_factory.py`.",
             "- Generic compose coverage: `tests/config/test_config_system.py::test_supported_task_composes`.",

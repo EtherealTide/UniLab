@@ -848,7 +848,7 @@ def build_play_actor(
             device,
             **actor_kwargs,
         )
-    elif algo_name in ("flashsac", "warpsac"):
+    elif algo_name == "flashsac":
         actor = build_actor(
             algo_name,
             obs_dim,
@@ -878,7 +878,7 @@ def load_play_actor(
     checkpoint: dict[str, Any],
 ) -> None:
     """Restore an off-policy play actor and its optional observation normalizer."""
-    if algo_name in ("sac", "flashsac", "warpsac"):
+    if algo_name in ("sac", "flashsac"):
         actor.load_state_dict(checkpoint["actor"])
     else:
         raise ValueError(f"Unsupported algo: {algo_name}")
@@ -961,7 +961,7 @@ def create_sac_playback_session(
         obs_dim=obs_dim,
         critic_obs_dim=critic_obs_dim,
     )
-    if algo_name in ("flashsac", "warpsac"):
+    if algo_name == "flashsac":
         actor_kwargs.update(
             {
                 "actor_num_blocks": cfg.algo.algo_params.actor_num_blocks,
