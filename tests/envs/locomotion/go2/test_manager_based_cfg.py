@@ -77,6 +77,16 @@ _OWNER_CASES = (
         id="appo-mujoco",
     ),
     pytest.param(
+        "appo",
+        ("task=go2_joystick_flat/motrix",),
+        "motrix",
+        0.25,
+        False,
+        True,
+        False,
+        id="appo-motrix",
+    ),
+    pytest.param(
         "flashsac",
         ("task=go2_joystick_flat/mujoco",),
         "mujoco",
@@ -228,7 +238,7 @@ def test_go2_flat_registry_is_manager_only() -> None:
     assert bare_cfg.rewards == {}
     assert registry.list_registered_envs()["Go2JoystickFlat"] == {
         "config_factory": "ManagerBasedRlEnvCfg",
-        "available_backends": ["mujoco", "superdex", "drake"],
+        "available_backends": ["mujoco", "motrix", "superdex", "drake"],
     }
 
 
@@ -253,6 +263,15 @@ def test_go2_flat_drake_owner_keeps_policy_io_and_disables_unsupported_dr() -> N
         *(list(env_cfg.observations["policy"].terms)),
         "base_lin_vel",
     ]
+
+
+def test_go2_flat_motrix_owner_uses_tensor_reset_events() -> None:
+    registry.ensure_registries()
+    _, env_cfg, _ = _materialize("appo", ("task=go2_joystick_flat/motrix",))
+
+    assert env_cfg.events["reset_scene_to_default"].func is mdp.reset_scene_to_default_tensor
+    assert env_cfg.events["reset_root_state_uniform"].func is mdp.reset_root_state_uniform_tensor
+    assert env_cfg.events["pd_gains"] is None
 
 
 @pytest.mark.parametrize(

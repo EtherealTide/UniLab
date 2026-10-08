@@ -108,6 +108,9 @@ def build_appo_runner_kwargs(
     nan_guard_cfg = resolve_nan_guard_cfg(cfg.training)
     if nan_guard_cfg is not None:
         runner_kwargs["nan_guard_cfg"] = nan_guard_cfg
+        from unilab.training.tensor_runtime_hooks import build_tensor_nan_guard_factory
+
+        runner_kwargs["nan_guard_factory"] = build_tensor_nan_guard_factory()
     return runner_kwargs
 
 
