@@ -42,6 +42,7 @@ _SUPPORTED_TOPOLOGY_MODES = (SINGLE_GPU_MODE,)
 _NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _DEFAULT_CONTROL_COMMAND = ("nvidia-cuda-mps-control", "-d")
 _QUIT_COMMAND = ("nvidia-cuda-mps-control",)
+_SERVER_LIST_QUERY_COMMAND = ("nvidia-cuda-mps-control",)
 _MAX_CONTROL_SOCKET_BYTES = 95
 _INERT_CONTROL_ARTIFACTS = ("control_lock", "log")
 _GPU_QUERY_COMMAND = (
@@ -189,6 +190,9 @@ def _canonical_uuid(value: str, *, field: str = "uuid") -> str:
         raise CudaMpsCliError(
             f"MIG device {value!r} is not supported by uni-cumps yet; select a physical GPU UUID."
         )
+    # Torch properties commonly expose the bare UUID without NVIDIA's GPU- tag.
+    if not uuid.upper().startswith("GPU-") and len(uuid) == 36 and uuid.count("-") == 4:
+        uuid = f"GPU-{uuid}"
     if not uuid.upper().startswith("GPU-"):
         raise CudaMpsCliError(f"Invalid NVIDIA GPU {field}: {value!r}; expected a GPU-<id> UUID.")
     raw_uuid = uuid[4:]
@@ -490,6 +494,41 @@ def _wait_for_control(pipe_directory: Path, timeout: float = 5.0) -> bool:
             return True
         time.sleep(0.05)
     return False
+
+
+def _wait_for_control_query(
+    environment: Mapping[str, str],
+    run_command: RunCommand,
+    *,
+    timeout: float = 5.0,
+) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            _run_command(
+                run_command,
+                _SERVER_LIST_QUERY_COMMAND,
+                input="get_server_list\n",
+                timeout=remaining,
+                env=environment,
+            )
+        except CudaMpsCliError:
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+            continue
+        return True
+    return False
+
+
+def _stop_unrecorded_control(
+    environment: Mapping[str, str],
+    run_command: RunCommand,
+) -> bool:
+    try:
+        _run_command(run_command, _QUIT_COMMAND, input="quit\n", env=environment)
+    except CudaMpsCliError:
+        return False
+    return True
 
 
 def _remove_inert_control_artifacts(pipe_directory: Path) -> None:
@@ -837,6 +876,18 @@ def start_daemon(
             f"MPS control did not create a usable control pipe at {control}. "
             "Inspect CUDA_MPS_LOG_DIRECTORY and the host deployment."
         )
+    if not _wait_for_control_query(env, run_command):
+        stopped = _stop_unrecorded_control(env, run_command)
+        if using_default_runtime:
+            _remove_orphan_default_control_sockets(pipe_directory)
+        tail = _control_log_tail(log_directory)
+        detail = f" Control log tail:\n{tail}" if tail is not None else ""
+        if not stopped:
+            detail += " The launched control daemon may still be running."
+        raise CudaMpsCliError(
+            "MPS control created a pipe but did not answer a readiness query. "
+            f"Inspect CUDA_MPS_LOG_DIRECTORY and the host deployment.{detail}"
+        )
     process_identity = _control_daemon_identity(pipe_directory)
     if process_identity is None:
         raise CudaMpsCliError(
@@ -878,6 +929,38 @@ def environment_for_daemon(daemon: DaemonRecord) -> dict[str, str]:
         "CUDA_MPS_PIPE_DIRECTORY": daemon.pipe_directory,
         "CUDA_MPS_LOG_DIRECTORY": daemon.log_directory,
     }
+
+
+def select_environment_for_gpu(
+    gpu_uuid: str,
+    *,
+    root: Path | None = None,
+    proc_stat: Callable[[int], tuple[int, int] | None] = _proc_stat,
+) -> dict[str, str]:
+    """Select the sole live user-owned daemon environment for one GPU.
+
+    This is launcher-facing data only. It does not mutate the current process,
+    start a daemon, stop a daemon, or provide stop authority.
+    """
+
+    canonical = _canonical_uuid(gpu_uuid)
+    matching = [
+        daemon
+        for daemon in list_daemon_records(root)
+        if canonical in daemon.gpu_uuids and daemon_process_is_live(daemon, proc_stat=proc_stat)
+    ]
+    if not matching:
+        raise CudaMpsCliError(
+            f"No live UniLab-recorded CUDA MPS daemon covers GPU {canonical}. "
+            "Run `uni-cumps start` first or set CUDA_MPS_PIPE_DIRECTORY explicitly."
+        )
+    if len(matching) > 1:
+        names = ", ".join(daemon.name for daemon in matching)
+        raise CudaMpsCliError(
+            f"Multiple live UniLab-recorded daemons cover GPU {canonical}: {names}. "
+            "Set CUDA_MPS_PIPE_DIRECTORY to the intended daemon explicitly."
+        )
+    return environment_for_daemon(matching[0])
 
 
 def stop_daemon(

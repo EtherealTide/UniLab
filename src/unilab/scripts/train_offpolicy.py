@@ -52,6 +52,10 @@ from unilab.training import (
     resolve_nan_guard_cfg,
     should_run_playback,
 )
+from unilab.training.cuda_mps_cli import (
+    CudaMpsCliError,
+    select_environment_for_gpu,
+)
 from unilab.training.cuda_process_sharing import (
     CudaProcessSharingEvidence,
     probe_cuda_process_sharing,
@@ -260,6 +264,11 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
         str(cfg.training.sim_backend),
         rank_device,
     )
+    _select_cuda_mps_daemon_environment(
+        getattr(cfg.training, "cuda_process_sharing", None),
+        str(cfg.training.sim_backend),
+        rank_device,
+    )
     cuda_process_sharing = probe_cuda_process_sharing(
         getattr(cfg.training, "cuda_process_sharing", None),
         rank_device,
@@ -374,6 +383,49 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
 
     _attach_cuda_process_sharing_manifest(runner, cuda_process_sharing)
     return runner
+
+
+def _select_cuda_mps_daemon_environment(
+    requested: Any,
+    backend: str,
+    learner_device: str,
+) -> None:
+    """Bind the sole live UniLab-recorded daemon in this trainer process.
+
+    Explicit deployment environment wins. Otherwise an ``mps`` request resolves
+    the user-owned daemon record for the rank-local GPU before the fail-closed
+    probe. This never starts or stops a daemon and never mutates a parent shell.
+    """
+
+    del backend
+    if requested != "mps" or os.environ.get("CUDA_MPS_PIPE_DIRECTORY"):
+        return
+    try:
+        import torch
+    except ImportError:
+        return
+    if not torch.cuda.is_available():
+        return
+    normalized_device = learner_device.strip().lower()
+    if normalized_device == "cuda":
+        index = 0
+    else:
+        base, separator, index_text = normalized_device.partition(":")
+        if base != "cuda" or not separator or not index_text.isdigit():
+            return
+        index = int(index_text)
+    if index >= int(torch.cuda.device_count()):
+        return
+    properties = torch.cuda.get_device_properties(index)
+    uuid = str(getattr(properties, "uuid", "")).strip()
+    if not uuid:
+        return
+    try:
+        environment = select_environment_for_gpu(uuid)
+    except CudaMpsCliError as exc:
+        raise ValueError(str(exc)) from exc
+    os.environ.setdefault("CUDA_MPS_PIPE_DIRECTORY", environment["CUDA_MPS_PIPE_DIRECTORY"])
+    os.environ.setdefault("CUDA_MPS_LOG_DIRECTORY", environment["CUDA_MPS_LOG_DIRECTORY"])
 
 
 def _attach_cuda_process_sharing_manifest(

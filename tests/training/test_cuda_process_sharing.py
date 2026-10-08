@@ -34,10 +34,10 @@ def _torch(uuid: str) -> Any:
 
 def _fake_commands(gpu_uuid: str = "GPU-a", *, server_pid: int = 2768293) -> Any:
     def run_command(command: list[str], **kwargs: Any) -> _Completed:
-        del kwargs
         if command[0] == "nvidia-smi":
             return _Completed(f"0, {gpu_uuid}\n")
-        if command == ["nvidia-cuda-mps-control", "get-server-list"]:
+        if command == ["nvidia-cuda-mps-control"]:
+            assert kwargs["input"] == "get_server_list\n"
             return _Completed(f"{server_pid}\n")
         raise AssertionError(f"unexpected command: {command}")
 
