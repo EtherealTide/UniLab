@@ -7,6 +7,7 @@ import os
 import platform
 import socket
 import stat
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -261,6 +262,143 @@ def test_start_daemon_uses_explicit_directories_and_records_identity(
     assert started[1][1]["env"]["CUDA_VISIBLE_DEVICES"] == GPU_A
     assert started[1][1]["env"]["CUDA_MPS_PIPE_DIRECTORY"] == str(pipe_dir)
     assert (linux_host / "prod" / "daemon.json").is_file()
+
+
+def test_default_daemon_name_uses_complete_uuid() -> None:
+    name = mps._default_name((mps.GpuIdentity(0, GPU_A),))
+
+    assert name == "gpu-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+
+def test_start_daemon_rejects_long_unix_socket_path(linux_host: Path) -> None:
+    long_dir = linux_host / ("x" * 96)
+
+    with pytest.raises(mps.CudaMpsCliError, match="MPS control socket path is too long"):
+        mps.start_daemon(
+            GPU_A,
+            name="prod",
+            pipe_dir=str(long_dir / "pipe"),
+            log_dir=str(linux_host / "log"),
+            root=linux_host,
+            run_command=fake_run(),
+        )
+
+
+def test_start_daemon_recovers_only_inert_failed_control_artifacts(
+    linux_host: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    short_root = tmp_path.parent / "u"
+    monkeypatch.setattr(mps.tempfile, "gettempdir", lambda: str(short_root))
+    monkeypatch.setattr(mps.shutil, "which", lambda _name: "/fake/bin/nvidia-cuda-mps-control")
+    pipe_dir = short_root / "p" / "prod" / "pipe"
+    pipe_dir.mkdir(parents=True)
+    (pipe_dir / "control_lock").touch()
+    log_fifo = pipe_dir / "log"
+    os.mkfifo(log_fifo)
+    preserved = pipe_dir / "unrelated"
+    preserved.touch()
+    (pipe_dir / "control").touch()
+
+    with pytest.raises(mps.CudaMpsCliError, match="Refusing to attach"):
+        mps.start_daemon(
+            GPU_A,
+            name="prod",
+            pipe_dir=str(pipe_dir),
+            log_dir=str(short_root / "p" / "prod" / "log"),
+            root=linux_host,
+            run_command=fake_run(),
+        )
+
+    assert not (pipe_dir / "control_lock").exists()
+    assert not log_fifo.exists()
+    assert preserved.exists()
+
+
+def test_start_daemon_failure_reports_control_log_and_cleans_artifacts(
+    linux_host: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(mps.shutil, "which", lambda _name: "/fake/bin/nvidia-cuda-mps-control")
+    short_root = tmp_path.parent / "u2"
+    monkeypatch.setattr(mps.tempfile, "gettempdir", lambda: str(short_root))
+    pipe_dir = short_root / "p" / "prod" / "pipe"
+    log_dir = short_root / "p" / "prod" / "log"
+    log_dir.mkdir(parents=True)
+    (log_dir / "control.log").write_text("control failed\n", encoding="utf-8")
+
+    def run(command: list[str], **kwargs: Any) -> Completed:
+        if command[0] == "nvidia-smi":
+            return Completed(f"0, {GPU_A}, Default\n")
+        if command == list(mps._DEFAULT_CONTROL_COMMAND):
+            pipe_dir.mkdir(parents=True, exist_ok=True)
+            (pipe_dir / "control_lock").touch()
+            return Completed(returncode=1)
+        raise AssertionError(f"unexpected command {command}")
+
+    with pytest.raises(mps.CudaMpsCliError, match="control failed"):
+        mps.start_daemon(
+            GPU_A,
+            name="prod",
+            pipe_dir=str(pipe_dir),
+            log_dir=str(log_dir),
+            root=linux_host,
+            run_command=run,
+        )
+
+    assert not (pipe_dir / "control_lock").exists()
+
+
+def test_default_runtime_recovers_orphan_control_sockets() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        monkeypatch_root = root / "tmp"
+        runtime = monkeypatch_root / "uni-cumps" / "gpu-test" / "pipe"
+        runtime.mkdir(parents=True)
+        control = runtime / "control"
+        # Create actual socket nodes like NVIDIA leaves behind.
+        socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).bind(str(control))
+        socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).bind(str(runtime / "control_privileged"))
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(mps.tempfile, "gettempdir", lambda: str(monkeypatch_root))
+            root_path = mps._default_runtime_root("gpu-test")
+            mps._remove_orphan_default_control_sockets(root_path / "pipe")
+
+        assert not control.exists()
+        assert not (runtime / "control_privileged").exists()
+
+
+def test_default_runtime_preserves_live_control_with_stale_pid_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        runtime = Path(raw) / "uni-cumps" / "gpu-test" / "pipe"
+        runtime.mkdir(parents=True)
+        (runtime / "nvidia-cuda-mps-control.pid").write_text("4242\n", encoding="utf-8")
+        control = runtime / "control"
+        socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).bind(str(control))
+
+        monkeypatch.setattr(mps, "_proc_stat", live_proc_stat())
+        monkeypatch.setattr(
+            mps,
+            "_process_name_is_alive",
+            lambda pid, name: pid == 4242 and name.startswith("nvidia"),
+        )
+        mps._remove_orphan_default_control_sockets(runtime)
+
+        assert control.exists()
+
+
+def test_default_runtime_removes_orphan_socket_with_stale_pid_file() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        runtime = Path(raw) / "uni-cumps" / "gpu-test" / "pipe"
+        runtime.mkdir(parents=True)
+        (runtime / "nvidia-cuda-mps-control.pid").write_text("99999999\n", encoding="utf-8")
+        control = runtime / "control"
+        socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).bind(str(control))
+
+        mps._remove_orphan_default_control_sockets(runtime)
+
+        assert not control.exists()
 
 
 def test_start_daemon_refuses_existing_unmanaged_control_path(

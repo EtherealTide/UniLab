@@ -23,6 +23,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -41,6 +42,8 @@ _SUPPORTED_TOPOLOGY_MODES = (SINGLE_GPU_MODE,)
 _NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _DEFAULT_CONTROL_COMMAND = ("nvidia-cuda-mps-control", "-d")
 _QUIT_COMMAND = ("nvidia-cuda-mps-control",)
+_MAX_CONTROL_SOCKET_BYTES = 95
+_INERT_CONTROL_ARTIFACTS = ("control_lock", "log")
 _GPU_QUERY_COMMAND = (
     "nvidia-smi",
     "--query-gpu=index,uuid,compute_mode",
@@ -440,6 +443,17 @@ def _proc_stat(pid: int) -> tuple[int, int] | None:
         return None
 
 
+def _process_name_is_alive(pid: int, expected_name: str) -> bool:
+    """Match a procfs comm name, allowing its conventional 15-character limit."""
+
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        process_name = text[text.index("(") + 1 : text.rindex(")")].strip()
+    except (OSError, ValueError):
+        return False
+    return process_name == expected_name or process_name.startswith(expected_name[:15])
+
+
 def daemon_process_is_live(
     daemon: DaemonRecord, *, proc_stat: Callable[[int], tuple[int, int] | None] = _proc_stat
 ) -> bool:
@@ -478,6 +492,54 @@ def _wait_for_control(pipe_directory: Path, timeout: float = 5.0) -> bool:
     return False
 
 
+def _remove_inert_control_artifacts(pipe_directory: Path) -> None:
+    """Remove only artifacts left by a failed control launch; preserve sockets."""
+
+    if not pipe_directory.exists():
+        return
+    for name in _INERT_CONTROL_ARTIFACTS:
+        path = pipe_directory / name
+        try:
+            if path.is_fifo() or (name == "control_lock" and path.is_file()):
+                path.unlink()
+        except OSError as exc:
+            raise CudaMpsCliError(
+                f"Could not clean failed-control artifact {path}: {exc}."
+            ) from exc
+
+
+def _remove_orphan_default_control_sockets(pipe_directory: Path) -> None:
+    """Remove UniLab-default sockets orphaned after a control process exit.
+
+    Explicit user-supplied directories are never modified. In the default
+    runtime root, NVIDIA leaves ``control`` and ``control_privileged`` sockets
+    after the control process exits, which otherwise blocks every restart. A
+    stale PID file alone is not ownership evidence: remove the sockets only
+    when its PID is absent or no longer has the expected control process name.
+    """
+
+    identity = _control_daemon_identity(pipe_directory)
+    if identity is not None and _process_name_is_alive(identity[0], "nvidia-cuda-mps-control"):
+        return
+    for name in ("control", "control_privileged"):
+        path = pipe_directory / name
+        try:
+            if path.is_socket():
+                path.unlink()
+        except OSError as exc:
+            raise CudaMpsCliError(f"Could not clean orphan MPS socket {path}: {exc}.") from exc
+
+
+def _control_log_tail(log_directory: Path, limit: int = 12) -> str | None:
+    path = log_directory / "control.log"
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    tail = "\n".join(lines[-limit:]).strip()
+    return tail or None
+
+
 def _control_daemon_identity(pipe_directory: Path) -> tuple[int, int] | None:
     pid: int | None = None
     try:
@@ -490,8 +552,26 @@ def _control_daemon_identity(pipe_directory: Path) -> tuple[int, int] | None:
 
 
 def _default_name(gpus: Sequence[GpuIdentity]) -> str:
+    """Use the complete UUID so shortened prefixes cannot collide."""
+
     uuid = gpus[0].uuid.removeprefix("GPU-").lower()
-    return f"gpu-{uuid[:12]}"
+    return f"gpu-{uuid}"
+
+
+def _default_runtime_root(daemon_name: str) -> Path:
+    """Return a short, user-private runtime root safe for Unix socket paths."""
+
+    root = Path(tempfile.gettempdir()) / "uni-cumps" / daemon_name
+    base = root.parent
+    try:
+        base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root.chmod(0o700)
+    except OSError as exc:
+        raise CudaMpsCliError(
+            f"Could not create user-owned MPS runtime directory {root}: {exc}."
+        ) from exc
+    return root
 
 
 def _write_daemon_record(root: Path, daemon: DaemonRecord) -> Path:
@@ -696,8 +776,10 @@ def start_daemon(
         raise CudaMpsCliError(
             f"Could not prepare daemon record for {daemon_name!r}: {exc}."
         ) from exc
-    pipe_value = pipe_dir or str(base / daemon_name / "pipe")
-    log_value = log_dir or str(base / daemon_name / "log")
+    runtime_base = _default_runtime_root(daemon_name)
+    using_default_runtime = pipe_dir is None
+    pipe_value = pipe_dir or str(runtime_base / "pipe")
+    log_value = log_dir or str(runtime_base / "log")
     try:
         pipe_directory = Path(pipe_value).expanduser().resolve(strict=False)
         log_directory = Path(log_value).expanduser().resolve(strict=False)
@@ -706,6 +788,16 @@ def start_daemon(
     if pipe_directory == log_directory:
         raise CudaMpsCliError("MPS pipe and log directories must be different absolute paths.")
     control = pipe_directory / "control"
+    control_bytes = len(str(control).encode())
+    if control_bytes > _MAX_CONTROL_SOCKET_BYTES:
+        raise CudaMpsCliError(
+            f"MPS control socket path is too long ({control_bytes} bytes; maximum "
+            f"{_MAX_CONTROL_SOCKET_BYTES}): {control}. Choose a shorter --pipe-dir, such as "
+            "/tmp/<short-name>/pipe."
+        )
+    _remove_inert_control_artifacts(pipe_directory)
+    if using_default_runtime:
+        _remove_orphan_default_control_sockets(pipe_directory)
     if control.exists():
         raise CudaMpsCliError(
             f"Refusing to attach to an existing control path {control}; remove/rename it or choose a new daemon."
@@ -718,13 +810,21 @@ def start_daemon(
         "CUDA_MPS_LOG_DIRECTORY": str(log_directory),
     }
     try:
-        pipe_directory.mkdir(parents=True, exist_ok=True)
-        log_directory.mkdir(parents=True, exist_ok=True)
+        pipe_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        log_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        pipe_directory.chmod(0o700)
+        log_directory.chmod(0o700)
     except OSError as exc:
         raise CudaMpsCliError(f"Could not create user-owned MPS directories: {exc}.") from exc
     command = list(_DEFAULT_CONTROL_COMMAND)
     if daemon:
-        _run_command(run_command, command, env=env)  # type: ignore[call-overload]
+        try:
+            _run_command(run_command, command, env=env)
+        except CudaMpsCliError as exc:
+            _remove_inert_control_artifacts(pipe_directory)
+            tail = _control_log_tail(log_directory)
+            detail = f" Control log tail:\n{tail}" if tail is not None else ""
+            raise CudaMpsCliError(f"{exc}{detail}") from exc
     else:
         runner = foreground_runner if foreground_runner is not None else _foreground_control
         return_code = runner(env)
