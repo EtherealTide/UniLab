@@ -69,75 +69,26 @@ def test_flashsac_g1_motion_tracking_uses_comparable_dr_free_owner() -> None:
         == "unilab.tasks.motion_tracking.common.manager_terms.motion_joint_pos_rel"
     )
     assert mjwarp_cfg.training.sim_backend == "mjwarp"
-    assert (
-        mjwarp_cfg.env.observations.actor.terms.motion_anchor_pack.func
-        == "unilab.tasks.motion_tracking.common.manager_terms.MotionObservationPack"
+    assert mjwarp_cfg.env.commands.motion._target_ == (
+        "unilab.tasks.motion_tracking.common.manager_terms.TensorMotionCommandCfg"
     )
-    assert (
-        mjwarp_cfg.env.observations.actor.terms.motion_anchor_pack._target_
-        == "unilab.tasks.motion_tracking.common.manager_terms.MotionObservationPackCfg"
-    )
-    assert (
-        mjwarp_cfg.env.observations.critic.terms.motion_critic_pack.func
-        == "unilab.tasks.motion_tracking.common.manager_terms.MotionCriticObservationPack"
-    )
-    assert mjwarp_cfg.env.observations.critic.terms.motion_critic_pack._target_ == (
-        "unilab.tasks.motion_tracking.common.manager_terms.MotionCriticObservationPackCfg"
-    )
-    assert mjwarp_cfg.env.reset_owners.motion._target_ == (
-        "unilab.tasks.motion_tracking.common.manager_terms.MotionResetOwnerCfg"
-    )
-    assert (
-        mjwarp_cfg.reward.motion_penalty_pack.func
-        == "unilab.tasks.motion_tracking.common.manager_terms.MotionPenaltyRewardPack"
-    )
-    assert mjwarp_cfg.reward.motion_penalty_pack._target_ == (
-        "unilab.tasks.motion_tracking.common.manager_terms.MotionPenaltyRewardPackCfg"
-    )
-    assert mjwarp_cfg.reward.motion_penalty_pack.reward_pack_names == [
-        "action_rate_l2",
-        "joint_limit",
-        "undesired_contacts",
-    ]
-    assert mjwarp_cfg.reward.motion_penalty_pack.weight == 0.0
-    for name in mjwarp_cfg.reward.motion_penalty_pack.reward_pack_names:
-        assert mjwarp_cfg.reward[name] is not None
-    # Anchor term execution, the MJWARP-only tensor command implementation, and
-    # its fused selected-reset owner are intended cross-backend differences;
-    # the semantic owner remains DR-free.
-    mujoco_env = OmegaConf.to_container(mujoco_cfg.env)
-    mjwarp_env = OmegaConf.to_container(mjwarp_cfg.env)
-    assert isinstance(mujoco_env, dict) and isinstance(mjwarp_env, dict)
-    del mjwarp_env["observations"]
-    del mujoco_env["observations"]
-    del mjwarp_env["commands"]
-    del mujoco_env["commands"]
-    del mjwarp_env["reset_owners"]
-    del mjwarp_env["terminations"]
-    del mujoco_env["terminations"]
-    assert mjwarp_env == mujoco_env
-    mjwarp_reward = OmegaConf.to_container(mjwarp_cfg.reward)
-    mujoco_reward = OmegaConf.to_container(mujoco_cfg.reward)
-    assert isinstance(mjwarp_reward, dict) and isinstance(mujoco_reward, dict)
-    del mjwarp_reward["motion_penalty_pack"]
-    for fused_name in ("action_rate_l2", "joint_limit", "undesired_contacts"):
-        del mjwarp_reward[fused_name]
-        del mujoco_reward[fused_name]
-    assert mjwarp_reward == mujoco_reward
+    assert mjwarp_cfg.env == mujoco_cfg.env
+    assert mjwarp_cfg.reward == mujoco_cfg.reward
 
 
-def test_flashsac_fused_rewards_publish_canonical_component_names() -> None:
+def test_flashsac_g1_motion_tracking_mjwarp_is_managed_term_baseline() -> None:
+    mujoco_cfg = _compose_flashsac("g1_motion_tracking/mujoco")
+    cfg = _compose_flashsac("g1_motion_tracking/mjwarp")
+
+    assert cfg.training.sim_backend == "mjwarp"
+    assert cfg.env == mujoco_cfg.env
+    assert cfg.reward == mujoco_cfg.reward
+    assert cfg.algo == mujoco_cfg.algo
+
+
+def test_flashsac_motion_rewards_publish_canonical_component_names() -> None:
     cfg = _compose_flashsac("g1_motion_tracking/mujoco")
 
-    assert cfg.reward.motion_reward_pack.reward_pack_names == [
-        "motion_global_root_pos",
-        "motion_global_root_ori",
-        "motion_body_pos",
-        "motion_body_ori",
-        "motion_body_lin_vel",
-        "motion_body_ang_vel",
-    ]
-    assert cfg.reward.motion_reward_pack.weight == 0.0
     for name, weight in (
         ("motion_global_root_pos", 1.0),
         ("motion_global_root_ori", 0.5),
@@ -180,7 +131,7 @@ def test_flashsac_g1_motion_tracking_newton_keeps_mujoco_parity() -> None:
     assert cfg.algo == mujoco_cfg.algo
 
 
-def test_flashsac_g1_motion_tracking_motrix_uses_packed_tensor_owner() -> None:
+def test_flashsac_g1_motion_tracking_motrix_uses_tensor_command() -> None:
     mujoco_cfg = _compose_flashsac("g1_motion_tracking/mujoco")
     cfg = _compose_flashsac("g1_motion_tracking/motrix")
 
@@ -190,22 +141,7 @@ def test_flashsac_g1_motion_tracking_motrix_uses_packed_tensor_owner() -> None:
     assert cfg.env.commands.motion._target_ == (
         "unilab.tasks.motion_tracking.common.manager_terms.TensorMotionCommandCfg"
     )
-    assert cfg.env.reset_owners.motion._target_ == (
-        "unilab.tasks.motion_tracking.common.manager_terms.MotionResetOwnerCfg"
-    )
-    assert cfg.env.reset_owners.motion.command_name == "motion"
-    assert cfg.env.reset_owners.motion.action_name == "joint_pos"
-    assert cfg.env.reset_owners.motion.owns_command_reset is True
-    assert cfg.env.reset_owners.motion.owns_action_reset is True
-    assert cfg.env.reset_owners.motion.owns_observation_reset is True
-    assert cfg.env.reset_owners.motion.owns_metric_reset is True
-
-    motrix_env = OmegaConf.to_container(cfg.env)
-    mujoco_env = OmegaConf.to_container(mujoco_cfg.env)
-    assert isinstance(motrix_env, dict) and isinstance(mujoco_env, dict)
-    del motrix_env["reset_owners"]
-    mujoco_env.pop("reset_owners", None)
-    assert motrix_env == mujoco_env
+    assert cfg.env == mujoco_cfg.env
     assert cfg.algo == mujoco_cfg.algo
 
 
@@ -256,21 +192,22 @@ def test_sac_g1_motion_tracking_mjwarp_uses_tensor_motion_owner() -> None:
     assert cfg.env.commands.motion._target_ == (
         "unilab.tasks.motion_tracking.common.manager_terms.TensorMotionCommandCfg"
     )
-    assert (
-        cfg.env.observations.actor.terms.motion_anchor_pack.func
-        == "unilab.tasks.motion_tracking.common.manager_terms.MotionObservationPack"
+    actor_terms = cfg.env.observations.actor.terms
+    critic_terms = cfg.env.observations.critic.terms
+    assert actor_terms.command.func == "unilab.envs.mdp.generated_commands"
+    assert actor_terms.motion_anchor_pos_b.func == (
+        "unilab.tasks.motion_tracking.common.manager_terms.motion_anchor_pos_b"
     )
-    assert cfg.env.observations.actor.terms.motion_anchor_pack._target_ == (
-        "unilab.tasks.motion_tracking.common.manager_terms.MotionObservationPackCfg"
+    assert actor_terms.motion_anchor_ori_b.func == (
+        "unilab.tasks.motion_tracking.common.manager_terms.motion_anchor_ori_b"
     )
-    assert cfg.env.observations.critic.terms.motion_anchor_pack.func == (
-        "unilab.tasks.motion_tracking.common.manager_terms.MotionAnchorObservationPack"
+    assert actor_terms.base_lin_vel.noise.n_min == pytest.approx(-0.1)
+    assert actor_terms.base_ang_vel.noise.n_min == pytest.approx(-0.2)
+    assert actor_terms.joint_pos.noise.n_min == pytest.approx(-0.01)
+    assert actor_terms.joint_vel.noise.n_min == pytest.approx(-1.5)
+    assert critic_terms.motion_anchor_pos_b.func == (
+        "unilab.tasks.motion_tracking.common.manager_terms.motion_anchor_pos_b"
     )
-    noise = cfg.env.observations.actor.terms.motion_anchor_pack.noise
-    assert len(noise.ranges) == 160
-    assert noise.ranges[58] == pytest.approx((-0.0, 0.0))
-    assert noise.ranges[67] == pytest.approx((-0.1, 0.1))
-    assert noise.ranges[70] == pytest.approx((-0.2, 0.2))
-    assert noise.ranges[73] == pytest.approx((-0.01, 0.01))
-    assert noise.ranges[102] == pytest.approx((-1.5, 1.5))
-    assert noise.ranges[131] == pytest.approx((-0.0, 0.0))
+    assert critic_terms.motion_anchor_ori_b.func == (
+        "unilab.tasks.motion_tracking.common.manager_terms.motion_anchor_ori_b"
+    )
