@@ -248,7 +248,8 @@ def test_start_daemon_uses_explicit_directories_and_records_identity(
             (pipe_dir / "nvidia-cuda-mps-control.pid").write_text("4242\n")
             monkeypatch.setattr(mps, "_proc_stat", live_proc_stat())
             return Completed("")
-        if command == list(mps._SERVER_LIST_QUERY_COMMAND):
+        if command == ["nvidia-cuda-mps-control"]:
+            assert kwargs["input"] == "get_server_list\n"
             return Completed("")
         raise AssertionError(f"unexpected command {command}")
 
@@ -286,7 +287,8 @@ def test_start_daemon_waits_until_control_answers_query(
             (pipe_dir / "nvidia-cuda-mps-control.pid").write_text("4242\n")
             monkeypatch.setattr(mps, "_proc_stat", live_proc_stat())
             return Completed("")
-        if command == list(mps._SERVER_LIST_QUERY_COMMAND):
+        if command == ["nvidia-cuda-mps-control"]:
+            assert kwargs["input"] == "get_server_list\n"
             queries.append(command)
             assert kwargs["env"]["CUDA_MPS_PIPE_DIRECTORY"] == str(pipe_dir)
             assert kwargs["timeout"] > 0.25
@@ -325,10 +327,8 @@ def test_start_daemon_cleans_up_unrecorded_control_after_readiness_failure(
             (pipe_dir / "nvidia-cuda-mps-control.pid").write_text("4242\n")
             monkeypatch.setattr(mps, "_proc_stat", lambda _pid: None)
             return Completed("")
-        if command == list(mps._SERVER_LIST_QUERY_COMMAND):
-            assert kwargs["timeout"] > 0.25
-            return Completed("control is not ready", returncode=1)
         if command == list(mps._QUIT_COMMAND):
+            assert kwargs["input"] == "quit\n"
             quit_commands += 1
             assert kwargs["env"]["CUDA_MPS_PIPE_DIRECTORY"] == str(pipe_dir)
             return Completed("")
@@ -551,7 +551,8 @@ def test_start_daemon_quarantines_stale_record(
             (pipe_dir / "nvidia-cuda-mps-control.pid").write_text("4242\n")
             monkeypatch.setattr(mps, "_proc_stat", live_proc_stat())
             return Completed("")
-        if command == list(mps._SERVER_LIST_QUERY_COMMAND):
+        if command == ["nvidia-cuda-mps-control"]:
+            assert kwargs["input"] == "get_server_list\n"
             return Completed("")
         raise AssertionError(f"unexpected command {command}")
 
@@ -686,7 +687,8 @@ def test_doctor_uses_sole_live_managed_daemon_pipe(
             if "--query-gpu=index,uuid" in command:
                 return Completed(f"0, {GPU_A}\n")
             return Completed(f"0, {GPU_A}, Default\n")
-        if command == ["nvidia-cuda-mps-control", "get_server_list"]:
+        if command == ["nvidia-cuda-mps-control"]:
+            assert kwargs["input"] == "get_server_list\n"
             return Completed("4242\n")
         raise AssertionError(f"unexpected command {command}")
 
@@ -705,7 +707,8 @@ def test_doctor_uses_sole_live_managed_daemon_pipe(
         Path(record.pipe_directory) / "control"
     )
     daemon_query = commands[-1]
-    assert daemon_query[0] == ["nvidia-cuda-mps-control", "get_server_list"]
+    assert daemon_query[0] == ["nvidia-cuda-mps-control"]
+    assert daemon_query[1]["input"] == "get_server_list\n"
     assert daemon_query[1]["env"]["CUDA_MPS_PIPE_DIRECTORY"] == record.pipe_directory
 
 
@@ -725,7 +728,8 @@ def test_doctor_reports_missing_control_daemon_and_exits_invalid(
             if "--query-gpu=index,uuid" in command:
                 return Completed(f"0, {GPU_A}\n")
             return Completed(f"0, {GPU_A}, Default\n")
-        if command == ["nvidia-cuda-mps-control", "get_server_list"]:
+        if command == ["nvidia-cuda-mps-control"]:
+            assert kwargs["input"] == "get_server_list\n"
             return Completed("Cannot find MPS control daemon process", returncode=1)
         raise AssertionError(f"unexpected command {command}")
 

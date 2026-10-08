@@ -42,7 +42,7 @@ _SUPPORTED_TOPOLOGY_MODES = (SINGLE_GPU_MODE,)
 _NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _DEFAULT_CONTROL_COMMAND = ("nvidia-cuda-mps-control", "-d")
 _QUIT_COMMAND = ("nvidia-cuda-mps-control",)
-_SERVER_LIST_QUERY_COMMAND = ("nvidia-cuda-mps-control", "get_server_list")
+_SERVER_LIST_QUERY_COMMAND = ("nvidia-cuda-mps-control",)
 _MAX_CONTROL_SOCKET_BYTES = 95
 _INERT_CONTROL_ARTIFACTS = ("control_lock", "log")
 _GPU_QUERY_COMMAND = (
@@ -509,6 +509,7 @@ def _wait_for_control_query(
             _run_command(
                 run_command,
                 _SERVER_LIST_QUERY_COMMAND,
+                input="get_server_list\n",
                 timeout=remaining,
                 env=environment,
             )
