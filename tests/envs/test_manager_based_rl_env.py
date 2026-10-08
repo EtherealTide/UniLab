@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -1017,26 +1018,108 @@ def test_manager_public_inputs_and_episode_counters_are_tensor_first() -> None:
     env.close()
 
 
-@pytest.mark.parametrize(
-    ("explicit_device", "expected_device"),
-    [
-        (None, torch.device("cpu")),
-        ("cpu", torch.device("cpu")),
-    ],
-)
-def test_backend_capability_derives_cpu_placement_for_host_bridge(
-    explicit_device: str | None, expected_device: torch.device
+def test_backend_capability_derives_declared_host_bridge_device(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = _make_cfg()
 
     env, backend = _make_env(cfg)
 
-    assert env.device == expected_device
+    assert env.device == torch.device("cpu")
     assert backend.lifecycle[-1] == "materialize"
     assert env._tensor_runtime_bound is True
     env.reset()
     assert all(value.device == env.device for value in env.obs_buf.values())
     env.close()
+
+    # A CPU-only capability must stay on CPU even when a GPU is visible. This
+    # exercises the negative branch without requiring CUDA/ROCm hardware.
+    if not bool(torch.cuda._is_compiled()):
+        pytest.skip("fake CUDA visibility requires a Torch CUDA/ROCm build")
+    original_is_available = torch.cuda.is_available
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    try:
+        env, _ = _make_env(cfg)
+        assert env.device == torch.device("cpu")
+    finally:
+        monkeypatch.setattr(torch.cuda, "is_available", original_is_available)
+        env.close()
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_mujoco_host_bridge_manager_tensor_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, device: str
+) -> None:
+    pytest.importorskip("unisim.backend.mujoco.backend")
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("GPU host bridge requires CUDA or ROCm PyTorch")
+    expected_device = (
+        torch.device("cuda", torch.cuda.current_device())
+        if device == "cuda"
+        else torch.device("cpu")
+    )
+    if device == "cpu":
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    model = tmp_path / "model.xml"
+    model.write_text(
+        "<mujoco><option gravity='0 0 0'/><worldbody><body name='base'>"
+        "<freejoint/><geom type='box' size='0.1 0.1 0.1' contype='0' conaffinity='0'/>"
+        "<body name='arm' pos='0 0 0.2'><joint name='joint' axis='0 0 1'/>"
+        "<geom type='box' size='0.1 0.1 0.1' contype='0' conaffinity='0'/>"
+        "</body></body></worldbody><actuator><motor name='motor' joint='joint' "
+        "ctrlrange='-1 1'/></actuator></mujoco>"
+    )
+    scene = SceneCfg(
+        model_file=str(model),
+        entities={
+            "robot": EntityCfg(
+                root_body_name="base", joint_names=("joint",), actuator_names=("motor",)
+            )
+        },
+    )
+    cfg = ManagerBasedRlEnvCfg(
+        scene=scene,
+        sim_dt=0.01,
+        ctrl_dt=0.02,
+        max_episode_seconds=0.04,
+        observations={
+            "actor": ObservationGroupCfg(
+                terms={"joint": ObservationTermCfg(func=mdp.joint_pos_rel)}
+            )
+        },
+        actions={"effort": mdp.JointEffortActionCfg(entity_name="robot", actuator_names=(".*",))},
+        events={"default": EventTermCfg(func=mdp.reset_scene_to_default, mode="reset")},
+        rewards={"alive": RewardTermCfg(func=mdp.is_alive, weight=1.0)},
+        terminations={"time_out": TerminationTermCfg(func=mdp.time_out, time_out=True)},
+        policy_observation_group="actor",
+    )
+    backend = create_backend(
+        "mujoco", scene, 2, cfg.sim_dt, base_name="base", add_body_sensors=True
+    )
+    env = ManagerBasedRlEnv(cfg, backend, 2)
+    try:
+        assert env.device == expected_device
+        assert backend.get_tensor_capabilities().execution is TensorExecution.HOST_BRIDGE
+        env.init_state()
+        env.reset()
+        actions = torch.full((2, 1), 0.5, device=env.device)
+        state = env.step(actions)
+        for value in (*state.obs.values(), state.reward, state.terminated, state.truncated):
+            assert value.device == expected_device
+            assert torch.isfinite(value).all()
+        assert (state.obs["obs"] > 0).all()
+        unchanged = state.obs["obs"][0].clone()
+        obs, _ = env.reset(env_indices=torch.tensor([1], device=env.device))
+        torch.testing.assert_close(state.obs["obs"][0], unchanged)
+        torch.testing.assert_close(obs["obs"], torch.zeros((1, 1), device=env.device))
+        torch.testing.assert_close(env.episode_length_buf, torch.tensor([1, 0], device=env.device))
+        state = env.step(actions)
+        torch.testing.assert_close(state.truncated, torch.tensor([True, False], device=env.device))
+        assert state.final_observation is not None
+        assert all(value.device == expected_device for value in state.final_observation.values())
+        assert state.info["steps"].device == expected_device
+    finally:
+        env.close()
 
 
 def _make_state_env(
@@ -1527,7 +1610,7 @@ def test_real_mujoco_backend_is_materialized_before_first_reset() -> None:
         assert state.obs["obs"].shape == (2, 1)
         assert torch.isfinite(state.obs["obs"]).all()
 
-        state = env.step(torch.empty((2, 0), dtype=torch.float32))
+        state = env.step(torch.empty((2, 0), dtype=torch.float32, device=env.device))
         assert torch.isfinite(state.obs["obs"]).all()
         assert torch.isfinite(state.reward).all()
     finally:

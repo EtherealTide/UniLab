@@ -8,7 +8,7 @@ Apache-2.0; provenance is retained in the derived files.
 | Surface | Status | Migration delta |
 | --- | --- | --- |
 | Manager dictionaries, term names/order, `func + params` | Compatible | Imports change from `mjlab` to `unilab`; the Balance task keeps all source entries and ordering. |
-| Term math and buffers | Adapted | `torch.Tensor` and Torch ops become `np.ndarray` and NumPy ops. |
+| Term math and buffers | Adapted | Observations use Torch on the Manager device; smooth reward math uses a fixture-only NumPy adapter. |
 | Config container | Adapted | The Python config factory becomes one Hydra owner YAML, materialized as a plain `ManagerBasedRlEnvCfg`. |
 | Scene/simulation | Adapted | mjlab scene/sim/viewer objects become task-owned MJCF plus `SceneCfg`/`EntityCfg`; the source contact-disable setting is embedded and visual materials are inlined for replicated scenes. |
 | Joint effort and reset mutation | Adapted, fixture-local | Shared test-only adapters write through the entity control/reset contracts; they are not public built-ins. |

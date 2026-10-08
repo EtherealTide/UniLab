@@ -2,7 +2,7 @@
 # src/mjlab/tasks/cartpole/cartpole_env_cfg.py.
 # Copyright 2025, The mjlab Developers.
 # Modified by UniLab for NumPy and fixture-only Hydra/entity adapters; Apache-2.0.
-"""NumPy terms for the pinned mjlab Cartpole Balance fixture."""
+"""Pinned mjlab Cartpole terms with Torch observations and a NumPy reward adapter."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import math
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
+import torch
 
 from unilab.base import registry
 from unilab.envs import ManagerBasedRlEnvCfg, make_manager_based_rl_env
@@ -25,11 +26,11 @@ _GAUSSIAN_SCALE = math.sqrt(-2.0 * math.log(0.1))
 _QUADRATIC_SCALE = math.sqrt(1.0 - 0.1)
 
 
-def pole_angle_cos_sin(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> np.ndarray:
+def pole_angle_cos_sin(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     """Return cosine and sine of the selected pole angle."""
     asset = cast("Entity", env.scene[asset_cfg.name])
-    angle = asset.data.joint_pos[:, asset_cfg.joint_ids]
-    return np.concatenate((np.cos(angle), np.sin(angle)), axis=-1)
+    angle = asset.joint_tensor_view(env.device).joint_pos[:, asset_cfg.joint_ids]
+    return torch.cat((torch.cos(angle), torch.sin(angle)), dim=-1)
 
 
 def _gaussian_tolerance(x: np.ndarray, margin: float) -> np.ndarray:
