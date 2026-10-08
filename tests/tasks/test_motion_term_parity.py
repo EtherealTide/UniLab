@@ -1099,7 +1099,18 @@ def test_motion_reward_pack_matches_individual_tensor_rewards(
         },
     )
     monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
-    cfg = mt.MotionRewardPackCfg(func=mt.MotionRewardPack, weight=1.0)
+    cfg = mt.MotionRewardPackCfg(
+        func=mt.MotionRewardPack,
+        weight=0.0,
+        reward_pack_names=(
+            "motion_global_root_pos",
+            "motion_global_root_ori",
+            "motion_body_pos",
+            "motion_body_ori",
+            "motion_body_lin_vel",
+            "motion_body_ang_vel",
+        ),
+    )
     term = mt.MotionRewardPack(cfg, env)
 
     out = term(env)
@@ -1152,7 +1163,7 @@ def test_motion_reward_pack_matches_individual_tensor_rewards(
             orientation=False,
         )
     )
-    expected = root_pos + 0.5 * root_ori + 2.0 * body_pos + body_ori + body_lin + body_ang
+    expected = torch.stack((root_pos, root_ori, body_pos, body_ori, body_lin, body_ang), dim=1)
     assert isinstance(out, torch.Tensor)
     torch.testing.assert_close(out, expected, rtol=2e-6, atol=2e-7)
 
@@ -1188,7 +1199,8 @@ def test_motion_penalty_pack_matches_individual_tensor_penalties(
     contact_body_names = tuple(command.cfg.body_names[:3])
     cfg = mt.MotionPenaltyRewardPackCfg(
         func=mt.MotionPenaltyRewardPack,
-        weight=1.0,
+        weight=0.0,
+        reward_pack_names=("action_rate_l2", "joint_limit", "undesired_contacts"),
         contact_body_names=contact_body_names,
     )
     term = mt.MotionPenaltyRewardPack(cfg, env)
@@ -1206,7 +1218,7 @@ def test_motion_penalty_pack_matches_individual_tensor_penalties(
         .sum(dim=-1)
         .to(dtype=torch.float32)
     )
-    expected = -0.1 * action_rate - 2.0 * joint_limit - 0.1 * contacts
+    expected = torch.stack((action_rate, joint_limit, contacts), dim=1)
     torch.testing.assert_close(value, expected)
 
 
@@ -1291,7 +1303,18 @@ def test_motion_reward_packs_publish_owner_call_timing(
         },
     )
     monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
-    cfg = mt.MotionRewardPackCfg(func=mt.MotionRewardPack, weight=1.0)
+    cfg = mt.MotionRewardPackCfg(
+        func=mt.MotionRewardPack,
+        weight=0.0,
+        reward_pack_names=(
+            "motion_global_root_pos",
+            "motion_global_root_ori",
+            "motion_body_pos",
+            "motion_body_ori",
+            "motion_body_lin_vel",
+            "motion_body_ang_vel",
+        ),
+    )
     term = mt.MotionRewardPack(cfg, env)
 
     term(env)

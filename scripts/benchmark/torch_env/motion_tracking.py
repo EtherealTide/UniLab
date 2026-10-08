@@ -1,4 +1,4 @@
-"""G1MotionTrackingSAC (SAC/MuJoCo) numeric manager workload.
+"""G1MotionTracking (SAC/MuJoCo) numeric manager workload.
 
 Synthetic xp-port of the NumPy kernels in the collector-timed sections of
 `uv run train --algo sac --task g1_motion_tracking --sim mujoco`

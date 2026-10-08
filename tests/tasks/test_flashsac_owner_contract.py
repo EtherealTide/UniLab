@@ -34,16 +34,16 @@ def test_flashsac_owner_fingerprint_accepts_canonical_backends() -> None:
     mujoco = _materialize_task("g1_motion_tracking/mujoco")
     mjwarp = _materialize_task("g1_motion_tracking/mjwarp")
     assert module._torch_g1_flashsac_owner_identity(mujoco) == (
-        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V11
+        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V21
     )
     assert module._torch_g1_flashsac_owner_identity(mjwarp) == (
-        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V16
+        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V23
     )
 
 
 def test_flashsac_motrix_owner_uses_generic_manager_runtime() -> None:
     registry.ensure_registries()
-    assert "motrix" in registry._envs["G1MotionTrackingSAC"].env_factory_dict
+    assert "motrix" in registry._envs["G1MotionTracking"].env_factory_dict
 
 
 def test_reusable_tensor_runtime_accepts_second_g1_manager_owner() -> None:
@@ -73,12 +73,31 @@ def test_fused_motion_reward_pack_owner_identity_is_canonical() -> None:
         cfg = _materialize_task(f"g1_motion_tracking/{backend}")
         identity = module._torch_g1_flashsac_owner_identity(cfg)
         expected = {
-            "mujoco": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V11,
-            "genesis": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V11,
-            "newton": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V11,
-            "mjwarp": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V16,
+            "mujoco": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V21,
+            "genesis": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V21,
+            "newton": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V21,
+            "mjwarp": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V23,
         }[backend]
         assert identity == expected
+
+
+def test_fused_motion_reward_pack_names_stay_contract_aligned() -> None:
+    """Packed FlashSAC execution and semantic reward declarations stay aligned."""
+    cfg = _materialize_task("g1_motion_tracking/mujoco")
+
+    packed = cfg.rewards["motion_reward_pack"]
+    expected = (
+        "motion_global_root_pos",
+        "motion_global_root_ori",
+        "motion_body_pos",
+        "motion_body_ori",
+        "motion_body_lin_vel",
+        "motion_body_ang_vel",
+    )
+    assert tuple(packed.reward_pack_names) == expected
+    assert packed.weight == 0.0
+    for name in expected:
+        assert name in cfg.rewards
 
 
 def test_flashsac_owner_rejects_fixed_model_variants_before_backend_creation() -> None:

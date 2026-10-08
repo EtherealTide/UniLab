@@ -55,7 +55,7 @@ def test_default_compose_targets_motion_tracking_mujoco() -> None:
     assert bench.DEFAULT_SIM == "mujoco"
     assert bench._owner_config_exists("g1_motion_tracking", "mujoco")
     assert case.command == "uv run train --algo sac --task g1_motion_tracking --sim mujoco"
-    assert case.training_task_name == "G1MotionTrackingSAC"
+    assert case.training_task_name == "G1MotionTracking"
     assert case.num_envs == 2048
     assert case.env_steps_per_sync == 1
     assert case.replay_buffer_n == 512

@@ -86,6 +86,27 @@ _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V15 = (
 _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V16 = (
     "bdd459e6cd54bfb3535a825f762b3ab57d7ed47b0bc16fd7a7b6cc4e9a1cc9c1"
 )
+# V17-V20 were transition identities while packed logging moved from internal
+# pack weights to canonical RewardManager term weights. They remain accepted so
+# in-flight owner snapshots fail closed only on semantic drift, not on this
+# completed transition.
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V17 = (
+    "205268ac43ca0b1b9eaaf5ec3d62a1e28b7ff7051d3ea5fcb7d56fee03c9fb19"
+)
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V18 = (
+    "e4ed72fe9d32e3eaafc4cddfbf70d43d39ba514b0175b5aa4b74b0727fdf515d"
+)
+# V21 applies to the non-MJWarp owners and V22 to MJWarp: the fused packs emit
+# raw per-component columns, while RewardManager owns canonical names/weights.
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V21 = (
+    "8d554342b93da489faaa1cd3f8a1be5ed242960f3c26d890230d1dee80fd654c"
+)
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V22 = (
+    "5f406476f3b2cf9e8cafbcbe2b4f67562f5d223f421f1324ccbf3f0aee600d60"
+)
+_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V23 = (
+    "62c8f187d88a7c1a85b71cb88f153b61aaf350acecea80e45c8109f5f532ddbc"
+)
 _TORCH_G1_SAC_OWNER_IDENTITY_V2 = "a4cd74dd23a511de02c572102856190d78b819f874ec7d81e104aaff03e82c80"
 
 
@@ -99,6 +120,11 @@ def _validate_torch_g1_flashsac_owner_contract(cfg: ManagerBasedRlEnvCfg) -> Non
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V14,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V15,
         _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V16,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V17,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V18,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V21,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V22,
+        _TORCH_G1_FLASHSAC_OWNER_IDENTITY_V23,
         _TORCH_G1_SAC_OWNER_IDENTITY_V2,
     }:
         raise ValueError(
@@ -115,6 +141,11 @@ __all__ = [
     "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V14",
     "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V15",
     "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V16",
+    "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V17",
+    "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V18",
+    "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V21",
+    "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V22",
+    "_TORCH_G1_FLASHSAC_OWNER_IDENTITY_V23",
     "_TORCH_G1_SAC_OWNER_IDENTITY_V2",
     "_qualified_name",
     "_torch_g1_flashsac_owner_identity",
