@@ -306,6 +306,23 @@ def test_offpolicy_g1_walk_flat_env_cfg_override_has_rewards_and_events():
     assert env_cfg_override["rewards"]["tracking_lin_vel"]["weight"] == pytest.approx(2.0)
 
 
+def test_host_bridge_env_overrides_route_explicit_manager_torch_device(monkeypatch):
+    offpolicy_cfg = _offpolicy_cfg(["task=g1_walk_flat/mujoco"])
+    ppo_cfg = _ppo_cfg(["task=g1_walk_flat/mujoco", "training.device=cuda:2"])
+    ppo_mod = _train_rsl_rl(monkeypatch)
+    offpolicy_mod = _offpolicy()
+
+    monkeypatch.setattr(offpolicy_mod, "resolve_dp_rank_device", lambda rank: "cuda:2")
+    monkeypatch.setattr("unilab.utils.device.get_default_device", lambda: "cuda:2", raising=False)
+
+    offpolicy_override = offpolicy_mod.build_offpolicy_env_cfg_override("sac", offpolicy_cfg)
+    ppo_override = ppo_mod.build_ppo_env_cfg_override(ppo_cfg)
+
+    assert offpolicy_override is not None
+    assert offpolicy_override["manager_torch_device"] == "cuda:2"
+    assert ppo_override["manager_torch_device"] == "cuda:2"
+
+
 @pytest.mark.parametrize(
     ("backend", "field"),
     [
@@ -1529,6 +1546,7 @@ def test_play_offpolicy_can_skip_onnx_export_and_still_record_video(
 
     class FakeEnv:
         def __init__(self):
+            self.device = torch.device("cpu")
             self.obs_groups_spec = {"obs": 4}
             self.action_space = type("ActionSpace", (), {"shape": (2,)})()
             self.state = None
@@ -1537,12 +1555,12 @@ def test_play_offpolicy_can_skip_onnx_export_and_still_record_video(
             self.state = type(
                 "State",
                 (),
-                {"obs": {"obs": np.zeros((cfg.training.play_env_num, 4), dtype=np.float32)}},
+                {"obs": {"obs": torch.zeros((cfg.training.play_env_num, 4), dtype=torch.float32)}},
             )()
 
         def reset(self, env_ids):
             batch = len(env_ids)
-            return ({"obs": np.zeros((batch, 4), dtype=np.float32)}, {})
+            return ({"obs": torch.zeros((batch, 4), dtype=torch.float32)}, {})
 
         def step(self, actions):
             batch = actions.shape[0]
@@ -1550,7 +1568,7 @@ def test_play_offpolicy_can_skip_onnx_export_and_still_record_video(
                 "State",
                 (),
                 {
-                    "obs": {"obs": np.ones((batch, 4), dtype=np.float32)},
+                    "obs": {"obs": torch.ones((batch, 4), dtype=torch.float32)},
                     "info": {},
                 },
             )()
@@ -1655,10 +1673,11 @@ class _PlayFakeActor:
 
 
 def _make_play_fake_env(captured: dict[str, Any], play_env_num: int):
-    import numpy as np
+    import torch
 
     class FakeEnv:
         def __init__(self):
+            self.device = torch.device("cpu")
             self.obs_groups_spec = {"obs": 4}
             self.action_space = type("ActionSpace", (), {"shape": (2,)})()
             self.state = None
@@ -1667,12 +1686,12 @@ def _make_play_fake_env(captured: dict[str, Any], play_env_num: int):
             self.state = type(
                 "State",
                 (),
-                {"obs": {"obs": np.zeros((play_env_num, 4), dtype=np.float32)}},
+                {"obs": {"obs": torch.zeros((play_env_num, 4), dtype=torch.float32)}},
             )()
 
         def reset(self, env_ids):
             batch = len(env_ids)
-            return ({"obs": np.zeros((batch, 4), dtype=np.float32)}, {})
+            return ({"obs": torch.zeros((batch, 4), dtype=torch.float32)}, {})
 
         def step(self, actions):
             batch = actions.shape[0]
@@ -1680,7 +1699,7 @@ def _make_play_fake_env(captured: dict[str, Any], play_env_num: int):
                 "State",
                 (),
                 {
-                    "obs": {"obs": np.ones((batch, 4), dtype=np.float32)},
+                    "obs": {"obs": torch.ones((batch, 4), dtype=torch.float32)},
                     "info": {},
                 },
             )()
@@ -2651,6 +2670,8 @@ def test_play_interactive_velocity_command_contract_rejects_numpy() -> None:
 def test_play_interactive_runner_log_dir_uses_algo_log_name(monkeypatch: pytest.MonkeyPatch):
     import types
 
+    from unilab.base.base import EnvPlayCapabilities
+
     mod = _play_interactive()
     captured: dict[str, object] = {}
 
@@ -2690,10 +2711,18 @@ def test_play_interactive_runner_log_dir_uses_algo_log_name(monkeypatch: pytest.
 
         user_scn = type("Scene", (), {"ngeom": 0})()
 
+    class FakePhysicsStateApplier:
+        def __init__(self, env, model, env_index=0):
+            del env, model, env_index
+
+        def apply(self, state, data):
+            del state, data
+
     fake_env = types.SimpleNamespace(
         obs_groups_spec={"obs": 5},
         action_space=types.SimpleNamespace(shape=(3,), low=np.full((3,), -1.0), high=np.ones((3,))),
         cfg=types.SimpleNamespace(ctrl_dt=0.02),
+        play_capabilities=EnvPlayCapabilities(supports_physics_state_playback=True),
         get_playback_model=lambda: object(),
         get_scene_visual_model_file=lambda: None,
         get_physics_state_snapshot=lambda: np.zeros((1, 8), dtype=np.float32),
@@ -2716,9 +2745,7 @@ def test_play_interactive_runner_log_dir_uses_algo_log_name(monkeypatch: pytest.
     )
     monkeypatch.setattr(mod, "PPOConfig", lambda: types.SimpleNamespace(to_dict=lambda: {}))
     monkeypatch.setattr(mod.mujoco, "MjData", lambda model: object())
-    monkeypatch.setattr(mod.mujoco, "mj_setState", lambda *args, **kwargs: None)
-    monkeypatch.setattr(mod.mujoco, "mj_forward", lambda *args, **kwargs: None)
-    monkeypatch.setattr(mod.mujoco, "mjtState", types.SimpleNamespace(mjSTATE_FULLPHYSICS=0))
+    monkeypatch.setattr(mod, "PhysicsStateApplier", FakePhysicsStateApplier)
     monkeypatch.setattr(mod.mujoco.viewer, "launch_passive", lambda *args, **kwargs: FakeViewer())
 
     args = types.SimpleNamespace(

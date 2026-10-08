@@ -224,7 +224,7 @@ def test_interactive_viewer_renders_frames() -> None:
     # pos/lookat branch reuses a tilted default up and rolls the camera).
     expected_pose = genesis_playback.camera_pose_matrix_z_up(
         *genesis_playback.camera_pose_from_kwargs(
-            viewer_backend._camera_kwargs, viewer_backend._camera_lookat()
+            viewer_backend._camera_cfg, viewer_backend._camera_lookat()
         )
     )
     actual_pose = np.asarray(

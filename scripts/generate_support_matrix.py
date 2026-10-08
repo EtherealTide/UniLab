@@ -25,7 +25,7 @@ from scripts.tools.support_matrix import (
 
 _SUPPORT_LEVEL_ENUM = re.compile(r"\bSupportLevel\.([A-Z][A-Z_]+)\b")
 
-_ROCM_HOST_BRIDGE_LABEL = "Supported: CPU-authoritative physics with ROCm Torch buffers (`cuda`)"
+_ROCM_HOST_BRIDGE_LABEL = "CPU-authoritative host bridge with explicit ROCm Torch buffers (`cuda`)"
 
 
 def _with_support_level_values(content: str) -> str:
@@ -33,8 +33,9 @@ def _with_support_level_values(content: str) -> str:
     rendered = _SUPPORT_LEVEL_ENUM.sub(lambda match: match.group(1).lower(), content)
     # UniSim's static inventory is deliberately conservative: it only states
     # that no ROCm-native CUDA-only fallback exists. Host bridges accepting
-    # `cuda` Torch buffers also accept ROCm PyTorch's CUDA-namespace API while
-    # physics remains CPU-authoritative; make that repository guarantee visible.
+    # `cuda` Torch buffers also accept ROCm PyTorch's CUDA-namespace API,
+    # but only when the process explicitly requests those Manager carriers;
+    # make that opt-in repository guarantee visible.
     return rendered.replace(
         "CPU-authoritative host bridge only; no ROCm CUDA-only fallback",
         _ROCM_HOST_BRIDGE_LABEL,

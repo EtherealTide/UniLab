@@ -13,6 +13,7 @@ from unisim.backend.mjwarp import runtime as mjwarp_runtime
 import unilab.base.process_device as process_device
 from unilab.base.process_device import (
     apply_backend_env_device_override,
+    apply_manager_torch_device_override,
     bind_genesis_process_device,
     configure_backend_process_device,
     rank_local_visible_cuda_entries,
@@ -148,6 +149,28 @@ def test_backend_env_device_override_routes_rank_local_zero(
     assert routed["isaacgym_device_id"] == 0
     assert owner_override["isaacgym_device_id"] == 7
     assert routed["nested"] is owner_override["nested"]
+
+
+def test_manager_torch_device_override_routes_only_explicit_cuda() -> None:
+    owner_override = {"manager_torch_device": "owner-cpu", "nested": {"keep": True}}
+
+    routed = apply_manager_torch_device_override(owner_override, "mujoco", learner_device=None)
+    assert routed is not owner_override
+    assert routed == owner_override
+
+    routed = apply_manager_torch_device_override(owner_override, "mujoco", learner_device="cpu")
+    assert routed["manager_torch_device"] == "cpu"
+
+    routed = apply_manager_torch_device_override(owner_override, "mujoco", learner_device="cuda:3")
+    assert routed["manager_torch_device"] == "cuda:3"
+    assert routed["nested"] is owner_override["nested"]
+    assert owner_override["manager_torch_device"] == "owner-cpu"
+
+    routed = apply_manager_torch_device_override(owner_override, "mujoco", learner_device="mps")
+    assert routed["manager_torch_device"] == "owner-cpu"
+
+    routed = apply_manager_torch_device_override(owner_override, "mjwarp", learner_device="cuda:3")
+    assert routed["manager_torch_device"] == "owner-cpu"
 
 
 def test_non_gpu_backend_is_left_untouched() -> None:

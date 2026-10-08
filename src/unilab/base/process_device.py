@@ -16,8 +16,9 @@ from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 # These backends consume an explicit integer device id while materializing
-# their simulator.  MuJoCo/Motrix/Drake either run on the host or own their
-# device selection internally and must not receive a synthetic override.
+# their simulator.  MuJoCo/Motrix/Drake run CPU-authoritative physics; their
+# optional accelerator Manager buffers are selected separately through
+# ``manager_torch_device``.
 BACKEND_ENV_DEVICE_FIELDS: dict[str, str] = {
     "isaacgym": "isaacgym_device_id",
     "isaacsim": "isaacsim_device_id",
@@ -40,6 +41,11 @@ BACKEND_ENV_DEVICE_STR_FIELDS: dict[str, str] = {
 # CUDA IPC arena.  Its Torch current device must therefore agree with the
 # integer payload sent to that worker before construction.
 _EXTERNAL_CUDA_IPC_BACKENDS = {"isaacgym", "isaacsim"}
+
+# HOST_BRIDGE backends accept optional accelerator Torch carriers across their packed
+# boundary. A process may explicitly request those carriers on its learner Torch
+# device; unset non-accelerator requests retain the owner/default CPU placement.
+_HOST_BRIDGE_TORCH_BACKENDS = {"mujoco", "motrix", "drake", "superdex"}
 
 
 # Set once ``bind_genesis_process_device`` has pinned CUDA_VISIBLE_DEVICES for
@@ -167,6 +173,35 @@ def apply_backend_env_device_override(
         result[str_field] = f"cuda:{int(device_id)}"
     elif int_field is not None:
         result[int_field] = int(device_id)
+    return result
+
+
+def apply_manager_torch_device_override(
+    env_cfg_override: Mapping[str, Any] | None,
+    backend_type: str,
+    *,
+    learner_device: str | None = None,
+) -> dict[str, Any]:
+    """Return an env override selecting optional HOST_BRIDGE Torch carriers.
+
+    The input mapping is never mutated. Explicit CPU requests force CPU carriers.
+    Unset and non-CUDA learner requests retain owner/default placement. A CUDA request
+    is validated against backend capabilities when the environment binds.
+    DEVICE_RESIDENT backends own placement and never receive this synthetic field.
+    """
+
+    result = dict(env_cfg_override) if env_cfg_override is not None else {}
+    if _normalize_backend(backend_type) not in _HOST_BRIDGE_TORCH_BACKENDS:
+        return result
+    if learner_device is None:
+        return result
+    device = str(learner_device).strip()
+    if not device or device.lower() == "cpu":
+        result["manager_torch_device"] = "cpu"
+        return result
+    if device.split(":", 1)[0].lower() != "cuda":
+        return result
+    result["manager_torch_device"] = device
     return result
 
 
@@ -399,6 +434,7 @@ def _reset_genesis_device_pin_for_tests() -> None:
 __all__ = [
     "BACKEND_ENV_DEVICE_FIELDS",
     "apply_backend_env_device_override",
+    "apply_manager_torch_device_override",
     "bind_backend_process_device",
     "bind_backend_process_device_for_backend",
     "bind_genesis_process_device",

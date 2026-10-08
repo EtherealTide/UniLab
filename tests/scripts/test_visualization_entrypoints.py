@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.base import CameraCfg
 
 # CPU-bound on the single-core CI runner; kept in the slow lane (make test-slow).
@@ -136,12 +137,12 @@ def _keyboard_env(
     obs_contains_command: bool = False,
 ) -> Any:
     info: dict[str, Any] = (
-        {"commands": np.asarray([[0.37, -0.23, 0.19]], dtype=np.float32)}
+        {"commands": torch.tensor([[0.37, -0.23, 0.19]], dtype=torch.float32)}
         if with_commands
         else {"steps": 0}
     )
     if obs_contains_command:
-        info["commands"] = np.asarray([[0.37, -0.23, 0.19]], dtype=np.float32)
+        info["commands"] = torch.tensor([[0.37, -0.23, 0.19]], dtype=torch.float32)
     commands_cfg = (
         type(
             "Cmds",
@@ -159,9 +160,9 @@ def _keyboard_env(
     cfg = cfg_type()
     cfg.commands = commands_cfg
     obs = (
-        {"obs": np.asarray([[1.0, 0.37, -0.23, 0.19, 2.0]], dtype=np.float32)}
+        {"obs": torch.tensor([[1.0, 0.37, -0.23, 0.19, 2.0]], dtype=torch.float32)}
         if obs_contains_command
-        else {"obs": np.asarray([[1.0, 2.0, 3.0]], dtype=np.float32)}
+        else {"obs": torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float32)}
     )
     state = type("State", (), {"info": info, "obs": obs})()
     env_type = type(env_cls_name, (), {"__module__": module})
@@ -297,11 +298,13 @@ def test_play_interactive_viewer_model_uses_shared_render_playback_resolver(
 
 def test_play_interactive_binds_mjwarp_process_device_before_session(monkeypatch):
     mod = _load_script("play_interactive")
-    bound: list[tuple[str, str]] = []
+    bound: list[tuple[str, str, int | None]] = []
     monkeypatch.setattr(
         mod,
         "configure_backend_process_device",
-        lambda backend_type, device: bound.append((backend_type, device)),
+        lambda backend_type, device, backend_device_id=None: bound.append(
+            (backend_type, device, backend_device_id)
+        ),
     )
     monkeypatch.setattr(mod, "_select_playback_device", lambda cfg: "cuda:0")
     monkeypatch.setattr(mod, "available_backends_for_task", lambda task: ["mjwarp"])
@@ -323,16 +326,18 @@ def test_play_interactive_binds_mjwarp_process_device_before_session(monkeypatch
     with pytest.raises(RuntimeError, match="stop-before-session"):
         mod.play_interactive(args, None)
 
-    assert bound == [("mjwarp", "cuda:0")]
+    assert bound == [("mjwarp", "cuda:0", None)]
 
 
 def test_play_interactive_device_binding_is_noop_for_mujoco(monkeypatch):
     mod = _load_script("play_interactive")
-    bound: list[tuple[str, str]] = []
+    bound: list[tuple[str, str, int | None]] = []
     monkeypatch.setattr(
         mod,
         "configure_backend_process_device",
-        lambda backend_type, device: bound.append((backend_type, device)),
+        lambda backend_type, device, backend_device_id=None: bound.append(
+            (backend_type, device, backend_device_id)
+        ),
     )
     monkeypatch.setattr(mod, "_select_playback_device", lambda cfg: "cuda:0")
     monkeypatch.setattr(mod, "available_backends_for_task", lambda task: ["mujoco"])
@@ -354,4 +359,4 @@ def test_play_interactive_device_binding_is_noop_for_mujoco(monkeypatch):
     with pytest.raises(RuntimeError, match="stop-before-session"):
         mod.play_interactive(args, None)
 
-    assert bound == [("mujoco", "cuda:0")]
+    assert bound == [("mujoco", "cuda:0", None)]

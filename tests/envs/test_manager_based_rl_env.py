@@ -1018,10 +1018,19 @@ def test_manager_public_inputs_and_episode_counters_are_tensor_first() -> None:
     env.close()
 
 
-def test_backend_capability_derives_declared_host_bridge_device(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("manager_torch_device", "expected_device"),
+    [
+        (None, torch.device("cpu")),
+        ("cpu", torch.device("cpu")),
+    ],
+)
+def test_backend_capability_defaults_host_bridge_manager_carriers_to_cpu(
+    manager_torch_device: str | None,
+    expected_device: torch.device,
 ) -> None:
     cfg = _make_cfg()
+    cfg.manager_torch_device = manager_torch_device
 
     env, backend = _make_env(cfg)
 
@@ -1032,18 +1041,30 @@ def test_backend_capability_derives_declared_host_bridge_device(
     assert all(value.device == env.device for value in env.obs_buf.values())
     env.close()
 
-    # A CPU-only capability must stay on CPU even when a GPU is visible. This
-    # exercises the negative branch without requiring CUDA/ROCm hardware.
+
+def test_host_bridge_ignores_accelerator_availability_without_explicit_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     if not bool(torch.cuda._is_compiled()):
         pytest.skip("fake CUDA visibility requires a Torch CUDA/ROCm build")
     original_is_available = torch.cuda.is_available
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     try:
+        cfg = _make_cfg()
         env, _ = _make_env(cfg)
-        assert env.device == torch.device("cpu")
     finally:
         monkeypatch.setattr(torch.cuda, "is_available", original_is_available)
         env.close()
+
+    assert env.device == torch.device("cpu")
+
+
+def test_manager_torch_device_rejects_non_tensor_device_and_invalid_syntax() -> None:
+    for value, error in (("mps", ValueError), (12, TypeError), ("", TypeError)):
+        cfg = _make_cfg()
+        cfg.manager_torch_device = value
+        with pytest.raises(error):
+            cfg.validate()
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
@@ -1093,6 +1114,8 @@ def test_mujoco_host_bridge_manager_tensor_lifecycle(
         terminations={"time_out": TerminationTermCfg(func=mdp.time_out, time_out=True)},
         policy_observation_group="actor",
     )
+    if device == "cuda":
+        cfg.manager_torch_device = device
     backend = create_backend(
         "mujoco", scene, 2, cfg.sim_dt, base_name="base", add_body_sensors=True
     )

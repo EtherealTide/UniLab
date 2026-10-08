@@ -252,19 +252,18 @@ def test_ppo_g1_motion_tracking():
     assert cfg.algo.max_iterations == 15000
     assert cfg.algo.algorithm.entropy_coef == pytest.approx(0.005)
 
-    # Interactive playback defaults to policy mode for this task.
-    assert cfg.interactive.action_mode == "policy"
-    assert cfg.env.commands.motion.params.sampling_mode == "start"
+    assert cfg.interactive.action_mode == "zero"
+    assert cfg.env.commands.motion.params.sampling_mode == "adaptive"
     assert cfg.env.commands.motion.params.truncate_on_clip_end is False
-    assert cfg.env.sim_dt == pytest.approx(0.005)
+    assert cfg.env.sim_dt == pytest.approx(1.0 / 150.0)
     assert cfg.env.actions.joint_pos.scale == pytest.approx(X2_ACTION_SCALE[0])
-    assert cfg.env.terminations.anchor_pos.params.threshold == pytest.approx(0.5)
-    assert cfg.env.terminations.ee_body_pos.params.threshold == pytest.approx(0.5)
-    assert cfg.env.terminations.undesired_contacts is not None
-    assert cfg.reward.motion_joint_pos.weight == pytest.approx(0.5)
-    assert cfg.reward.motion_joint_vel.weight == pytest.approx(0.25)
-    assert cfg.reward.motion_body_pos.weight == pytest.approx(2.0)
-    assert cfg.reward.motion_body_ori.weight == pytest.approx(1.5)
-    assert cfg.reward.motion_ee_body_pos_z.weight == pytest.approx(2.0)
-    assert cfg.reward.action_rate_l2.weight == pytest.approx(-0.005)
-    assert cfg.reward.undesired_contacts.weight == pytest.approx(-0.1)
+    assert cfg.env.terminations.anchor_pos.params.threshold == pytest.approx(0.25)
+    assert cfg.env.terminations.ee_body_pos.params.threshold == pytest.approx(0.25)
+    assert "undesired_contacts" not in cfg.env.terminations
+    assert cfg.reward.motion_joint_pos.weight == pytest.approx(0.0)
+    assert cfg.reward.motion_joint_vel.weight == pytest.approx(0.0)
+    assert cfg.reward.motion_body_pos.weight == pytest.approx(1.0)
+    assert cfg.reward.motion_body_ori.weight == pytest.approx(1.0)
+    assert "motion_ee_body_pos_z" not in cfg.reward
+    assert cfg.reward.action_rate_l2.weight == pytest.approx(-0.1)
+    assert "undesired_contacts" not in cfg.reward
