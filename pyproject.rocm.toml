@@ -60,6 +60,7 @@ unilab-complete = "unilab.cli_completion:main"
 unilab-viz-nan = "unilab.utils.nan_viz:main"
 unilab-render-teaser = "unilab.visualization.teaser:main"
 unilab-pull-assets = "unilab.assets.pull:main"
+uni-cumps = "unilab.training.cuda_mps_cli:main"
 
 [project.optional-dependencies]
 drake = [
