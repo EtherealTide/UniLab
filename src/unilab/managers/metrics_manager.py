@@ -1,6 +1,6 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681), src/mjlab/managers/metrics_manager.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy and UniLab contracts; licensed under Apache-2.0.
+# Modified by UniLab for the tensor-only Manager runtime; licensed under Apache-2.0.
 """Metrics manager for logging custom per-step metrics during training."""
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Sequence
 
-import numpy as np
+import torch
 from prettytable import PrettyTable
 
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
@@ -67,8 +67,9 @@ class MetricsManager(ManagerBase):
         self.cfg = deepcopy(cfg)
         super().__init__(env=env)
 
-        self._episode_sums: dict[str, np.ndarray] = {}
-        self._episode_max: dict[str, np.ndarray] = {}
+        self._device = getattr(env, "device", torch.device("cpu"))
+        self._episode_sums: dict[str, torch.Tensor] = {}
+        self._episode_max: dict[str, torch.Tensor] = {}
         for idx, term_name in enumerate(self._term_names):
             if self._term_cfgs[idx].reduce not in REDUCE_OPTIONS:
                 msg = (
@@ -77,26 +78,30 @@ class MetricsManager(ManagerBase):
                 )
                 raise ValueError(msg)
 
-            self._episode_sums[term_name] = np.zeros(self.num_envs, dtype=np.float32)
+            self._episode_sums[term_name] = torch.zeros(
+                self.num_envs, dtype=torch.float32, device=self._device
+            )
 
             if self._term_cfgs[idx].reduce == "max":
-                self._episode_max[term_name] = np.full(
-                    self.num_envs, float("-inf"), dtype=np.float32
+                self._episode_max[term_name] = torch.full(
+                    (self.num_envs,), float("-inf"), dtype=torch.float32, device=self._device
                 )
         # Pre-resolved tensor refs for substep terms to avoid dict lookups in
         # the hot loop.
-        self._substep_accum: list[np.ndarray] = []
-        self._substep_episode_sums: list[np.ndarray] = []
-        self._substep_episode_max: list[np.ndarray | None] = []
+        self._substep_accum: list[torch.Tensor] = []
+        self._substep_episode_sums: list[torch.Tensor] = []
+        self._substep_episode_max: list[torch.Tensor | None] = []
         for idx in self._substep_term_indices:
             name = self._term_names[idx]
-            buf = np.zeros(self.num_envs, dtype=np.float32)
+            buf = torch.zeros(self.num_envs, dtype=torch.float32, device=self._device)
             self._substep_accum.append(buf)
             self._substep_episode_sums.append(self._episode_sums[name])
             self._substep_episode_max.append(self._episode_max.get(name))
         self._substep_count: int = 0
-        self._step_count = np.zeros(self.num_envs, dtype=np.int64)
-        self._step_values = np.zeros((self.num_envs, len(self._term_names)), dtype=np.float32)
+        self._step_count = torch.zeros(self.num_envs, dtype=torch.int64, device=self._device)
+        self._step_values = torch.zeros(
+            (self.num_envs, len(self._term_names)), dtype=torch.float32, device=self._device
+        )
 
     def __str__(self) -> str:
         msg = f"<MetricsManager> contains {len(self._term_names)} active terms.\n"
@@ -118,40 +123,52 @@ class MetricsManager(ManagerBase):
 
     # Methods.
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> dict[str, float]:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
         if env_ids is None:
             env_ids = slice(None)
         extras = {}
-        counts = self._step_count[env_ids].astype(np.float32)
+        mask = self._reset_mask(env_ids)
+        counts = self._step_count[mask].to(torch.float32)
         # Avoid division by zero for envs that haven't stepped.
-        safe_counts = np.maximum(counts, 1.0)
+        safe_counts = torch.clamp(counts, min=1.0)
         for idx, key in enumerate(self._episode_sums):
             reduce = self._term_cfgs[idx].reduce
             if reduce == "max":
-                extras["Episode_Metrics/" + key] = float(np.mean(self._episode_max[key][env_ids]))
-                self._episode_max[key][env_ids] = float("-inf")
+                values = self._episode_max[key][mask]
+                extras["Episode_Metrics/" + key] = self._log_mean(values)
 
             elif reduce == "last":
-                extras["Episode_Metrics/" + key] = float(np.mean(self._step_values[env_ids, idx]))
+                extras["Episode_Metrics/" + key] = self._log_mean(self._step_values[mask, idx])
 
             elif reduce == "sum":
-                extras["Episode_Metrics/" + key] = float(np.mean(self._episode_sums[key][env_ids]))
+                extras["Episode_Metrics/" + key] = self._log_mean(self._episode_sums[key][mask])
 
             else:
-                extras["Episode_Metrics/" + key] = float(
-                    np.mean(self._episode_sums[key][env_ids] / safe_counts)
-                )
+                values = self._episode_sums[key][mask] / safe_counts
+                extras["Episode_Metrics/" + key] = self._log_mean(values)
 
-            self._episode_sums[key][env_ids] = 0.0
-        self._step_count[env_ids] = 0
+        self.clear_episode_state(env_ids)
+        return extras
 
+    def clear_episode_state(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        """Clear selected episode accumulators without publishing summaries.
+
+        Reset owners consume this boundary when they own metric reset. Generic
+        reset behavior remains publication followed by this same selected-row
+        state clear.
+        """
+        if env_ids is None:
+            env_ids = slice(None)
+        mask = self._reset_mask(env_ids)
+        for key in self._episode_sums:
+            self._episode_sums[key].masked_fill_(mask, 0.0)
+            if key in self._episode_max:
+                self._episode_max[key].masked_fill_(mask, float("-inf"))
+        self._step_count.masked_fill_(mask, 0)
         for buf in self._substep_accum:
-            buf[env_ids] = 0.0
-
+            buf.masked_fill_(mask, 0.0)
         for term_cfg in self._class_term_cfgs:
             term_cfg.func.reset(env_ids=env_ids)
-
-        return extras
 
     def compute_substep(self) -> None:
         """Accumulate per-substep metric values inside the decimation loop.
@@ -174,8 +191,8 @@ class MetricsManager(ManagerBase):
                 self._step_values[:, idx] = avg
                 max_buf = self._substep_episode_max[i]
                 if max_buf is not None:
-                    np.maximum(max_buf, avg, out=max_buf)
-                self._substep_accum[i].fill(0.0)
+                    torch.maximum(max_buf, avg, out=max_buf)
+                    self._substep_accum[i].fill_(0.0)
             self._substep_count = 0
         for idx in self._step_term_indices:
             name = self._term_names[idx]
@@ -183,7 +200,7 @@ class MetricsManager(ManagerBase):
             self._episode_sums[name] += value
             self._step_values[:, idx] = value
             if name in self._episode_max:
-                np.maximum(self._episode_max[name], value, out=self._episode_max[name])
+                torch.maximum(self._episode_max[name], value, out=self._episode_max[name])
 
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:
         terms = []
@@ -207,13 +224,63 @@ class MetricsManager(ManagerBase):
             if hasattr(term_cfg.func, "reset") and callable(term_cfg.func.reset):
                 self._class_term_cfgs.append(term_cfg)
 
-    def _compute_term(self, idx: int) -> np.ndarray:
+    def _compute_term(self, idx: int) -> torch.Tensor:
         name = self._term_names[idx]
         term_cfg = self._term_cfgs[idx]
         value = term_cfg.func(self._env, **term_cfg.params)
-        self._check_term_shape(name, value)
-        self._check_term_finite(name, value)
-        return value
+        if isinstance(value, torch.Tensor):
+            if value.dtype != torch.float32:
+                raise TypeError(
+                    f"MetricsManager term '{name}' returned dtype {value.dtype}, expected float32."
+                )
+            if value.device != self._device:
+                raise ValueError(
+                    f"MetricsManager term '{name}' returned device {value.device}, "
+                    f"expected {self._device}."
+                )
+            result = value.clone()
+        else:
+            raise TypeError(
+                f"MetricsManager term '{name}' returned {type(value).__name__}, expected "
+                "torch.Tensor."
+            )
+        if result.shape != (self.num_envs,):
+            raise ValueError(
+                f"MetricsManager term '{name}' returned shape {tuple(result.shape)}; "
+                f"expected ({self.num_envs},)."
+            )
+        if not bool(torch.isfinite(result).all()):
+            raise ValueError(f"MetricsManager term '{name}' returned non-finite values.")
+        return result
+
+    def _reset_mask(self, env_ids: torch.Tensor | slice) -> torch.Tensor:
+        if env_ids is None:
+            return torch.ones(self.num_envs, dtype=torch.bool, device=self._device)
+        if isinstance(env_ids, slice):
+            indices = torch.arange(self.num_envs, dtype=torch.int64, device=self._device)[env_ids]
+            mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
+            return mask.index_fill(0, indices, True)
+        if (
+            not isinstance(env_ids, torch.Tensor)
+            or env_ids.ndim != 1
+            or env_ids.dtype
+            not in {
+                torch.int32,
+                torch.int64,
+            }
+        ):
+            raise TypeError("MetricsManager reset rows must be one-dimensional integers")
+        rows = env_ids.to(self._device)
+        if rows.numel() and (rows.min() < 0 or rows.max() >= self.num_envs):
+            raise IndexError(f"MetricsManager reset rows out of range: {rows.tolist()}")
+        mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
+        return mask.index_fill(0, rows.to(torch.int64), True)
+
+    @staticmethod
+    def _log_mean(values: torch.Tensor) -> float:
+        if values.numel() == 0:
+            return 0.0
+        return float(values.mean().item())
 
 
 class NullMetricsManager:
@@ -232,7 +299,7 @@ class NullMetricsManager:
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:
         return []
 
-    def reset(self, env_ids: np.ndarray | None = None) -> dict[str, float]:
+    def reset(self, env_ids: torch.Tensor | None = None) -> dict[str, float]:
         return {}
 
     def compute_substep(self) -> None:

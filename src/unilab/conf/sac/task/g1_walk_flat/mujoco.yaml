@@ -17,3 +17,5 @@ algo:
   algo_params:
     alpha_init: 0.001
     target_entropy_ratio: 0.0
+  # MuJoCo/mjbatch is HOST_BRIDGE: CPU physics remains authoritative while
+  # Manager reads/reset/control cross one packed device boundary per phase.

@@ -8,11 +8,14 @@ factory. Physics implementations and their public contract live in the
 
 from __future__ import annotations
 
+import inspect
+import sys
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import unisim
-from unisim.backend.base import SimBackend
+from unisim.backend.base import SimBackend, TensorExecution, validate_tensor_device
+from unisim.support import get_tensor_platform_profiles
 
 from unilab.assets.hub import ensure_robot_assets_for_paths, resolve_superdex_robot_asset
 from unilab.base.process_device import bind_genesis_process_device
@@ -20,6 +23,203 @@ from unilab.base.process_device import bind_genesis_process_device
 if TYPE_CHECKING:
     from unilab.base.base import EnvCfg
     from unilab.base.scene import SceneCfg
+
+
+_CUDA_BACKEND_INT_DEVICE_FIELDS = {
+    "genesis": "genesis_device_id",
+    "isaacgym": "isaacgym_device_id",
+    "isaacsim": "isaacsim_device_id",
+}
+_EXTERNAL_WORKER_DEVICE_FIELDS = {
+    "isaacgym": "isaacgym_device_id",
+    "isaacsim": "isaacsim_device_id",
+}
+
+
+def _requested_cuda_only_device(backend_type: str, kwargs: dict[str, Any]) -> str:
+    if backend_type == "mjwarp":
+        return "cuda"
+    if backend_type == "newton":
+        device = kwargs.get("newton_device")
+        return "cuda" if device is None else str(device)
+
+    field = _CUDA_BACKEND_INT_DEVICE_FIELDS[backend_type]
+    device_id = kwargs.get(field)
+    if device_id is None:
+        # Genesis follows its current/default process device when unset.  The
+        # Isaac workers instead default their payload to ordinal zero, so an
+        # omitted owner field remains an explicit zero request.
+        return "cuda:0" if backend_type in _EXTERNAL_WORKER_DEVICE_FIELDS else "cuda"
+    if isinstance(device_id, bool) or not isinstance(device_id, int) or device_id < 0:
+        raise ValueError(f"{field} must be a non-negative integer or None, got {device_id!r}")
+    return f"cuda:{device_id}"
+
+
+def _torch_cuda_runtime_state() -> tuple[dict[str, Any], int | None]:
+    try:
+        import torch
+
+        available = bool(torch.cuda.is_available())
+        count = int(torch.cuda.device_count()) if available else 0
+        current = int(torch.cuda.current_device()) if available else None
+        state = {
+            "available": available,
+            "visible_count": count,
+            "current": current,
+            "torch": torch.__version__,
+            # torch.version is absent from the old CPU wheels used by the
+            # CPU-only pyright job; diagnostics still record the build kind
+            # whenever the runtime exposes it.
+            "torch_hip": getattr(getattr(torch, "version", None), "hip", None),
+            "platform": sys.platform,
+        }
+        return state, current
+    except Exception as exc:
+        return {
+            "available": False,
+            "visible_count": 0,
+            "current": None,
+            "torch": f"import failed: {exc}",
+            "torch_hip": "unknown",
+            "platform": sys.platform,
+        }, None
+
+
+def _fail_closed_cuda_only(
+    backend_type: str,
+    requested_device: str,
+    runtime_state: dict[str, Any],
+    reason: str,
+    next_step: str,
+) -> RuntimeError:
+    return RuntimeError(
+        f"{backend_type} is a CUDA-only tensor backend and this request is unsupported: "
+        f"{reason}. requested_device={requested_device!r}, "
+        f"cuda_available={runtime_state['available']}, "
+        f"visible_cuda_devices={runtime_state['visible_count']}, "
+        f"current_cuda_device={runtime_state['current']}, "
+        f"torch={runtime_state['torch']}, torch_hip={runtime_state['torch_hip']}, "
+        f"platform={runtime_state['platform']}. {next_step}"
+    )
+
+
+def _validate_cuda_only_backend_platform(backend_type: str, kwargs: dict[str, Any]) -> None:
+    """Fail closed before cold-path work on a non-CUDA platform or device.
+
+    UniSim's SDK-free public inventory owns the long-term platform matrix.  This
+    final owner-layer choke point checks only the static boundary, so optional
+    SDK discovery and task capability negotiation remain in UniSim.
+    """
+
+    profile = get_tensor_platform_profiles().get(backend_type)
+    if profile is None or profile.execution is not TensorExecution.DEVICE_RESIDENT:
+        return
+
+    try:
+        requested_device = _requested_cuda_only_device(backend_type, kwargs)
+    except ValueError as exc:
+        runtime_state, _ = _torch_cuda_runtime_state()
+        raise _fail_closed_cuda_only(
+            backend_type,
+            "<invalid>",
+            runtime_state,
+            str(exc),
+            "Use a non-negative integer backend device id.",
+        ) from exc
+
+    runtime_state, current_device = _torch_cuda_runtime_state()
+    try:
+        validate_tensor_device(
+            profile.torch_devices,
+            requested_device,
+            current_device=current_device,
+            label=f"{backend_type} tensor runtime",
+        )
+    except ValueError as exc:
+        raise _fail_closed_cuda_only(
+            backend_type,
+            requested_device,
+            runtime_state,
+            str(exc),
+            "Use a Linux CUDA process; CPU, MPS, ROCm, and hidden fallbacks are unsupported.",
+        ) from exc
+
+    if sys.platform == "darwin":
+        raise _fail_closed_cuda_only(
+            backend_type,
+            requested_device,
+            runtime_state,
+            "macOS has no supported CUDA runtime",
+            "Use a CPU-authoritative host-bridge backend or a Linux CUDA runtime.",
+        )
+    if runtime_state["torch_hip"] not in (None, "None", ""):
+        raise _fail_closed_cuda_only(
+            backend_type,
+            requested_device,
+            runtime_state,
+            "this Torch build reports ROCm/HIP rather than CUDA",
+            "Install a Linux CUDA Torch build or use a CPU-authoritative host-bridge backend.",
+        )
+    if not runtime_state["available"]:
+        raise _fail_closed_cuda_only(
+            backend_type,
+            requested_device,
+            runtime_state,
+            "Torch CUDA is unavailable",
+            "Check driver/runtime installation and CUDA_VISIBLE_DEVICES before construction.",
+        )
+
+    requested_parts = requested_device.lower().split(":", 1)
+    explicit_index = int(requested_parts[1]) if len(requested_parts) == 2 else None
+    requested_index = current_device if explicit_index is None else explicit_index
+    if requested_index is None or requested_index >= int(runtime_state["visible_count"]):
+        raise _fail_closed_cuda_only(
+            backend_type,
+            requested_device,
+            runtime_state,
+            "the requested CUDA ordinal is out of range",
+            "Use an index below torch.cuda.device_count() after CUDA_VISIBLE_DEVICES remapping.",
+        )
+
+    field = _EXTERNAL_WORKER_DEVICE_FIELDS.get(backend_type)
+    if field is not None:
+        payload_id = kwargs.get(field)
+        payload_index = 0 if payload_id is None else int(payload_id)
+        if payload_index != current_device:
+            raise _fail_closed_cuda_only(
+                backend_type,
+                requested_device,
+                runtime_state,
+                (
+                    "the external worker payload device does not match the learner's "
+                    f"current Torch CUDA device ({payload_index} != {current_device})"
+                ),
+                "Bind the rank learner and its Isaac worker to the same CUDA ordinal "
+                "before construction.",
+            )
+        import torch
+
+        torch.cuda.set_device(payload_index)
+
+
+def _validate_isaacsim_tensor_cuda_ipc_runtime() -> None:
+    """Fail closed before constructing an IsaacSim release without CUDA IPC.
+
+    ``isaacsim_tensor_cuda_ipc`` is an M9 candidate contract.  A production
+    owner must not reach a released unisim-core that silently ignores or does
+    not understand the constructor option.  The public adapter constructor is
+    the compatibility boundary; no backend-private implementation state is
+    inspected.
+    """
+    from unisim.backend.isaacsim import IsaacSimBackend
+
+    parameter = inspect.signature(IsaacSimBackend.__init__).parameters.get("tensor_cuda_ipc")
+    if parameter is None or parameter.kind is inspect.Parameter.VAR_KEYWORD:
+        raise RuntimeError(
+            "isaacsim_tensor_cuda_ipc requires a unisim-core IsaacSim backend with the "
+            "tensor_cuda_ipc constructor contract; the installed unisim-core IsaacSim "
+            "backend does not provide it"
+        )
 
 
 def env_backend_kwargs(cfg: "EnvCfg") -> dict[str, Any]:
@@ -66,6 +266,12 @@ def env_backend_kwargs(cfg: "EnvCfg") -> dict[str, Any]:
         result["isaacsim_gpu_max_rigid_contact_count"] = cfg.isaacsim_gpu_max_rigid_contact_count
     if cfg.isaacsim_gpu_max_rigid_patch_count is not None:
         result["isaacsim_gpu_max_rigid_patch_count"] = cfg.isaacsim_gpu_max_rigid_patch_count
+    # Forward the tensor opt-in only when enabled so releases without the M9
+    # constructor never see an unknown keyword on the legacy default path.
+    if cfg.isaacsim_tensor_cuda_ipc:
+        result["isaacsim_tensor_cuda_ipc"] = True
+    if cfg.isaacsim_share_friction_materials:
+        result["share_friction_materials"] = True
     # Forward the explicit Genesis device id only when a rank selected one;
     # when absent, unisim-core's factory default applies and Genesis picks
     # its own device.
@@ -87,6 +293,9 @@ def create_backend(
     """Prepare UniLab-owned assets and construct a UniSim backend."""
     if scene is None:
         raise ValueError("SceneCfg must be provided")
+    _validate_cuda_only_backend_platform(backend_type, kwargs)
+    if backend_type == "isaacsim" and kwargs.get("isaacsim_tensor_cuda_ipc", False):
+        _validate_isaacsim_tensor_cuda_ipc_runtime()
     superdex_assets_root = kwargs.pop("superdex_assets_root", None)
     if backend_type == "superdex" and scene.model_file.endswith(".superdex_bot"):
         scene = replace(

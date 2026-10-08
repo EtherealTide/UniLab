@@ -13,7 +13,7 @@ import textwrap
 import types
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Iterator
 
 import numpy as np
 import pytest
@@ -35,9 +35,28 @@ from unisim.backend.isaacsim.dependencies import (
 from unisim.backend.isaacsim.scene_worker import _rotate
 from unisim.backend.isaacsim.worker import _resolve_articulation_root_prim_path
 
-from unilab.base.backend_factory import create_backend
+import unilab.base.backend_factory as backend_factory
+from unilab.base.backend_factory import (
+    _validate_isaacsim_tensor_cuda_ipc_runtime,
+    create_backend,
+)
 from unilab.base.base import EnvCfg
 from unilab.base.scene import SceneCfg
+
+
+@pytest.fixture(autouse=True)
+def _bypass_cuda_only_platform_gate(monkeypatch: pytest.MonkeyPatch):
+    """Exercise the adapter below the factory's CUDA-only platform gate.
+
+    The fail-closed gate (issue #1811 platform matrix) has dedicated coverage
+    in ``tests/base/test_cuda_backend_platform_preflight.py``.  These
+    mock-worker suites intentionally run on CUDA-less hosts, so the gate is
+    bypassed here to keep the adapter behavior under test reachable.
+    """
+    monkeypatch.setattr(
+        backend_factory, "_validate_cuda_only_backend_platform", lambda *args, **kwargs: None
+    )
+
 
 _MOCK_WORKER = str(Path(__file__).resolve().parent / "isaacgym_mock_worker.py")
 SIM_DT = 0.005
@@ -111,7 +130,7 @@ def _make_backend(scene_file: str, **kwargs: Any) -> IsaacSimBackend:
 
 
 @pytest.fixture()
-def backend(scene_file: str) -> IsaacSimBackend:
+def backend(scene_file: str) -> Iterator[IsaacSimBackend]:
     instance = _make_backend(scene_file)
     instance.materialize()
     try:
@@ -144,6 +163,8 @@ def test_factory_routes_isaacsim_without_importing_kit(scene_file: str) -> None:
         ({"isaacsim_render_mode": "video"}, "isaacsim_render_mode"),
         ({"isaacsim_render_width": 0}, "isaacsim_render_width"),
         ({"isaacsim_render_height": True}, "isaacsim_render_height"),
+        ({"isaacsim_tensor_cuda_ipc": 1}, "isaacsim_tensor_cuda_ipc"),
+        ({"isaacsim_share_friction_materials": 1}, "isaacsim_share_friction_materials"),
     ],
 )
 def test_env_cfg_rejects_invalid_isaacsim_render_settings(
@@ -206,6 +227,52 @@ def test_env_backend_kwargs_forwards_isaacsim_solver_knobs() -> None:
             assert defaults[name] is None
 
 
+def test_env_backend_kwargs_forwards_isaacsim_tensor_cuda_ipc() -> None:
+    """Tensor opt-in is explicit and defaults to the legacy subprocess path."""
+    from unilab.base.backend_factory import env_backend_kwargs
+
+    assert "isaacsim_tensor_cuda_ipc" not in env_backend_kwargs(EnvCfg())
+    kwargs = env_backend_kwargs(EnvCfg(isaacsim_tensor_cuda_ipc=True))
+    assert kwargs["isaacsim_tensor_cuda_ipc"] is True
+
+
+def test_env_backend_kwargs_forwards_isaacsim_material_sharing() -> None:
+    """Material sharing is an explicit benchmark/task opt-in, not a default."""
+    from unilab.base.backend_factory import env_backend_kwargs
+
+    assert "share_friction_materials" not in env_backend_kwargs(EnvCfg())
+    kwargs = env_backend_kwargs(EnvCfg(isaacsim_share_friction_materials=True))
+    assert kwargs["share_friction_materials"] is True
+
+
+def test_create_backend_rejects_legacy_isaacsim_tensor_cuda_ipc_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LegacyIsaacSimBackend:
+        def __init__(self, scene: object, num_envs: int, sim_dt: float, **kwargs: object):
+            raise AssertionError("legacy backend must not be constructed")
+
+    monkeypatch.setattr(
+        "unisim.backend.isaacsim.IsaacSimBackend",
+        LegacyIsaacSimBackend,
+    )
+
+    with pytest.raises(
+        RuntimeError, match="installed unisim-core IsaacSim backend does not provide"
+    ):
+        create_backend(
+            "isaacsim",
+            SceneCfg(),
+            1,
+            0.02,
+            isaacsim_tensor_cuda_ipc=True,
+        )
+
+
+def test_isaacsim_tensor_cuda_ipc_runtime_guard_accepts_public_contract() -> None:
+    _validate_isaacsim_tensor_cuda_ipc_runtime()
+
+
 def test_dependencies_resolve_default_layout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -257,7 +324,7 @@ def test_materialize_uses_shared_protocol_and_exposes_state(backend: IsaacSimBac
 
 
 def test_env_cleanup_hook_reaps_isaacsim_worker(backend: IsaacSimBackend) -> None:
-    """The NpEnv cleanup hook must not leave the external worker alive."""
+    """The TorchEnv cleanup hook must not leave the external worker alive."""
     proc = backend._proc
     assert proc is not None and proc.poll() is None
     shm_names = [handle.name for handle in backend._shm_handles.values()]
@@ -292,7 +359,7 @@ def test_play_contract_advertises_native_rendering(
     caps = backend.get_play_capabilities()
     assert caps.supports_native_interactive_renderer
     assert caps.supports_native_video_capture
-    assert not caps.supports_physics_state_playback
+    assert caps.supports_physics_state_playback
 
     plan = backend.resolve_play_render_plan(
         play_render_mode="none", play_steps=3, output_video=tmp_path / "ignored.mp4"

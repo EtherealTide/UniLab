@@ -1,26 +1,9 @@
 .PHONY: sync
 sync:
-	uv sync --extra mujoco --extra motrix --extra uni_rl
+	uv sync --extra mujoco --extra uni_rl
 
 .PHONY: setup
-setup:
-	uv sync --extra mujoco --extra motrix --extra uni_rl
-	uv run --no-sync unilab-complete install
-
-# Installs the Python extra and builds DrakeUni's native extension. By default
-# the host-compatible official tarball is downloaded; use DRAKE_HOME=<prefix>
-# to build against an existing installation.
-.PHONY: setup-drake
-setup-drake:
-	@ if [ -n "$(DRAKE_HOME)" ]; then \
-		bash scripts/tools/setup_drake_env.sh --drake-home "$(DRAKE_HOME)"; \
-	else \
-		bash scripts/tools/setup_drake_env.sh --download-drake; \
-	fi
-
-.PHONY: setup-motrix
-setup-motrix:
-	uv sync --extra motrix
+setup: sync
 	uv run --no-sync unilab-complete install
 
 .PHONY: install-completion
@@ -31,12 +14,12 @@ install-completion:
 sync-rocm:
 	@cp pyproject.rocm.toml pyproject.toml
 	@if [ -f uv.rocm.lock ]; then cp uv.rocm.lock uv.lock; fi
-	uv sync --extra mujoco --extra motrix --extra uni_rl
+	uv sync --extra mujoco --extra uni_rl
 	cp uv.lock uv.rocm.lock
 
 .PHONY: sync-xpu
 sync-xpu:
-	uv sync --extra mujoco --extra motrix --extra uni_rl --no-install-package torch
+	uv sync --extra mujoco --extra uni_rl --no-install-package torch
 	uv pip install torch==2.7.0 --torch-backend xpu
 
 .PHONY: format
@@ -91,3 +74,7 @@ clean:
 	find src/unilab/assets/caches -type f ! -name '.gitkeep' -delete 2>/dev/null || true
 	find src/unilab/assets/checkpoints -type f ! -name '.gitkeep' -delete 2>/dev/null || true
 	find src/unilab/assets/scenes -type f ! -name '.gitkeep' -delete 2>/dev/null || true
+
+.PHONY: setup-drake
+setup-drake:
+	uv run --no-sync bash scripts/tools/setup_drake_env.sh --download-drake

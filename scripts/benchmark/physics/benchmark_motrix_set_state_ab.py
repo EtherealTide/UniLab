@@ -1,3 +1,9 @@
+# HISTORICAL SHELVED-BACKEND BENCHMARK (#1811)
+# This adapter-specific probe is retained for migration context only.
+# It is not part of the scoped tensor Manager benchmark surface
+# (mujoco/mjwarp/genesis), is not discovered by default benchmark
+# selection, and must not be used as a production support claim.
+
 """Local A/B microbenchmark for Motrix ``set_state`` (issue #679).
 
 Two variants run against the same ``MotrixBackend`` instance and the same
@@ -10,8 +16,8 @@ sequence of reset requests:
 * ``optimized`` — the current backend method: reusable scratch buffers, single
   hoisted ``env_ids_intp``, and a c-contiguous fast path for actuator ctrl.
 
-Both variants instrument the same 16-key schema documented in
-:mod:`unilab.base.np_env`. Only the internals differ.
+Both variants instrument the same 16-key reset-timing schema documented by the
+environment lifecycle. Only the internals differ.
 
 The script does NOT touch the collector loop / physics — it only drives the
 ``set_state`` method — so it isolates the change under study.
@@ -46,7 +52,7 @@ from unilab.base.scene import SceneCfg  # noqa: E402
 
 _G1_MODEL_FILE = str(ASSETS_ROOT_PATH / "robots" / "g1" / "scene_flat.xml")
 
-# Schema mirrors BACKEND_SET_STATE_DETAIL_TIMING_KEYS in np_env.py; keys that
+# Schema mirrors BACKEND_SET_STATE_DETAIL_TIMING_KEYS in backend_timing.py; keys that
 # don't apply to motrix stay at 0.0.
 _TIMING_KEYS = (
     "set_state_mask_ms",

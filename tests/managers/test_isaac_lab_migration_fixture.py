@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
@@ -98,24 +99,24 @@ def test_fixture_real_mujoco_reset_step_and_partial_reset() -> None:
         assert env.obs_groups_spec == {"obs": 4}
         assert env.action_space.shape == (1,)
         assert state.obs["obs"].shape == (8, 4)
-        assert np.isfinite(state.obs["obs"]).all()
+        assert torch.isfinite(state.obs["obs"]).all()
 
         before = env.scene["robot"].data.joint_pos.copy()
         reset_ids = np.asarray([1, 6], dtype=np.int32)
-        reset_obs, _ = env.reset(env_ids=reset_ids)
+        reset_obs, _ = env.reset(env_indices=torch.tensor(reset_ids, dtype=torch.int64))
         after = env.scene["robot"].data.joint_pos.copy()
         assert reset_obs["obs"].shape == (2, 4)
         np.testing.assert_array_equal(after[[0, 2, 3, 4, 5, 7]], before[[0, 2, 3, 4, 5, 7]])
         assert np.all(np.abs(after[reset_ids, 0]) <= 1.0)
         assert np.all(np.abs(after[reset_ids, 1]) <= 0.25 * np.pi)
 
-        state = env.step(np.zeros((8, 1), dtype=np.float32))
+        state = env.step(torch.zeros((8, 1), dtype=torch.float32))
         assert state.obs["obs"].shape == (8, 4)
         assert state.reward.shape == (8,)
         assert state.terminated.shape == (8,)
         assert state.truncated.shape == (8,)
-        assert np.isfinite(state.obs["obs"]).all()
-        assert np.isfinite(state.reward).all()
+        assert torch.isfinite(state.obs["obs"]).all()
+        assert torch.isfinite(state.reward).all()
 
         robot = env.scene["robot"]
         pole_pos = robot.data.joint_pos[:, 1]

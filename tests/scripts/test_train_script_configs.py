@@ -27,12 +27,10 @@ APPO_MUJOCO_SMOKE_TASKS = [
     "go2_joystick_flat/mujoco",
     "g1_walk_flat/mujoco",
     "g1_motion_tracking/mujoco",
-    "g1_flip_tracking/mujoco",
 ]
 
 APPO_MOTION_SMOKE_TASKS = {
     "g1_motion_tracking/mujoco",
-    "g1_flip_tracking/mujoco",
     "g1_box_tracking/mujoco",
 }
 
@@ -140,7 +138,6 @@ def test_ppo_two_gpu_rsl_rl_training_smoke(task: str, task_name: str, tmp_path: 
             sys.executable,
             "src/unilab/scripts/train_rsl_rl.py",
             f"task={task}",
-            "training.devices=[0,1]",
             "training.play_render_mode=record",
             "training.play_steps=2",
             "training.play_env_num=2",

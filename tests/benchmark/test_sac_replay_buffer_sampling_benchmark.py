@@ -42,7 +42,7 @@ def test_sac_default_case_uses_configured_batch() -> None:
     assert case.shape.packed_width == 2 * 45 + 29 + 3 + 2 * 48
 
 
-def test_default_compose_targets_motion_tracking_motrix() -> None:
+def test_default_compose_targets_motion_tracking_mujoco() -> None:
     cfg = bench._compose_offpolicy_cfg()
     case = bench._build_case(
         cfg,
@@ -52,9 +52,9 @@ def test_default_compose_targets_motion_tracking_motrix() -> None:
     )
 
     assert bench.DEFAULT_TASK == "g1_motion_tracking"
-    assert bench.DEFAULT_SIM == "motrix"
-    assert bench._owner_config_exists("g1_motion_tracking", "motrix")
-    assert case.command == "uv run train --algo sac --task g1_motion_tracking --sim motrix"
+    assert bench.DEFAULT_SIM == "mujoco"
+    assert bench._owner_config_exists("g1_motion_tracking", "mujoco")
+    assert case.command == "uv run train --algo sac --task g1_motion_tracking --sim mujoco"
     assert case.training_task_name == "G1MotionTrackingSAC"
     assert case.num_envs == 2048
     assert case.env_steps_per_sync == 1
@@ -71,10 +71,10 @@ def test_default_compose_targets_motion_tracking_motrix() -> None:
 
 
 def test_missing_owner_config_fails_before_hydra_compose() -> None:
-    missing = bench._owner_config_path("not_a_task", "motrix")
+    missing = bench._owner_config_path("not_a_task", "mujoco")
 
     try:
-        bench._compose_offpolicy_cfg("not_a_task", "motrix")
+        bench._compose_offpolicy_cfg("not_a_task", "mujoco")
     except FileNotFoundError as exc:
         assert str(missing) in str(exc)
     else:

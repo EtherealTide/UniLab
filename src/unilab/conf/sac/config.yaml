@@ -38,10 +38,6 @@ algo:
 
 training:
   task_name: G1WalkFlat
-  # list[int] | null; null/[] = auto-selected single-device behavior;
-  # [d0] = explicit single CUDA device; [d0..dN-1] = N-way data parallel,
-  # rank i trains on cuda:devices[i].
-  devices: null
   # list[list[int]] | null; one CPU-id segment per rank for the collector's
   # MuJoCo pool; null = auto partition of cpu_count // world_size per rank.
   dp_collector_cpu_ids: null
@@ -58,6 +54,9 @@ training:
   wandb_notes: null
   wandb_mode: null
   sim_backend: mujoco
+  # null preserves independent CUDA contexts; 'mps' explicitly requests CUDA
+  # process sharing and fails closed if the host daemon is not already valid.
+  cuda_process_sharing: null
   nan_guard:
     enabled: true
     buffer_size: 100
@@ -77,6 +76,14 @@ training:
   log_root: null
   log_dir: null
   env_steps_per_sync: 1
+  # Fixed in-flight learner-inference requests; 1 preserves legacy ordering.
+  inference_slot_capacity: 1
+  # Tensor-collector steps between metric compaction and one host flush.
+  collector_metrics_interval: 1
+  # Fixed replay-ingress chunks that may be published before learner commit.
+  replay_ingress_depth: 2
+  # Rows per replay-ingress chunk; null means one chunk per collector vector.
+  replay_ingress_slot_rows: null
   trace_enabled: false
   trace_output_dir: null
   trace_thread_time: false

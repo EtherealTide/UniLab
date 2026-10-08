@@ -28,8 +28,24 @@ from unisim.backend.isaacgym.dependencies import (
 from unisim.backend.isaacgym.sensors import scan_scene_metadata
 from unisim.dr.types import IntervalTermOp
 
+import unilab.base.backend_factory as backend_factory
 from unilab.base.backend_factory import create_backend
 from unilab.base.scene import SceneCfg
+
+
+@pytest.fixture(autouse=True)
+def _bypass_cuda_only_platform_gate(monkeypatch: pytest.MonkeyPatch):
+    """Exercise the adapter below the factory's CUDA-only platform gate.
+
+    The fail-closed gate (issue #1811 platform matrix) has dedicated coverage
+    in ``tests/base/test_cuda_backend_platform_preflight.py``.  These
+    mock-worker suites intentionally run on CUDA-less hosts, so the gate is
+    bypassed here to keep the adapter behavior under test reachable.
+    """
+    monkeypatch.setattr(
+        backend_factory, "_validate_cuda_only_backend_platform", lambda *args, **kwargs: None
+    )
+
 
 _MOCK_WORKER = str(Path(__file__).resolve().parent / "isaacgym_mock_worker.py")
 
@@ -706,10 +722,7 @@ def test_dr_and_pre_step_control_fail_closed(backend: IsaacGymBackend) -> None:
         backend.set_pre_step_control(lambda backend_, ctrl: ctrl)
     backend.set_pre_step_control(None)
 
-    # Physics-state playback export stays unsupported; native rendering has
-    # its own dedicated tests below.
-    with pytest.raises(NotImplementedError, match="physics-state playback"):
-        backend.get_physics_state()
+    # Physics-state playback is covered by the UniSim adapter contract tests.
 
 
 def test_close_reaps_worker_and_unlinks_shm(backend: IsaacGymBackend) -> None:
@@ -850,7 +863,7 @@ def test_play_capabilities_advertise_native_rendering(backend: IsaacGymBackend) 
     caps = backend.get_play_capabilities()
     assert caps.supports_native_interactive_renderer
     assert caps.supports_native_video_capture
-    assert not caps.supports_physics_state_playback
+    assert caps.supports_physics_state_playback
 
 
 def test_normalize_camera_kwargs_maps_mujoco_convention() -> None:

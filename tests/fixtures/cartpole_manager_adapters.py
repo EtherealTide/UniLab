@@ -11,6 +11,7 @@ from numbers import Real
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
+import torch
 
 from unilab.managers import ActionTerm, ActionTermCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
@@ -78,21 +79,24 @@ class JointEffortAction(ActionTerm):
         self._actuator_ids.setflags(write=False)
         self._actuator_names = tuple(actuator_names)
         self._scale = finite_real(cfg.scale, label="JointEffortActionCfg scale")
-        self._raw_actions = np.zeros((self.num_envs, len(actuator_ids)), dtype=np.float32)
-        self._processed_actions = np.zeros_like(self._raw_actions)
+        self._device = torch.device(getattr(env, "device", torch.device("cpu")))
+        self._raw_actions = torch.zeros(
+            (self.num_envs, len(actuator_ids)), dtype=torch.float32, device=self._device
+        )
+        self._processed_actions = torch.zeros_like(self._raw_actions)
 
     @property
     def action_dim(self) -> int:
         return self._raw_actions.shape[1]
 
     @property
-    def raw_action(self) -> np.ndarray:
+    def raw_action(self) -> torch.Tensor:
         return self._raw_actions
 
-    def process_actions(self, actions: np.ndarray) -> None:
-        if not isinstance(actions, np.ndarray):
+    def process_actions(self, actions: torch.Tensor) -> None:
+        if not isinstance(actions, torch.Tensor):
             raise TypeError(
-                "Cartpole fixture JointEffortAction expected np.ndarray, "
+                "Cartpole fixture JointEffortAction expected torch.Tensor, "
                 f"received {type(actions).__name__}"
             )
         if actions.shape != self._raw_actions.shape:
@@ -100,10 +104,15 @@ class JointEffortAction(ActionTerm):
                 "Cartpole fixture JointEffortAction expected shape "
                 f"{self._raw_actions.shape}, received {actions.shape}"
             )
-        if not np.isfinite(actions).all():
+        if actions.dtype != torch.float32 or actions.device != self._device:
+            raise TypeError(
+                "Cartpole fixture JointEffortAction expected float32 actions on "
+                f"{self._device}; got {actions.dtype} on {actions.device}"
+            )
+        if not bool(torch.isfinite(actions).all()):
             raise ValueError("Cartpole fixture JointEffortAction received NaN or Inf")
-        np.copyto(self._raw_actions, actions)
-        np.multiply(actions, self._scale, out=self._processed_actions)
+        self._raw_actions.copy_(actions)
+        torch.multiply(actions, self._scale, out=self._processed_actions)
 
     def apply_actions(self) -> None:
         self._entity.data.write_ctrl(
@@ -111,7 +120,7 @@ class JointEffortAction(ActionTerm):
             actuator_ids=self._actuator_ids,
         )
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: np.ndarray | torch.Tensor | slice | None = None) -> None:
         ids = slice(None) if env_ids is None else env_ids
         self._raw_actions[ids] = 0.0
         self._processed_actions[ids] = 0.0

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import os
-import warnings
 from types import SimpleNamespace
 
 import pytest
 import torch
+from uni_rl.ipc.dp_launcher import visible_cuda_entries
 from unisim.backend.mjwarp import runtime as mjwarp_runtime
 
 import unilab.base.process_device as process_device
@@ -15,9 +15,9 @@ from unilab.base.process_device import (
     apply_backend_env_device_override,
     bind_genesis_process_device,
     configure_backend_process_device,
+    rank_local_visible_cuda_entries,
     resolve_backend_env_device_id,
     resolve_backend_process_device,
-    warn_if_backend_device_collision,
 )
 
 
@@ -94,94 +94,76 @@ def test_mjwarp_binding_rejects_non_cuda_warp_resolution(
         mjwarp_runtime.bind_mjwarp_process_device("cuda:1")
 
 
-@pytest.mark.parametrize(
-    "backend_type",
-    ["isaacgym", "isaacsim", "genesis", "newton"],
-)
-def test_offpolicy_rank_routes_host_visible_backend_device(backend_type: str) -> None:
-    assert (
-        resolve_backend_env_device_id(
-            backend_type,
-            devices=(0, 1),
-            rank=1,
-            world_size=1,
-            learner_device="cuda:1",
-        )
-        == 1
+@pytest.mark.parametrize("backend_type", ["isaacgym", "isaacsim", "genesis", "newton"])
+def test_explicit_single_device_fallback_routes_backend_payload(
+    backend_type: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    assert resolve_backend_env_device_id(backend_type, learner_device="cuda:1") == 1
+
+
+def test_single_gpu_mjwarp_process_binding_needs_no_visibility_mask(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    warp = _FakeWarp()
+    monkeypatch.setattr(
+        mjwarp_runtime,
+        "load_mjwarp_dependencies",
+        lambda: SimpleNamespace(warp=warp),
     )
 
+    resolved = configure_backend_process_device("mjwarp", "cuda:0")
 
-@pytest.mark.parametrize(
-    "backend_type",
-    ["isaacgym", "isaacsim", "genesis", "newton"],
-)
-def test_torchrun_rank_routes_local_backend_device(backend_type: str) -> None:
-    # torchrun remaps CUDA_VISIBLE_DEVICES to [4, 5], so rank 1 must send
-    # local index 1 to the worker rather than host-visible index 5.
-    assert (
-        resolve_backend_env_device_id(
-            backend_type,
-            devices=(4, 5),
-            rank=1,
-            local_rank=1,
-            world_size=2,
-        )
-        == 1
-    )
+    assert resolved == "cuda:0"
+    assert warp.set_calls == ["cuda:0"]
 
 
-def test_backend_env_device_override_does_not_mutate_owner_mapping() -> None:
-    owner_override = {"isaacgym_device_id": 0, "nested": {"keep": True}}
-    routed = apply_backend_env_device_override(
-        owner_override,
-        "isaacgym",
-        devices=(0, 1),
-        rank=1,
-        world_size=1,
-    )
+@pytest.mark.parametrize("backend_type", ["isaacgym", "isaacsim", "genesis", "newton"])
+def test_multi_visible_rank_fails_closed(
+    backend_type: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
 
-    assert routed["isaacgym_device_id"] == 1
-    assert owner_override["isaacgym_device_id"] == 0
+    with pytest.raises(ValueError, match="exactly one CUDA_VISIBLE_DEVICES"):
+        resolve_backend_env_device_id(backend_type)
+
+
+def test_rank_local_visibility_entries_are_opaque() -> None:
+    assert rank_local_visible_cuda_entries(None) == ()
+    assert visible_cuda_entries("GPU-a,MIG-b") == ("GPU-a", "MIG-b")
+
+
+def test_backend_env_device_override_routes_rank_local_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
+    owner_override = {"isaacgym_device_id": 7, "nested": {"keep": True}}
+
+    routed = apply_backend_env_device_override(owner_override, "isaacgym")
+
+    assert routed["isaacgym_device_id"] == 0
+    assert owner_override["isaacgym_device_id"] == 7
     assert routed["nested"] is owner_override["nested"]
-
-
-def test_nonzero_rank_device_zero_emits_collision_warning() -> None:
-    with pytest.warns(RuntimeWarning, match=r"training\.devices=\[0, 1\]"):
-        warn_if_backend_device_collision(
-            "genesis",
-            devices=(0, 1),
-            rank=1,
-            device_id=0,
-        )
 
 
 def test_non_gpu_backend_is_left_untouched() -> None:
     owner_override = {"isaacgym_device_id": 0}
-    assert (
-        apply_backend_env_device_override(
-            owner_override,
-            "mujoco",
-            devices=(0, 1),
-            rank=1,
-            world_size=1,
-        )
-        == owner_override
-    )
+    assert apply_backend_env_device_override(owner_override, "mujoco") == owner_override
 
 
-def test_newton_override_carries_cuda_device_string() -> None:
-    # Newton consumes an explicit ``cuda:N`` string, so its rank-local device
-    # reaches spawn collectors as an override string rather than an integer id.
+def test_newton_override_carries_cuda_device_string(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     owner_override: dict[str, object] = {"newton_device": None, "nested": {"keep": True}}
-    routed = apply_backend_env_device_override(
-        owner_override,
-        "newton",
-        devices=(0, 1),
-        rank=1,
-        world_size=1,
-    )
 
-    assert routed["newton_device"] == "cuda:1"
+    routed = apply_backend_env_device_override(owner_override, "newton")
+
+    assert routed["newton_device"] == "cuda:0"
     assert owner_override["newton_device"] is None
     assert routed["nested"] is owner_override["nested"]
 
@@ -190,26 +172,13 @@ def test_newton_override_falls_back_to_learner_device() -> None:
     routed = apply_backend_env_device_override(
         None,
         "newton",
-        devices=None,
-        rank=0,
-        world_size=1,
         learner_device="cuda:0",
     )
 
     assert routed["newton_device"] == "cuda:0"
 
 
-def test_newton_nonzero_rank_device_zero_emits_collision_warning() -> None:
-    with pytest.warns(RuntimeWarning, match=r"training\.devices=\[0, 1\]"):
-        warn_if_backend_device_collision(
-            "newton",
-            devices=(0, 1),
-            rank=1,
-            device_id=0,
-        )
-
-
-@pytest.fixture
+@pytest.fixture()
 def genesis_pin_state(monkeypatch: pytest.MonkeyPatch):
     """Host-free Genesis pin lane: stub torch CUDA state and the pin latch."""
 
@@ -277,26 +246,6 @@ def test_genesis_pin_is_idempotent_for_repeated_rank_binding(
     assert bind_genesis_process_device("cuda:1") == "cuda:0"
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
     assert genesis_pin_state == [0, 0]
-
-
-def test_genesis_resolution_uses_pinned_namespace(genesis_pin_state: list[int]) -> None:
-    bind_genesis_process_device("cuda:1")
-
-    # After the pin every in-process consumer resolves to index 0, and the
-    # transition collision guard stays quiet because each rank owns its GPU.
-    assert (
-        resolve_backend_env_device_id(
-            "genesis",
-            devices=(0, 1),
-            rank=1,
-            world_size=1,
-            learner_device="cuda:1",
-        )
-        == 0
-    )
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        warn_if_backend_device_collision("genesis", devices=(0, 1), rank=1, device_id=0)
 
 
 def test_genesis_pin_rejects_index_beyond_visible_devices(

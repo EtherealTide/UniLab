@@ -11,7 +11,7 @@ Faithful xp-port of the NumPy computation in the collector-timed sections of
 - the pre-migration reset computations now owned by Manager-Based command and
   event terms (qpos/qvel sampling, commands, gait phase, kp/kd payload, obs
   rebuild at batch n_reset).
-- `NpEnv._reset_done_envs` scatter/gather (terminal-obs double copy, obs/info
+- selected-row reset scatter/gather (terminal observation copy and obs/info
   scatter).
 
 Excluded (identical across variants, not NumPy/Torch env math):
@@ -267,8 +267,8 @@ class WalkFlatWorkload:
         )
         self.obs = obs
 
-        # Done-triggered curriculum bookkeeping (truncated is NpEnv-side and
-        # excluded; done == terminated here).
+        # Done-triggered curriculum bookkeeping (truncation is environment-side
+        # and excluded; done == terminated here).
         if b.any_scalar(terminated):
             done_idx = b.nonzero(terminated)
             ep_len = b.float_(self.steps[done_idx]) + 1.0
@@ -289,7 +289,7 @@ class WalkFlatWorkload:
         b = self.b
         n = int(env_ids.shape[0])
 
-        # NpEnv._reset_done_envs: steps reset + terminal-obs double copy.
+        # Selected-row reset: steps reset + terminal-observation copy.
         self.steps[env_ids] = 0
         for key in ("obs", "critic"):
             self.final_obs[key][env_ids] = self.obs[key][env_ids]
@@ -330,7 +330,7 @@ class WalkFlatWorkload:
             self.dof_vel[env_ids],
         )
 
-        # NpEnv._reset_done_envs: obs/info scatter.
+        # Selected-row reset: obs/info scatter.
         for key in ("obs", "critic"):
             self.obs[key][env_ids] = obs_r[key]
         self.commands[env_ids] = commands

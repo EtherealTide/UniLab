@@ -1,8 +1,8 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681),
 # src/mjlab/envs/mdp/actions/actions.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy and the SimBackend/entity contracts; Apache-2.0.
-"""Joint transmission actions for the NumPy Manager-Based runtime."""
+# Modified by UniLab for the Manager-Based and entity contracts; Apache-2.0.
+"""Joint transmission actions for the Manager-Based runtime."""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ import math
 import re
 from dataclasses import dataclass
 from numbers import Real
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
+import torch
 
-from unilab.dtype_config import get_global_dtype
 from unilab.managers.action_manager import ActionTerm, ActionTermCfg
 
 if TYPE_CHECKING:
@@ -79,26 +79,35 @@ class BaseAction(ActionTerm):
 
     cfg: BaseActionCfg
     _entity: Entity
+    uses_tensor_actions: ClassVar[bool] = True
 
     def __init__(self, cfg: BaseActionCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg=cfg, env=env)
         target_ids, target_names = self._entity.find_joints_by_actuator_names(cfg.actuator_names)
         self._target_ids = np.asarray(target_ids, dtype=np.intp)
         self._target_ids.setflags(write=False)
+        self._device = getattr(env, "device", torch.device("cpu"))
+        self._target_index = torch.from_numpy(self._target_ids.copy()).to(
+            dtype=torch.int64, device=self._device
+        )
         self._target_names = list(target_names)
         self._action_dim = len(target_ids)
-        dtype = get_global_dtype()
-        self._raw_actions = np.zeros((self.num_envs, self.action_dim), dtype=dtype)
-        self._processed_actions = np.zeros_like(self._raw_actions)
-        self._scale = self._resolve_affine(cfg.scale, default=1.0, label="scale")
-        self._offset = self._resolve_affine(cfg.offset, default=0.0, label="offset")
-        self._clip = self._resolve_clip(cfg.clip)
+        self._raw_actions = torch.zeros(
+            (self.num_envs, self.action_dim), dtype=torch.float32, device=self._device
+        )
+        self._processed_actions = torch.zeros_like(self._raw_actions)
+        self._affine_shape = (self.num_envs, self.action_dim)
+        self._scale = self._cold_affine(self._resolve_affine(cfg.scale, default=1.0, label="scale"))
+        self._offset = self._cold_affine(
+            self._resolve_affine(cfg.offset, default=0.0, label="offset")
+        )
+        self._clip = self._cold_clip(self._resolve_clip(cfg.clip))
 
     def _resolve_affine(
         self, value: float | dict[str, float], *, default: float, label: str
     ) -> float | np.ndarray:
         if isinstance(value, dict):
-            result = np.full_like(self._raw_actions, default)
+            result = np.full(self._affine_shape, default, dtype=np.float32)
             indices, resolved = _resolve_named_values(
                 value, self._target_names, label=f"{type(self).__name__} {label}"
             )
@@ -111,7 +120,7 @@ class BaseAction(ActionTerm):
     def _resolve_clip(self, value: dict[str, tuple] | None) -> np.ndarray | None:
         if value is None:
             return None
-        result = np.empty((*self._raw_actions.shape, 2), dtype=self._raw_actions.dtype)
+        result = np.empty((*self._affine_shape, 2), dtype=np.float32)
         result[..., 0] = -np.inf
         result[..., 1] = np.inf
         indices, bounds = _resolve_named_values(
@@ -134,20 +143,30 @@ class BaseAction(ActionTerm):
             result[:, index, 1] = upper
         return result
 
+    def _cold_affine(self, value: float | np.ndarray) -> float | torch.Tensor:
+        if isinstance(value, np.ndarray):
+            return torch.from_numpy(value).to(dtype=torch.float32, device=self._device, copy=True)
+        return value
+
+    def _cold_clip(self, value: np.ndarray | None) -> torch.Tensor | None:
+        if value is None:
+            return None
+        return torch.from_numpy(value).to(dtype=torch.float32, device=self._device, copy=True)
+
     @property
-    def scale(self) -> float | np.ndarray:
+    def scale(self) -> float | torch.Tensor:
         return self._scale
 
     @property
-    def offset(self) -> float | np.ndarray:
+    def offset(self) -> float | torch.Tensor:
         return self._offset
 
     @property
-    def raw_action(self) -> np.ndarray:
+    def raw_action(self) -> torch.Tensor:
         return self._raw_actions
 
     @property
-    def processed_action(self) -> np.ndarray:
+    def processed_action(self) -> torch.Tensor:
         return self._processed_actions
 
     @property
@@ -162,33 +181,65 @@ class BaseAction(ActionTerm):
     def target_names(self) -> list[str]:
         return list(self._target_names)
 
-    def process_actions(self, actions: np.ndarray) -> None:
-        if not isinstance(actions, np.ndarray):
+    def process_actions(self, actions: torch.Tensor) -> None:
+        if not isinstance(actions, torch.Tensor):
             raise TypeError(
-                f"{type(self).__name__} expected np.ndarray, got {type(actions).__name__}"
+                f"{type(self).__name__} expected torch.Tensor, got {type(actions).__name__}"
             )
         if actions.shape != self._raw_actions.shape:
             raise ValueError(
                 f"{type(self).__name__} expected action shape {self._raw_actions.shape}, "
                 f"got {actions.shape}"
             )
-        if not np.isfinite(actions).all():
+        if actions.dtype != torch.float32:
+            raise TypeError(f"{type(self).__name__} expected float32 actions")
+        if actions.device != self._device:
+            raise ValueError(
+                f"{type(self).__name__} expected device {self._device}, got {actions.device}"
+            )
+        if not bool(torch.isfinite(actions).all()):
             raise ValueError(f"{type(self).__name__} received NaN or Inf actions")
-        self._raw_actions[:] = actions
-        np.multiply(self._raw_actions, self._scale, out=self._processed_actions)
-        np.add(self._processed_actions, self._offset, out=self._processed_actions)
+        self._raw_actions.copy_(actions)
+        self._apply_affine(self._raw_actions, self._processed_actions)
+
+    def validate_actions(self) -> None:
+        """Validate the manager-owned raw action, not its affine projection."""
+        if not bool(torch.isfinite(self._raw_actions).all()):
+            raise ValueError(f"{type(self).__name__} received NaN or Inf actions")
+
+    def _apply_affine(self, source: torch.Tensor, destination: torch.Tensor) -> None:
+        destination.copy_(source)
+        destination.mul_(self._scale).add_(self._offset)
         if self._clip is not None:
-            np.clip(
-                self._processed_actions,
-                self._clip[..., 0],
-                self._clip[..., 1],
-                out=self._processed_actions,
+            destination.clamp_(
+                min=self._clip[..., 0],
+                max=self._clip[..., 1],
             )
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         if env_ids is None:
             env_ids = slice(None)
-        self._raw_actions[env_ids] = 0.0
+        selector = self._reset_selector(env_ids)
+        self._raw_actions[selector] = 0.0
+
+    def _reset_selector(self, env_ids: torch.Tensor | np.ndarray | slice) -> torch.Tensor | slice:
+        if isinstance(env_ids, slice):
+            return env_ids
+        if (
+            not isinstance(env_ids, torch.Tensor)
+            or env_ids.ndim != 1
+            or env_ids.dtype
+            not in {
+                torch.int32,
+                torch.int64,
+            }
+        ):
+            raise TypeError(f"{type(self).__name__} reset rows must be 1-D integers")
+        return env_ids.to(self._device, torch.int64)
+
+    def _entity_values(self, values: torch.Tensor) -> np.ndarray:
+        """Publish processed controls to the temporary NumPy Entity write boundary."""
+        return values.detach().cpu().numpy()
 
 
 @dataclass(kw_only=True)
@@ -211,12 +262,40 @@ class JointPositionAction(BaseAction):
             raise TypeError("JointPositionActionCfg use_default_offset must be bool")
         super().__init__(cfg=cfg, env=env)
         if cfg.use_default_offset:
-            self._offset = self._entity.data.default_joint_pos[:, self._target_ids].copy()
-        self._target = np.empty_like(self._processed_actions)
+            self._offset = self._cold_affine(
+                self._entity.data.default_joint_pos[:, self._target_ids].copy()
+            )
+        self._target = np.empty((self.num_envs, self.action_dim), dtype=np.float32)
+        self._tensor_target = torch.empty_like(self._processed_actions)
+        self._full_width_natural_target = self._target_ids.size == self._entity.num_joints and bool(
+            np.array_equal(self._target_ids, np.arange(self._entity.num_joints, dtype=np.intp))
+        )
 
     def apply_actions(self) -> None:
+        control = self._entity.data.control_buffer
+        if isinstance(control, torch.Tensor):
+            # Stay on the control plane for tensor-native joint transmissions.
+            # EntityData.write_ctrl owns all layout/range/finite checks; this
+            # only removes the full-batch D2H and H2D scatter otherwise created
+            # by the temporary NumPy entity boundary.
+            encoder_bias = self._entity.data.encoder_bias_tensor.to(
+                device=self._device, non_blocking=True
+            )
+            torch.sub(
+                self._processed_actions,
+                encoder_bias.index_select(1, self._target_index),
+                out=self._tensor_target,
+            )
+            if self._full_width_natural_target:
+                self._entity.set_full_width_joint_position_target(self._tensor_target)
+            else:
+                self._entity.set_joint_position_target(
+                    self._tensor_target, joint_ids=self._target_ids
+                )
+            return
+        processed = self._entity_values(self._processed_actions)
         encoder_bias = self._entity.data.encoder_bias[:, self._target_ids]
-        np.subtract(self._processed_actions, encoder_bias, out=self._target)
+        np.subtract(processed, encoder_bias, out=self._target)
         self._entity.set_joint_position_target(self._target, joint_ids=self._target_ids)
 
 
@@ -248,10 +327,20 @@ class RelativeJointPositionActionCfg(BaseActionCfg):
 class RelativeJointPositionAction(BaseAction):
     """Control joints via position targets relative to current positions."""
 
+    def _joint_state(self):
+        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        if read_plan is not None:
+            return read_plan.joint_tensor_view(self._entity)
+        return self._entity.joint_tensor_view(self._device)
+
     def apply_actions(self) -> None:
-        current = self._entity.data.joint_pos[:, self._target_ids]
-        target = current + self._processed_actions
-        self._entity.set_joint_position_target(target, joint_ids=self._target_ids)
+        joint_state = self._joint_state()
+        target = joint_state.joint_pos.index_select(1, self._target_index) + (
+            self._processed_actions
+        )
+        self._entity.set_joint_position_target(
+            self._entity_values(target), joint_ids=self._target_ids
+        )
 
 
 @dataclass(kw_only=True)
@@ -272,11 +361,13 @@ class JointVelocityAction(BaseAction):
         if not isinstance(cfg.use_default_offset, bool):
             raise TypeError("JointVelocityActionCfg use_default_offset must be bool")
         if cfg.use_default_offset:
-            self._offset = self._entity.data.default_joint_vel[:, self._target_ids].copy()
+            self._offset = self._cold_affine(
+                self._entity.data.default_joint_vel[:, self._target_ids].copy()
+            )
 
     def apply_actions(self) -> None:
         self._entity.set_joint_velocity_target(
-            self._processed_actions,
+            self._entity_values(self._processed_actions),
             joint_ids=self._target_ids,
         )
 
@@ -294,7 +385,7 @@ class JointEffortAction(BaseAction):
 
     def apply_actions(self) -> None:
         self._entity.set_joint_effort_target(
-            self._processed_actions,
+            self._entity_values(self._processed_actions),
             joint_ids=self._target_ids,
         )
 

@@ -4,17 +4,33 @@ from __future__ import annotations
 
 import importlib.util
 import queue
+import socket
 from pathlib import Path
+from subprocess import CompletedProcess
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import gymnasium as gym
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from uni_rl.ipc.dp_launcher import UNILAB_DP_LOG_DIR, UNILAB_DP_RANK, UNILAB_DP_WORLD_SIZE
+from uni_rl.utils.tensor_runtime import (
+    InferencePlacement,
+    InferenceTransport,
+    TensorRuntimeSettings,
+)
+
+from unilab.training import cuda_process_sharing
 
 _ROOT = Path(__file__).parent.parent.parent
 _CONF_DIR = _ROOT / "src" / "unilab" / "conf"
+
+
+@pytest.fixture(autouse=True)
+def _rank_local_cuda_visibility(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
 
 
 def _offpolicy():
@@ -30,17 +46,12 @@ def _offpolicy_cfg(overrides: list[str] | None = None, *, algo: str = "sac"):
     GlobalHydra.instance().clear()
     normalized: list[str] = []
     task_selected = False
-    devices_selected = False
     for override in overrides or []:
         if override.startswith("task="):
             task_selected = True
-        elif override.startswith("training.devices="):
-            devices_selected = True
         normalized.append(override)
     if not task_selected:
         normalized.append("task=g1_walk_flat/mujoco")
-    if not devices_selected:
-        normalized.append("training.devices=[0]")
     with initialize_config_dir(config_dir=str(_CONF_DIR / algo), version_base="1.3"):
         return compose("config", overrides=normalized, return_hydra_config=True)
 
@@ -48,6 +59,9 @@ def _offpolicy_cfg(overrides: list[str] | None = None, *, algo: str = "sac"):
 class _FakeEnv:
     obs_groups_spec = {"obs": 4, "critic": 6}
     action_space = gym.spaces.Box(-1.0, 1.0, shape=(2,))
+
+    def init_state(self):
+        return SimpleNamespace(obs={"obs": torch.zeros((1, 4)), "critic": torch.zeros((1, 6))})
 
     def close(self):
         return None
@@ -78,10 +92,162 @@ def _fake_env_factory(num_envs, env_cfg_override):
     return _FakeEnv()
 
 
+def _cuda_torch_module(monkeypatch: pytest.MonkeyPatch, uuid: str = "GPU-a"):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda _index: SimpleNamespace(uuid=uuid),
+    )
+
+
+class _FakeCudaProcessSharingEvidence:
+    configured = "mps"
+    effective = "mps"
+    validated = True
+    learner_device = "cuda:0"
+    collector_device = "cuda:0"
+    learner_gpu_uuid = None
+    collector_gpu_uuid = None
+    control_pipe = "/tmp/unilab-mps/control"
+    server_pid = 2768293
+
+    def manifest(self):
+        return {
+            "configured": self.configured,
+            "effective": self.effective,
+            "validated": self.validated,
+            "learner_device": self.learner_device,
+            "collector_device": self.collector_device,
+            "learner_gpu_uuid": self.learner_gpu_uuid,
+            "collector_gpu_uuid": self.collector_gpu_uuid,
+            "control_pipe": self.control_pipe,
+            "server_pid": self.server_pid,
+        }
+
+
 def test_offpolicy_config_has_one_replay_path():
     cfg = _offpolicy_cfg()
     assert cfg.training.replay_prefetch_mode == "one_tick"
     assert cfg.training.env_steps_per_sync == 1
+    assert cfg.training.inference_slot_capacity == 1
+    assert cfg.training.collector_metrics_interval == 1
+    assert cfg.training.replay_ingress_depth == 2
+    assert cfg.training.replay_ingress_slot_rows is None
+
+
+@pytest.mark.parametrize("algo", ["sac", "flashsac", "warpsac"])
+def test_offpolicy_owners_default_cuda_process_sharing_off(algo: str):
+    cfg = _offpolicy_cfg(algo=algo)
+
+    assert cfg.training.cuda_process_sharing is None
+
+
+def test_flashsac_scoped_tensor_benchmark_reduces_metric_flush_frequency():
+    cfg = _offpolicy_cfg(
+        ["task=g1_motion_tracking/mjwarp"],
+        algo="flashsac",
+    )
+
+    assert cfg.training.inference_slot_capacity == 1
+    assert cfg.training.collector_metrics_interval == 100
+    assert cfg.training.replay_ingress_depth == 2
+    assert cfg.training.replay_ingress_slot_rows is None
+
+
+def test_warpsac_declares_public_tensor_runtime_knobs():
+    cfg = _offpolicy_cfg(algo="warpsac")
+
+    assert cfg.training.inference_slot_capacity == 1
+    assert cfg.training.collector_metrics_interval == 1
+    assert cfg.training.replay_ingress_depth == 2
+    assert cfg.training.replay_ingress_slot_rows is None
+
+
+@pytest.mark.parametrize("algo", ["sac", "flashsac", "warpsac"])
+def test_cuda_process_sharing_request_fails_before_env_materialization(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    algo: str,
+):
+    module = _offpolicy()
+    _cuda_torch_module(monkeypatch)
+    cfg = _offpolicy_cfg(
+        ["task=g1_walk_flat/mjwarp", "training.cuda_process_sharing=mps"],
+        algo=algo,
+    )
+
+    def reject_factory(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("invalid MPS topology must fail before env creation")
+
+    monkeypatch.setattr(module, "registry_env_factory", reject_factory)
+    monkeypatch.setattr(
+        module,
+        "configure_backend_process_device",
+        lambda _backend, device: device,
+    )
+    monkeypatch.setattr(
+        module,
+        "probe_cuda_process_sharing",
+        lambda *_args, **kwargs: cuda_process_sharing.probe_cuda_process_sharing(
+            *_args,
+            **kwargs,
+            run_command=lambda *_command, **_run_kwargs: CompletedProcess(
+                [], 0, stdout="0,GPU-a\n"
+            ),
+        ),
+    )
+    monkeypatch.setattr(cuda_process_sharing, "_nvidia_uuid", lambda *_args, **_kwargs: "A")
+    # Keep the host daemon discovery deterministic: point at a real Unix socket
+    # that has no daemon behind it.
+    control = tmp_path / "nvidia-mps" / "control"
+    control.parent.mkdir(parents=True)
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(control))
+    control.chmod(0o666)
+    monkeypatch.setenv("CUDA_MPS_PIPE_DIRECTORY", str(control.parent))
+    monkeypatch.setenv("CUDA_MPS_LOG_DIRECTORY", str(tmp_path / "nvidia-mps-log"))
+    monkeypatch.setattr(
+        cuda_process_sharing.subprocess,
+        "run",
+        lambda *_args, **_kwargs: CompletedProcess([], 0, stdout="2768293\n"),
+    )
+    with pytest.raises(
+        ValueError,
+        match="could not reach the control daemon|found no control pipe",
+    ):
+        module.build_runner(algo, cfg)
+
+
+def test_valid_cuda_process_sharing_evidence_enters_runner_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    module = _offpolicy()
+    _cuda_torch_module(monkeypatch)
+    cfg = _offpolicy_cfg(["task=g1_walk_flat/mjwarp", "training.cuda_process_sharing=mps"])
+    evidence = _FakeCudaProcessSharingEvidence()
+    monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
+    monkeypatch.setattr(
+        module,
+        "configure_backend_process_device",
+        lambda _backend, device: device,
+    )
+    monkeypatch.setattr(
+        module,
+        "probe_cuda_process_sharing",
+        lambda *args, **kwargs: evidence,
+    )
+
+    import uni_rl.algos.fast_sac.double_buffer as owner_module
+
+    monkeypatch.setattr(owner_module, "FastSACLearner", _FakeLearner)
+    monkeypatch.setattr(owner_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
+
+    runner = module.build_runner("sac", cfg)
+
+    assert runner.runtime_manifest["cuda_process_sharing"] == evidence.manifest()
 
 
 @pytest.mark.parametrize("mode", ["invalid_mode", "same_tick"])
@@ -91,26 +257,60 @@ def test_non_one_tick_prefetch_is_rejected_before_dispatch(mode: str):
         _offpolicy().build_runner("sac", cfg)
 
 
+@pytest.mark.parametrize(
+    ("setting", "value", "maximum"),
+    [
+        ("inference_slot_capacity", 17, 16),
+        ("collector_metrics_interval", 10_001, 10_000),
+        ("replay_ingress_depth", 17, 16),
+    ],
+)
 @pytest.mark.parametrize("algo", ["sac", "flashsac", "warpsac"])
-@pytest.mark.parametrize("device", ["cpu", "xpu"])
-def test_non_cuda_training_devices_fail_before_env_materialization(
+def test_tensor_runtime_bounds_fail_before_env_materialization(
     monkeypatch: pytest.MonkeyPatch,
     algo: str,
-    device: str,
+    setting: str,
+    value: int,
+    maximum: int,
 ):
     module = _offpolicy()
-    cfg = _offpolicy_cfg([f"training.devices=[{device}]"], algo=algo)
+    cfg = _offpolicy_cfg([f"training.{setting}={value}"], algo=algo)
     env_calls = 0
 
     def reject_factory(num_envs, env_cfg_override):
         del num_envs, env_cfg_override
         nonlocal env_calls
         env_calls += 1
-        raise AssertionError("unsupported replay device must fail before env creation")
+        raise AssertionError("invalid tensor-runtime bounds must fail before env creation")
 
-    # The injected env_factory is the only env-construction seam uni_rl has.
     monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: reject_factory)
-    with pytest.raises(ValueError, match="training.devices entries"):
+    pattern = rf"training\.{setting}.*no greater than {maximum}"
+    with pytest.raises(ValueError, match=pattern):
+        module.build_runner(algo, cfg)
+    assert env_calls == 0
+
+
+@pytest.mark.parametrize("algo", ["sac", "flashsac", "warpsac"])
+def test_replay_ingress_rows_fail_before_env_materialization_when_above_num_envs(
+    monkeypatch: pytest.MonkeyPatch,
+    algo: str,
+):
+    module = _offpolicy()
+    cfg = _offpolicy_cfg(algo=algo)
+    cfg.training.replay_ingress_slot_rows = cfg.algo.num_envs + 1
+    env_calls = 0
+
+    def reject_factory(num_envs, env_cfg_override):
+        del num_envs, env_cfg_override
+        nonlocal env_calls
+        env_calls += 1
+        raise AssertionError("invalid replay-ingress rows must fail before env creation")
+
+    monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: reject_factory)
+    with pytest.raises(
+        ValueError,
+        match=rf"training\.replay_ingress_slot_rows.*no greater than {cfg.algo.num_envs}",
+    ):
         module.build_runner(algo, cfg)
     assert env_calls == 0
 
@@ -130,6 +330,22 @@ def test_sac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPatch):
     assert runner.kwargs["algo_type"] == "sac"
     assert runner.kwargs["device"] == "cuda:0"
     assert runner.kwargs["replay_prefetch_mode"] == "one_tick"
+    settings = runner.kwargs["tensor_runtime_settings"]
+    assert isinstance(settings, TensorRuntimeSettings)
+    assert settings.inference_slot_capacity == 1
+    assert settings.collector_metrics_interval == 1
+    assert settings.replay_ingress_depth == 2
+    assert settings.replay_ingress_slot_rows == cfg.algo.num_envs
+    assert settings.num_envs == cfg.algo.num_envs
+    assert settings.batch_size == cfg.algo.batch_size
+    assert settings.updates_per_step == cfg.algo.updates_per_step
+    assert settings.learner_sample_count == (cfg.algo.batch_size * cfg.algo.updates_per_step)
+    assert runner.kwargs["batch_size"] == settings.batch_size
+    assert runner.kwargs["updates_per_step"] == settings.updates_per_step
+    assert settings.configured_inference_slot_capacity == 1
+    assert settings.configured_collector_metrics_interval == 1
+    assert settings.configured_replay_ingress_depth == 2
+    assert settings.configured_replay_ingress_slot_rows is None
     assert runner.kwargs["learner"].kwargs == {
         "device": "cuda:0",
         "obs_dim": 4,
@@ -203,23 +419,75 @@ def test_flashsac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPa
     assert runner.kwargs["algo_type"] == "flashsac"
     assert runner.kwargs["device"] == "cuda:0"
     assert runner.kwargs["replay_prefetch_mode"] == "one_tick"
+    settings = runner.kwargs["tensor_runtime_settings"]
+    assert isinstance(settings, TensorRuntimeSettings)
+    assert settings.inference_slot_capacity == 1
+    assert settings.collector_metrics_interval == 1
+    assert settings.replay_ingress_depth == 2
+    assert settings.replay_ingress_slot_rows == cfg.algo.num_envs
+    assert settings.num_envs == cfg.algo.num_envs
+    assert settings.batch_size == cfg.algo.batch_size
+    assert settings.updates_per_step == cfg.algo.updates_per_step
+    assert settings.learner_sample_count == (cfg.algo.batch_size * cfg.algo.updates_per_step)
+    assert runner.kwargs["batch_size"] == settings.batch_size
+    assert runner.kwargs["updates_per_step"] == settings.updates_per_step
+    assert settings.configured_inference_slot_capacity == 1
+    assert settings.configured_collector_metrics_interval == 1
+    assert settings.configured_replay_ingress_depth == 2
+    assert settings.configured_replay_ingress_slot_rows is None
 
 
 def test_warpsac_dispatch_constructs_regime_aware_runner(
     monkeypatch: pytest.MonkeyPatch,
 ):
     module = _offpolicy()
-    cfg = _offpolicy_cfg(algo="warpsac")
+    cfg = _offpolicy_cfg(
+        [
+            "training.inference_slot_capacity=3",
+            "training.collector_metrics_interval=7",
+            "training.replay_ingress_depth=4",
+            "training.replay_ingress_slot_rows=2",
+        ],
+        algo="warpsac",
+    )
 
-    import uni_rl.algos.warp_sac.double_buffer as warp_module
+    import uni_rl.algos.flash_sac.double_buffer as warp_module
 
     monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
-    monkeypatch.setattr(warp_module, "WarpSACLearner", _FakeLearner)
+    monkeypatch.setattr(warp_module, "FlashSACLearner", _FakeLearner)
     monkeypatch.setattr(warp_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
 
     runner = module.build_runner("warpsac", cfg)
     assert isinstance(runner, _FakeRunner)
-    assert runner.kwargs["algo_type"] == "warpsac"
+    assert runner.kwargs["algo_type"] == "flashsac"
+    settings = runner.kwargs["tensor_runtime_settings"]
+    assert isinstance(settings, TensorRuntimeSettings)
+    assert settings.inference_slot_capacity == 3
+    assert settings.collector_metrics_interval == 7
+    assert settings.replay_ingress_depth == 4
+    assert settings.replay_ingress_slot_rows == 2
+    assert settings.num_envs == cfg.algo.num_envs
+    assert settings.batch_size == cfg.algo.batch_size
+    assert settings.updates_per_step == cfg.algo.updates_per_step
+    assert settings.learner_sample_count == (cfg.algo.batch_size * cfg.algo.updates_per_step)
+    assert runner.kwargs["batch_size"] == settings.batch_size
+    assert runner.kwargs["updates_per_step"] == settings.updates_per_step
+    assert settings.configured_inference_slot_capacity == 3
+    assert settings.configured_collector_metrics_interval == 7
+    assert settings.configured_replay_ingress_depth == 4
+    assert settings.configured_replay_ingress_slot_rows == 2
+    assert "inference_slot_capacity" not in runner.kwargs
+    assert "collector_metrics_interval" not in runner.kwargs
+    manifest = settings.manifest()
+    assert manifest["replay_ingress_depth"]["default"] == 2
+    assert manifest["replay_ingress_depth"]["effective"] == 4
+    assert manifest["replay_ingress_depth"]["maximum"] == 16
+    assert manifest["replay_ingress_slot_rows"]["default"] == "algo.num_envs"
+    assert manifest["replay_ingress_slot_rows"]["effective"] == 2
+    assert manifest["replay_ingress_slot_rows"]["maximum"] == cfg.algo.num_envs
+    assert manifest["learner_sampling"]["effective_rows_per_sync"] == (
+        settings.learner_sample_count
+    )
     assert runner.kwargs["replay_pipeline_factory"].keywords == {
         "decay_step": cfg.algo.decay_step,
         "min_weight": cfg.algo.replay_min_weight,
@@ -236,7 +504,16 @@ def test_flashsac_n_step_is_rejected():
 def _bare_runner():
     from uni_rl.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
 
-    return object.__new__(DoubleBufferOffPolicyRunner)
+    runner = object.__new__(DoubleBufferOffPolicyRunner)
+    runner.inference_placement = InferencePlacement(
+        mode=InferenceTransport.CPU,
+        env_device="cpu",
+        ring_device="cpu",
+        learner_device="cpu",
+        collector_tensor_native=False,
+        staging_policy="cpu_explicit_staging",
+    )
+    return runner
 
 
 def test_inference_response_detects_dead_collector():
@@ -294,17 +571,19 @@ def test_build_runner_binds_mjwarp_rank_process_to_learner_device(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(UNILAB_DP_RANK, "1")
+    monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     monkeypatch.setenv(UNILAB_DP_LOG_DIR, "/tmp/offpolicy_test_run")
     bindings: list[tuple[str, str]] = []
 
     runner, _ = _build_sac_runner_with_fakes(
         monkeypatch,
-        ["task=g1_walk_flat/mjwarp", "training.devices=[0,1]"],
+        ["task=g1_walk_flat/mjwarp"],
         backend_binding_calls=bindings,
     )
 
-    assert bindings == [("mjwarp", "cuda:1")]
-    assert runner.kwargs["device"] == "cuda:1"
+    assert bindings == [("mjwarp", "cuda:0")]
+    assert runner.kwargs["device"] == "cuda:0"
 
 
 def test_build_runner_partitions_collector_cpus_per_rank(monkeypatch: pytest.MonkeyPatch):
@@ -312,18 +591,20 @@ def test_build_runner_partitions_collector_cpus_per_rank(monkeypatch: pytest.Mon
         "uni_rl.ipc.dp_launcher._discover_physical_cpu_groups",
         lambda _: [[core, core + 64] for core in range(64)],
     )
-    # Spawned rank: rank comes from the env, world_size from training.devices.
+    # Spawned rank/world size come from the launcher environment.
     monkeypatch.setenv(UNILAB_DP_RANK, "1")
+    monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     monkeypatch.setenv(UNILAB_DP_LOG_DIR, "/tmp/offpolicy_test_run")
     runner, probe_env_calls = _build_sac_runner_with_fakes(
         monkeypatch,
-        ["training.devices=[0,1]"],
+        [],
         cpu_count=128,
     )
     assert runner.kwargs["collector_cpu_ids"] == [
         cpu for core in range(32, 64) for cpu in (core, core + 64)
     ]
-    assert runner.kwargs["device"] == "cuda:1"
+    assert runner.kwargs["device"] == "cuda:0"
     # The thread budget is resolved against the rank's CPU share, not the host.
     assert runner.kwargs["torch_thread_runtime"]["cpu_count"] == 64
     # The num_envs=1 probe env must never see cpu_ids (it would size its
@@ -335,16 +616,16 @@ def test_build_runner_partitions_collector_cpus_per_rank(monkeypatch: pytest.Mon
 
 
 def test_build_runner_rank_zero_partitions_without_dp_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv(UNILAB_DP_RANK, raising=False)
+    monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     monkeypatch.setattr(
         "uni_rl.ipc.dp_launcher._discover_physical_cpu_groups",
         lambda _: [[core, core + 64] for core in range(64)],
     )
-    # Rank 0 carries no UNILAB_DP_* env; world_size must come from the config.
-    monkeypatch.delenv(UNILAB_DP_RANK, raising=False)
-    monkeypatch.delenv(UNILAB_DP_WORLD_SIZE, raising=False)
     runner, _ = _build_sac_runner_with_fakes(
         monkeypatch,
-        ["training.devices=[0,1]"],
+        [],
         cpu_count=128,
     )
     assert runner.kwargs["collector_cpu_ids"] == [
@@ -368,10 +649,11 @@ def test_build_runner_single_rank_keeps_collector_cpus_unset(monkeypatch: pytest
 
 def test_build_runner_explicit_dp_collector_cpu_ids(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv(UNILAB_DP_RANK, "0")
+    monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     runner, probe_env_calls = _build_sac_runner_with_fakes(
         monkeypatch,
         [
-            "training.devices=[0,1]",
             "training.dp_collector_cpu_ids=[[0,1],[2,3]]",
         ],
         cpu_count=128,
@@ -395,7 +677,7 @@ def test_collector_env_cfg_override_without_cpu_ids_passes_through():
     runner = _bare_runner()
     runner.env_cfg_override = {"a": 1}
     runner.collector_cpu_ids = None
-    assert runner._collector_env_cfg_override() is runner.env_cfg_override
+    assert runner._collector_env_cfg_override() == runner.env_cfg_override
 
 
 def test_collector_env_cfg_override_from_none_base():

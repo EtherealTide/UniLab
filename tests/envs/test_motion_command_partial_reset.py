@@ -18,6 +18,7 @@ from typing import Callable
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
@@ -30,10 +31,7 @@ from unilab.tasks.motion_tracking.g1.manager_terms import BoxMotionCommand
 
 _ROOT = Path(__file__).parents[2]
 
-_CASES = (
-    ("ppo", "g1_flip_tracking", "G1FlipTracking"),
-    ("ppo", "g1_box_tracking", "G1BoxTracking"),
-)
+_CASES = (("ppo", "g1_box_tracking", "G1BoxTracking"),)
 
 _SAMPLER_STAT_METRICS = ("sampling_entropy", "sampling_top1_prob", "sampling_top1_bin")
 
@@ -130,13 +128,15 @@ def test_motion_command_partial_reset_row_parity(
         action_dim = term.motion.num_joints
         rng = np.random.default_rng(7)
         for _ in range(5):
-            env.step((0.1 * rng.standard_normal((num_envs, action_dim))).astype(np.float32))
+            env.step(
+                torch.tensor(0.1 * rng.standard_normal((num_envs, action_dim)), dtype=torch.float32)
+            )
 
         reset_ids = np.array([0, 2], dtype=np.int32)
         keep_ids = np.array([1, 3], dtype=np.int32)
         before = {name: value.copy() for name, value in _buffers(term).items()}
         metrics_before = {name: value.copy() for name, value in term.metrics.items()}
-        reset_obs, _ = env.reset(env_ids=reset_ids)
+        reset_obs, _ = env.reset(env_indices=torch.tensor(reset_ids, dtype=torch.int64))
         after = _buffers(term)
 
         # Untouched rows keep their per-step values bit-identically, except the
@@ -164,7 +164,7 @@ def test_motion_command_partial_reset_row_parity(
         assert env.state is not None
         for group, values in reset_obs.items():
             assert values.shape[0] == len(reset_ids)
-            assert np.isfinite(values).all()
+            assert torch.isfinite(values).all()
             np.testing.assert_array_equal(env.state.obs[group][reset_ids], values)
 
         # Reference: a full recompute of the post-reset state (the pre-#1261

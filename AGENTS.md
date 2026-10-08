@@ -38,11 +38,11 @@ architecture changes.
   stay importable and functional without uni_rl for single-process runs;
   only multi-GPU launch delegates lazily to `uni_rl.ipc`. The env factory
   must be a pickleable `EnvFactory` for spawn collectors.
-- Environment reset returns `(obs_dict, info_dict)` and `NpEnvState.obs` is a
-  dict. Keep `obs_groups_spec` and policy dimensions consistent with wrappers
-  and learners.
+- Environment reset returns `(obs_dict, info_dict)` and `TorchEnvState.obs` is a
+  dict of tensors. Keep `obs_groups_spec` and policy dimensions consistent with
+  wrappers and learners.
 - The Manager-Based runtime is the sole task runtime; do not restore legacy
-  `EnvCfg -> NpEnv` factories or compatibility seams.
+  class-config factory seams or compatibility layers.
 - Manager-Based event terms negotiated through `SimBackend` capabilities are
   the sole DR lifecycle; do not reintroduce a DR manager/provider protocol, and
   unsupported capabilities fail closed.
@@ -101,7 +101,7 @@ them in the issue/ADR before expanding the work.
 
 ## Useful pointers
 
-- Env contract: `src/unilab/base/np_env.py`
+- Env contract: `src/unilab/base/torch_env.py`
 - Env factory/device binding: `src/unilab/base/env_factory.py`,
   `src/unilab/base/process_device.py`
 - Backend owner: `src/unilab/base/backend_factory.py`

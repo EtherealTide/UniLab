@@ -8,9 +8,9 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.base import BackendSensorView
 
-from unilab.dtype_config import get_global_dtype
 from unilab.managers import (
     ObservationGroupCfg,
     ObservationManager,
@@ -153,13 +153,13 @@ def test_gait_phase_matches_global_legacy_clock_and_ignores_episode_reset() -> N
     manager = _observations(env)
     assert manager.group_obs_dim == {"policy": (4,)}
     initial = manager.compute_group("policy")
-    assert isinstance(initial, np.ndarray)
+    assert isinstance(initial, torch.Tensor)
     np.testing.assert_array_equal(initial, [[0.0, 0.5, 0.5, 0.0]] * 2)
 
     cast(Any, env).common_step_counter = 25
     env.episode_length_buf[:] = [0, 999]  # Partial reset does not reset the global clock.
     advanced = manager.compute_group("policy")
-    assert isinstance(advanced, np.ndarray)
+    assert isinstance(advanced, torch.Tensor)
     np.testing.assert_allclose(
         advanced, [[1.1920929e-7, 0.5000001, 0.5000001, 1.1920929e-7]] * 2, atol=1e-8
     )
@@ -172,7 +172,7 @@ def test_standing_aware_gait_freezes_only_standing_environments() -> None:
 
     cast(Any, env).common_step_counter = 1
     phase = manager.compute_group("policy")
-    assert isinstance(phase, np.ndarray)
+    assert isinstance(phase, torch.Tensor)
     np.testing.assert_allclose(
         phase,
         [[0.0, 0.5, 0.5, 0.0], [0.04, 0.54, 0.54, 0.04]],
@@ -344,8 +344,13 @@ def test_base_reward_terms_match_go2_flat_equations() -> None:
     }
     for name in expected:
         assert actual[name].shape == (2,)
-        assert actual[name].dtype == np.dtype(get_global_dtype())
-        np.testing.assert_allclose(actual[name], expected[name], rtol=1e-6, atol=1e-7)
+        assert actual[name].dtype == torch.float32
+        torch.testing.assert_close(
+            actual[name],
+            torch.from_numpy(np.ascontiguousarray(expected[name])),
+            rtol=1e-6,
+            atol=1e-7,
+        )
 
 
 def test_base_reward_terms_fail_closed_at_nearest_boundary() -> None:

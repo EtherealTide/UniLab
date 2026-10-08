@@ -11,6 +11,10 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
 import numpy as np
+import torch
+from unisim.backend.base import SimBackend
+
+from unilab.managers.torch_rng import TorchManagerRng
 
 
 class ManagerEntity(Protocol):
@@ -48,6 +52,9 @@ class ManagerEntity(Protocol):
 
     @property
     def pair_names(self) -> Sequence[str]: ...
+
+    @property
+    def data(self) -> Any: ...
 
     @property
     def num_joints(self) -> int: ...
@@ -134,6 +141,20 @@ class ManagerEntity(Protocol):
         env_ids: np.ndarray | slice | None = None,
     ) -> None: ...
 
+    def write_root_state_tensor_to_sim(
+        self,
+        root_state: torch.Tensor,
+        env_ids: torch.Tensor | np.ndarray | slice | None = None,
+    ) -> None: ...
+
+    def write_motion_state_tensor_to_sim(
+        self,
+        root_state: torch.Tensor,
+        position: torch.Tensor,
+        velocity: torch.Tensor,
+        env_ids: torch.Tensor,
+    ) -> None: ...
+
 
 class ManagerSensorView(Protocol):
     """Backend-owned named-sensor view retained by a manager term."""
@@ -159,6 +180,8 @@ class ManagerScene(Protocol):
     @property
     def entities(self) -> Mapping[str, ManagerEntity]: ...
 
+    def compile_tensor_reads(self, device: str | torch.device, specs: Sequence[Any]) -> Any: ...
+
     @property
     def env_origins(self) -> np.ndarray: ...
 
@@ -174,27 +197,32 @@ class ManagerScene(Protocol):
         self, values: np.ndarray, env_ids: np.ndarray, *, term_name: str
     ) -> None: ...
 
+    @property
+    def _tensor_read_plan(self) -> Any: ...
+
 
 class ManagerActionTerm(Protocol):
     @property
-    def raw_action(self) -> np.ndarray: ...
+    def raw_action(self) -> np.ndarray | torch.Tensor: ...
+
+    def process_actions(self, actions: np.ndarray | torch.Tensor) -> None: ...
 
 
 class ManagerActionManager(Protocol):
     @property
-    def action(self) -> np.ndarray: ...
+    def action(self) -> torch.Tensor: ...
 
     @property
-    def prev_action(self) -> np.ndarray: ...
+    def prev_action(self) -> torch.Tensor: ...
 
     @property
-    def prev_prev_action(self) -> np.ndarray: ...
+    def prev_prev_action(self) -> torch.Tensor: ...
 
     def get_term(self, name: str) -> ManagerActionTerm: ...
 
 
 class ManagerCommandManager(Protocol):
-    def get_command(self, name: str) -> np.ndarray | None: ...
+    def get_command(self, name: str) -> torch.Tensor | None: ...
 
     def get_term(self, name: str) -> Any: ...
 
@@ -209,7 +237,7 @@ class ManagerEventManager(Protocol):
 
 class ManagerTerminationManager(Protocol):
     @property
-    def terminated(self) -> np.ndarray: ...
+    def terminated(self) -> torch.Tensor: ...
 
     def get_term_cfg(self, term_name: str) -> Any: ...
 
@@ -231,7 +259,24 @@ class ManagerBasedRlEnv(Protocol):
     def num_envs(self) -> int: ...
 
     @property
+    def device(self) -> torch.device: ...
+
+    @property
     def rng(self) -> np.random.Generator: ...
+
+    @property
+    def torch_rng(self) -> TorchManagerRng | None: ...
+
+    @property
+    def cfg(self) -> Any: ...
+
+    @property
+    def backend(self) -> SimBackend: ...
+
+    _tensor_reset_default_root_state: torch.Tensor | None
+    _tensor_reset_env_origins: torch.Tensor | None
+    _tensor_reset_pose_bounds: torch.Tensor | None
+    _tensor_reset_velocity_bounds: torch.Tensor | None
 
     @property
     def physics_dt(self) -> float: ...
@@ -258,7 +303,10 @@ class ManagerBasedRlEnv(Protocol):
     def reward_manager(self) -> ManagerRewardManager: ...
 
     @property
-    def episode_length_buf(self) -> np.ndarray: ...
+    def metrics_manager(self) -> Any: ...
+
+    @property
+    def episode_length_buf(self) -> torch.Tensor: ...
 
     @property
     def reset_buf(self) -> np.ndarray: ...

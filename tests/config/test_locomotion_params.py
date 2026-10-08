@@ -11,37 +11,6 @@ pytestmark = pytest.mark.slow
 
 CONF_DIR = Path(__file__).parent.parent.parent / "src" / "unilab" / "conf"
 
-G1_BEYONDMIMIC_ACTION_SCALE = [
-    0.5475464629911068,
-    0.35066146637882434,
-    0.5475464629911068,
-    0.35066146637882434,
-    0.43857731392336724,
-    0.43857731392336724,
-    0.5475464629911068,
-    0.35066146637882434,
-    0.5475464629911068,
-    0.35066146637882434,
-    0.43857731392336724,
-    0.43857731392336724,
-    0.5475464629911068,
-    0.43857731392336724,
-    0.43857731392336724,
-    0.43857731392336724,
-    0.43857731392336724,
-    0.43857731392336724,
-    0.43857731392336724,
-    0.43857731392336724,
-    0.07450087032950714,
-    0.07450087032950714,
-    0.43857731392336724,
-    0.43857731392336724,
-    0.43857731392336724,
-    0.43857731392336724,
-    0.43857731392336724,
-    0.07450087032950714,
-    0.07450087032950714,
-]
 X2_ACTION_SCALE = [0.25] * 29
 
 
@@ -244,7 +213,6 @@ def test_g1_task_owner_yamls_preserve_legacy_and_walk_observation_profiles():
     assert uses_walk_profile("ppo", ["task=g1_walk_flat/mujoco"]) is False
     assert uses_walk_profile("appo", ["task=g1_walk_flat/mujoco"]) is False
     assert uses_walk_profile("sac", ["task=g1_walk_flat/mujoco"]) is True
-    assert uses_walk_profile("sac", ["task=g1_walk_flat/motrix"]) is True
     assert uses_walk_profile("flashsac", ["task=g1_walk_flat/mujoco"]) is True
     assert uses_walk_profile("warpsac", ["task=g1_walk_flat/mujoco"]) is True
 
@@ -347,37 +315,6 @@ def test_ppo_g1_box_tracking():
     assert cfg.reward.object_global_ref_orientation_error_exp.weight == pytest.approx(2.0)
     assert cfg.reward.object_global_ref_position_error_exp.params.std == pytest.approx(0.2)
     assert cfg.reward.object_global_ref_orientation_error_exp.params.std == pytest.approx(0.3)
-
-
-def test_ppo_g1_flip_tracking():
-    from hydra import compose, initialize_config_dir
-    from hydra.core.global_hydra import GlobalHydra
-
-    GlobalHydra.instance().clear()
-    with initialize_config_dir(config_dir=str(CONF_DIR / "ppo"), version_base="1.3"):
-        cfg = compose("config", overrides=["task=g1_flip_tracking/mujoco"])
-    assert cfg.training.task_name == "G1FlipTracking"
-    assert cfg.algo.num_envs == 1024
-    assert cfg.algo.max_iterations == 20000
-    assert cfg.algo.actor.obs_normalization is True
-    assert cfg.algo.critic.obs_normalization is True
-    assert cfg.algo.obs_groups.critic == ["critic"]
-    assert cfg.algo.algorithm.entropy_coef == pytest.approx(0.005)
-    assert cfg.algo.algorithm.desired_kl == pytest.approx(0.01)
-    assert cfg.env.commands.motion.params.sampling_mode == "start"
-    assert cfg.env.commands.motion.params.truncate_on_clip_end is False
-    assert cfg.env.sim_dt == pytest.approx(0.005)
-    assert cfg.env.actions.joint_pos.scale[".*_(hip_pitch|hip_yaw)_joint"] == pytest.approx(
-        G1_BEYONDMIMIC_ACTION_SCALE[0]
-    )
-    assert cfg.env.terminations.anchor_pos.params.threshold == pytest.approx(0.5)
-    assert cfg.env.terminations.ee_body_pos.params.threshold == pytest.approx(0.5)
-    assert cfg.env.terminations.undesired_contacts is not None
-    assert cfg.reward.motion_body_pos.weight == pytest.approx(2.0)
-    assert cfg.reward.motion_body_ori.weight == pytest.approx(1.5)
-    assert cfg.reward.motion_ee_body_pos_z.weight == pytest.approx(2.0)
-    assert cfg.reward.action_rate_l2.weight == pytest.approx(-0.005)
-    assert cfg.reward.undesired_contacts.weight == pytest.approx(-0.1)
 
 
 def test_ppo_x2_wall_flip_tracking():

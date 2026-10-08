@@ -29,6 +29,10 @@ env:
   superdex_num_workers: 0
   superdex_allow_contact_approximation: true
   events:
+    reset_scene_to_default:
+      func: unilab.envs.mdp.reset_scene_to_default_tensor
+    reset_root_state_uniform:
+      func: unilab.envs.mdp.reset_root_state_uniform_tensor
     pd_gains: null
 
 reward:

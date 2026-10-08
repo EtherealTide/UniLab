@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
@@ -39,7 +40,7 @@ def test_fr3_owner_has_torque_control_without_free_root_terms(
     cfg.validate()
     assert cfg.scene is not None
     assert cfg.scene.entities["robot"].root_body_name == "fr3_link0"
-    assert list(cfg.events) == ["reset_scene_to_default", "reset_joints"]
+    assert list(cfg.events) == ["reset_joints"]
     assert list(cfg.observations["policy"].terms) == ["target_error", "joint_vel", "actions"]
     assert cfg.superdex_effort_limits == [20.0] * 4 + [5.0] * 3
     assert cfg.superdex_num_workers == 0
@@ -93,33 +94,36 @@ def test_fr3_native_rollout_and_selected_reset() -> None:
         state = env.init_state()
         assert env.obs_groups_spec == {"obs": 21}
         assert env.action_space.shape == (7,)
+        action = torch.full((2, 7), 0.05, dtype=torch.float32)
         for _ in range(32):
-            state = env.step(np.full((2, 7), 0.05, dtype=np.float32))
-            assert np.isfinite(state.obs["obs"]).all()
-            assert np.isfinite(state.reward).all()
+            state = env.step(action)
+            assert torch.isfinite(state.obs["obs"]).all()
+            assert torch.isfinite(state.reward).all()
         before = env.scene["robot"].data.joint_pos.copy()
-        counters = state.info["steps"].copy()
-        obs, _ = env.reset(env_ids=np.array([0], dtype=np.int32))
+        counters = state.info["steps"].clone()
+        obs, _ = env.reset(torch.tensor([0], dtype=torch.int64))
         assert obs["obs"].shape == (1, 21)
         np.testing.assert_array_equal(env.scene["robot"].data.joint_pos[1], before[1])
         assert state.info["steps"][1] == counters[1]
-        np.testing.assert_allclose(
+        torch.testing.assert_close(
             obs["obs"][0, :7],
-            env.scene["robot"].data.joint_pos[0] - np.array([0.1, -0.7, 0, -2.2, 0, 1.5, 1.57]),
+            torch.as_tensor(env.scene["robot"].data.joint_pos[0], dtype=torch.float32)
+            - torch.tensor([0.1, -0.7, 0, -2.2, 0, 1.5, 1.57], dtype=torch.float32),
             atol=1e-6,
+            rtol=0,
         )
     finally:
         env.close()
     with pytest.raises(RuntimeError, match="closed"):
-        env.step(np.zeros((2, 7), dtype=np.float32))
+        env.step(torch.zeros((2, 7), dtype=torch.float32))
 
 
 def _spawn_rollout(overrides: dict[str, Any]) -> tuple[int, ...]:
     factory = registry_env_factory("FR3JointTarget", "superdex")
     env = factory(num_envs=1, env_cfg_override=overrides)
     try:
-        obs, _ = env.reset(env_ids=np.array([0], dtype=np.int32))
-        env.step(np.zeros((1, 7), dtype=np.float32))
+        obs, _ = env.reset(torch.tensor([0], dtype=torch.int64))
+        env.step(torch.zeros((1, 7), dtype=torch.float32))
         return obs["obs"].shape
     finally:
         env.close()
@@ -129,8 +133,8 @@ def _spawn_parallel_rollout(overrides: dict[str, Any]) -> tuple[int, ...]:
     factory = registry_env_factory("FR3JointTarget", "superdex")
     env = factory(num_envs=2, env_cfg_override={**overrides, "superdex_num_workers": 2})
     try:
-        obs, _ = env.reset(env_ids=np.array([0, 1], dtype=np.int32))
-        env.step(np.zeros((2, 7), dtype=np.float32))
+        obs, _ = env.reset(torch.tensor([0, 1], dtype=torch.int64))
+        env.step(torch.zeros((2, 7), dtype=torch.float32))
         return obs["obs"].shape
     finally:
         env.close()

@@ -1,37 +1,24 @@
-"""Adapter from the UniLab numpy env contract to the RSL-RL VecEnv contract."""
+"""Adapter from the UniLab TorchEnv contract to RSL-RL's VecEnv."""
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
-import numpy as np
 import torch
 from tensordict import TensorDict
 
 
-def _to_torch(x: Any, device: str | torch.device) -> torch.Tensor:
-    """Convert numpy-like input to torch on the target device."""
-    if isinstance(x, torch.Tensor):
-        return x.to(device)
-    if isinstance(x, np.ndarray):
-        tensor = torch.from_numpy(x).to(device)
-        # UniLab policies use float32. Keep the environment contract tolerant
-        # of physics backends that publish float64 observations while
-        # preserving integer/bool tensors.
-        if tensor.is_floating_point() and tensor.dtype != torch.float32:
-            tensor = tensor.float()
-        return tensor
-    arr = np.asarray(x, dtype=np.float32)
-    return torch.from_numpy(arr).to(device)
-
-
-def _to_numpy(x: Any) -> np.ndarray:
-    """Convert torch tensor or numpy-like input to numpy."""
-    if isinstance(x, np.ndarray):
-        return x
-    if isinstance(x, torch.Tensor):
-        return x.detach().cpu().numpy()
-    return np.asarray(x)
+def _to_policy_tensor(x: Any, device: str | torch.device) -> torch.Tensor:
+    """Move a TorchEnv observation tensor onto the policy device."""
+    if not isinstance(x, torch.Tensor):
+        raise TypeError(f"TorchEnv observation must be a torch.Tensor, got {type(x).__name__}")
+    tensor = x.to(device)
+    # UniLab policies use float32. Some backends publish float64 observations;
+    # preserve integer/bool tensors.
+    if tensor.is_floating_point() and tensor.dtype != torch.float32:
+        tensor = tensor.float()
+    return tensor
 
 
 def get_policy_obs_dims(obs_groups_spec: dict[str, int]) -> tuple[int, int]:
@@ -44,7 +31,7 @@ def get_policy_obs_dims(obs_groups_spec: dict[str, int]) -> tuple[int, int]:
 
 
 class RslRlVecEnvAdapter:
-    """Adapter from the UniLab numpy env contract to RSL-RL's VecEnv."""
+    """Adapter from the UniLab TorchEnv contract to RSL-RL's VecEnv."""
 
     def __init__(
         self,
@@ -79,7 +66,7 @@ class RslRlVecEnvAdapter:
 
         self.episode_returns = torch.zeros(self.num_envs, device=device)
         self.episode_lengths = torch.zeros(self.num_envs, device=device)
-        self.max_episode_length = np.ceil(env.cfg.max_episode_seconds / env.cfg.ctrl_dt)
+        self.max_episode_length = math.ceil(env.cfg.max_episode_seconds / env.cfg.ctrl_dt)
         self.reset()
 
     @property
@@ -99,37 +86,45 @@ class RslRlVecEnvAdapter:
         self.episode_lengths = value
         set_env_episode_lengths = getattr(self.env, "set_episode_length_buf", None)
         if callable(set_env_episode_lengths):
-            set_env_episode_lengths(_to_numpy(value).astype(np.int64))
+            env_device = getattr(self.env, "device", None)
+            if env_device is None:
+                raise TypeError("TorchEnv must expose its authoritative device")
+            set_env_episode_lengths(value.to(device=env_device, dtype=torch.int64).contiguous())
 
     def _policy_obs(self, obs: dict[str, Any]) -> torch.Tensor:
         if self.policy_obs_mode == "actor":
-            return _to_torch(obs["obs"], self.device)
+            return _to_policy_tensor(obs["obs"], self.device)
 
         policy_groups = [
-            _to_numpy(value) for group_name, value in obs.items() if group_name != "critic"
+            _to_policy_tensor(value, self.device)
+            for group_name, value in obs.items()
+            if group_name != "critic"
         ]
         if not policy_groups:
             raise KeyError("Observation dict must contain at least one non-critic group")
         if len(policy_groups) == 1:
-            return _to_torch(policy_groups[0], self.device)
-        return _to_torch(np.concatenate(policy_groups, axis=1), self.device)
+            return policy_groups[0]
+        return torch.cat(policy_groups, dim=-1)
 
     def _obs_to_tensordict(self, obs: dict[str, Any]) -> TensorDict:
         td_dict: dict[str, torch.Tensor] = {
-            "actor": _to_torch(obs["obs"], self.device),
+            "actor": _to_policy_tensor(obs["obs"], self.device),
             "policy": self._policy_obs(obs),
         }
         if "critic" in obs:
-            td_dict["critic"] = _to_torch(obs["critic"], self.device)
+            td_dict["critic"] = _to_policy_tensor(obs["critic"], self.device)
         return TensorDict(td_dict, batch_size=self.num_envs, device=self.device)
 
-    def step(
-        self, actions: torch.Tensor | np.ndarray
-    ) -> tuple[TensorDict, torch.Tensor, torch.Tensor, dict]:
-        actions_np = _to_numpy(actions)
-        state = self.env.step(actions_np)
-        rewards = _to_torch(state.reward, self.device)
-        dones = _to_torch(state.terminated | state.truncated, self.device).bool()
+    def step(self, actions: torch.Tensor) -> tuple[TensorDict, torch.Tensor, torch.Tensor, dict]:
+        env_device = getattr(self.env, "device", self.device)
+        if not isinstance(actions, torch.Tensor):
+            raise TypeError(
+                f"RslRlVecEnvAdapter action must be a torch.Tensor, got {type(actions).__name__}"
+            )
+        action_tensor = actions.to(device=env_device, dtype=torch.float32).contiguous()
+        state = self.env.step(action_tensor)
+        rewards = _to_policy_tensor(state.reward, self.device)
+        dones = _to_policy_tensor(state.terminated | state.truncated, self.device).bool()
 
         self.episode_returns += rewards
         self.episode_lengths += 1
@@ -137,7 +132,7 @@ class RslRlVecEnvAdapter:
         infos: dict[str, torch.Tensor | dict[str, Any]] = {}
         done_idx = torch.nonzero(dones).flatten()
         if len(done_idx) > 0:
-            infos["time_outs"] = _to_torch(state.truncated, self.device).bool()
+            infos["time_outs"] = _to_policy_tensor(state.truncated, self.device).bool()
             self.episode_returns[done_idx] = 0
             self.episode_lengths[done_idx] = 0
 
@@ -150,7 +145,10 @@ class RslRlVecEnvAdapter:
         if self.env.state is None:
             self.env.init_state()
 
-        env_indices = np.arange(self.num_envs, dtype=np.int32)
+        env_device = getattr(self.env, "device", None)
+        if env_device is None:
+            raise TypeError("TorchEnv must expose its authoritative device")
+        env_indices = torch.arange(self.num_envs, dtype=torch.int64, device=env_device)
         obs_out, info = self.env.reset(env_indices)
         self.episode_returns[:] = 0
         self.episode_lengths[:] = 0
@@ -163,7 +161,27 @@ class RslRlVecEnvAdapter:
     def get_privileged_observations(self) -> torch.Tensor:
         assert self.env.state is not None
         obs = self.env.state.obs
-        return _to_torch(obs.get("critic", obs["obs"]), self.device)
+        return _to_policy_tensor(obs.get("critic", obs["obs"]), self.device)
+
+    def export_training_state(self) -> dict[str, Any] | None:
+        """Export the wrapped environment's plain versioned training state."""
+        export = getattr(self.env, "export_training_state", None)
+        if not callable(export):
+            return None
+        state = export()
+        if not isinstance(state, dict):
+            raise TypeError("TorchEnv training state export must return a dictionary")
+        return state
+
+    def import_training_state(self, state: dict[str, Any]) -> None:
+        """Restore the wrapped environment's plain versioned training state."""
+        importer = getattr(self.env, "import_training_state", None)
+        if not callable(importer):
+            raise TypeError(
+                "TorchEnv does not implement import_training_state; cannot restore "
+                "checkpoint environment state"
+            )
+        importer(state)
 
     def close(self) -> None:
         self.env.close()

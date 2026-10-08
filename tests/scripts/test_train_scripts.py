@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
@@ -297,82 +298,72 @@ def test_offpolicy_hydra_default_torch_thread_budget():
     assert cfg.training.torch_threads.set_env_vars is True
 
 
-def test_offpolicy_go2_motrix_task_is_not_configured():
-    """SAC has no Go2 Motrix owner config; use PPO for Go2 joystick tasks."""
-    from hydra.errors import MissingConfigException
-
-    with pytest.raises(MissingConfigException, match="task/go2_joystick_flat/motrix"):
-        _offpolicy_cfg(["task=go2_joystick_flat/motrix"])
-
-
-def test_offpolicy_g1_walk_flat_motrix_resolved_algo_matches_task_owner():
-    """Motrix SAC G1 walk flat composes backend-owned algo hyperparameters."""
-    cfg = _offpolicy_cfg(["task=g1_walk_flat/motrix"])
-
-    assert cfg.algo.num_envs == 2048
-    assert cfg.algo.max_iterations == 5000
-
-
 def test_offpolicy_g1_walk_flat_env_cfg_override_has_rewards_and_events():
-    cfg = _offpolicy_cfg(["task=g1_walk_flat/motrix"])
+    cfg = _offpolicy_cfg(["task=g1_walk_flat/mujoco"])
 
     env_cfg_override = _offpolicy().build_offpolicy_env_cfg_override("sac", cfg)
 
-    assert env_cfg_override["rewards"]["tracking_lin_vel"]["weight"] == pytest.approx(2.2)
-    assert env_cfg_override["events"]["pd_gains"] is None
+    assert env_cfg_override["rewards"]["tracking_lin_vel"]["weight"] == pytest.approx(2.0)
 
 
 @pytest.mark.parametrize(
     ("backend", "field"),
     [
-        ("isaacgym", "isaacgym_device_id"),
-        ("isaacsim", "isaacsim_device_id"),
         ("genesis", "genesis_device_id"),
     ],
 )
-def test_offpolicy_gpu_backend_env_follows_dp_rank(
+def test_offpolicy_backend_env_follows_rank_local_cuda_visibility(
     monkeypatch: pytest.MonkeyPatch, backend: str, field: str
 ) -> None:
-    """Off-policy collectors receive the host-visible rank device."""
+    """Single-entry CVD owns the rank namespace without training.devices."""
 
     mod = _offpolicy()
-    cfg = _offpolicy_cfg([f"task=g1_walk_flat/{backend}", "training.devices=[0,1]"])
-    monkeypatch.setenv("UNILAB_DP_RANK", "1")
+    cfg = _offpolicy_cfg([f"task=g1_walk_flat/{backend}"])
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
+    monkeypatch.delenv("UNILAB_DP_RANK", raising=False)
+    monkeypatch.delenv("UNILAB_DP_WORLD_SIZE", raising=False)
 
     override = mod.build_offpolicy_env_cfg_override("sac", cfg)
 
     assert override is not None
-    assert override[field] == 1
+    assert override[field] == 0
+
+
+def test_removed_training_devices_fails_closed() -> None:
+    mod = _offpolicy()
+    cfg = _offpolicy_cfg(["+training.devices=[0]"])
+
+    with pytest.raises(ValueError, match="training.devices was removed"):
+        mod.main(cfg)
 
 
 @pytest.mark.parametrize(
     ("backend", "field"),
     [
-        ("isaacgym", "isaacgym_device_id"),
-        ("isaacsim", "isaacsim_device_id"),
         ("genesis", "genesis_device_id"),
     ],
 )
 def test_ppo_gpu_backend_env_uses_torchrun_local_rank(
     monkeypatch: pytest.MonkeyPatch, backend: str, field: str
 ) -> None:
-    """PPO workers pass a local index after torchrun remaps CUDA visibility."""
+    """PPO workers use the rank-local ordinal after torchrun remaps visibility."""
 
     mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg([f"task=g1_walk_flat/{backend}", "training.devices=[4,5]"])
+    cfg = _ppo_cfg([f"task=g1_walk_flat/{backend}"])
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     monkeypatch.setenv("LOCAL_RANK", "1")
     monkeypatch.setenv("WORLD_SIZE", "2")
 
     override = mod.build_ppo_env_cfg_override(cfg)
 
-    assert override[field] == 1
+    assert override[field] == 0
 
 
 def test_ppo_multi_rank_routes_one_cpu_partition_to_the_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=go2_joystick_flat/superdex", "training.devices=[0,1]"])
+    cfg = _ppo_cfg(["task=go2_joystick_flat/mujoco"])
     monkeypatch.setenv("RANK", "1")
     monkeypatch.setenv("LOCAL_RANK", "1")
     monkeypatch.setenv("WORLD_SIZE", "2")
@@ -387,74 +378,7 @@ def test_ppo_multi_rank_routes_one_cpu_partition_to_the_env(
     assert override["cpu_ids"] == [8, 24]
 
 
-def test_offpolicy_isaacsim_training_and_eval_use_separate_render_overrides():
-    cfg = _offpolicy_cfg(
-        [
-            "task=g1_walk_flat/isaacsim",
-            "training.play_render_mode=record",
-        ]
-    )
-    mod = _offpolicy()
-
-    training_override = mod.build_offpolicy_env_cfg_override("sac", cfg)
-    play_override = mod.build_offpolicy_play_env_cfg_override("sac", cfg)
-
-    assert "isaacsim_render_mode" not in training_override
-    assert play_override["isaacsim_render_mode"] == "record"
-
-
-def test_ppo_go2_resolved_algo_matches_old_motrix_behavior():
-    """Equivalence: PPO Go2 algo hyperparams match pre-refactor motrix values."""
-    cfg = _ppo_cfg(["task=go2_joystick_flat/motrix"])
-
-    assert cfg.algo.max_iterations == 151
-    assert cfg.algo.actor.obs_normalization is True
-    assert cfg.algo.critic.obs_normalization is True
-    assert cfg.algo.actor.distribution_cfg.init_std == pytest.approx(0.5)
-    assert cfg.algo.algorithm.learning_rate == pytest.approx(3.0e-4)
-    assert cfg.algo.algorithm.entropy_coef == pytest.approx(1.0e-3)
-
-
-def test_ppo_g1_resolved_algo_matches_motrix_owner():
-    """Equivalence: PPO G1 algo hyperparams match the Motrix owner values.
-
-    For this migration we align with the final UniLab1 Motrix runtime.
-    """
-    cfg = _ppo_cfg(["task=g1_walk_flat/motrix"])
-
-    assert cfg.algo.max_iterations == 2200
-    assert cfg.algo.actor.obs_normalization is True
-    assert cfg.algo.critic.obs_normalization is True
-    assert cfg.algo.obs_groups.actor == ["policy"]
-    assert cfg.algo.actor.distribution_cfg.init_std == pytest.approx(0.5)
-    assert cfg.algo.algorithm.learning_rate == pytest.approx(3.0e-4)
-    assert cfg.algo.algorithm.entropy_coef == pytest.approx(5.0e-3)
-
-
-def test_ppo_g1_mujoco_base_hyperparams_remain_separate():
-    cfg = _ppo_cfg(["task=g1_walk_flat/mujoco"])
-
-    assert cfg.algo.max_iterations == 2200
-    assert cfg.algo.actor.obs_normalization is False
-    assert cfg.algo.critic.obs_normalization is False
-    assert cfg.algo.obs_groups.actor == ["actor"]
-
-
-def test_ppo_g1_env_preset_has_env_overrides():
-    cfg = _ppo_cfg(["task=g1_walk_flat/motrix"])
-
-    assert OmegaConf.select(cfg, "env.motrix_max_iterations") is None
-    assert cfg.env.actions.joint_pos.scale == pytest.approx(0.5)
-    assert cfg.env.commands.twist.ranges.lin_vel_x == [0.4, 0.7]
-    assert cfg.env.observations.policy.terms.gait_phase.params.init_mode == "offset_phase"
-    assert cfg.env.events.reset_root_state_uniform.params.velocity_range.x == [-0.05, 0.05]
-    assert cfg.reward.feet_phase_contrast.weight == pytest.approx(1.5)
-    assert cfg.reward.feet_phase_contact.weight == pytest.approx(1.0)
-    assert cfg.reward.feet_double_stance.weight == pytest.approx(-1.0)
-    assert cfg.reward.feet_phase.params.min_forward_speed == pytest.approx(0.05)
-
-
-def test_ppo_task_go2_aligns_mujoco_with_motrix_defaults():
+def test_ppo_task_go2_training_defaults():
     cfg = _ppo_cfg(["task=go2_joystick_flat/mujoco"])
 
     assert cfg.algo.num_envs == 1024
@@ -471,116 +395,12 @@ def test_ppo_task_go2_aligns_mujoco_with_motrix_defaults():
     assert cfg.algo.algorithm.entropy_coef == pytest.approx(1.0e-3)
 
 
-def test_ppo_go2_drake_batch_config_matches_go2_training_defaults():
-    cfg = _ppo_cfg(["task=go2_joystick_flat/drake"])
-
-    assert cfg.training.task_name == "Go2JoystickFlat"
-    assert cfg.training.sim_backend == "drake"
-    assert cfg.algo.num_envs == 1024
-    assert cfg.algo.max_iterations == 151
-    assert cfg.algo.actor.obs_normalization is True
-    assert cfg.algo.critic.obs_normalization is True
-    assert cfg.algo.actor.distribution_cfg.init_std == pytest.approx(0.5)
-    assert cfg.algo.algorithm.learning_rate == pytest.approx(3.0e-4)
-    assert cfg.algo.algorithm.entropy_coef == pytest.approx(1.0e-3)
-    assert cfg.env.drake_backend_mode == "batch"
-    assert cfg.env.drake_nthread == 0
-    assert cfg.env.scene.model_file == "src/unilab/assets/robots/go2/scene_flat.xml"
-    assert cfg.env.events.pd_gains is None
-    # Contact reward disabled on drake: drake_uni reports world-frame net
-    # contact force, not contact-frame force (issue #1471).
-    assert cfg.reward.contact is None
-
-
-def test_build_ppo_env_cfg_override_go2_motrix(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=go2_joystick_flat/motrix"])
-
-    env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
-
-    assert env_cfg_override["rewards"]["tracking_lin_vel"]["weight"] == pytest.approx(1.0)
-    assert env_cfg_override["rewards"]["contact"]["func"].endswith("feet_phase_contact")
-    assert env_cfg_override["commands"]["twist"]["ranges"] == {
-        "lin_vel_x": [0.5, 0.5],
-        "lin_vel_y": [0.0, 0.0],
-        "ang_vel_z": [0.0, 0.0],
-    }
-    assert env_cfg_override["events"]["pd_gains"] is None
-
-
-def test_build_ppo_env_cfg_override_g1_motrix(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=g1_walk_flat/motrix"])
-
-    env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
-
-    # env_cfg_override has reward + env preset fields (flat, matching env cfg structure)
-    assert env_cfg_override["rewards"]["upper_body_pose"]["weight"] == pytest.approx(-0.05)
-    assert env_cfg_override["rewards"]["penalty_feet_ori"]["weight"] == pytest.approx(0.0)
-    assert env_cfg_override["rewards"]["feet_phase_contrast"]["weight"] == pytest.approx(1.5)
-    assert env_cfg_override["rewards"]["feet_phase_contact"]["weight"] == pytest.approx(1.0)
-    assert env_cfg_override["rewards"]["feet_double_stance"]["weight"] == pytest.approx(-1.0)
-    assert env_cfg_override["rewards"]["feet_phase"]["params"][
-        "min_forward_speed"
-    ] == pytest.approx(0.05)
-    assert "motrix_max_iterations" not in env_cfg_override
-    assert env_cfg_override["actions"]["joint_pos"]["scale"] == pytest.approx(0.5)
-    assert env_cfg_override["commands"]["twist"]["ranges"]["lin_vel_x"] == [0.4, 0.7]
-    assert env_cfg_override["events"]["pd_gains"] is None
-    assert env_cfg_override["events"]["reset_root_state_uniform"]["params"]["velocity_range"][
-        "x"
-    ] == [-0.05, 0.05]
-
-
-def test_build_ppo_env_cfg_override_carries_motrix_max_iterations_override(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=g1_walk_flat/motrix", "+env.motrix_max_iterations=9"])
-
-    env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
-
-    assert env_cfg_override["motrix_max_iterations"] == 9
-
-
-def test_offpolicy_g1_walk_flat_motrix_env_cfg_override_disables_pd_gains():
-    cfg = _offpolicy_cfg(["task=g1_walk_flat/motrix"])
-
-    env_cfg_override = _offpolicy().build_offpolicy_env_cfg_override("sac", cfg)
-
-    assert env_cfg_override["events"]["pd_gains"] is None
-    assert env_cfg_override["rewards"]["tracking_lin_vel"]["weight"] == pytest.approx(2.2)
-
-
-def test_build_ppo_env_cfg_override_applies_go2_motrix_reward(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=go2_joystick_flat/motrix"])
-
-    env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
-
-    assert cfg.reward.tracking_lin_vel.weight == pytest.approx(1.0)
-    assert cfg.algo.num_envs == 1024
-    assert env_cfg_override["events"]["pd_gains"] is None
-    assert env_cfg_override["rewards"]["tracking_lin_vel"]["weight"] == pytest.approx(1.0)
-    assert env_cfg_override["rewards"]["tracking_ang_vel"]["weight"] == pytest.approx(0.2)
-
-
 def test_build_ppo_env_cfg_override_allegro_mujoco(
     monkeypatch: pytest.MonkeyPatch,
 ):
     mod = _train_rsl_rl(monkeypatch)
     cfg = _ppo_cfg(["task=allegro_inhand/mujoco"])
-    ppo_motrix_cfg = _ppo_cfg(["task=allegro_inhand/motrix"])
-    ppo_drake_cfg = _ppo_cfg(["task=allegro_inhand/drake"])
     appo_cfg = _appo_cfg(["task=allegro_inhand/mujoco"])
-    appo_motrix_cfg = _appo_cfg(["task=allegro_inhand/motrix"])
-    appo_drake_cfg = _appo_cfg(["task=allegro_inhand/drake"])
 
     env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
 
@@ -622,19 +442,6 @@ def test_build_ppo_env_cfg_override_allegro_mujoco(
         appo_cfg.algo.algorithm.use_clipped_value_loss is cfg.algo.algorithm.use_clipped_value_loss
     )
     assert appo_cfg.algo.algorithm.schedule == cfg.algo.algorithm.schedule
-    assert appo_motrix_cfg.training.task_name == appo_cfg.training.task_name
-    assert appo_motrix_cfg.training.sim_backend == ppo_motrix_cfg.training.sim_backend
-    assert appo_motrix_cfg.algo.actor.obs_normalization is True
-    assert appo_motrix_cfg.algo.critic.obs_normalization is True
-    assert appo_motrix_cfg.reward.rotate.weight == pytest.approx(
-        ppo_motrix_cfg.reward.rotate.weight
-    )
-    assert appo_motrix_cfg.env.events.pd_gains is None
-    assert ppo_motrix_cfg.env.events.pd_gains is None
-    assert ppo_drake_cfg.training.sim_backend == "drake"
-    assert appo_drake_cfg.training.sim_backend == "drake"
-    assert ppo_drake_cfg.env.events.pd_gains is None
-    assert appo_drake_cfg.env.events.pd_gains is None
 
 
 def test_build_ppo_env_cfg_override_allegro_grasp_mujoco(
@@ -820,7 +627,6 @@ def _build_rsl_lifecycle_case(
         def log_video(self, path: str | None) -> None:
             captured["video"] = path
 
-    monkeypatch.setattr(mod, "resolve_dp_topology", lambda _devices: None)
     monkeypatch.setattr(mod, "current_torch_distributed_rank", lambda: 0)
     monkeypatch.setattr(mod, "current_torch_distributed_local_rank", lambda: 0)
     monkeypatch.setattr(mod, "current_torch_distributed_world_size", lambda: 1)
@@ -904,7 +710,7 @@ def test_train_rsl_rl_runtime_error_propagates_after_single_cleanup(
     mod, cfg, captured, raised = _build_rsl_lifecycle_case(monkeypatch, tmp_path, sentinel)
 
     with pytest.raises(RuntimeError) as caught:
-        mod.main.__wrapped__(cfg)
+        mod.main(cfg)
 
     assert caught.value is raised is sentinel
     assert captured["env_close"] == 1
@@ -927,7 +733,7 @@ def test_train_rsl_rl_run_complete_close_error_is_not_misclassified(
     )
 
     with pytest.raises(RuntimeError) as caught:
-        mod.main.__wrapped__(cfg)
+        mod.main(cfg)
 
     assert caught.value is sentinel
     assert captured["env_close"] == 1
@@ -957,24 +763,14 @@ def test_train_rsl_rl_play_only_keeps_single_cleanup_and_runs_playback(
     assert captured["summaries"] == []
 
 
-@pytest.mark.parametrize(
-    ("devices", "world_size"),
-    [
-        ((0, 1), 1),
-        (None, 2),
-    ],
-)
 def test_train_rsl_rl_grasp_collection_rejects_multi_rank_before_launch(
     monkeypatch: pytest.MonkeyPatch,
-    devices: tuple[int, ...] | None,
-    world_size: int,
 ) -> None:
     mod = _train_rsl_rl(monkeypatch)
     cfg = _ppo_cfg(["task=allegro_inhand_grasp/mujoco", "+env.grasp_collection_target=1"])
-    monkeypatch.setattr(mod, "resolve_dp_topology", lambda _devices: devices)
     monkeypatch.setattr(mod, "current_torch_distributed_rank", lambda: 0)
     monkeypatch.setattr(mod, "current_torch_distributed_local_rank", lambda: 0)
-    monkeypatch.setattr(mod, "current_torch_distributed_world_size", lambda: world_size)
+    monkeypatch.setattr(mod, "current_torch_distributed_world_size", lambda: 2)
     monkeypatch.setattr(
         mod,
         "launch_torchrun_workers",
@@ -983,30 +779,28 @@ def test_train_rsl_rl_grasp_collection_rejects_multi_rank_before_launch(
     monkeypatch.setattr(
         mod,
         "ensure_registries",
-        lambda: (_ for _ in ()).throw(AssertionError("must fail before registry bootstrap")),
+        lambda: (_ for _ in ()).throw(AssertionError("must fail before env construction")),
     )
-
-    with pytest.raises(ValueError, match="requires one process"):
-        mod.main.__wrapped__(cfg)
+    with pytest.raises(ValueError, match="multi-rank completion"):
+        mod.main(cfg)
 
 
 def test_ppo_cli_algo_override_wins_over_base(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """CLI override takes precedence over base task algo values via Hydra compose."""
-    cfg = _ppo_cfg(["task=g1_walk_flat/motrix", "algo.max_iterations=1"])
+    cfg = _ppo_cfg(["task=g1_walk_flat/mujoco", "algo.max_iterations=1"])
 
     assert cfg.algo.max_iterations == 1
-    # Other base values remain intact
-    assert cfg.algo.actor.obs_normalization is True
-    assert cfg.algo.critic.obs_normalization is True
+    # Other base values remain intact.
+    assert cfg.algo.actor.obs_normalization is False
 
 
-def test_g1_motion_tracking_ppo_motrix_prefers_backend_specific_reward(
+def test_g1_motion_tracking_ppo_prefers_backend_specific_reward(
     monkeypatch: pytest.MonkeyPatch,
 ):
     mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=g1_motion_tracking/motrix"])
+    cfg = _ppo_cfg(["task=g1_motion_tracking/mujoco"])
 
     assert cfg.reward.motion_body_pos.weight == pytest.approx(1.0)
     cfg.reward.motion_body_pos.weight = 1.25
@@ -1020,7 +814,7 @@ def test_build_ppo_play_env_cfg_override_applies_g1_motion_tracking_play_profile
     monkeypatch: pytest.MonkeyPatch,
 ):
     mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=g1_motion_tracking/motrix", "training.play_only=true"])
+    cfg = _ppo_cfg(["task=g1_motion_tracking/mujoco", "training.play_only=true"])
     assert cfg.training.play_env_num == 16
 
     monkeypatch.setattr(
@@ -1031,8 +825,7 @@ def test_build_ppo_play_env_cfg_override_applies_g1_motion_tracking_play_profile
 
     env_cfg_override = mod.build_ppo_play_env_cfg_override(cfg)
 
-    assert cfg.training.play_env_num == 16
-    assert env_cfg_override["render_spacing"] == pytest.approx(2.5)
+    assert env_cfg_override["render_spacing"] == pytest.approx(2.0)
     assert env_cfg_override["scene"]["model_file"].endswith("robots/g1/scene_flat.xml")
     assert "robot" in env_cfg_override["scene"]["entities"]
     assert env_cfg_override["rewards"]["motion_body_pos"]["weight"] == pytest.approx(1.0)
@@ -1044,7 +837,7 @@ def test_build_ppo_play_env_cfg_override_respects_cli_play_env_override(
     mod = _train_rsl_rl(monkeypatch)
     cfg = _ppo_cfg(
         [
-            "task=g1_motion_tracking/motrix",
+            "task=g1_motion_tracking/mujoco",
             "training.play_only=true",
             "training.play_env_num=32",
         ]
@@ -1059,14 +852,14 @@ def test_build_ppo_play_env_cfg_override_respects_cli_play_env_override(
     env_cfg_override = mod.build_ppo_play_env_cfg_override(cfg)
 
     assert cfg.training.play_env_num == 32
-    assert env_cfg_override["render_spacing"] == pytest.approx(2.5)
+    assert env_cfg_override["render_spacing"] == pytest.approx(2.0)
 
 
 def test_build_ppo_play_env_cfg_override_keeps_task_owned_manager_scene(
     monkeypatch: pytest.MonkeyPatch,
 ):
     mod = _train_rsl_rl(monkeypatch)
-    cfg = _ppo_cfg(["task=g1_motion_tracking/motrix", "training.play_only=true"])
+    cfg = _ppo_cfg(["task=g1_motion_tracking/mujoco", "training.play_only=true"])
     monkeypatch.setattr(
         mod,
         "materialize_scene_visual_override",
@@ -1172,7 +965,7 @@ def test_run_motrix_rsl_play_loop_uses_render_spacing_and_offset_mode(
 def test_g1_motion_tracking_appo_reward_extraction_prefers_backend_specific_reward():
     from unilab.base.config_adapter import BackendAdapter
 
-    cfg = _appo_cfg(["task=g1_motion_tracking/motrix"])
+    cfg = _appo_cfg(["task=g1_motion_tracking/mujoco"])
 
     assert cfg.reward.motion_body_pos.weight == pytest.approx(1.0)
     cfg.reward.motion_body_pos.weight = 1.5
@@ -1183,25 +976,25 @@ def test_g1_motion_tracking_appo_reward_extraction_prefers_backend_specific_rewa
 
 
 def test_g1_motion_tracking_ppo_task_exposes_final_reward():
-    cfg = _ppo_cfg(["task=g1_motion_tracking/motrix"])
+    cfg = _ppo_cfg(["task=g1_motion_tracking/mujoco"])
 
     assert cfg.reward.motion_body_pos.weight == pytest.approx(1.0)
 
 
 def test_g1_motion_tracking_appo_task_exposes_final_reward():
-    cfg = _appo_cfg(["task=g1_motion_tracking/motrix"])
+    cfg = _appo_cfg(["task=g1_motion_tracking/mujoco"])
 
     assert cfg.reward.motion_body_pos.weight == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------
-# train_appo.py — motrix runner / play helpers
+# train_appo.py — runner / play helpers
 # ---------------------------------------------------------------------------
 
 
 def test_build_appo_runner_kwargs_forwards_sim_backend():
     mod = _train_appo()
-    cfg = _appo_cfg(["task=g1_motion_tracking/motrix"])
+    cfg = _appo_cfg(["task=g1_motion_tracking/mujoco"])
 
     runner_kwargs = mod.build_appo_runner_kwargs(
         cfg,
@@ -1210,7 +1003,7 @@ def test_build_appo_runner_kwargs_forwards_sim_backend():
     )
 
     assert runner_kwargs["env_name"] == "G1MotionTracking"
-    assert runner_kwargs["sim_backend"] == "motrix"
+    assert runner_kwargs["sim_backend"] == "mujoco"
     assert runner_kwargs["collector_device"] == "cpu"
     assert runner_kwargs["num_envs"] == cfg.algo.num_envs
     assert runner_kwargs["steps_per_env"] == cfg.algo.steps_per_env
@@ -1220,14 +1013,12 @@ def test_build_appo_runner_kwargs_forwards_sim_backend():
 
 
 def test_run_motrix_play_loop_runs_without_physics_state():
-    import numpy as np
-    import torch
-
     mod = _train_appo()
 
     class FakeActor:
         def __call__(self, td):
             batch = td.batch_size[0]
+            assert td["policy"].device.type == "cpu"
             return torch.zeros((batch, 3), dtype=torch.float32)
 
     class FakeBackend:
@@ -1244,10 +1035,11 @@ def test_run_motrix_play_loop_runs_without_physics_state():
 
     class FakeState:
         def __init__(self):
-            self.obs = {"obs": np.ones((2, 5), dtype=np.float32)}
+            self.obs = {"obs": torch.ones((2, 5), dtype=torch.float32)}
 
     class FakeEnv:
         def __init__(self):
+            self.device = torch.device("cpu")
             self.state = None
             self._renderer = FakeBackend()
             self.init_state_calls = 0
@@ -1261,11 +1053,15 @@ def test_run_motrix_play_loop_runs_without_physics_state():
         def reset(self, env_indices):
             self.reset_calls += 1
             assert env_indices.shape == (2,)
-            return {"obs": np.ones((2, 5), dtype=np.float32)}, {}
+            assert env_indices.dtype == torch.int64
+            assert env_indices.device == self.device
+            return {"obs": torch.ones((2, 5), dtype=torch.float32, device=self.device)}, {}
 
         def step(self, actions):
             self.step_calls += 1
             assert actions.shape == (2, 3)
+            assert actions.dtype == torch.float32
+            assert actions.device == self.device
             return FakeState()
 
         def init_play_renderer(self, render_spacing=None, render_offset_mode=None):
@@ -1334,6 +1130,50 @@ def test_resolve_appo_checkpoint_path_prefers_latest_model_in_explicit_dir(tmp_p
 
 def _offpolicy():
     return _load_script("train_offpolicy")
+
+
+def test_offpolicy_parent_visibility_infers_world_size(monkeypatch: pytest.MonkeyPatch):
+    mod = _offpolicy()
+    monkeypatch.delenv("UNILAB_DP_RANK", raising=False)
+    monkeypatch.delenv("UNILAB_DP_WORLD_SIZE", raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,MIG-b,2")
+
+    assert mod._requested_dp_world_size() == 3
+
+
+def test_offpolicy_parent_visibility_preserves_rank_zero_slice(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    mod = _offpolicy()
+    monkeypatch.setenv("UNILAB_DP_RANK", "0")
+    monkeypatch.setenv("UNILAB_DP_WORLD_SIZE", "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
+
+    mod._prepare_rank_zero_dp_visibility(2)
+
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "GPU-a"
+    assert mod._DP_PARENT_VISIBLE_ENTRIES == ("GPU-a", "GPU-b")
+
+
+def test_offpolicy_supervisor_constructor_sees_parent_mask(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    mod = _offpolicy()
+    monkeypatch.setenv("UNILAB_DP_RANK", "0")
+    monkeypatch.setenv("UNILAB_DP_WORLD_SIZE", "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a")
+    mod._DP_PARENT_VISIBLE_ENTRIES = ("GPU-a", "GPU-b")
+    observed: list[str] = []
+
+    class Supervisor:
+        def __init__(self, *, world_size: int, log_dir: str):
+            observed.extend((str(world_size), log_dir, os.environ["CUDA_VISIBLE_DEVICES"]))
+
+    monkeypatch.setattr(mod, "DpRankSupervisor", Supervisor)
+    mod._build_dp_rank_supervisor(2, "/tmp/unilab-dp")
+
+    assert observed == ["2", "/tmp/unilab-dp", "GPU-a,GPU-b"]
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "GPU-a"
 
 
 def test_offpolicy_default_device_preferred_cpu():
@@ -1640,19 +1480,17 @@ def test_offpolicy_resolve_play_obs_dim_ignores_critic():
 
 
 def test_offpolicy_extract_play_obs_uses_obs_group_only():
-    import numpy as np
-
     from unilab.visualization.interactive_playback import extract_play_obs
 
     obs = {
-        "obs": np.ones((2, 98), dtype=np.float32),
-        "critic": np.full((2, 101), 2.0, dtype=np.float32),
+        "obs": torch.ones((2, 98), dtype=torch.float32),
+        "critic": torch.full((2, 101), 2.0, dtype=torch.float32),
     }
 
     play_obs = extract_play_obs(obs)
 
     assert play_obs.shape == (2, 98)
-    assert np.allclose(play_obs, 1.0)
+    assert torch.allclose(play_obs, torch.ones_like(play_obs))
 
 
 def test_offpolicy_play_actor_spec_keeps_standard_sac_and_flashsac():
@@ -2136,7 +1974,7 @@ def test_play_wrapper_imports_shared_implementation():
 
 def test_play_wrapper_uses_current_reset_contract():
     """Verify wrapper reset() uses current (obs, info) contract, not old (_, obs, _)."""
-    import numpy as np
+    import torch
     from tensordict import TensorDict
 
     from unilab.rl import RslRlVecEnvAdapter
@@ -2144,8 +1982,9 @@ def test_play_wrapper_uses_current_reset_contract():
     # Create a fake environment that returns (obs, info) tuple
     class FakeEnv:
         def __init__(self):
+            self.device = torch.device("cpu")
             self.num_envs = 2
-            self.state = type("State", (), {"obs": {"obs": np.ones((2, 5), dtype=np.float32)}})()
+            self.state = type("State", (), {"obs": {"obs": torch.ones((2, 5))}})()
             self.cfg = type("Cfg", (), {"max_episode_seconds": 10.0, "ctrl_dt": 0.02})()
             self.observation_space = type("Space", (), {"shape": (5,)})()
             self.action_space = type("Space", (), {"shape": (3,)})()
@@ -2156,7 +1995,7 @@ def test_play_wrapper_uses_current_reset_contract():
 
         def reset(self, env_indices):
             # Returns current contract: (obs, info)
-            return {"obs": np.ones((2, 5), dtype=np.float32)}, {}
+            return {"obs": torch.ones((2, 5))}, {}
 
     env = FakeEnv()
     wrapper = RslRlVecEnvAdapter(env, device="cpu", policy_obs_mode="flat")
@@ -2172,14 +2011,15 @@ def test_play_wrapper_uses_current_reset_contract():
 
 def test_play_wrapper_policy_obs_mode_actor():
     """Verify wrapper supports policy_obs_mode='actor'."""
-    import numpy as np
+    import torch
 
     from unilab.rl import RslRlVecEnvAdapter
 
     class FakeEnv:
         def __init__(self):
+            self.device = torch.device("cpu")
             self.num_envs = 1
-            self.state = type("State", (), {"obs": {"obs": np.ones((1, 3), dtype=np.float32)}})()
+            self.state = type("State", (), {"obs": {"obs": torch.ones((1, 3))}})()
             self.cfg = type("Cfg", (), {"max_episode_seconds": 10.0, "ctrl_dt": 0.02})()
             self.observation_space = type("Space", (), {"shape": (3,)})()
             self.action_space = type("Space", (), {"shape": (2,)})()
@@ -2190,8 +2030,8 @@ def test_play_wrapper_policy_obs_mode_actor():
 
         def reset(self, env_indices):
             return {
-                "obs": np.ones((1, 3), dtype=np.float32),
-                "critic": np.zeros((1, 5), dtype=np.float32),
+                "obs": torch.ones((1, 3)),
+                "critic": torch.zeros((1, 5)),
             }, {}
 
     env = FakeEnv()
@@ -2210,20 +2050,21 @@ def test_play_wrapper_policy_obs_mode_actor():
 
 
 def test_play_wrapper_flat_policy_excludes_critic_only_group():
-    import numpy as np
+    import torch
 
     from unilab.rl import RslRlVecEnvAdapter
 
     class FakeEnv:
         def __init__(self):
+            self.device = torch.device("cpu")
             self.num_envs = 1
             self.state = type(
                 "State",
                 (),
                 {
                     "obs": {
-                        "obs": np.array([[1.0, 2.0, 3.0]], dtype=np.float32),
-                        "critic": np.array([[9.0, 9.0, 9.0, 9.0]], dtype=np.float32),
+                        "obs": torch.tensor([[1.0, 2.0, 3.0]]),
+                        "critic": torch.tensor([[9.0, 9.0, 9.0, 9.0]]),
                     }
                 },
             )()
@@ -2236,19 +2077,13 @@ def test_play_wrapper_flat_policy_excludes_critic_only_group():
             pass
 
         def reset(self, env_indices):
-            return cast(dict[str, np.ndarray], getattr(self.state, "obs")), {}
+            return cast(dict[str, torch.Tensor], getattr(self.state, "obs")), {}
 
     wrapper = RslRlVecEnvAdapter(FakeEnv(), device="cpu", policy_obs_mode="flat")
     obs_td, _ = wrapper.reset()
 
-    np.testing.assert_allclose(
-        obs_td["policy"].cpu().numpy(),
-        np.array([[1.0, 2.0, 3.0]], dtype=np.float32),
-    )
-    np.testing.assert_allclose(
-        obs_td["critic"].cpu().numpy(),
-        np.array([[9.0, 9.0, 9.0, 9.0]], dtype=np.float32),
-    )
+    assert torch.equal(obs_td["policy"], torch.tensor([[1.0, 2.0, 3.0]]))
+    assert torch.equal(obs_td["critic"], torch.tensor([[9.0, 9.0, 9.0, 9.0]]))
     assert wrapper.num_obs == 3
     assert wrapper.num_privileged_obs == 4
 
@@ -2260,38 +2095,31 @@ def test_play_wrapper_step_exports_time_outs_without_bootstrap_obs():
 
     class FakeEnv:
         def __init__(self):
+            self.device = torch.device("cpu")
             self.num_envs = 1
             self.cfg = type("Cfg", (), {"max_episode_seconds": 10.0, "ctrl_dt": 0.02})()
             self.observation_space = type("Space", (), {"shape": (3,)})()
             self.action_space = type("Space", (), {"shape": (2,)})()
             self.obs_groups_spec = {"obs": 3, "critic": 2}
-            self.state = type("State", (), {"obs": {"obs": np.zeros((1, 3), dtype=np.float32)}})()
+            self.state = type("State", (), {"obs": {"obs": torch.zeros((1, 3))}})()
 
         def init_state(self):
             pass
 
         def reset(self, env_indices):
-            return {"obs": np.zeros((1, 3), dtype=np.float32)}, {}
+            return {"obs": torch.zeros((1, 3))}, {}
 
         def step(self, actions):
             return type(
                 "StepState",
                 (),
                 {
-                    "obs": {"obs": np.array([[1.0, 2.0, 3.0]], dtype=np.float32)},
-                    "reward": np.array([1.0], dtype=np.float32),
-                    "terminated": np.array([False]),
-                    "truncated": np.array([True]),
-                    "final_observation": {
-                        "obs": np.array([[7.0, 8.0, 9.0]], dtype=np.float32),
-                        "critic": np.array([[4.0, 5.0]], dtype=np.float32),
-                    },
-                    "info": {
-                        "final_observation": {
-                            "obs": np.array([[7.0, 8.0, 9.0]], dtype=np.float32),
-                            "critic": np.array([[4.0, 5.0]], dtype=np.float32),
-                        }
-                    },
+                    "obs": {"obs": torch.tensor([[1.0, 2.0, 3.0]])},
+                    "reward": torch.tensor([1.0]),
+                    "terminated": torch.tensor([False]),
+                    "truncated": torch.tensor([True]),
+                    "final_observation": {},
+                    "info": {},
                 },
             )()
 
@@ -2302,6 +2130,63 @@ def test_play_wrapper_step_exports_time_outs_without_bootstrap_obs():
     assert torch.equal(infos["time_outs"], torch.tensor([True]))
     # The direct rsl-rl adapter no longer exports final observations.
     assert "time_out_bootstrap_obs" not in infos
+
+
+def test_play_wrapper_round_trips_torchenv_training_state():
+    import torch
+
+    from unilab.rl import RslRlVecEnvAdapter
+
+    class _ProviderEnv:
+        def __init__(self):
+            self.device = torch.device("cpu")
+            self.num_envs = 1
+            self.state = type("State", (), {"obs": {"obs": torch.zeros((1, 3))}})()
+            self.cfg = type("Cfg", (), {"max_episode_seconds": 10.0, "ctrl_dt": 0.02})()
+            self.observation_space = type("Space", (), {"shape": (3,)})()
+            self.action_space = type("Space", (), {"shape": (2,)})()
+            self.obs_groups_spec = {"obs": 3}
+            self.imported = None
+
+        def init_state(self):
+            pass
+
+        def reset(self, env_indices):
+            return {"obs": torch.zeros((1, 3))}, {}
+
+        def export_training_state(self):
+            return {"version": 1, "step_counter": 17}
+
+        def import_training_state(self, state):
+            self.imported = dict(state)
+
+    class _PlainEnv:
+        def __init__(self):
+            self.device = torch.device("cpu")
+            self.num_envs = 1
+            self.state = type("State", (), {"obs": {"obs": torch.zeros((1, 3))}})()
+            self.cfg = type("Cfg", (), {"max_episode_seconds": 10.0, "ctrl_dt": 0.02})()
+            self.observation_space = type("Space", (), {"shape": (3,)})()
+            self.action_space = type("Space", (), {"shape": (2,)})()
+            self.obs_groups_spec = {"obs": 3}
+
+        def init_state(self):
+            pass
+
+        def reset(self, env_indices):
+            return {"obs": torch.zeros((1, 3))}, {}
+
+    provider = _ProviderEnv()
+    wrapper = RslRlVecEnvAdapter(provider, device="cpu")
+    assert wrapper.export_training_state() == {"version": 1, "step_counter": 17}
+    wrapper.import_training_state({"version": 1, "step_counter": 18})
+    assert provider.imported == {"version": 1, "step_counter": 18}
+
+    non_provider = _PlainEnv()
+    wrapper = RslRlVecEnvAdapter(non_provider, device="cpu")
+    assert wrapper.export_training_state() is None
+    with pytest.raises(TypeError, match="cannot restore checkpoint environment state"):
+        wrapper.import_training_state({"version": 1, "step_counter": 18})
 
 
 # ---------------------------------------------------------------------------
@@ -2358,15 +2243,13 @@ def test_offpolicy_flashsac_g1_motion_tracking_mjwarp_task_composes() -> None:
     assert cfg.training.play_render_mode == "record"
 
 
-@pytest.mark.parametrize("backend", ["mujoco", "motrix", "newton", "genesis"])
+@pytest.mark.parametrize("backend", ["mujoco", "mjwarp"])
 def test_offpolicy_flashsac_g1_motion_tracking_task_composes(backend: str) -> None:
     cfg = _offpolicy_cfg([f"task=g1_motion_tracking/{backend}"], algo="flashsac")
     assert cfg.training.task_name == "G1MotionTrackingSAC"
     assert cfg.training.sim_backend == backend
     assert cfg.algo.num_envs == 2048
     assert cfg.algo.max_iterations == 25000
-    if backend == "newton":
-        assert cfg.env.newton_use_cuda_graph is True
 
 
 @pytest.mark.parametrize("backend", ["mujoco", "mjwarp"])
@@ -2464,13 +2347,11 @@ def test_train_rsl_rl_play_reports_missing_requested_checkpoint_in_resolved_run(
     assert "algo.checkpoint=12" in captured
 
 
-def test_train_rsl_rl_motrix_auto_play_is_interactive(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
+def test_train_rsl_rl_auto_play_is_interactive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     mod = _train_rsl_rl(monkeypatch)
     cfg = _ppo_cfg(
         [
-            "task=go2_joystick_flat/motrix",
+            "task=go2_joystick_flat/mujoco",
             "training.play_only=true",
             "training.play_steps=37",
             "training.render_spacing=2.5",
@@ -2569,7 +2450,7 @@ def test_train_rsl_rl_record_play_uses_backend_plan(
     mod = _train_rsl_rl(monkeypatch)
     cfg = _ppo_cfg(
         [
-            "task=go2_joystick_flat/motrix",
+            "task=go2_joystick_flat/mujoco",
             "training.play_only=true",
             "training.play_render_mode=record",
             "training.play_steps=37",
@@ -2793,6 +2674,85 @@ def test_play_interactive_sac_overrides_pass_through():
         "task=g1_walk_flat/mujoco",
         "algo.load_run=my_run",
     ]
+
+
+def test_play_interactive_keyboard_commands_write_device_tensors():
+    import types
+
+    mod = _play_interactive()
+    commands = torch.zeros((2, 3), dtype=torch.float32)
+    cfg = types.SimpleNamespace(
+        heading_command=True,
+        resampling_time=2.0,
+        vel_limit=np.array([[-1.0, -0.5, -1.0], [1.0, 0.5, 1.0]]),
+    )
+    env = types.SimpleNamespace(state=types.SimpleNamespace(info={"commands": commands}), cfg=cfg)
+    env.cfg.commands = cfg
+    args = types.SimpleNamespace(
+        keyboard=True,
+        keyboard_step_lin=0.25,
+        keyboard_step_ang=0.5,
+    )
+
+    commander = mod._build_keyboard_commander(env, args)
+
+    assert commander is not None
+    commander.nudge(mod.KeyboardCommander.AXIS_VX, +1.0)
+    commander.nudge(mod.KeyboardCommander.AXIS_VYAW, +1.0)
+    mod._write_keyboard_command(env, commander)
+
+    torch.testing.assert_close(
+        commands,
+        torch.tensor([[0.25, 0.0, 0.5], [0.25, 0.0, 0.5]], dtype=torch.float32),
+    )
+
+
+def test_play_interactive_velocity_overlay_reads_tensors_at_render_boundary():
+    import types
+
+    mod = _play_interactive()
+
+    class VizData:
+        xmat = np.tile(np.eye(3, dtype=np.float64), (4, 1, 1))
+        xpos = np.zeros((4, 3), dtype=np.float64)
+
+    env = types.SimpleNamespace(
+        state=types.SimpleNamespace(
+            info={"commands": torch.tensor([[1.0, -0.5, 0.2], [0.0, 0.0, 0.0]])}
+        ),
+        get_local_linvel=lambda: torch.tensor([[0.25, 0.1, 0.0], [0.0, 0.0, 0.0]]),
+    )
+
+    primitives = mod._velocity_command_primitives(
+        VizData(),
+        focus_body_id=0,
+        env=env,
+        height=0.5,
+        scale=1.0,
+        lateral_offset=0.1,
+    )
+
+    assert len(primitives) == 2
+    lengths = [primitive.size[0] for primitive in primitives]
+    assert np.allclose(lengths, [np.linalg.norm([1.0, -0.5]), np.linalg.norm([0.25, 0.1])])
+
+
+def test_play_interactive_velocity_command_contract_rejects_numpy() -> None:
+    import types
+
+    mod = _play_interactive()
+    env = types.SimpleNamespace(
+        state=types.SimpleNamespace(info={"commands": np.zeros((2, 3), dtype=np.float32)}),
+        cfg=types.SimpleNamespace(vel_limit=np.array([[-1.0] * 3, [1.0] * 3])),
+    )
+
+    assert (
+        mod._build_keyboard_commander(
+            env,
+            types.SimpleNamespace(keyboard=True, keyboard_step_lin=0.1, keyboard_step_ang=0.2),
+        )
+        is None
+    )
 
 
 def test_play_interactive_runner_log_dir_uses_algo_log_name(monkeypatch: pytest.MonkeyPatch):

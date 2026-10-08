@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
@@ -66,26 +67,6 @@ _OWNER_CASES = (
         id="ppo-mujoco",
     ),
     pytest.param(
-        "ppo",
-        ("task=go2_joystick_flat/motrix",),
-        "motrix",
-        0.25,
-        False,
-        False,
-        True,
-        id="ppo-motrix",
-    ),
-    pytest.param(
-        "ppo",
-        ("task=go2_joystick_flat/drake",),
-        "drake",
-        0.25,
-        False,
-        False,
-        False,
-        id="ppo-drake",
-    ),
-    pytest.param(
         "appo",
         ("task=go2_joystick_flat/mujoco",),
         "mujoco",
@@ -94,16 +75,6 @@ _OWNER_CASES = (
         True,
         False,
         id="appo-mujoco",
-    ),
-    pytest.param(
-        "appo",
-        ("task=go2_joystick_flat/motrix",),
-        "motrix",
-        0.25,
-        False,
-        True,
-        False,
-        id="appo-motrix",
     ),
     pytest.param(
         "flashsac",
@@ -115,16 +86,11 @@ _OWNER_CASES = (
         False,
         id="flashsac-mujoco",
     ),
-    pytest.param(
-        "sac",
-        ("task=go2_joystick_flat/drake",),
-        "drake",
-        0.25,
-        False,
-        False,
-        False,
-        id="sac-drake",
-    ),
+)
+_DRAKE_OWNER_CASE = (
+    "ppo",
+    ("task=go2_joystick_flat/drake",),
+    "drake",
 )
 
 
@@ -224,10 +190,6 @@ def test_go2_flat_owner_materializes_complete_plain_manager_cfg(
             "contact": 0.24,
             "swing_feet_z": 4.0,
         }
-        if backend == "drake":
-            # The drake owner disables contact: drake_uni reports world-frame
-            # per-body net contact force, not contact-frame force (#1471).
-            del expected_weights["contact"]
         if alive_declared:
             expected_weights["alive"] = 0.0
         actual_weights = {
@@ -251,7 +213,7 @@ def test_go2_flat_owner_materializes_complete_plain_manager_cfg(
                     continue
                 module = nested_term.func.__module__
                 assert ".backend." not in module
-                assert not any(name in module for name in (".mujoco", ".motrix", ".drake"))
+                assert not any(name in module for name in (".mujoco",))
 
     _assert_no_omegaconf(env_cfg)
 
@@ -266,13 +228,36 @@ def test_go2_flat_registry_is_manager_only() -> None:
     assert bare_cfg.rewards == {}
     assert registry.list_registered_envs()["Go2JoystickFlat"] == {
         "config_factory": "ManagerBasedRlEnvCfg",
-        "available_backends": ["mujoco", "motrix", "drake", "superdex"],
+        "available_backends": ["mujoco", "superdex", "drake"],
     }
+
+
+def test_go2_flat_drake_owner_keeps_policy_io_and_disables_unsupported_dr() -> None:
+    registry.ensure_registries()
+    _, env_cfg, _ = _materialize(*_DRAKE_OWNER_CASE[:2])
+
+    assert env_cfg.events["reset_root_state_uniform"] is None
+    assert env_cfg.events["pd_gains"] is None
+    assert env_cfg.rewards["contact"] is None
+    assert env_cfg.actions["joint_pos"].scale == pytest.approx(0.25)
+    assert list(env_cfg.observations["policy"].terms) == [
+        "base_ang_vel",
+        "projected_gravity",
+        "joint_pos",
+        "joint_vel",
+        "actions",
+        "command",
+        "gait_phase",
+    ]
+    assert list(env_cfg.observations["critic"].terms) == [
+        *(list(env_cfg.observations["policy"].terms)),
+        "base_lin_vel",
+    ]
 
 
 @pytest.mark.parametrize(
     ("backend", "owner"),
-    (("mujoco", "task=go2_joystick_flat/mujoco"), ("motrix", "task=go2_joystick_flat/motrix")),
+    (("mujoco", "task=go2_joystick_flat/mujoco"),),
 )
 def test_go2_flat_registry_executes_real_manager_runtime(backend: str, owner: str) -> None:
     if backend == "mujoco":
@@ -311,14 +296,14 @@ def test_go2_flat_registry_executes_real_manager_runtime(backend: str, owner: st
             np.broadcast_to(_HOME_JOINT_POS, (2, 12)),
         )
 
-        state = env.step(np.zeros((2, 12), dtype=np.float32))
+        state = env.step(torch.zeros((2, 12), dtype=torch.float32))
         assert {name: value.shape for name, value in state.obs.items()} == {
             "obs": (2, 49),
             "critic": (2, 52),
         }
         for value in (*state.obs.values(), state.reward):
-            assert isinstance(value, np.ndarray)
-            assert np.isfinite(value).all()
+            assert isinstance(value, torch.Tensor)
+            assert torch.isfinite(value).all()
     finally:
         env.close()
 
@@ -362,19 +347,17 @@ def test_go2_flat_flashsac_uses_canonical_manager_events_and_numpy_noise() -> No
     assert env_cfg.rewards["contact"].weight == pytest.approx(1.5)
 
 
-def test_go2_flat_drake_missing_dependency_is_explicit() -> None:
-    from unisim.backend.drake.backend import ensure_drake_batch_available
-
-    available, _ = ensure_drake_batch_available()
-    if available:
-        pytest.skip("DrakeUni is installed; missing-dependency behavior is not applicable")
-
+def test_go2_flat_drake_factory_is_registered_before_optional_runtime_load() -> None:
     registry.ensure_registries()
     hydra_cfg, _, env_override = _materialize("ppo", ("task=go2_joystick_flat/drake",))
-    with pytest.raises(ImportError, match="[Dd]rake"):
+    assert "drake" in registry.list_registered_envs()["Go2JoystickFlat"]["available_backends"]
+    try:
         registry.make(
             str(hydra_cfg.training.task_name),
             sim_backend="drake",
             env_cfg_override=env_override,
             num_envs=1,
         )
+    except (ImportError, NotImplementedError, RuntimeError, TypeError, ValueError) as exc:
+        # Registration must not bypass the optional native runtime boundary.
+        assert "drakeuni batch runtime" in str(exc).lower()

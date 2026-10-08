@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
@@ -90,7 +91,7 @@ def test_mjlab_fixture_real_mujoco_reset_step_and_reward() -> None:
 
         before = env.scene["cartpole"].data.joint_pos.copy()
         ids = np.asarray([1, 6], dtype=np.int32)
-        reset_obs, _ = env.reset(env_ids=ids)
+        reset_obs, _ = env.reset(env_indices=torch.tensor(ids, dtype=torch.int64))
         after = env.scene["cartpole"].data.joint_pos.copy()
         np.testing.assert_array_equal(after[[0, 2, 3, 4, 5, 7]], before[[0, 2, 3, 4, 5, 7]])
         assert reset_obs["obs"].shape == reset_obs["critic"].shape == (2, 5)
@@ -98,7 +99,7 @@ def test_mjlab_fixture_real_mujoco_reset_step_and_reward() -> None:
         assert np.all(np.abs(after[ids, 1]) <= 0.034)
         assert np.all(np.abs(env.scene["cartpole"].data.joint_vel[ids]) <= 0.01)
 
-        actions = np.full((8, 1), 0.25, dtype=np.float32)
+        actions = torch.full((8, 1), 0.25, dtype=torch.float32)
         state = env.step(actions)
         entity = env.scene["cartpole"]
         hinge = entity.data.joint_pos[:, 1]
@@ -131,7 +132,7 @@ def test_mjlab_fixture_missing_actuator_fails_on_cold_path() -> None:
         )
 
 
-def test_mjlab_fixture_is_pinned_test_only_numpy_code() -> None:
+def test_mjlab_fixture_is_pinned_test_only_migration_code() -> None:
     task_source = (FIXTURE_DIR / "task.py").read_text(encoding="utf-8")
     helper_source = (ROOT_DIR / "tests/fixtures/cartpole_manager_adapters.py").read_text(
         encoding="utf-8"
@@ -142,8 +143,6 @@ def test_mjlab_fixture_is_pinned_test_only_numpy_code() -> None:
         if not line.lstrip().startswith("#")
     )
     for forbidden in (
-        "import torch",
-        "from torch",
         "import mjlab",
         "from mjlab",
         "uni_rl",

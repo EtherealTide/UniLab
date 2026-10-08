@@ -6,8 +6,8 @@ defaults:
 training:
   task_name: Go2JoystickFlat
   sim_backend: drake
-  # Drake batch currently exposes NumPy float64 buffers and no floating-root
-  # reset contract; keep the owner on CPU and use the scene keyframe reset.
+  # Drake is an in-process CPU-authoritative host bridge. Keep this scoped
+  # owner on the CPU learner path while its packed reset profile is validated.
   device: cpu
 
 algo:
@@ -32,12 +32,13 @@ env:
   drake_backend_mode: batch
   drake_nthread: 0
   events:
+    # Drake's current public profile has no floating-root reset layout or reset
+    # randomization; retain the keyframe/default reset and fail closed rather
+    # than silently approximating these terms.
     reset_root_state_uniform: null
     pd_gains: null
 
 reward:
-  # drake_uni reports per-body net contact force in the world frame, not the
-  # MuJoCo contact frame (normal first) the gait terms gate on; keep the
-  # contact reward off until the drake adapter reports contact-frame force
-  # (issue #1471).
+  # DrakeUni reports per-body net contact force in world coordinates, while the
+  # Go2 gait term expects MuJoCo's contact-frame force (normal first).
   contact: null

@@ -48,6 +48,7 @@ _PACKAGE_CONF_ROOT = Path(__file__).resolve().parents[1] / "conf"
 from unilab.base.process_device import (
     apply_backend_env_device_override,
     configure_backend_process_device,
+    resolve_backend_env_device_id,
 )
 from unilab.training import (
     algo_config_dict,
@@ -538,7 +539,7 @@ def _velocity_command_primitives(
     state = getattr(env, "state", None)
     info = getattr(state, "info", None) if state is not None else None
     commands = info.get("commands") if isinstance(info, dict) else None
-    if not isinstance(commands, np.ndarray) or commands.ndim != 2 or commands.shape[1] < 3:
+    if not isinstance(commands, torch.Tensor) or commands.ndim != 2 or commands.shape[1] < 3:
         return []
 
     try:
@@ -546,7 +547,7 @@ def _velocity_command_primitives(
     except AttributeError:
         return []
     if (
-        not isinstance(local_linvel, np.ndarray)
+        not isinstance(local_linvel, torch.Tensor)
         or local_linvel.ndim != 2
         or local_linvel.shape[1] < 2
     ):
@@ -557,8 +558,13 @@ def _velocity_command_primitives(
     origin[2] += float(height)
     side = _local_xy_to_world_arrow(body_xmat, np.array([0.0, 1.0], dtype=np.float64))
 
-    target_vec = _local_xy_to_world_arrow(body_xmat, commands[0, :2])
-    current_vec = _local_xy_to_world_arrow(body_xmat, local_linvel[0, :2])
+    # Rendering is the explicit host boundary for viewer-only overlays.
+    target_vec = _local_xy_to_world_arrow(
+        body_xmat, commands[0, :2].detach().cpu().numpy().astype(np.float64)
+    )
+    current_vec = _local_xy_to_world_arrow(
+        body_xmat, local_linvel[0, :2].detach().cpu().numpy().astype(np.float64)
+    )
     target_origin = origin + side * float(lateral_offset)
     current_origin = origin - side * float(lateral_offset)
 
@@ -644,7 +650,7 @@ def _build_keyboard_commander(env: Any, args) -> KeyboardCommander | None:
     state = getattr(env, "state", None)
     command_arr = state.info.get("commands") if state is not None else None
     cmds_cfg = getattr(getattr(env, "cfg", None), "commands", None)
-    if not isinstance(command_arr, np.ndarray) or cmds_cfg is None:
+    if not isinstance(command_arr, torch.Tensor) or cmds_cfg is None:
         print("[play_interactive] interactive.keyboard ignored: task has no velocity 'commands'.")
         return None
 
@@ -656,8 +662,16 @@ def _build_keyboard_commander(env: Any, args) -> KeyboardCommander | None:
         step_lin=float(getattr(args, "keyboard_step_lin", 0.1)),
         step_ang=float(getattr(args, "keyboard_step_ang", 0.2)),
     )
-    env.state.info["commands"][:] = commander.command
+    env.state.info["commands"][:] = torch.as_tensor(
+        commander.command, device=env.state.info["commands"].device
+    ).to(env.state.info["commands"].dtype)
     return commander
+
+
+def _write_keyboard_command(env: Any, commander: KeyboardCommander) -> None:
+    """Publish a keyboard command into the TorchEnv command tensor."""
+    commands = env.state.info["commands"]
+    commands[:] = torch.as_tensor(commander.command, device=commands.device).to(commands.dtype)
 
 
 def _state_has_velocity_commands(env: Any) -> bool:
@@ -665,7 +679,7 @@ def _state_has_velocity_commands(env: Any) -> bool:
     info = getattr(state, "info", None) if state is not None else None
     command_arr = info.get("commands") if isinstance(info, dict) else None
     return (
-        isinstance(command_arr, np.ndarray)
+        isinstance(command_arr, torch.Tensor)
         and command_arr.ndim == 2
         and command_arr.shape[0] > 0
         and command_arr.shape[1] >= 3
@@ -728,13 +742,13 @@ def _state_policy_obs_contains_command(env: Any) -> bool:
     state = env.state
     obs = getattr(state, "obs", None)
     actor_obs = obs.get("obs") if isinstance(obs, dict) else None
-    if not isinstance(actor_obs, np.ndarray) or actor_obs.ndim != 2 or actor_obs.shape[0] == 0:
+    if not isinstance(actor_obs, torch.Tensor) or actor_obs.ndim != 2 or actor_obs.shape[0] == 0:
         return False
 
-    command = np.asarray(state.info["commands"][0, :3], dtype=np.float64)
+    command = state.info["commands"][0, :3].detach().cpu().numpy().astype(np.float64)
     if np.linalg.norm(command) <= 1.0e-9:
         return False
-    return _row_contains_contiguous_vector(actor_obs[0], command)
+    return _row_contains_contiguous_vector(actor_obs[0].detach().cpu().numpy(), command)
 
 
 def _policy_obs_contains_command(env: Any, *, reset_fn) -> bool:
@@ -814,10 +828,14 @@ def create_playback_session(
     # No-op for backends without a device binding requirement.  A non-zero
     # Genesis request pins CUDA_VISIBLE_DEVICES; the bound in-process device
     # replaces the requested one for the policy and the env overrides below.
-    if str(device).strip().lower().startswith("cuda"):
-        bound_device = configure_backend_process_device(sim_backend, device)
-        if bound_device is not None:
-            device = bound_device
+    backend_device_id = resolve_backend_env_device_id(sim_backend, learner_device=device)
+    bound_device = configure_backend_process_device(
+        sim_backend,
+        device,
+        backend_device_id=backend_device_id,
+    )
+    if bound_device is not None:
+        device = bound_device
 
     def _create_env(num_envs: int):
         if cfg is None:
@@ -1074,7 +1092,7 @@ def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = 
 
                 # Write the command before stepping so this step's obs follow it.
                 if commander is not None and env.state is not None:
-                    env.state.info["commands"][:] = commander.command
+                    _write_keyboard_command(env, commander)
 
                 playback_session.advance(controls)
 

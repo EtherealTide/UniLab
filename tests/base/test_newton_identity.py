@@ -5,8 +5,6 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
-from importlib.machinery import ModuleSpec
-from pathlib import Path
 
 import pytest
 
@@ -40,41 +38,4 @@ def test_newton_import_path_does_not_eagerly_import_engine_modules() -> None:
         "mujoco_warp False",
         "warp False",
         "mujoco False",
-    ]
-
-
-def test_newton_owner_routes_through_cli_without_importing_runtime(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from unilab import cli
-
-    (tmp_path / "scripts").mkdir(parents=True)
-    (tmp_path / "scripts" / "train_rsl_rl.py").write_text("", encoding="utf-8")
-    owner = tmp_path / "conf" / "ppo" / "task" / "g1_walk_flat"
-    owner.mkdir(parents=True)
-    (owner / "newton.yaml").write_text(
-        "training:\n  sim_backend: newton\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        cli,
-        "find_spec",
-        lambda name: (
-            ModuleSpec(name, loader=None)
-            if name in {"newton", "mujoco_warp", "mujoco", "warp"}
-            else None
-        ),
-    )
-
-    command = cli.build_command(
-        mode="train",
-        algo="ppo",
-        task="g1_walk_flat",
-        sim="newton",
-        overrides=[],
-        root=tmp_path,
-    )
-    assert command[1:] == [
-        str(tmp_path / "scripts" / "train_rsl_rl.py"),
-        "task=g1_walk_flat/newton",
     ]

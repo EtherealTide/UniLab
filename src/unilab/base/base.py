@@ -1,13 +1,18 @@
 import abc
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from os import PathLike
 from typing import Any, Optional
 
 import gymnasium as gym
 import numpy as np
-from unisim.backend.base import BackendPlayRenderPlan, CameraCfg, DebugOverlayGetter
+from unisim.backend.base import (
+    BackendPlayRenderPlan,
+    CameraCfg,
+    DebugOverlayGetter,
+    DebugPrimitive,
+)
 
 from .scene import SceneCfg
 from .variants import FixedModelVariantCatalogCfg
@@ -103,6 +108,15 @@ class EnvCfg:
     isaacsim_render_mode: Optional[str] = None
     isaacsim_render_width: int = 1280
     isaacsim_render_height: int = 720
+    # Opt in to the external-worker CUDA IPC tensor lifecycle.  The default
+    # remains false so legacy NumPy shared-memory behavior is unchanged until a
+    # task owner explicitly negotiates the candidate tensor contract.
+    isaacsim_tensor_cuda_ipc: bool = False
+    # Opt-in PhysX material sharing for large scenes.  Equal initial sliding
+    # friction values share a material and reset-time friction DR is disabled
+    # at capability negotiation.  Keep this false when complete per-geom/per-env
+    # friction DR is required.
+    isaacsim_share_friction_materials: bool = False
     # ``isaacsim`` PhysX solver overrides, forwarded to UniSim's bounded,
     # readback-validated PhysxSolverConfig (unilabsim/unisim#251, #259).
     # ``None`` keeps the PhysX scene defaults; the backend validates each
@@ -279,6 +293,15 @@ class EnvCfg:
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer, got {value!r}")
+        if not isinstance(self.isaacsim_tensor_cuda_ipc, bool):
+            raise ValueError(
+                f"isaacsim_tensor_cuda_ipc must be a boolean, got {self.isaacsim_tensor_cuda_ipc!r}"
+            )
+        if not isinstance(self.isaacsim_share_friction_materials, bool):
+            raise ValueError(
+                "isaacsim_share_friction_materials must be a boolean, got "
+                f"{self.isaacsim_share_friction_materials!r}"
+            )
         # PhysX accepts zero velocity iterations (its scene minimum is 0) but
         # requires at least one position iteration; mirror UniSim's
         # PhysxSolverConfig bounds here so owner configs fail fast.
@@ -472,8 +495,13 @@ class ABEnv(abc.ABC):
         """Initialize environment and return initial state"""
 
     @abc.abstractmethod
-    def step(self, actions: np.ndarray) -> Any:
-        """Step the environment with given actions, return new state"""
+    def step(self, actions: Any) -> Any:
+        """Step the environment with owner-declared action carrier.
+
+        The abstract base stays runtime-neutral during the staged NumPy-to-Torch
+        migration. Concrete owners validate the declared carrier; the final
+        Torch-only lifecycle accepts only Torch tensors.
+        """
 
     @abc.abstractmethod
     def close(self) -> None:

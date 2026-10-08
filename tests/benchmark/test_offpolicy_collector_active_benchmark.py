@@ -13,8 +13,8 @@ def _make_result(
     *,
     algo: str = "sac",
     task: str = "g1_walk_flat",
-    sim: str = "motrix",
-    runtime_sim_backend: str = "motrix",
+    sim: str = "mujoco",
+    runtime_sim_backend: str = "mujoco",
     num_envs: int = 8192,
     throughput: float = 123456.7,
     cpu_util_pct: float = 42.5,
@@ -70,19 +70,18 @@ def test_parse_case_requires_algo_task_sim() -> None:
         bench._parse_case("g1_walk_flat/mujoco")
 
 
-def test_default_cases_cover_motrix_only() -> None:
+def test_default_cases_cover_scoped_host_bridge() -> None:
     specs = bench._resolve_case_specs(
         "default",
         algos_arg="sac,flashsac",
-        backends=("motrix",),
+        backends=("mujoco",),
     )
 
-    assert "sac/g1_motion_tracking/motrix" in specs
-    assert "flashsac/g1_walk_flat/motrix" in specs
-    assert "sac/g1_motion_tracking/mujoco" not in specs
+    assert "sac/g1_motion_tracking/mujoco" in specs
+    assert "flashsac/g1_walk_flat/mujoco" in specs
 
 
-def test_all_backend_selection_expands_default_cases() -> None:
+def test_all_backend_selection_stays_on_scoped_default_backends() -> None:
     backends = bench._resolve_backend_selection(backend="mujoco", all_backends=True)
     specs = bench._resolve_case_specs(
         "default",
@@ -90,16 +89,16 @@ def test_all_backend_selection_expands_default_cases() -> None:
         backends=backends,
     )
 
-    assert backends == ("mujoco", "motrix")
+    assert backends == ("mujoco",)
     assert "sac/g1_motion_tracking/mujoco" in specs
-    assert "sac/g1_motion_tracking/motrix" in specs
     assert "flashsac/g1_walk_flat/mujoco" in specs
-    assert "flashsac/g1_walk_flat/motrix" in specs
 
 
-def test_mjwarp_backend_is_opt_in_and_never_part_of_all() -> None:
-    # --all stays on the default backends; mjwarp must be requested explicitly.
+def test_cuda_tensor_backends_are_opt_in() -> None:
+    assert bench.OPTIONAL_BACKENDS == ("mjwarp", "genesis")
+    assert set(bench.OPTIONAL_BACKENDS).isdisjoint(bench.BENCHMARK_BACKENDS)
     assert "mjwarp" not in bench._resolve_backend_selection(backend="mujoco", all_backends=True)
+    assert "genesis" not in bench._resolve_backend_selection(backend="mujoco", all_backends=True)
     if bench.find_spec("mujoco_warp") is None or bench.find_spec("warp") is None:
         with pytest.raises(SystemExit, match="mjwarp extra"):
             bench._resolve_backend_selection(backend="mjwarp", all_backends=False)
@@ -117,33 +116,8 @@ def test_resolve_case_specs_deduplicates_explicit_specs() -> None:
     assert specs == ["sac/g1_walk_flat/mujoco", "flashsac/g1_walk_flat/mujoco"]
 
 
-def test_motrixsim_case_alias_uses_motrix_owner_config() -> None:
-    assert bench._owner_config_path("sac", "g1_walk_flat", "motrixsim").name == "motrix.yaml"
-
-    cfg = bench._compose_offpolicy_cfg(
-        "sac",
-        "g1_walk_flat",
-        "motrixsim",
-        num_envs=2,
-    )
-
-    assert cfg.training.sim_backend == "motrix"
-    assert cfg.algo.num_envs == 2
-
-
-def test_auto_discovery_supports_motrixsim_alias() -> None:
-    specs = bench._resolve_case_specs(
-        "auto",
-        algos_arg="sac,flashsac",
-        backends=("motrix",),
-    )
-
-    assert "sac/g1_walk_flat/motrix" in specs
-    assert "flashsac/g1_walk_flat/motrix" in specs
-
-
 def test_noise_seed_override_composes_for_target_g1_profiles() -> None:
-    # Manager-Based owners seed their NumPy runtime directly rather than
+    # Manager-Based owners seed their tensor runtime directly rather than
     # carrying the legacy observation-noise config.
     for spec in (("sac", "g1_motion_tracking", "mujoco"),):
         cfg = bench._compose_offpolicy_cfg(
@@ -169,20 +143,17 @@ def test_parse_args_defaults_to_large_env_count_and_longer_measure_window() -> N
 
     assert args.num_envs == 8192
     assert args.measure_steps == 100
-    assert args.backend == "motrix"
+    assert args.backend == "mujoco"
     assert not args.all_backends
 
 
 def test_parse_args_accepts_backend_and_all_backend_modes() -> None:
-    motrix_args = bench.parse_args(["--backend", "motrix"])
+    backend_args = bench.parse_args(["--backend", "mujoco"])
     all_args = bench.parse_args(["--all"])
-    legacy_sim_args = bench.parse_args(["--sim", "motrixsim"])
 
-    assert motrix_args.backend == "motrix"
-    assert not motrix_args.all_backends
-    assert all_args.backend == "motrix"
+    assert not backend_args.all_backends
+    assert all_args.backend == "mujoco"
     assert all_args.all_backends
-    assert legacy_sim_args.backend == "motrix"
 
 
 def test_hardware_table_includes_cpu_and_memory_details() -> None:
@@ -208,7 +179,7 @@ def test_throughput_table_includes_case_throughput_and_num_env() -> None:
 
     assert "AMD Ryzen" not in table
     assert "g1_walk_flat" in table
-    assert "motrix" in table
+    assert "mujoco" in table
     assert "8,192" in table
     assert "123,457" in table
     assert "42.5" in table
@@ -378,3 +349,184 @@ def test_format_set_state_mjwarp_table_covers_mjwarp_only_keys() -> None:
     assert "Host cache refresh" in table
     assert "4.000 (50.0%)" in table
     assert "2.000 (25.0%)" in table
+
+
+def test_active_collector_loop_keeps_transition_tensors_native() -> None:
+    """The benchmark hot loop must not regress to NumPy transition carriers."""
+    import ast
+    from pathlib import Path
+
+    source = Path(bench.__file__).read_text()
+    tree = ast.parse(source)
+    loop = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_active_window_case"
+    )
+
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "zeros"
+        for node in ast.walk(loop)
+    )
+    assert not any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "asarray"
+        for node in ast.walk(loop)
+    )
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "from_numpy"
+        for node in ast.walk(loop)
+    )
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "resolve_terminal_observation_contract"
+        for node in ast.walk(loop)
+    )
+
+
+def test_variant_labels_require_unique_nonempty_values() -> None:
+    assert bench._variant_labels(None) == ("default",)
+    assert bench._variant_labels("numpy, torch") == ("numpy", "torch")
+
+    with pytest.raises(ValueError, match="at least one non-empty label"):
+        bench._variant_labels(" , ")
+    with pytest.raises(ValueError, match="labels must be unique"):
+        bench._variant_labels("torch,torch")
+
+
+def test_variant_overrides_parse_hydra_equals_values() -> None:
+    parsed = bench._parse_variant_overrides(["torch=env.seed=7", "torch=training.foo=1"])
+
+    assert parsed == {"torch": ["env.seed=7", "training.foo=1"]}
+
+    with pytest.raises(ValueError, match="VARIANT=HYDRA_OVERRIDE"):
+        bench._parse_variant_overrides(["torch"])
+    with pytest.raises(ValueError, match="non-empty VARIANT"):
+        bench._parse_variant_overrides(["=env.seed=7"])
+
+
+def test_parse_args_accepts_variant_labels_and_overrides() -> None:
+    args = bench.parse_args(
+        [
+            "--variants",
+            "numpy,torch",
+            "--variant-override",
+            "torch=env.seed=7",
+            "--variant-override",
+            "numpy=env.seed=8",
+        ]
+    )
+
+    assert args.variants == "numpy,torch"
+    assert args.variant_override == ["torch=env.seed=7", "numpy=env.seed=8"]
+
+
+def test_variant_blocks_alternate_labels_without_extending_measurement(monkeypatch) -> None:
+    """A/B blocks alternate labels and retain the same warmup/measure budget."""
+    order: list[str] = []
+
+    def fake_build_and_run_case(
+        spec,
+        *,
+        warmup_steps,
+        measure_steps,
+        replay_capacity_steps,
+        tail_steps,
+        num_envs,
+        extra_overrides,
+        variant,
+        profile_numpy_random,
+    ):
+        order.append(variant)
+        result = _make_result(
+            throughput=1000.0,
+            include_env_step_breakdown=True,
+        )
+        result.case = bench.CollectorCase(**{**vars(result.case), "variant": variant})
+        return result
+
+    monkeypatch.setattr(bench, "_build_and_run_case", fake_build_and_run_case)
+    monkeypatch.setattr(bench, "_print_result", lambda result: None)
+
+    payload = {}
+    monkeypatch.setattr(
+        bench,
+        "_write_json",
+        lambda path, value: payload.update(value),
+    )
+
+    argv = [
+        "--cases",
+        "flashsac/g1_walk_flat/mujoco",
+        "--warmup-steps",
+        "5",
+        "--measure-steps",
+        "20",
+        "--variants",
+        "base,head",
+        "--repeat-variant-blocks",
+        "2",
+    ]
+    monkeypatch.setattr(sys, "argv", ["benchmark", *argv])
+    bench.main()
+
+    assert order == ["base", "head", "base", "head"]
+    assert payload["args"]["warmup_steps"] == 5
+    assert payload["args"]["measure_steps"] == 20
+    assert payload["args"]["repeat_variant_blocks"] == 2
+    assert [result["case"]["variant"] for result in payload["results"]] == order
+
+
+def test_variant_ablation_table_compares_each_variant_to_default() -> None:
+    baseline = _make_result(num_envs=2, throughput=1000.0)
+    torch_result = _make_result(num_envs=2, throughput=1500.0)
+    torch_result.case = bench.CollectorCase(**{**vars(torch_result.case), "variant": "torch"})
+
+    table = bench._format_variant_ablation_table([baseline, torch_result])
+
+    assert "default" in table
+    assert "torch" in table
+    assert "1.500x" in table
+
+
+def test_variant_ablation_table_pairs_each_head_with_preceding_base() -> None:
+    base_low = _make_result(num_envs=2, throughput=1000.0)
+    head_low = _make_result(num_envs=2, throughput=1200.0)
+    base_high = _make_result(num_envs=2, throughput=1500.0)
+    head_high = _make_result(num_envs=2, throughput=1500.0)
+    for result, variant in (
+        (base_low, "base"),
+        (head_low, "head"),
+        (base_high, "base"),
+        (head_high, "head"),
+    ):
+        result.case = bench.CollectorCase(**{**vars(result.case), "variant": variant})
+
+    table = bench._format_variant_ablation_table(
+        [base_low, head_low, base_high, head_high], paired=True
+    )
+
+    assert "1.200x" in table
+    assert "1.500x" in table
+
+
+def test_numpy_random_profiler_times_generator_bound_calls() -> None:
+    import numpy as np
+
+    profiler = bench._NumpyRandomProfiler()
+    generator = np.random.default_rng(17)
+    proxy = profiler.bind_generator(generator)
+
+    profiler.begin_step()
+    proxy.uniform(-1.0, 1.0, (2,))
+    proxy.integers(0, 3, (2,))
+    profiler.end_step()
+
+    assert profiler.step_calls == 2
+    assert profiler.step_ms >= 0.0
+    assert isinstance(proxy.bit_generator, np.random.BitGenerator)
+    assert profiler.restore_generator() is generator

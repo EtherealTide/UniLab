@@ -36,6 +36,11 @@ BACKEND_ENV_DEVICE_STR_FIELDS: dict[str, str] = {
     "newton": "newton_device",
 }
 
+# Isaac's simulator runs in a dedicated worker, but the host learner owns the
+# CUDA IPC arena.  Its Torch current device must therefore agree with the
+# integer payload sent to that worker before construction.
+_EXTERNAL_CUDA_IPC_BACKENDS = {"isaacgym", "isaacsim"}
+
 
 # Set once ``bind_genesis_process_device`` has pinned CUDA_VISIBLE_DEVICES for
 # this process.  Genesis/Quadrants binds its CUDA runtime to the first visible
@@ -50,23 +55,6 @@ def _normalize_backend(backend_type: str) -> str:
     if not isinstance(backend_type, str) or not backend_type.strip():
         raise ValueError(f"backend_type must be a non-empty string, got {backend_type!r}")
     return backend_type.strip().lower()
-
-
-def _normalize_device_indices(devices: Sequence[int] | None) -> tuple[int, ...] | None:
-    if devices is None:
-        return None
-    normalized: list[int] = []
-    for entry in devices:
-        if isinstance(entry, bool) or not isinstance(entry, int):
-            raise ValueError(
-                f"training.devices entries must be integer CUDA indices, got {entry!r}"
-            )
-        if entry < 0:
-            raise ValueError(f"training.devices entries must be non-negative, got {entry}")
-        normalized.append(int(entry))
-    if len(set(normalized)) != len(normalized):
-        raise ValueError(f"training.devices must not contain duplicates, got {normalized}")
-    return tuple(normalized)
 
 
 def _cuda_device_index(device: str | None) -> int | None:
@@ -105,34 +93,33 @@ def _cuda_device_index(device: str | None) -> int | None:
     return index
 
 
+def rank_local_visible_cuda_entries(
+    current_visible_devices: str | None = None,
+) -> tuple[str, ...]:
+    """Return opaque rank-local CUDA visibility entries before Torch init."""
+    raw = (
+        os.environ.get("CUDA_VISIBLE_DEVICES")
+        if current_visible_devices is None
+        else current_visible_devices
+    )
+    if raw is None:
+        return ()
+    entries = tuple(entry.strip() for entry in raw.split(",") if entry.strip())
+    if entries == ("-1",):
+        return ()
+    return entries
+
+
 def resolve_backend_env_device_id(
     backend_type: str,
     *,
-    devices: Sequence[int] | None = None,
-    rank: int = 0,
-    local_rank: int | None = None,
-    world_size: int = 1,
     learner_device: str | None = None,
 ) -> int | None:
-    """Resolve the integer simulator device id for a training rank.
+    """Resolve the simulator payload id from the rank-local CUDA namespace.
 
-    Args:
-        backend_type: Selected UniSim backend.
-        devices: ``training.devices`` in the host-visible namespace.  This is
-            used by the off-policy launcher and by single-process PPO.
-        rank: Off-policy data-parallel rank (rank zero by default).
-        local_rank: ``LOCAL_RANK`` from torchrun.  In a distributed PPO worker
-            this is the logical index inside the launcher's remapped
-            ``CUDA_VISIBLE_DEVICES`` list.
-        world_size: Torchrun world size.  Values greater than one select the
-            ``local_rank`` namespace; values of one select ``devices[rank]``.
-        learner_device: Explicit learner device fallback when no topology was
-            configured (for example APPO or a single-device play command).
-
-    Returns ``None`` for backends without an explicit simulator device field.
-    For a torchrun worker the returned id is intentionally *local* (rather
-    than the host index in ``devices``), because the worker subprocess inherits
-    the remapped ``CUDA_VISIBLE_DEVICES`` environment.
+    ``None`` means the backend has no payload device field. With CUDA visible,
+    exactly one rank-local entry is required and the payload id is always ``0``;
+    otherwise the explicit non-Genesis learner device fallback remains valid.
     """
 
     backend = _normalize_backend(backend_type)
@@ -140,42 +127,16 @@ def resolve_backend_env_device_id(
     if field is None:
         return None
 
-    if backend == "genesis" and _genesis_device_pinned:
-        # Post-pin the process sees exactly one CUDA device; every rank-local
-        # consumer (learner probe, spawn collector, playback) must use the
-        # in-process index 0 regardless of the original host/rank topology.
+    visible_entries = rank_local_visible_cuda_entries()
+    if len(visible_entries) == 1:
         return 0
-
-    normalized_devices = _normalize_device_indices(devices)
-    world_size = int(world_size)
-    if world_size < 1:
-        raise ValueError(f"world_size must be positive, got {world_size}")
-
-    if world_size > 1:
-        resolved_local_rank = int(rank if local_rank is None else local_rank)
-        if resolved_local_rank < 0 or resolved_local_rank >= world_size:
-            raise ValueError(
-                f"local_rank={resolved_local_rank} is out of range for world_size={world_size}"
-            )
-        if normalized_devices is not None and len(normalized_devices) != world_size:
-            raise ValueError(
-                f"training.devices has {len(normalized_devices)} entries but "
-                f"WORLD_SIZE={world_size}"
-            )
-        # torchrun launch_torchrun_workers remaps CVD to the selected physical
-        # devices.  Isaac workers inherit that environment, so LOCAL_RANK is
-        # the correct payload index.
-        return resolved_local_rank
-
-    if normalized_devices:
-        resolved_rank = int(rank)
-        if resolved_rank < 0 or resolved_rank >= len(normalized_devices):
-            raise ValueError(
-                f"rank={resolved_rank} is out of range for training.devices="
-                f"{list(normalized_devices)}"
-            )
-        return normalized_devices[resolved_rank]
-
+    if visible_entries:
+        raise ValueError(
+            "A CUDA rank must own exactly one CUDA_VISIBLE_DEVICES entry; got "
+            f"{','.join(visible_entries)!r}"
+        )
+    if backend == "genesis" and _genesis_device_pinned:
+        return 0
     return _cuda_device_index(learner_device)
 
 
@@ -183,10 +144,6 @@ def apply_backend_env_device_override(
     env_cfg_override: Mapping[str, Any] | None,
     backend_type: str,
     *,
-    devices: Sequence[int] | None = None,
-    rank: int = 0,
-    local_rank: int | None = None,
-    world_size: int = 1,
     learner_device: str | None = None,
 ) -> dict[str, Any]:
     """Return an env override carrying the rank-selected simulator device.
@@ -203,14 +160,7 @@ def apply_backend_env_device_override(
     str_field = BACKEND_ENV_DEVICE_STR_FIELDS.get(backend)
     if int_field is None and str_field is None:
         return result
-    device_id = resolve_backend_env_device_id(
-        backend,
-        devices=devices,
-        rank=rank,
-        local_rank=local_rank,
-        world_size=world_size,
-        learner_device=learner_device,
-    )
+    device_id = resolve_backend_env_device_id(backend, learner_device=learner_device)
     if device_id is None:
         return result
     if str_field is not None:
@@ -220,49 +170,12 @@ def apply_backend_env_device_override(
     return result
 
 
-def warn_if_backend_device_collision(
-    backend_type: str,
-    *,
-    devices: Sequence[int] | None,
-    rank: int,
-    device_id: int | None,
-    source: str = "environment",
-) -> None:
-    """Warn when a multi-rank simulator still resolves to device zero.
-
-    This is a transition guard for older adapters/configuration paths.  Rank
-    zero legitimately owns device zero; only a non-zero rank resolving to zero
-    is a collision.  The warning is intentionally emitted at construction
-    time, never from a hot simulation path.
-    """
-
-    backend = _normalize_backend(backend_type)
-    if backend not in BACKEND_ENV_DEVICE_FIELDS and backend not in BACKEND_ENV_DEVICE_STR_FIELDS:
-        return
-    if backend == "genesis" and _genesis_device_pinned:
-        # A successful pin places every rank on its own physical GPU; the
-        # in-process index 0 that follows is not a collision.
-        return
-    normalized_devices = _normalize_device_indices(devices)
-    if (
-        normalized_devices is None
-        or len(normalized_devices) <= 1
-        or int(rank) <= 0
-        or device_id != 0
-    ):
-        return
-    warnings.warn(
-        f"{backend} rank {int(rank)} resolved its {source} device to 0 while "
-        f"training.devices={list(normalized_devices)} requests multiple devices; "
-        "all simulator workers may be sharing GPU 0",
-        RuntimeWarning,
-        stacklevel=2,
-    )
-
-
 def resolve_backend_process_device(backend_type: str, learner_device: str | None) -> str | None:
     backend = _normalize_backend(backend_type)
-    if backend not in {"mjwarp", "newton", "genesis"}:
+    if (
+        backend not in {"mjwarp", "newton", "genesis"}
+        and backend not in _EXTERNAL_CUDA_IPC_BACKENDS
+    ):
         return None
     if learner_device is None:
         raise ValueError(f"{backend} requires an explicit CUDA process device")
@@ -274,12 +187,69 @@ def resolve_backend_process_device(backend_type: str, learner_device: str | None
     return resolved
 
 
-def configure_backend_process_device(backend_type: str, learner_device: str | None) -> str | None:
+def _bind_external_cuda_ipc_process_device(
+    backend_type: str,
+    resolved: str,
+    *,
+    backend_device_id: int | None = None,
+) -> str:
+    import torch
+
+    learner_index = _cuda_device_index(resolved)
+    if learner_index is None:
+        raise ValueError(
+            f"{backend_type} requires a CUDA process device shared with its learner; "
+            f"got {resolved!r}"
+        )
+    if backend_device_id is not None:
+        if (
+            isinstance(backend_device_id, bool)
+            or not isinstance(backend_device_id, int)
+            or backend_device_id < 0
+        ):
+            raise ValueError(
+                f"{backend_type} backend device id must be a non-negative integer or None, "
+                f"got {backend_device_id!r}"
+            )
+        if backend_device_id != learner_index:
+            raise ValueError(
+                f"{backend_type} learner device {resolved!r} does not match its backend "
+                f"payload device id {backend_device_id}; refusing to construct cross-device "
+                "CUDA IPC"
+            )
+    if not torch.cuda.is_available():
+        raise ValueError(
+            f"{backend_type} requires CUDA device {resolved!r}, but CUDA is unavailable "
+            "in this process"
+        )
+    visible_count = int(torch.cuda.device_count())
+    if learner_index >= visible_count:
+        raise ValueError(
+            f"{backend_type} device index {learner_index} is out of range; "
+            f"torch.cuda.device_count()={visible_count}"
+        )
+    torch.cuda.set_device(learner_index)
+    return f"cuda:{learner_index}"
+
+
+def configure_backend_process_device(
+    backend_type: str,
+    learner_device: str | None,
+    *,
+    backend_device_id: int | None = None,
+) -> str | None:
     resolved = resolve_backend_process_device(backend_type, learner_device)
     if resolved is None:
         return None
-    if _normalize_backend(backend_type) == "genesis":
+    backend = _normalize_backend(backend_type)
+    if backend == "genesis":
         return bind_genesis_process_device(resolved)
+    if backend in _EXTERNAL_CUDA_IPC_BACKENDS:
+        return _bind_external_cuda_ipc_process_device(
+            backend,
+            resolved,
+            backend_device_id=backend_device_id,
+        )
     return bind_backend_process_device_for_backend(backend_type, resolved)
 
 
@@ -359,10 +329,6 @@ def _pin_cuda_visible_devices(index: int) -> None:
 def pin_genesis_device_before_cuda_init(
     backend_type: str,
     *,
-    devices: Sequence[int] | None = None,
-    rank: int = 0,
-    local_rank: int | None = None,
-    world_size: int = 1,
     learner_device: str | None = None,
 ) -> str | None:
     """Pin Genesis to its rank device before the first torch CUDA call.
@@ -370,21 +336,13 @@ def pin_genesis_device_before_cuda_init(
     ``torch.cuda.is_available()`` already latches ``CUDA_VISIBLE_DEVICES`` in
     the CUDA runtime, so the pin must run ahead of *any* torch CUDA query —
     entrypoints should call this before registry/bootstrap/device detection.
-    Pure config topology (``training.devices`` / ``LOCAL_RANK`` / an explicit
-    ``cuda:N`` learner device) resolves without touching torch.  Returns the
+    An explicit non-Genesis ``cuda:N`` learner device resolves without touching torch.  Returns the
     in-process device the caller must use when a pin happened, else ``None``.
     """
 
     if _normalize_backend(backend_type) != "genesis":
         return None
-    device_id = resolve_backend_env_device_id(
-        backend_type,
-        devices=devices,
-        rank=rank,
-        local_rank=local_rank,
-        world_size=world_size,
-        learner_device=learner_device,
-    )
+    device_id = resolve_backend_env_device_id(backend_type, learner_device=learner_device)
     if not device_id:
         return None
     return bind_genesis_process_device(f"cuda:{device_id}")
@@ -446,7 +404,7 @@ __all__ = [
     "bind_genesis_process_device",
     "configure_backend_process_device",
     "pin_genesis_device_before_cuda_init",
+    "rank_local_visible_cuda_entries",
     "resolve_backend_env_device_id",
     "resolve_backend_process_device",
-    "warn_if_backend_device_collision",
 ]

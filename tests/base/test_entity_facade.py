@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.base import BackendMocapPoseBinding, BackendRootStateLayout, SimBackend
 from unisim.dr.types import DomainRandomizationCapabilities
 
@@ -533,7 +534,7 @@ def test_entity_root_writes_use_cached_layout_and_one_reset_commit() -> None:
     cold_layout_calls = backend.calls["root-state layout"]
     half_sqrt = np.sqrt(0.5)
 
-    with transaction.scoped(np.array([0, 2], dtype=np.int32)):
+    with transaction.scoped(torch.tensor([0, 2], dtype=torch.int64)):
         robot.write_root_link_pose_to_sim(
             np.array(
                 [
@@ -572,7 +573,7 @@ def test_entity_read_reset_root_pose_returns_staged_or_default_pose() -> None:
     )
     robot = scene["robot"]
 
-    with transaction.scoped(np.array([0, 2], dtype=np.int32)):
+    with transaction.scoped(torch.tensor([0, 2], dtype=torch.int64)):
         robot.write_root_link_pose_to_sim(
             np.array([[10.0, 11.0, 12.0, 1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
             env_ids=np.array([2], dtype=np.int32),
@@ -609,7 +610,7 @@ def test_entity_caches_unsupported_root_layout_without_hot_path_probe() -> None:
         NotImplementedError,
         match="reset root-state layout.*backend 'drake'.*drake lacks root-state layout",
     ):
-        with transaction.scoped(np.array([0], dtype=np.int32)):
+        with transaction.scoped(torch.tensor([0], dtype=torch.int64)):
             robot.write_root_state_to_sim(
                 np.array([[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]),
                 env_ids=np.array([0], dtype=np.int32),

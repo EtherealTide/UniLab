@@ -1,10 +1,10 @@
 """RSL-RL distributed-training helpers.
 
-The small pure helpers here (torchrun environment readers, ``training.devices``
-normalization, launch-time device validation) are owned by UniLab so that
-single-process PPO training and playback run without uni_rl installed. The
-multi-GPU launcher and CPU partitioner stay owned by ``uni_rl.ipc.dp_launcher``
-and are imported lazily only when a multi-rank topology is requested.
+The small pure helpers here (torchrun environment readers, removed-device
+configuration validation) are owned by UniLab so that single-process PPO
+training and playback run without uni_rl installed. The multi-GPU launcher and
+CPU partitioner stay owned by ``uni_rl.ipc.dp_launcher`` and are imported
+lazily only when a multi-rank topology is requested.
 ``UNILAB_DP_LOG_DIR`` is a shared environment-variable contract with that
 launcher: it sets the variable for spawned workers, workers read it here.
 """
@@ -38,40 +38,16 @@ def current_torch_distributed_world_size() -> int:
     return int(os.environ.get("WORLD_SIZE", "1"))
 
 
-def resolve_dp_topology(devices_cfg: Any) -> tuple[int, ...] | None:
-    """Normalize ``training.devices`` into an ordered CUDA-index tuple.
-
-    Returns None for the single-card default (null / empty list). The user
-    given order is preserved: rank i maps to ``cuda:{devices[i]}``.
-    """
+def reject_removed_device_config(devices_cfg: Any) -> None:
+    """Fail closed if the removed CUDA-index device list is still supplied."""
     if devices_cfg is None:
-        return None
-    devices = list(devices_cfg)
-    if len(devices) == 0:
-        return None
-    normalized: list[int] = []
-    for entry in devices:
-        if isinstance(entry, bool) or not isinstance(entry, int):
-            raise ValueError(
-                f"training.devices entries must be integer CUDA indices, got {entry!r}"
-            )
-        if entry < 0:
-            raise ValueError(f"training.devices entries must be non-negative, got {entry}")
-        normalized.append(int(entry))
-    if len(set(normalized)) != len(normalized):
-        raise ValueError(f"training.devices must not contain duplicates, got {normalized}")
-    return tuple(normalized)
-
-
-def validate_dp_launchable(devices: tuple[int, ...]) -> None:
-    """Fail fast at launch time when the host lacks any requested CUDA device."""
-    device_count = torch.cuda.device_count()
-    missing = [index for index in devices if index >= device_count]
-    if missing:
-        raise ValueError(
-            f"training.devices={list(devices)} requires CUDA device index(es) {missing}, "
-            f"but torch.cuda.device_count()={device_count}"
-        )
+        return
+    if hasattr(devices_cfg, "__len__") and len(devices_cfg) == 0:
+        return
+    raise ValueError(
+        "training.devices was removed; control GPUs exclusively with rank-local "
+        "CUDA_VISIBLE_DEVICES"
+    )
 
 
 def _require_uni_rl_dp_launcher():
@@ -82,8 +58,8 @@ def _require_uni_rl_dp_launcher():
         if exc.name is not None and exc.name.split(".")[0] != "uni_rl":
             raise
         raise ModuleNotFoundError(
-            "Multi-GPU PPO (training.devices with more than one entry, or an "
-            "external torchrun launch) requires the optional unilab-rl package; "
+            "Multi-GPU PPO and multi-rank CPU partitioning require the optional "
+            "unilab-rl package; "
             "install it with: pip install unilab[uni_rl]"
         ) from exc
     return dp_launcher
@@ -113,19 +89,19 @@ def resolve_collector_cpu_ids(
 
 
 def launch_torchrun_workers(
-    devices: tuple[int, ...],
     *,
+    world_size: int,
     script_path: str | os.PathLike[str],
     argv: Sequence[str],
     log_dir: str,
 ) -> None:
-    """Launch one local torchrun worker per configured CUDA device.
+    """Launch one single-GPU torchrun worker per selected visibility entry.
 
     Worker supervision is owned by ``uni_rl.ipc.dp_launcher`` and requires the
     optional unilab-rl package.
     """
     _require_uni_rl_dp_launcher().launch_torchrun_workers(
-        devices,
+        world_size=world_size,
         script_path=Path(script_path),
         argv=argv,
         log_dir=log_dir,
@@ -145,36 +121,29 @@ def apply_rsl_rl_rank_seed(cfg: Any, rank: int) -> int:
 def resolve_rsl_rl_device(
     *,
     configured_device: str | None,
-    devices: tuple[int, ...] | None,
     world_size: int,
     local_rank: int,
     default_device: str,
 ) -> str:
     """Resolve the exact device string expected by RSL-RL's runner.
 
-    Integrated multi-GPU workers see the selected physical devices through a
-    remapped ``CUDA_VISIBLE_DEVICES`` list, so RSL-RL must receive
-    ``cuda:LOCAL_RANK`` rather than the original host-global device index.
+    Every distributed worker owns one visible GPU and therefore uses
+    ``cuda:0``. ``LOCAL_RANK`` is a process label, never a CUDA index.
     """
-    if configured_device is not None and devices is not None:
-        raise ValueError("Set either training.device or training.devices, not both")
     if world_size < 1:
         raise ValueError(f"world_size must be positive, got {world_size}")
     if local_rank < 0 or local_rank >= world_size:
         raise ValueError(f"local_rank={local_rank} is out of range for world_size={world_size}")
-    if world_size > 1:
-        if configured_device is not None:
-            raise ValueError(
-                "training.device cannot select one device in a distributed run; "
-                "use training.devices"
-            )
-        if devices is not None and len(devices) != world_size:
-            raise ValueError(
-                f"training.devices has {len(devices)} entries but WORLD_SIZE={world_size}"
-            )
-        return f"cuda:{local_rank}"
-    if devices is not None:
-        return f"cuda:{devices[0]}"
+    from unilab.base.process_device import rank_local_visible_cuda_entries
+
+    entries = rank_local_visible_cuda_entries()
+    if len(entries) == 1:
+        return "cuda:0"
+    if entries:
+        raise ValueError(
+            "A CUDA PPO worker must own exactly one CUDA_VISIBLE_DEVICES entry; "
+            f"got {','.join(entries)!r}"
+        )
     return configured_device or default_device
 
 

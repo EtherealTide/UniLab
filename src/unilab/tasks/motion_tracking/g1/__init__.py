@@ -9,27 +9,38 @@ G1_MOTION_TASKS = (
     "G1MotionTracking",
     "G1MotionTrackingSAC",
     "G1BoxTracking",
-    "G1FlipTracking",
-    "G1FlipTrackingSAC",
     "G1WBTObs",
 )
 
 for _task_name in G1_MOTION_TASKS:
     registry.register_env_config(_task_name, ManagerBasedRlEnvCfg)
-    registry.register_env(_task_name, make_manager_based_rl_env, sim_backend="mujoco")
-    registry.register_env(_task_name, make_manager_based_rl_env, sim_backend="motrix")
+    if _task_name != "G1MotionTrackingSAC":
+        registry.register_env(_task_name, make_manager_based_rl_env, sim_backend="mujoco")
 
-# mjwarp is registered only for G1MotionTrackingSAC (benchmark scope, issue #1292);
-# mujoco-warp + warp-lang remain optional deps and other motion tasks keep
-# mujoco/motrix until their mjwarp paths are validated.
-registry.register_env("G1MotionTrackingSAC", make_manager_based_rl_env, sim_backend="mjwarp")
-
-# genesis/newton implement the motion-body-id capability since unisim-core 1.5.1
-# (unilabsim/unisim#137); isaacgym/isaacsim join them since unisim-core 1.7.4
-# fixed the subprocess body-state publish/reset paths (unilabsim/unisim#141,
-# PR #145).
-for _backend in ("genesis", "newton", "isaacgym", "isaacsim"):
-    registry.register_env("G1MotionTrackingSAC", make_manager_based_rl_env, sim_backend=_backend)
-
-
+# The canonical FlashSAC motion owners run the Manager tensor lifecycle.
+registry.register_env(
+    "G1MotionTrackingSAC",
+    make_manager_based_rl_env,
+    sim_backend="mujoco",
+)
+registry.register_env(
+    "G1MotionTrackingSAC",
+    make_manager_based_rl_env,
+    sim_backend="mjwarp",
+)
+registry.register_env(
+    "G1MotionTrackingSAC",
+    make_manager_based_rl_env,
+    sim_backend="genesis",
+)
+registry.register_env(
+    "G1MotionTrackingSAC",
+    make_manager_based_rl_env,
+    sim_backend="newton",
+)
+registry.register_env(
+    "G1MotionTrackingSAC",
+    make_manager_based_rl_env,
+    sim_backend="motrix",
+)
 __all__ = ["BoxMotionData", "BoxMotionLoader", "G1_MOTION_TASKS"]

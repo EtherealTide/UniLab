@@ -15,12 +15,13 @@ from typing import (
     TypeVar,
 )
 
-from .base import ABEnv, EnvCfg
+from .base import EnvCfg
 from .config_materialization import apply_cfg_overrides
 from .config_overrides import (
     CONFIG_MAPPING_POLICY_KEY,
     MANAGER_TERM_MAPPING_POLICY,
 )
+from .torch_env import TorchEnv
 
 EnvCfgFactory = Callable[[], EnvCfg]
 TEnvCfgFactory = TypeVar("TEnvCfgFactory", bound=EnvCfgFactory)
@@ -35,23 +36,36 @@ class EnvFactory(Protocol):
         *,
         num_envs: int = 1,
         backend_type: str = "mujoco",
-    ) -> ABEnv: ...
+    ) -> Any: ...
 
 
 TEnvFactory = TypeVar("TEnvFactory", bound=EnvFactory)
 RewardOverrideField = Literal["reward_config", "rewards"]
-_SUPPORTED_SIM_BACKENDS = (
+_TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS = (
     "mujoco",
     "mjwarp",
-    "motrix",
-    "drake",
-    "isaacgym",
     "genesis",
-    "isaacsim",
     "newton",
+    "motrix",
     "superdex",
+    "drake",
 )
-_DEFAULT_SIM_BACKEND_ORDER: tuple[str, ...] = ("mujoco", "motrix")
+_SHELVED_SIM_BACKENDS = (
+    "isaacgym",
+    "isaacsim",
+)
+_SUPPORTED_SIM_BACKENDS = _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS + _SHELVED_SIM_BACKENDS
+# Drake is an explicit owner-selected CPU host bridge during its scoped
+# reintroduction; never use it as an implicit fallback backend.
+_DEFAULT_SIM_BACKEND_ORDER: tuple[str, ...] = tuple(
+    backend for backend in _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS if backend != "drake"
+)
+_TENSOR_MANAGER_BACKEND_SCOPE_ERROR = (
+    "Simulation backend '{backend}' is temporarily out of the tensor-only "
+    "Manager runtime scope. Active backends: "
+    f"{', '.join(_TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS)}. Re-enabling it requires "
+    "capability, parity, and support-matrix evidence (issue #1811)."
+)
 _REGISTRY_MODULES_ATTR = "__unilab_registry_modules__"
 _DEFAULT_REGISTRY_PACKAGES = ("unilab.tasks",)
 # Environment variable used to extend ensure_registries() with extra packages.
@@ -152,6 +166,8 @@ def materialize_env_config(name: str) -> EnvCfg:
 
 def register_env(name: str, env_factory: TEnvFactory, sim_backend: str) -> TEnvFactory:
     """Register and return an environment class or function factory."""
+    if sim_backend in _SHELVED_SIM_BACKENDS:
+        raise ValueError(_TENSOR_MANAGER_BACKEND_SCOPE_ERROR.format(backend=sim_backend))
     if sim_backend not in _SUPPORTED_SIM_BACKENDS:
         raise ValueError(
             f"Unsupported simulation backend: {sim_backend}. "
@@ -252,14 +268,14 @@ def make(
     sim_backend: Optional[str] = None,
     env_cfg_override: Optional[Dict[str, Any]] = None,
     num_envs: int = 1,
-) -> ABEnv:
+) -> Any:
     """
     Create an environment instance by name.
 
     Args:
         name: Environment name
         sim_backend: Simulation backend. If None, uses the
-            explicit default backend order: "mujoco", then "motrix".
+            explicit tensor-manager backend order: "mujoco", "mjwarp", "genesis", "newton".
         num_envs: Number of environments to create
 
     Returns:
@@ -292,11 +308,11 @@ def make(
     # Create environment instance
     factory = meta.env_factory_dict[sim_backend]
     env = factory(env_cfg, num_envs=num_envs, backend_type=sim_backend)
-    if not isinstance(env, ABEnv):
+    if not isinstance(env, TorchEnv):
         raise TypeError(
             f"Environment '{name}' backend '{sim_backend}' factory "
             f"'{_env_factory_name(factory)}' returned {type(env).__name__}, "
-            "expected an ABEnv instance"
+            "expected a TorchEnv instance"
         )
     return env
 

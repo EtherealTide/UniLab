@@ -58,6 +58,8 @@ def cartpole_smooth_reward(
     cart_pos = asset.data.joint_pos[:, cart_cfg.joint_ids].squeeze(-1)
     centered = (1.0 + _gaussian_tolerance(cart_pos, margin=2.0)) / 2.0
     control = env.action_manager.action.squeeze(-1)
+    if hasattr(control, "detach"):
+        control = control.detach().cpu().numpy()
     small_control = (4.0 + _quadratic_tolerance(control, margin=1.0)) / 5.0
     hinge_vel = asset.data.joint_vel[:, hinge_cfg.joint_ids].squeeze(-1)
     small_velocity = (1.0 + _gaussian_tolerance(hinge_vel, margin=5.0)) / 2.0

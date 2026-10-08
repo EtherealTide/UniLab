@@ -1,7 +1,7 @@
 """Tests for env-owned CPU block process confinement (``apply_env_cpu_runtime``).
 
 Multi-rank off-policy collectors pin their MuJoCo pool workers to a per-rank
-CPU block via ``EnvCfg.cpu_ids``; ``NpEnv.__init__`` additionally confines the
+CPU block via ``EnvCfg.cpu_ids``; ``TorchEnv.__init__`` additionally confines the
 owning process to the same block and sizes Numba's parallel pool to it, so
 host-side kernels cannot drift onto sibling ranks' CPUs. Unit tests mock the
 OS/Numba seams; one subprocess test validates the real placement contract.
@@ -20,11 +20,12 @@ import gymnasium as gym
 import numba
 import numpy as np
 import pytest
+import torch
 
 import unilab.base.cpu_runtime as cpu_runtime
 from unilab.base.base import EnvCfg
 from unilab.base.cpu_runtime import apply_env_cpu_runtime
-from unilab.base.np_env import NpEnv, NpEnvState
+from unilab.base.torch_env import TorchEnv, TorchEnvState
 
 
 def _record_affinity(monkeypatch: pytest.MonkeyPatch, available: set[int]) -> list[tuple]:
@@ -151,7 +152,7 @@ def test_confine_existing_threads_without_proc_is_noop(monkeypatch: pytest.Monke
 
 
 # ---------------------------------------------------------------------------
-# NpEnv wiring
+# TorchEnv wiring
 # ---------------------------------------------------------------------------
 
 
@@ -160,7 +161,7 @@ class _StubCfg(EnvCfg):
     max_episode_seconds: float | None = 1.0
 
 
-class _StubNpEnv(NpEnv):
+class _StubTorchEnv(TorchEnv):
     def __init__(self, cfg: EnvCfg):
         backend = MagicMock()
         backend.get_scene_model_file.return_value = None
@@ -174,25 +175,25 @@ class _StubNpEnv(NpEnv):
     def action_space(self) -> gym.Space:
         return gym.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
 
-    def apply_action(self, actions: np.ndarray, state: NpEnvState) -> np.ndarray:
+    def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:
         return actions
 
-    def update_state(self, state: NpEnvState) -> NpEnvState:
+    def update_state(self, state: TorchEnvState) -> TorchEnvState:
         return state
 
 
 @pytest.mark.parametrize("cpu_ids", (None, [2, 3]))
-def test_np_env_init_applies_env_cpu_runtime(monkeypatch: pytest.MonkeyPatch, cpu_ids):
-    import unilab.base.np_env as np_env_module
+def test_torch_env_init_applies_env_cpu_runtime(monkeypatch: pytest.MonkeyPatch, cpu_ids):
+    import unilab.base.torch_env as torch_env_module
 
     calls: list[list[int] | None] = []
     monkeypatch.setattr(
-        np_env_module,
+        torch_env_module,
         "apply_env_cpu_runtime",
         lambda value: calls.append(None if value is None else list(value)),
     )
 
-    _StubNpEnv(EnvCfg(cpu_ids=cpu_ids))
+    _StubTorchEnv(EnvCfg(cpu_ids=cpu_ids))
 
     assert calls == [cpu_ids]
 

@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from unisim.backend.mjwarp.dependencies import load_mjwarp_dependencies
@@ -229,14 +230,14 @@ def test_g1_walk_flat_owner_one_step(
     )
 
     action_dim = int(env.action_space.shape[-1])
-    state = env.step(np.zeros((2, action_dim), dtype=np.float32))
+    state = env.step(torch.zeros((2, action_dim), dtype=torch.float32, device=env.device))
 
     assert set(state.obs) == {"obs", "critic"}
     assert state.obs["obs"].shape == (2, 98)
     assert state.obs["critic"].shape == (2, 101)
-    assert np.isfinite(state.obs["obs"]).all()
-    assert np.isfinite(state.obs["critic"]).all()
-    assert np.isfinite(state.reward).all()
+    assert torch.isfinite(state.obs["obs"]).all()
+    assert torch.isfinite(state.obs["critic"]).all()
+    assert torch.isfinite(state.reward).all()
 
 
 def test_body_state_matches_mujoco_backend() -> None:
@@ -338,7 +339,7 @@ def test_body_state_matches_mujoco_backend() -> None:
 def test_set_state_returns_schema_conformant_timing() -> None:
     """Issue #1295: mjwarp set_state reports the shared keyset plus its granular
     reset_upload / reset_forward / host_cache_refresh sub-timings."""
-    from unilab.base.np_env import BACKEND_SET_STATE_DETAIL_TIMING_KEYS
+    from unilab.base.backend_timing import BACKEND_SET_STATE_DETAIL_TIMING_KEYS
 
     backend = _backend(2)
     qpos, qvel = _stand_state(backend, 2)

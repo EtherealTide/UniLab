@@ -28,7 +28,6 @@ _MBA_TASKS = frozenset(
     {
         "AllegroInhandRotation",
         "AllegroInhandRotationGrasp",
-        # #1534 starts directly on the canonical manager runtime; no legacy seam.
         "FR3JointTarget",
         "Go2JoystickFlat",
         "StewartBalance",
@@ -51,8 +50,6 @@ _MOTION_CORE_TASKS = frozenset(
 _MOTION_TASKS = frozenset(
     {
         "G1BoxTracking",
-        "G1FlipTracking",
-        "G1FlipTrackingSAC",
         "G1WBTObs",
         "X2WallFlipTracking",
     }

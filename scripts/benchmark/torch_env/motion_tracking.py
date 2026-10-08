@@ -7,7 +7,7 @@ Synthetic xp-port of the NumPy kernels in the collector-timed sections of
 - `MotionCommand` gather, relative transforms, termination/reward terms,
   observation-group assembly (actor 160 / critic 289), and adaptive sampler
   bookkeeping from the Manager-Based motion runtime.
-- Motion-command reset-state construction and `NpEnv._reset_done_envs`
+- Motion-command reset-state construction and selected-row reset
   scatter/gather.
 
 Excluded (identical across variants, not NumPy/Torch env math):
@@ -492,19 +492,20 @@ class MotionTrackingWorkload:
         self.obs = obs
 
         # MotionSampler.update_failure_stats (adaptive mode).
-        if b.any_scalar(terminated):
-            bin_idx = b.clip((self.current_frames * N_BINS) // N_FRAMES, 0, N_BINS - 1)
-            failed = bin_idx[terminated]
-            counts = b.float_(b.bincount(failed, N_BINS))
-            self.bin_failed_count = (
-                SAMPLER_ALPHA * counts + (1.0 - SAMPLER_ALPHA) * self.bin_failed_count
-            )
+        # Keep the accumulator branch host-free for Torch accelerators. A
+        # device-resident 0/1 reduction selects the EMA coefficient without
+        # converting ``any`` to a Python bool, while the discard bin preserves
+        # the production rule that no-failure bins remain unchanged.
+        bin_idx = b.clip((self.current_frames * N_BINS) // N_FRAMES, 0, N_BINS - 1)
+        failed = b.where(terminated, bin_idx, b.long(b.float_(bin_idx) * 0.0) + N_BINS)
+        counts = b.float_(b.bincount(failed, N_BINS + 1))[:N_BINS]
+        alpha = b.float_(b.any(terminated)) * SAMPLER_ALPHA
+        self.bin_failed_count = alpha * counts + (1.0 - alpha) * self.bin_failed_count
 
         # MotionSampler.step + truncate_on_clip_end=True branch.
         self.current_frames = self.current_frames + 1
         clip_done = self.current_frames > CLIP_END_FRAME
-        if b.any_scalar(clip_done):
-            self.clip_end_truncated[b.nonzero(clip_done)] = True
+        self.clip_end_truncated = b.logical_or(self.clip_end_truncated, clip_done)
         return obs, reward, terminated
 
     # ----------------------------------------------------------- reset_done --
@@ -524,11 +525,23 @@ class MotionTrackingWorkload:
         b = self.b
         n = int(env_ids.shape[0])
 
-        # NpEnv._reset_done_envs: steps reset + terminal-obs double copy.
+        # Selected-row reset: steps reset + terminal-observation copy.
         self.steps[env_ids] = 0
         for key in ("obs", "critic"):
             self.final_obs[key][env_ids] = self.obs[key][env_ids]
             self.compat_final_obs[key][env_ids] = self.final_obs[key][env_ids]
+
+        if n == 0:
+            # Torch's multinomial sampler rejects a zero-sample draw.  Empty
+            # reset sets are valid during small smoke runs, so return correctly
+            # shaped no-op state/observations without consulting the sampler.
+            empty_actions = b.zeros((0, N_ACTION))
+            return (
+                b.zeros((0, NQ)),
+                b.zeros((0, NV)),
+                {"obs": b.zeros((0, OBS_DIM)), "critic": b.zeros((0, CRITIC_DIM))},
+                {"current_actions": empty_actions, "last_actions": empty_actions},
+            )
 
         # MotionSampler.sample_frames (adaptive).
         p = self.bin_failed_count + SAMPLER_UNIFORM_RATIO / N_BINS
@@ -585,7 +598,7 @@ class MotionTrackingWorkload:
             new_actions,
         )
 
-        # NpEnv._reset_done_envs: obs/info scatter.
+        # Selected-row reset: obs/info scatter.
         for key in ("obs", "critic"):
             self.obs[key][env_ids] = obs_r[key]
         self.current_actions[env_ids] = new_actions

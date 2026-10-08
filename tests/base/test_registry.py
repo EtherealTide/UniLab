@@ -9,9 +9,17 @@ from types import SimpleNamespace
 import gymnasium as gym
 import numpy as np
 import pytest
+import torch
+from unisim.backend.base import (
+    SimBackend,
+    TensorDataPlane,
+    TensorExecution,
+    TensorLifecycleCapabilities,
+)
 
 import unilab.base.registry as registry_mod
-from unilab.base.base import ABEnv, EnvCfg
+from unilab.base.base import EnvCfg
+from unilab.base.torch_env import TorchEnv
 
 # ---------------------------------------------------------------------------
 # Helpers: local env stubs registered only for these tests
@@ -31,10 +39,24 @@ class _TestCfgB(EnvCfg):
     pass
 
 
-class _TestEnvA(ABEnv):
+class _TestEnvA(TorchEnv):
     def __init__(self, cfg, num_envs=1, backend_type="mujoco"):
-        self._cfg = cfg
-        self._num_envs = num_envs
+        from unittest.mock import MagicMock
+
+        backend = MagicMock(spec=SimBackend)
+        backend.tensor_execution.return_value = TensorExecution.HOST_BRIDGE
+        backend.get_tensor_capabilities.return_value = TensorLifecycleCapabilities(
+            execution=TensorExecution.HOST_BRIDGE,
+            state_fields=frozenset({"qpos", "qvel"}),
+            stepping=True,
+            selected_reset=True,
+            packed_host_bridge=True,
+            data_plane=TensorDataPlane.HOST_BRIDGE,
+            stream_event_ownership="registry-test",
+            torch_devices=("cpu",),
+        )
+        backend.step_tensor.return_value = None
+        super().__init__(cfg, backend, num_envs, device="cpu")
 
     @property
     def num_envs(self):
@@ -63,14 +85,27 @@ class _TestEnvA(ABEnv):
     def init_state(self):
         return None
 
-    def step(self, actions):
-        return None
+    def apply_action(self, actions, state):
+        return actions
+
+    def update_state(self, state):
+        return state
+
+    def reset(self, env_indices=None):
+        rows = self._normalize_reset_indices(env_indices)
+        return (
+            {
+                name: torch.zeros((rows.numel(), dim), device=self.device)
+                for name, dim in self.obs_groups_spec.items()
+            },
+            {},
+        )
 
     def close(self):
         pass
 
 
-class _TestEnvMotrix(_TestEnvA):
+class _TestEnvMjwarp(_TestEnvA):
     pass
 
 
@@ -84,7 +119,7 @@ if not registry_mod.contains(_TEST_ENV_B):
 
 if not registry_mod.contains(_TEST_ENV_C):
     registry_mod.register_env_config(_TEST_ENV_C, _TestCfgA)
-    registry_mod.register_env(_TEST_ENV_C, _TestEnvMotrix, "motrix")
+    registry_mod.register_env(_TEST_ENV_C, _TestEnvMjwarp, "mjwarp")
     registry_mod.register_env(_TEST_ENV_C, _TestEnvA, "mujoco")
 
 
@@ -155,7 +190,7 @@ def test_env_decorator_registers_plain_factory_and_returns_it_unchanged():
     _name = "_TestDecoratorEnvFactory"
     registry_mod.register_env_config(_name, _TestCfgA)
 
-    def make_env(cfg: EnvCfg, num_envs: int = 1, backend_type: str = "mujoco") -> ABEnv:
+    def make_env(cfg: EnvCfg, num_envs: int = 1, backend_type: str = "mujoco") -> TorchEnv:
         return _TestEnvA(cfg, num_envs=num_envs, backend_type=backend_type)
 
     registered = registry_mod.env(_name, "mujoco")(make_env)
@@ -223,6 +258,37 @@ def test_register_env_invalid_backend_raises():
         registry_mod.register_env(_name, _TestEnvA, "not_a_backend")
 
 
+@pytest.mark.parametrize("backend", ["isaacgym", "isaacsim"])
+def test_register_env_rejects_shelved_backend(backend):
+    """Shelved adapters fail closed instead of registering a runtime path."""
+    _name = "_TestShelvedBackendEnv"
+    if not registry_mod.contains(_name):
+        registry_mod.register_env_config(_name, _TestCfgA)
+    with pytest.raises(
+        ValueError,
+        match=r"temporarily out of the tensor-only Manager runtime scope",
+    ):
+        registry_mod.register_env(_name, _TestEnvA, backend)
+
+
+def test_default_backend_order_is_tensor_manager_scope():
+    assert registry_mod._DEFAULT_SIM_BACKEND_ORDER == (
+        "mujoco",
+        "mjwarp",
+        "genesis",
+        "newton",
+        "motrix",
+        "superdex",
+    )
+
+
+def test_drake_is_registered_without_changing_default_backend_order():
+    """Drake is explicit-select only; absent owners still reject it."""
+    assert "drake" in registry_mod._TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS
+    assert "drake" not in registry_mod._DEFAULT_SIM_BACKEND_ORDER
+    assert "drake" not in registry_mod._envs[_TEST_ENV_A].env_factory_dict
+
+
 def test_register_env_without_config_raises():
     """register_env() when config is not yet registered must raise ValueError."""
     with pytest.raises(ValueError, match="not registered"):
@@ -275,12 +341,12 @@ def test_make_calls_plain_factory_with_cfg_num_envs_and_backend():
     _name = "_TestCallableEnvFactory"
     received: dict[str, object] = {}
 
-    def make_env(cfg: EnvCfg, num_envs: int = 1, backend_type: str = "mujoco") -> ABEnv:
+    def make_env(cfg: EnvCfg, num_envs: int = 1, backend_type: str = "mujoco") -> TorchEnv:
         received.update(cfg=cfg, num_envs=num_envs, backend_type=backend_type)
         return _TestEnvA(cfg, num_envs=num_envs, backend_type=backend_type)
 
     registry_mod.register_env_config(_name, _CallableFactoryCfg)
-    registered = registry_mod.register_env(_name, make_env, "motrix")
+    registered = registry_mod.register_env(_name, make_env, "mjwarp")
 
     made = registry_mod.make(
         _name,
@@ -293,7 +359,7 @@ def test_make_calls_plain_factory_with_cfg_num_envs_and_backend():
     assert isinstance(made, _TestEnvA)
     assert received["cfg"] is made.cfg
     assert received["num_envs"] == 7
-    assert received["backend_type"] == "motrix"
+    assert received["backend_type"] == "mjwarp"
     assert made.cfg.ctrl_dt == pytest.approx(0.05)
 
 
@@ -308,7 +374,7 @@ def test_make_rejects_invalid_factory_output_at_registry_boundary():
 
     with pytest.raises(
         TypeError,
-        match=r"_TestInvalidEnvFactoryOutput.*mujoco.*make_invalid_env.*object.*ABEnv",
+        match=r"_TestInvalidEnvFactoryOutput.*mujoco.*make_invalid_env.*object.*TorchEnv",
     ):
         registry_mod.make(_name, sim_backend="mujoco")
 
@@ -316,7 +382,12 @@ def test_make_rejects_invalid_factory_output_at_registry_boundary():
 def test_make_unsupported_backend_raises():
     """make() with an unsupported backend name raises ValueError."""
     with pytest.raises(ValueError, match="does not support simulation backend"):
-        registry_mod.make(_TEST_ENV_A, sim_backend="motrix")
+        registry_mod.make(_TEST_ENV_A, sim_backend="not_a_backend")
+
+
+def test_make_rejects_shelved_backend_registration():
+    with pytest.raises(ValueError, match="temporarily out of the tensor-only"):
+        registry_mod.register_env(_TEST_ENV_A, lambda *args, **kwargs: None, "isaacgym")
 
 
 def test_make_no_env_factory_raises():

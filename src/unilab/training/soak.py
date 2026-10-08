@@ -1,0 +1,1013 @@
+"""Resource and progress monitoring for long-duration training soaks.
+
+The monitor deliberately uses ``/proc`` and ``nvidia-smi`` instead of importing
+Torch: it must remain usable when the supervised trainer, its collector
+subprocesses, and their accelerator contexts are the only CUDA owners.  The
+artifact is intended to be self-contained enough to diagnose a failed soak even
+after all child processes have exited.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import platform
+import signal
+import subprocess
+import time
+from collections.abc import Iterable, Mapping, Sequence
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+from typing import Any
+
+from unilab.cli import build_command
+
+_ARTIFACT_SCHEMA_VERSION = "0.3.0"
+_SUPPORTED_METRIC_SCHEMA_VERSION = 1
+_SUPPORTED_RUNTIME_MANIFEST_SCHEMA_VERSION = 1
+_SHUTDOWN_CLASSIFICATIONS = frozenset(
+    (
+        "normal_completion",
+        "learner_failure",
+        "collector_failure",
+        "backend_worker_failure",
+        "timeout/stale_tick",
+        "external_cancellation",
+        "unknown_failure",
+    )
+)
+
+_REPLAY_INGRESS_INTEGER_FIELDS = (
+    "ingress_depth",
+    "ingress_slot_rows",
+    "published_sequence",
+    "release_sequence",
+    "occupancy",
+    "high_water_occupancy",
+    "backpressure_waits",
+    "early_returns",
+    "dropped_batches",
+    "closed_returns",
+    "stop_returns",
+)
+
+
+class SoakFailureError(RuntimeError):
+    """Raised when a supervised soak violates a fail-closed condition."""
+
+
+def _read_int(path: Path) -> int | None:
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _proc_dir(pid: int) -> Path:
+    return Path("/proc") / str(pid)
+
+
+def _process_start_ticks(pid: int) -> set[int]:
+    """Return Linux thread start ticks, used to reject PID reuse."""
+    starts: set[int] = set()
+    task_dir = _proc_dir(pid) / "task"
+    try:
+        entries = list(task_dir.iterdir())
+    except OSError:
+        return starts
+    for task in entries:
+        try:
+            stat = (task / "stat").read_text(encoding="utf-8")
+            fields = stat.rsplit(")", 1)[-1].split()
+            # Field 22 (`starttime`) is index 19 after removing pid/comm.
+            if len(fields) > 19:
+                starts.add(int(fields[19]))
+        except (OSError, ValueError):
+            continue
+    return starts
+
+
+def _discover_descendants(pid: int) -> dict[int, set[int]]:
+    """Discover a process tree once without relying on ``ps`` output."""
+    discovered: dict[int, set[int]] = {}
+    pending = [pid]
+    while pending:
+        current = pending.pop()
+        if current in discovered:
+            continue
+        discovered[current] = _process_start_ticks(current)
+        children: set[int] = set()
+        try:
+            task_paths = list((_proc_dir(current) / "task").glob("*"))
+            for task in task_paths:
+                child_text = (task / "children").read_text(encoding="utf-8")
+                children.update(int(value) for value in child_text.split())
+        except OSError:
+            pass
+        pending.extend(children - discovered.keys())
+    return discovered
+
+
+def _fd_class(link: str) -> str:
+    if link.startswith("pipe:"):
+        return "pipe"
+    if link.startswith("socket:"):
+        return "socket"
+    if link.startswith("memfd:"):
+        return "memfd"
+    if link == "anon_inode:[eventfd]":
+        return "eventfd"
+    if link == "anon_inode:[eventpoll]":
+        return "eventpoll"
+    if link.startswith("/dev/nvidia") or link.startswith("/dev/nvidia-cuda"):
+        return "nvidia"
+    if link.startswith("/dev/shm/") or link.startswith("/run/shm/"):
+        return "shared_memory"
+    return "other"
+
+
+def _process_snapshot(pid: int, start_ticks: set[int]) -> dict[str, Any] | None:
+    proc = _proc_dir(pid)
+    try:
+        if not proc.exists() or _process_start_ticks(pid) != start_ticks:
+            return None
+    except OSError:
+        return None
+
+    rss_kib = 0
+    try:
+        status = (proc / "status").read_text(encoding="utf-8")
+    except OSError:
+        status = ""
+    for line in status.splitlines():
+        if line.startswith("VmRSS:"):
+            fields = line.split()
+            if len(fields) >= 2:
+                try:
+                    rss_kib = int(fields[1])
+                except ValueError:
+                    rss_kib = 0
+            break
+
+    fd_classes: dict[str, int] = {}
+    fd_count = 0
+    try:
+        fd_entries = list((proc / "fd").iterdir())
+    except OSError:
+        fd_entries = []
+    for fd in fd_entries:
+        try:
+            link = os.readlink(fd)
+        except OSError:
+            continue
+        fd_count += 1
+        label = _fd_class(link)
+        fd_classes[label] = fd_classes.get(label, 0) + 1
+
+    try:
+        cmdline = (
+            (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", errors="replace")
+        )
+    except OSError:
+        cmdline = ""
+    return {
+        "pid": pid,
+        "start_ticks": sorted(start_ticks),
+        "rss_kib": rss_kib,
+        "fd_count": fd_count,
+        "fd_classes": dict(sorted(fd_classes.items())),
+        "command": cmdline[:512],
+    }
+
+
+def _tree_snapshot(pid: int, known: dict[int, set[int]] | None = None) -> dict[str, Any]:
+    discovered = known or _discover_descendants(pid)
+    processes: list[dict[str, Any]] = []
+    for child_pid, starts in sorted(discovered.items()):
+        snapshot = _process_snapshot(child_pid, starts)
+        if snapshot is not None:
+            processes.append(snapshot)
+    return {
+        "process_count": len(processes),
+        "rss_kib_total": sum(int(process["rss_kib"]) for process in processes),
+        "fd_count_total": sum(int(process["fd_count"]) for process in processes),
+        "fd_classes_total": _sum_dicts(
+            process["fd_classes"]
+            for process in processes
+            if isinstance(process["fd_classes"], dict)
+        ),
+        "processes": processes,
+    }
+
+
+def _sum_dicts(items: Iterable[Mapping[str, int]]) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for item in items:
+        for key, value in item.items():
+            result[key] = result.get(key, 0) + int(value)
+    return dict(sorted(result.items()))
+
+
+def _nvidia_smi_compute_apps() -> list[dict[str, str]]:
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-compute-apps",
+                "pid,process_name,used_gpu_memory,gpu_uuid",
+                "--format=csv,noheader",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    rows: list[dict[str, str]] = []
+    names = ("pid", "process_name", "used_gpu_memory", "gpu_uuid")
+    for line in result.stdout.splitlines():
+        values = [value.strip() for value in line.split(",")]
+        if len(values) == 4 and values != ["No running processes found"]:
+            rows.append(dict(zip(names, values, strict=True)))
+    return rows
+
+
+def _gpu_memory_mib(value: str) -> int | None:
+    fields = value.split()
+    if len(fields) != 2 or fields[1] not in {"MiB", "MB"}:
+        return None
+    try:
+        return int(fields[0])
+    except ValueError:
+        return None
+
+
+def _gpu_snapshot(processes: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    tree_pids = {int(process["pid"]) for process in processes}
+    rows = [row for row in _nvidia_smi_compute_apps() if int(row["pid"]) in tree_pids]
+    memories = [_gpu_memory_mib(row["used_gpu_memory"]) for row in rows]
+    return {
+        "process_count": len(rows),
+        "used_memory_mib_total": sum(value for value in memories if value is not None),
+        "processes": rows,
+    }
+
+
+def _progress_snapshot(progress_dir: Path) -> dict[str, Any]:
+    files: list[dict[str, Any]] = []
+    console_log_path = (progress_dir / "soak-console.log").resolve()
+    for path in progress_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        if path.resolve() == console_log_path:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        files.append(
+            {
+                "path": str(path),
+                "bytes": stat.st_size,
+                "mtime": stat.st_mtime,
+            }
+        )
+    return {
+        "file_count": len(files),
+        "bytes_total": sum(int(item["bytes"]) for item in files),
+        "max_mtime": max((float(item["mtime"]) for item in files), default=None),
+    }
+
+
+def _terminate_process_group(pid: int, process: subprocess.Popen[bytes] | None = None) -> None:
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if process is not None:
+            process.poll()
+        try:
+            os.killpg(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    if process is not None:
+        process.poll()
+
+
+def _load_json(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _git_snapshot(path: Path) -> dict[str, Any]:
+    def git(*args: str) -> str:
+        try:
+            result = subprocess.run(
+                ["git", *args],
+                cwd=path,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return result.stdout.strip() if result.returncode == 0 else ""
+
+    return {
+        "path": str(path),
+        "commit": git("rev-parse", "HEAD") or None,
+        "branch": git("rev-parse", "--abbrev-ref", "HEAD") or None,
+        "dirty_files": len(git("status", "--porcelain").splitlines()),
+    }
+
+
+def _gpu_device_snapshot() -> list[dict[str, str]]:
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,uuid,name,driver_version",
+                "--format=csv,noheader",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    names = ("index", "uuid", "name", "driver_version")
+    rows: list[dict[str, str]] = []
+    for line in result.stdout.splitlines():
+        values = [value.strip() for value in line.split(",")]
+        if len(values) == len(names):
+            rows.append(dict(zip(names, values, strict=True)))
+    return rows
+
+
+def _package_version(name: str) -> str | None:
+    try:
+        return version(name)
+    except PackageNotFoundError:
+        return None
+
+
+def _software_snapshot() -> dict[str, str | None]:
+    """Record monitor-process versions without importing accelerator packages."""
+    return {
+        "python": platform.python_version(),
+        "torch": _package_version("torch"),
+    }
+
+
+def runtime_snapshot(root: Path) -> dict[str, Any]:
+    """Record source, GPU, software, and environment provenance."""
+    return {
+        "source": _git_snapshot(root),
+        "gpu_devices": _gpu_device_snapshot(),
+        "software": _software_snapshot(),
+        "environment": {"CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES")},
+    }
+
+
+def _resource_summary(
+    samples: Sequence[Mapping[str, Any]], residual_count: int, run_summary: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    def values(path: tuple[str, ...]) -> list[float]:
+        result: list[float] = []
+        for sample in samples:
+            value: Any = sample
+            for key in path:
+                if not isinstance(value, Mapping):
+                    value = None
+                    break
+                value = value.get(key)
+            if isinstance(value, (int, float)):
+                result.append(float(value))
+        return result
+
+    process_counts = values(("process", "process_count"))
+    rss = values(("process", "rss_kib_total"))
+    gpu_memory = values(("gpu", "used_memory_mib_total"))
+    eventfds = values(("process", "fd_classes_total", "eventfd"))
+    shared_memory = values(("process", "fd_classes_total", "shared_memory"))
+    progress_bytes = values(("progress", "bytes_total"))
+    manifest = run_summary.get("runtime_manifest") if run_summary is not None else None
+    flight = manifest.get("inference_flight") if isinstance(manifest, Mapping) else None
+    budget = manifest.get("inference_memory_budget") if isinstance(manifest, Mapping) else None
+    replay_ingress = manifest.get("replay_ingress") if isinstance(manifest, Mapping) else None
+    return {
+        "sample_count": len(samples),
+        "max_process_count": max(process_counts, default=None),
+        "max_process_rss_kib": max(rss, default=None),
+        "max_gpu_used_memory_mib": max(gpu_memory, default=None),
+        "max_eventfd_count": max(eventfds, default=None),
+        "max_shared_memory_fd_count": max(shared_memory, default=None),
+        "max_progress_bytes": max(progress_bytes, default=None),
+        "residual_process_count": residual_count,
+        "ipc_event_count": budget.get("ipc_event_count") if isinstance(budget, Mapping) else None,
+        "max_in_flight": flight.get("max_in_flight") if isinstance(flight, Mapping) else None,
+        "max_publication_lag": (
+            flight.get("max_publication_lag") if isinstance(flight, Mapping) else None
+        ),
+        "replay_ingress_depth": (
+            replay_ingress.get("ingress_depth") if isinstance(replay_ingress, Mapping) else None
+        ),
+        "replay_ingress_slot_rows": (
+            replay_ingress.get("ingress_slot_rows") if isinstance(replay_ingress, Mapping) else None
+        ),
+        "replay_ingress_high_water_occupancy": (
+            replay_ingress.get("high_water_occupancy")
+            if isinstance(replay_ingress, Mapping)
+            else None
+        ),
+        "replay_ingress_final_occupancy": (
+            replay_ingress.get("occupancy") if isinstance(replay_ingress, Mapping) else None
+        ),
+        "replay_ingress_backpressure_waits": (
+            replay_ingress.get("backpressure_waits")
+            if isinstance(replay_ingress, Mapping)
+            else None
+        ),
+        "replay_ingress_backpressure_wait_s": (
+            replay_ingress.get("backpressure_wait_s")
+            if isinstance(replay_ingress, Mapping)
+            else None
+        ),
+        "replay_ingress_early_returns": (
+            replay_ingress.get("early_returns") if isinstance(replay_ingress, Mapping) else None
+        ),
+        "replay_ingress_dropped_batches": (
+            replay_ingress.get("dropped_batches") if isinstance(replay_ingress, Mapping) else None
+        ),
+    }
+
+
+def _finite_number(value: Any) -> float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _schema_failure(run_summary: Mapping[str, Any], *, completed: bool) -> str | None:
+    """Validate producer schemas for both normal and minimal failure summaries."""
+    scope = "completed " if completed else ""
+    metric_schema_version = run_summary.get("metric_schema_version")
+    if metric_schema_version is None:
+        return f"{scope}run_summary is missing metric_schema_version"
+    if (
+        isinstance(metric_schema_version, bool)
+        or not isinstance(metric_schema_version, int)
+        or metric_schema_version != _SUPPORTED_METRIC_SCHEMA_VERSION
+    ):
+        return (
+            f"{scope}run_summary has unsupported metric_schema_version "
+            f"{metric_schema_version!r}; expected {_SUPPORTED_METRIC_SCHEMA_VERSION}"
+        )
+
+    manifest = run_summary.get("runtime_manifest")
+    if not isinstance(manifest, Mapping):
+        return f"{scope}run_summary is missing runtime_manifest"
+    runtime_schema_version = manifest.get("schema_version")
+    if runtime_schema_version is None:
+        return f"{scope}runtime_manifest is missing runtime_manifest.schema_version"
+    if (
+        isinstance(runtime_schema_version, bool)
+        or not isinstance(runtime_schema_version, int)
+        or runtime_schema_version != _SUPPORTED_RUNTIME_MANIFEST_SCHEMA_VERSION
+    ):
+        return (
+            f"{scope}runtime_manifest has unsupported runtime_manifest.schema_version "
+            f"{runtime_schema_version!r}; expected "
+            f"{_SUPPORTED_RUNTIME_MANIFEST_SCHEMA_VERSION}"
+        )
+
+    return None
+
+
+def _runtime_manifest_contract_failure(
+    run_summary: Mapping[str, Any], *, completed: bool
+) -> str | None:
+    manifest = run_summary.get("runtime_manifest")
+    if not isinstance(manifest, Mapping):
+        return None
+    try:
+        from uni_rl.logging.runtime_manifest_schema import validate_runtime_manifest
+    except ImportError as exc:
+        return f"runtime_manifest validation requires uni_rl runtime_manifest_schema: {exc}"
+    try:
+        validate_runtime_manifest(manifest, completed=completed)
+    except (TypeError, ValueError) as exc:
+        return f"runtime_manifest violates v1 contract: {exc}"
+    return None
+
+
+def _shutdown_diagnostics(run_summary: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if run_summary is None:
+        return None
+    manifest = run_summary.get("runtime_manifest")
+    if not isinstance(manifest, Mapping):
+        return None
+    shutdown = manifest.get("shutdown")
+    return shutdown if isinstance(shutdown, Mapping) else None
+
+
+def _shutdown_contract_failure(
+    shutdown: Mapping[str, Any] | None,
+    *,
+    require_normal_completion: bool,
+) -> str | None:
+    """Validate only the durable, host-only shutdown fields consumed by soak."""
+    if shutdown is None:
+        return (
+            "completed runtime_manifest is missing shutdown diagnostics"
+            if require_normal_completion
+            else None
+        )
+    classification = shutdown.get("classification")
+    owner = shutdown.get("owner")
+    phase = shutdown.get("phase")
+    if not isinstance(classification, str) or classification not in _SHUTDOWN_CLASSIFICATIONS:
+        return f"shutdown has invalid classification {classification!r}"
+    if not isinstance(owner, str) or not owner:
+        return f"shutdown has invalid owner {owner!r}"
+    if not isinstance(phase, str) or not phase:
+        return f"shutdown has invalid phase {phase!r}"
+
+    exception = shutdown.get("exception")
+    if exception is not None and not isinstance(exception, Mapping):
+        return f"shutdown has invalid exception {exception!r}"
+    if isinstance(exception, Mapping):
+        exception_type = exception.get("type")
+        exception_message = exception.get("message")
+        if not isinstance(exception_type, str) or not isinstance(exception_message, str):
+            return "shutdown exception requires string type and message fields"
+
+    cleanup = shutdown.get("cleanup")
+    if not isinstance(cleanup, Mapping):
+        return f"shutdown has invalid cleanup {cleanup!r}"
+    cleanup_errors = cleanup.get("errors")
+    if not isinstance(cleanup_errors, list):
+        return "shutdown cleanup.errors must be a list"
+
+    if not require_normal_completion and classification == "normal_completion":
+        return "abnormal run shutdown classification cannot be normal_completion"
+    if require_normal_completion:
+        if classification != "normal_completion":
+            return (
+                "completed run shutdown classification must be normal_completion, "
+                f"got {classification!r}"
+            )
+        if cleanup_errors:
+            return f"completed run reported shutdown cleanup errors: {cleanup_errors!r}"
+    return None
+
+
+def _describe_shutdown(shutdown: Mapping[str, Any]) -> str:
+    exception = shutdown.get("exception")
+    exception_text = ""
+    if isinstance(exception, Mapping):
+        exception_text = f", exception={exception.get('type')!r}: {exception.get('message')!r}"
+    cleanup = shutdown.get("cleanup")
+    cleanup_count = ""
+    if isinstance(cleanup, Mapping) and isinstance(cleanup.get("errors"), list):
+        cleanup_count = f", cleanup_errors={len(cleanup['errors'])}"
+    return (
+        "shutdown classification="
+        f"{shutdown.get('classification')!r}, owner={shutdown.get('owner')!r}, "
+        f"phase={shutdown.get('phase')!r}{exception_text}{cleanup_count}"
+    )
+
+
+def _append_failure_reason(current: str | None, addition: str) -> str:
+    return addition if current is None else f"{current}; {addition}"
+
+
+def _final_replay_ingress_failure(run_summary: Mapping[str, Any]) -> str | None:
+    """Validate the final replay-ingress contract without reading CUDA tensors."""
+    manifest = run_summary.get("runtime_manifest")
+    if not isinstance(manifest, Mapping):
+        return "completed runtime_manifest is missing runtime_manifest"
+
+    replay_ingress = manifest.get("replay_ingress")
+    if not isinstance(replay_ingress, Mapping):
+        return "completed runtime_manifest is missing replay_ingress"
+
+    values: dict[str, int] = {}
+    for field in _REPLAY_INGRESS_INTEGER_FIELDS:
+        value = replay_ingress.get(field)
+        number = _finite_number(value)
+        if number is None or not number.is_integer():
+            return f"replay_ingress.{field} must be an integer, got {value!r}"
+        values[field] = int(number)
+
+    wait_s = replay_ingress.get("backpressure_wait_s")
+    finite_wait_s = _finite_number(wait_s)
+    if finite_wait_s is None:
+        return f"replay_ingress.backpressure_wait_s must be finite, got {wait_s!r}"
+    if finite_wait_s < 0:
+        return f"replay_ingress.backpressure_wait_s must be nonnegative, got {finite_wait_s!r}"
+
+    for field in _REPLAY_INGRESS_INTEGER_FIELDS:
+        if values[field] < 0:
+            return f"replay_ingress.{field} must be nonnegative, got {values[field]}"
+
+    if values["ingress_depth"] <= 0:
+        return f"replay_ingress.ingress_depth must be positive, got {values['ingress_depth']}"
+    if values["ingress_slot_rows"] <= 0:
+        return (
+            f"replay_ingress.ingress_slot_rows must be positive, got {values['ingress_slot_rows']}"
+        )
+    if values["release_sequence"] > values["published_sequence"]:
+        return (
+            "replay_ingress release_sequence exceeds published_sequence: "
+            f"{values['release_sequence']} > {values['published_sequence']}"
+        )
+    expected_occupancy = values["published_sequence"] - values["release_sequence"]
+    if values["occupancy"] != expected_occupancy:
+        return (
+            "replay_ingress occupancy does not match publication sequences: "
+            f"{values['occupancy']} != {expected_occupancy}"
+        )
+    if values["occupancy"] > values["ingress_depth"]:
+        return (
+            "replay_ingress occupancy exceeds ingress_depth: "
+            f"{values['occupancy']} > {values['ingress_depth']}"
+        )
+    if values["high_water_occupancy"] > values["ingress_depth"]:
+        return (
+            "replay_ingress high_water_occupancy exceeds ingress_depth: "
+            f"{values['high_water_occupancy']} > {values['ingress_depth']}"
+        )
+    if values["high_water_occupancy"] < values["occupancy"]:
+        return (
+            "replay_ingress high_water_occupancy is below final occupancy: "
+            f"{values['high_water_occupancy']} < {values['occupancy']}"
+        )
+    if values["early_returns"] != values["dropped_batches"]:
+        return (
+            "replay_ingress early_returns and dropped_batches disagree: "
+            f"{values['early_returns']} != {values['dropped_batches']}"
+        )
+    if values["closed_returns"] + values["stop_returns"] != values["early_returns"]:
+        return (
+            "replay_ingress shutdown return counters disagree with early_returns: "
+            f"{values['closed_returns']} + {values['stop_returns']} "
+            f"!= {values['early_returns']}"
+        )
+    if values["occupancy"] != 0:
+        return f"final replay ingress occupancy is nonzero: {values['occupancy']}"
+    if values["dropped_batches"] != 0:
+        return f"replay ingress dropped batches during normal run: {values['dropped_batches']}"
+    if values["early_returns"] != 0:
+        return f"replay ingress early returns during normal run: {values['early_returns']}"
+
+    total_env_steps = run_summary.get("total_env_steps")
+    total_steps_number = _finite_number(total_env_steps)
+    if total_steps_number is None or not total_steps_number.is_integer():
+        return f"completed total_env_steps must be an integer, got {total_env_steps!r}"
+    total_steps = int(total_steps_number)
+    if total_steps <= 0:
+        return f"completed total_env_steps must be positive, got {total_steps}"
+    if total_steps % values["ingress_slot_rows"] != 0:
+        return (
+            "total_env_steps is not divisible by replay_ingress.ingress_slot_rows: "
+            f"{total_steps} % {values['ingress_slot_rows']}"
+        )
+    expected_sequence = total_steps // values["ingress_slot_rows"]
+    if values["published_sequence"] != expected_sequence:
+        return (
+            "replay_ingress published_sequence does not match total_env_steps: "
+            f"{values['published_sequence']} != {expected_sequence}"
+        )
+    if values["release_sequence"] != expected_sequence:
+        return (
+            "replay_ingress release_sequence does not match total_env_steps: "
+            f"{values['release_sequence']} != {expected_sequence}"
+        )
+    if values["high_water_occupancy"] <= 0:
+        return "completed replay_ingress high_water_occupancy must be positive"
+
+    # UniLab's replay checks are intentionally more specific than the producer's
+    # stable-schema contract. Run the producer validator only after they pass so
+    # a generic schema error cannot hide the actionable replay-ingress failure.
+    return _runtime_manifest_contract_failure(run_summary, completed=True)
+
+
+def run_soak(
+    *,
+    command: Sequence[str],
+    progress_dir: Path,
+    output_path: Path,
+    sample_interval_seconds: float = 5.0,
+    startup_timeout_seconds: float = 600.0,
+    stale_progress_seconds: float = 120.0,
+    post_shutdown_grace_seconds: float = 5.0,
+    min_duration_seconds: float = 0.0,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run a command in its own process group and produce a soak artifact.
+
+    ``progress_dir`` is an owner-controlled training log directory.  File
+    growth is used as a backend-independent liveness signal; once progress is
+    first observed, no file change for ``stale_progress_seconds`` fails the
+    soak rather than allowing a deadlocked worker to run forever.
+    """
+    if sample_interval_seconds <= 0:
+        raise ValueError("sample_interval_seconds must be positive")
+    if startup_timeout_seconds <= 0:
+        raise ValueError("startup_timeout_seconds must be positive")
+    if stale_progress_seconds <= 0:
+        raise ValueError("stale_progress_seconds must be positive")
+    if post_shutdown_grace_seconds < 0:
+        raise ValueError("post_shutdown_grace_seconds must be nonnegative")
+    if min_duration_seconds < 0:
+        raise ValueError("min_duration_seconds must be nonnegative")
+
+    progress_dir.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    console_log_path = progress_dir / "soak-console.log"
+    started_wall = time.time()
+    started = time.monotonic()
+    samples: list[dict[str, Any]] = []
+    failure_reason: str | None = None
+    monitor_failure_kind: str | None = None
+    process: subprocess.Popen[bytes] | None = None
+    last_progress_change: float | None = None
+    last_progress_bytes: int | None = None
+    last_known_processes: list[dict[str, Any]] = []
+    returncode: int | None = None
+
+    with console_log_path.open("wb") as console_log:
+        try:
+            process = subprocess.Popen(
+                list(command),
+                cwd=cwd,
+                env=dict(os.environ) if env is None else dict(env),
+                stdout=console_log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            while process.poll() is None:
+                now = time.monotonic()
+                tree = _tree_snapshot(process.pid)
+                progress = _progress_snapshot(progress_dir)
+                last_known_processes = tree["processes"]
+                if progress["bytes_total"] > 0:
+                    if (
+                        last_progress_bytes is None
+                        or progress["bytes_total"] != last_progress_bytes
+                    ):
+                        last_progress_change = now
+                        last_progress_bytes = int(progress["bytes_total"])
+                    if (
+                        last_progress_change is not None
+                        and now - last_progress_change > stale_progress_seconds
+                    ):
+                        failure_reason = (
+                            "training progress did not change for "
+                            f"{now - last_progress_change:.1f}s"
+                        )
+                        monitor_failure_kind = "timeout/stale_tick"
+                        break
+                elif now - started > startup_timeout_seconds:
+                    failure_reason = (
+                        "training produced no progress artifact within "
+                        f"{startup_timeout_seconds:.1f}s"
+                    )
+                    monitor_failure_kind = "timeout/startup"
+                    break
+                samples.append(
+                    {
+                        "elapsed_s": round(now - started, 6),
+                        "process": tree,
+                        "gpu": _gpu_snapshot(tree["processes"]),
+                        "progress": progress,
+                    }
+                )
+                time.sleep(sample_interval_seconds)
+        except KeyboardInterrupt:
+            failure_reason = "soak was interrupted before the trainer completed"
+            monitor_failure_kind = "external_cancellation"
+        except Exception as exc:
+            failure_reason = f"soak monitor failed: {type(exc).__name__}: {exc}"
+            monitor_failure_kind = "monitor_failure"
+        finally:
+            if process is not None and process.poll() is None:
+                if failure_reason is None:
+                    failure_reason = "soak monitor exited before the trainer"
+                    monitor_failure_kind = "monitor_failure"
+                _terminate_process_group(process.pid, process)
+            if process is not None:
+                returncode = process.wait()
+
+    if failure_reason is None and returncode != 0:
+        failure_reason = f"trainer exited with returncode {returncode}"
+    if failure_reason is None and time.monotonic() - started < min_duration_seconds:
+        failure_reason = f"soak completed before min_duration_seconds={min_duration_seconds:.1f}"
+
+    if post_shutdown_grace_seconds:
+        time.sleep(post_shutdown_grace_seconds)
+    residual_processes = _residual_processes(last_known_processes)
+    if failure_reason is None and residual_processes:
+        pids = ", ".join(str(item["pid"]) for item in residual_processes)
+        failure_reason = f"residual child processes after shutdown: {pids}"
+        monitor_failure_kind = "resource_leak"
+
+    run_summary = _load_json(progress_dir / "run_summary.json")
+    shutdown = _shutdown_diagnostics(run_summary if isinstance(run_summary, Mapping) else None)
+    if not isinstance(run_summary, Mapping):
+        if run_summary is None:
+            failure_reason = _append_failure_reason(
+                failure_reason, "trainer did not write run_summary.json"
+            )
+            if monitor_failure_kind is None:
+                monitor_failure_kind = "missing_run_summary"
+        else:
+            failure_reason = _append_failure_reason(
+                failure_reason,
+                f"run_summary must be a JSON object, got {type(run_summary).__name__}",
+            )
+            if monitor_failure_kind is None:
+                monitor_failure_kind = "invalid_run_summary"
+    else:
+        summary_status = run_summary.get("status")
+        completed_summary = summary_status == "completed"
+        schema_failure = _schema_failure(run_summary, completed=completed_summary)
+        if schema_failure is not None:
+            failure_reason = _append_failure_reason(failure_reason, schema_failure)
+            if monitor_failure_kind is None:
+                monitor_failure_kind = "schema_violation"
+
+        if not completed_summary:
+            if failure_reason is None:
+                failure_reason = f"run_summary status is {summary_status!r}, expected 'completed'"
+            manifest_failure = _runtime_manifest_contract_failure(
+                run_summary,
+                completed=False,
+            )
+            if manifest_failure is not None:
+                failure_reason = _append_failure_reason(failure_reason, manifest_failure)
+            shutdown_failure = _shutdown_contract_failure(
+                shutdown,
+                require_normal_completion=False,
+            )
+            if shutdown_failure is not None:
+                failure_reason = _append_failure_reason(failure_reason, shutdown_failure)
+                if monitor_failure_kind is None:
+                    monitor_failure_kind = "shutdown_contract_violation"
+            elif shutdown is not None:
+                failure_reason = _append_failure_reason(
+                    failure_reason, _describe_shutdown(shutdown)
+                )
+            else:
+                failure_reason = _append_failure_reason(
+                    failure_reason, "shutdown diagnostics are unavailable"
+                )
+            if isinstance(shutdown, Mapping):
+                classification = shutdown.get("classification")
+                if (
+                    shutdown_failure is None
+                    and isinstance(classification, str)
+                    and classification in _SHUTDOWN_CLASSIFICATIONS
+                ):
+                    monitor_failure_kind = classification
+            elif monitor_failure_kind is None:
+                monitor_failure_kind = "unknown_failure"
+        else:
+            if schema_failure is None:
+                manifest = run_summary.get("runtime_manifest")
+                flight = manifest.get("inference_flight") if isinstance(manifest, Mapping) else None
+                if isinstance(flight, Mapping):
+                    queue_depth = flight.get("queue_depth")
+                    publication_lag = flight.get("publication_lag")
+                    if queue_depth not in (None, 0) or publication_lag not in (None, 0):
+                        failure_reason = _append_failure_reason(
+                            failure_reason,
+                            "final inference flight is not drained: "
+                            f"queue_depth={queue_depth!r}, publication_lag={publication_lag!r}",
+                        )
+                        if monitor_failure_kind is None:
+                            monitor_failure_kind = "unknown_failure"
+                replay_ingress_failure = _final_replay_ingress_failure(run_summary)
+                if replay_ingress_failure is not None:
+                    failure_reason = _append_failure_reason(failure_reason, replay_ingress_failure)
+                    if monitor_failure_kind is None:
+                        monitor_failure_kind = "schema_violation"
+            shutdown_failure = _shutdown_contract_failure(
+                shutdown,
+                require_normal_completion=True,
+            )
+            if shutdown_failure is not None:
+                failure_reason = _append_failure_reason(failure_reason, shutdown_failure)
+                if monitor_failure_kind is None:
+                    monitor_failure_kind = "shutdown_contract_violation"
+
+    if monitor_failure_kind is None and failure_reason is not None:
+        monitor_failure_kind = "unknown_failure"
+
+    completed = failure_reason is None
+    artifact: dict[str, Any] = {
+        "schema_version": _ARTIFACT_SCHEMA_VERSION,
+        "status": "passed" if completed else "failed",
+        "failure_reason": failure_reason,
+        "failure_classification": monitor_failure_kind,
+        "command": list(command),
+        "context": dict(metadata or {}),
+        "started_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started_wall)),
+        "ended_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "duration_s": round(time.monotonic() - started, 6),
+        "returncode": returncode,
+        "monitor": {
+            "sample_interval_s": sample_interval_seconds,
+            "startup_timeout_s": startup_timeout_seconds,
+            "stale_progress_s": stale_progress_seconds,
+            "post_shutdown_grace_s": post_shutdown_grace_seconds,
+            "min_duration_s": min_duration_seconds,
+            "sample_count": len(samples),
+        },
+        "samples": samples,
+        "resource_summary": _resource_summary(samples, len(residual_processes), run_summary),
+        "shutdown": shutdown,
+        "post_shutdown": {
+            "residual_processes": residual_processes,
+        },
+        "run_summary": run_summary,
+        "console_log": str(console_log_path),
+    }
+    output_path.write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
+    if not completed:
+        raise SoakFailureError(f"{failure_reason}; soak artifact: {output_path}")
+    return artifact
+
+
+def _residual_processes(last_known: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    residual: list[dict[str, Any]] = []
+    for item in last_known:
+        pid = int(item["pid"])
+        expected = {int(value) for value in item.get("start_ticks", [])}
+        snapshot = _process_snapshot(pid, expected)
+        if snapshot is not None:
+            residual.append(snapshot)
+    return residual
+
+
+def build_g1_flashsac_mjwarp_command(
+    *,
+    num_envs: int,
+    iterations: int,
+    log_dir: Path,
+    extra_overrides: Sequence[str] = (),
+) -> list[str]:
+    """Build the owner-selected, single-process FlashSAC/MJWarp soak command."""
+    if num_envs <= 0:
+        raise ValueError("num_envs must be positive")
+    if iterations <= 0:
+        raise ValueError("iterations must be positive")
+    reserved = {
+        "algo",
+        "task",
+        "training.sim_backend",
+        "training.play_only",
+        "training.no_play",
+        "training.log_dir",
+        "algo.num_envs",
+        "algo.max_iterations",
+    }
+    for override in extra_overrides:
+        key = override.split("=", 1)[0].strip().lstrip("+~")
+        if key in reserved:
+            raise ValueError(f"soak-owned Hydra override cannot be overridden: {key}")
+    return build_command(
+        mode="train",
+        algo="flashsac",
+        task="g1_motion_tracking",
+        sim="mjwarp",
+        overrides=(
+            f"algo.num_envs={num_envs}",
+            f"algo.max_iterations={iterations}",
+            "training.no_play=true",
+            f"training.log_dir={log_dir}",
+            *extra_overrides,
+        ),
+    )

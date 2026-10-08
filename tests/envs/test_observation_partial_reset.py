@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
@@ -63,13 +64,15 @@ def test_observation_partial_reset_row_contract() -> None:
         action_dim = 29
         rng = np.random.default_rng(7)
         for _ in range(5):
-            env.step((0.1 * rng.standard_normal((num_envs, action_dim))).astype(np.float32))
+            env.step(
+                torch.tensor(0.1 * rng.standard_normal((num_envs, action_dim)), dtype=torch.float32)
+            )
 
         assert env.state is not None
-        obs_before = {name: values.copy() for name, values in env.state.obs.items()}
+        obs_before = {name: values.clone() for name, values in env.state.obs.items()}
         reset_ids = np.array([0, 2], dtype=np.int32)
         keep_ids = np.array([1, 3], dtype=np.int32)
-        reset_obs, _ = env.reset(env_ids=reset_ids)
+        reset_obs, _ = env.reset(env_indices=torch.tensor(reset_ids, dtype=torch.int64))
 
         for group, values in reset_obs.items():
             assert values.shape == (len(reset_ids), obs_before[group].shape[1])
@@ -82,7 +85,9 @@ def test_observation_partial_reset_row_contract() -> None:
             )
 
         # The next per-step compute rebuilds full-batch observations normally.
-        env.step((0.1 * rng.standard_normal((num_envs, action_dim))).astype(np.float32))
+        env.step(
+            torch.tensor(0.1 * rng.standard_normal((num_envs, action_dim)), dtype=torch.float32)
+        )
         for group, values in env.state.obs.items():
             assert values.shape == obs_before[group].shape
             assert np.isfinite(values).all()

@@ -30,19 +30,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CONF_ROOT = REPO_ROOT / "src" / "unilab" / "conf"
 ABSENT = "<absent>"
 
-# Audited backend pairs. mujoco<->motrix is the historical primary contract;
-# mujoco<->isaacgym covers the subprocess backend owners; mujoco<->genesis
-# covers the in-process Genesis backend owners; mujoco<->isaacsim covers the
-# Python 3.11 worker backend owners. The additional adapters are audited
-# independently so a new owner cannot accidentally drift from the canonical
-# MuJoCo policy contract.
+# Audited backend pairs. During the #1811 tensor-only Manager migration the
+# production runtime is scoped to MuJoCo host-bridge and the two device-native
+# adapters. Other UniSim adapters remain shelved and are intentionally absent
+# from this production audit until re-enabled with capability and parity
+# evidence.
 CONTRACT_PAIRS: tuple[tuple[str, str], ...] = (
-    ("mujoco", "motrix"),
-    ("mujoco", "isaacgym"),
     ("mujoco", "genesis"),
-    ("mujoco", "isaacsim"),
-    ("mujoco", "newton"),
-    ("mujoco", "superdex"),
+    ("mujoco", "mjwarp"),
+    ("mjwarp", "genesis"),
 )
 
 

@@ -38,9 +38,6 @@ env:
         fr3_joint[1-4]: [-20.0, 20.0]
         fr3_joint[5-7]: [-5.0, 5.0]
   events:
-    reset_scene_to_default:
-      func: unilab.envs.mdp.reset_scene_to_default
-      mode: reset
     reset_joints:
       func: unilab.tasks.manipulation.fr3.joint_target.ResetJointOffsets
       mode: reset

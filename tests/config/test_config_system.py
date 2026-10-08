@@ -20,7 +20,7 @@ from omegaconf import OmegaConf
 pytestmark = pytest.mark.slow
 
 CONF_DIR = Path(__file__).parent.parent.parent / "src" / "unilab" / "conf"
-_BACKENDS = ("mujoco", "mjwarp", "motrix", "isaacgym", "genesis", "isaacsim", "newton")
+_BACKENDS = ("mujoco", "mjwarp")
 
 
 def _expected_backend_from_variant(name: str) -> str | None:
@@ -192,73 +192,14 @@ def test_ppo_g1_mjwarp_inherits_enabled_playback_default():
     assert cfg.training.play_render_mode == "record"
 
 
-def test_ppo_g1_backend_specific_hyperparams_remain_separate():
-    mujoco_cfg = _compose("ppo", overrides=["task=g1_walk_flat/mujoco"])
-    motrix_cfg = _compose("ppo", overrides=["task=g1_walk_flat/motrix"])
-
-    assert mujoco_cfg.algo.max_iterations == 2200
-    assert mujoco_cfg.algo.actor.obs_normalization is False
-    assert mujoco_cfg.algo.critic.obs_normalization is False
-    assert mujoco_cfg.algo.obs_groups.actor == ["actor"]
-
-    assert motrix_cfg.algo.max_iterations == 2200
-    assert motrix_cfg.algo.actor.obs_normalization is True
-    assert motrix_cfg.algo.critic.obs_normalization is True
-    assert motrix_cfg.algo.obs_groups.actor == ["policy"]
-    assert OmegaConf.select(motrix_cfg, "env.motrix_max_iterations") is None
-    assert motrix_cfg.env.actions.joint_pos.scale == pytest.approx(0.5)
-    assert motrix_cfg.env.commands.twist.ranges.lin_vel_x == [0.4, 0.7]
-    assert motrix_cfg.env.observations.policy.terms.gait_phase.params.init_mode == "offset_phase"
-    assert motrix_cfg.reward.tracking_lin_vel.weight == pytest.approx(2.0)
-    assert motrix_cfg.reward.tracking_ang_vel.weight == pytest.approx(0.25)
-    assert motrix_cfg.reward.forward_progress.weight == pytest.approx(0.0)
-    assert motrix_cfg.reward.under_speed.weight == pytest.approx(-0.2)
-    assert motrix_cfg.reward.penalty_feet_ori.weight == pytest.approx(0.0)
-    assert motrix_cfg.reward.feet_phase.weight == pytest.approx(1.2)
-    assert motrix_cfg.reward.feet_phase_contrast.weight == pytest.approx(1.5)
-    assert motrix_cfg.reward.feet_phase_contact.weight == pytest.approx(1.0)
-    assert motrix_cfg.reward.feet_double_stance.weight == pytest.approx(-1.0)
-    assert motrix_cfg.reward.base_height.weight == pytest.approx(-120.0)
-    assert motrix_cfg.reward.pose.weight == pytest.approx(-0.05)
-    assert motrix_cfg.reward.base_height.params.target_height == pytest.approx(0.765)
-    assert motrix_cfg.reward.feet_phase.params.min_forward_speed == pytest.approx(0.05)
-    assert motrix_cfg.env.terminations.base_height.params.minimum_height == pytest.approx(0.5)
-    assert motrix_cfg.env.terminations.tilt.params.max_tilt_deg == pytest.approx(35.0)
-
-
 def test_appo_adaptive_lr_factors_are_overridden_only_by_dex_hand_owners():
     g1_cfg = _compose("appo", overrides=["task=g1_walk_flat/mujoco"])
     allegro_cfg = _compose("appo", overrides=["task=allegro_inhand/mujoco"])
-    allegro_motrix_cfg = _compose("appo", overrides=["task=allegro_inhand/motrix"])
 
     assert g1_cfg.algo.algorithm.adaptive_kl_factor == pytest.approx(1.2)
     assert g1_cfg.algo.algorithm.adaptive_lr_factor == pytest.approx(1.1)
     assert allegro_cfg.algo.algorithm.adaptive_kl_factor == pytest.approx(2.0)
     assert allegro_cfg.algo.algorithm.adaptive_lr_factor == pytest.approx(1.5)
-    assert allegro_motrix_cfg.algo.algorithm.adaptive_kl_factor == pytest.approx(2.0)
-    assert allegro_motrix_cfg.algo.algorithm.adaptive_lr_factor == pytest.approx(1.5)
-
-
-def test_ppo_go2_motrix_preserves_backend_env_overrides():
-    cfg = _compose("ppo", overrides=["task=go2_joystick_flat/motrix"])
-
-    assert cfg.algo.num_envs == 1024
-    assert cfg.algo.actor.obs_normalization is True
-    assert cfg.algo.critic.obs_normalization is True
-    assert cfg.env.events.pd_gains is None
-    assert cfg.env.commands.twist.ranges.lin_vel_x == [0.5, 0.5]
-    assert cfg.env.commands.twist.ranges.lin_vel_y == [0.0, 0.0]
-    assert cfg.env.commands.twist.ranges.ang_vel_z == [0.0, 0.0]
-
-
-def test_offpolicy_g1_walk_flat_motrix_preserves_backend_env_overrides():
-    cfg = _compose("sac", overrides=["task=g1_walk_flat/motrix"])
-
-    assert cfg.training.sim_backend == "motrix"
-    assert cfg.algo.num_envs == 2048
-    assert cfg.algo.max_iterations == 5000
-    assert cfg.env.events.pd_gains is None
-    assert cfg.reward.tracking_lin_vel.weight == pytest.approx(2.2)
 
 
 def test_offpolicy_flashsac_go2_joystick_mujoco_enables_full_dr_stack():
@@ -297,9 +238,7 @@ def test_offpolicy_flashsac_go2_joystick_mujoco_enables_full_dr_stack():
 def test_cli_override_beats_task_defaults():
     cfg = _compose(
         "ppo",
-        overrides=["task=g1_walk_flat/motrix", "algo.max_iterations=1"],
+        overrides=["task=g1_walk_flat/mujoco", "algo.max_iterations=1"],
     )
 
     assert cfg.algo.max_iterations == 1
-    assert cfg.algo.actor.obs_normalization is True
-    assert cfg.algo.critic.obs_normalization is True

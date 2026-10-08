@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+import torch
 
 from unilab.envs import mdp
 from unilab.managers import RewardManager, RewardTermCfg
@@ -126,6 +127,35 @@ def test_generic_reward_terms_match_pinned_numpy_semantics() -> None:
     np.testing.assert_allclose(
         mdp.flat_orientation_l2(env),
         np.sum(np.square(entity.data.projected_gravity_b[:, :2]), axis=1),
+    )
+
+
+def test_action_history_rewards_remain_tensors_for_reward_manager() -> None:
+    env = _env()
+    action = torch.arange(6, dtype=torch.float32).reshape(3, 2)
+    env.action_manager.action = action
+    env.action_manager.prev_action = action - 0.25
+    env.action_manager.prev_prev_action = action - 0.75
+
+    rate = mdp.action_rate_l2(env)
+    acceleration = mdp.action_acc_l2(env)
+    manager = RewardManager(
+        {
+            "rate": RewardTermCfg(func=mdp.action_rate_l2, weight=-0.1),
+            "acceleration": RewardTermCfg(func=mdp.action_acc_l2, weight=-0.01),
+        },
+        env,
+    )
+    result = manager.compute(dt=0.5)
+
+    assert isinstance(rate, torch.Tensor)
+    assert rate.dtype == torch.float32
+    assert isinstance(acceleration, torch.Tensor)
+    assert acceleration.dtype == torch.float32
+    assert isinstance(result, torch.Tensor)
+    torch.testing.assert_close(
+        result,
+        torch.tensor([-0.1 * 0.25**2 - 0.01 * 0.25**2] * 3),
     )
 
 

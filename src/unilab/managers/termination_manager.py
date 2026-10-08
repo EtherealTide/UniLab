@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import time
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
+import torch
 from prettytable import PrettyTable
 
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
@@ -44,11 +46,14 @@ class TerminationManager(ManagerBase):
         self.cfg = deepcopy(cfg)
         super().__init__(env)
 
-        self._term_dones = dict()
+        self._device = getattr(env, "device", torch.device("cpu"))
+        self._term_dones: dict[str, torch.Tensor] = {}
         for term_name in self._term_names:
-            self._term_dones[term_name] = np.zeros(self.num_envs, dtype=np.bool_)
-        self._truncated_buf = np.zeros(self.num_envs, dtype=np.bool_)
-        self._terminated_buf = np.zeros_like(self._truncated_buf)
+            self._term_dones[term_name] = torch.zeros(
+                self.num_envs, dtype=torch.bool, device=self._device
+            )
+        self._truncated_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
+        self._terminated_buf = torch.zeros_like(self._truncated_buf)
 
     def __str__(self) -> str:
         msg = f"<TerminationManager> contains {len(self._term_names)} active terms.\n"
@@ -71,49 +76,61 @@ class TerminationManager(ManagerBase):
         return self._term_names
 
     @property
-    def dones(self) -> np.ndarray:
+    def dones(self) -> torch.Tensor:
         return self._truncated_buf | self._terminated_buf
 
     @property
-    def time_outs(self) -> np.ndarray:
+    def time_outs(self) -> torch.Tensor:
         return self._truncated_buf
 
     @property
-    def terminated(self) -> np.ndarray:
+    def terminated(self) -> torch.Tensor:
         return self._terminated_buf
 
     # Methods.
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> dict[str, int]:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, int]:
         if env_ids is None:
             env_ids = slice(None)
         extras = {}
-        for key in self._term_dones.keys():
-            extras["Episode_Termination/" + key] = int(
-                np.count_nonzero(self._term_dones[key][env_ids])
-            )
+        mask = self._reset_mask(env_ids)
+        keys = list(self._term_dones)
+        counts = [self._term_dones[key][mask].sum() for key in keys]
+        # Publish every episodic count through one device boundary instead of
+        # synchronizing once per termination term.
+        host_counts = torch.stack(counts).detach().cpu().tolist() if counts else []
+        for key, count in zip(keys, host_counts, strict=True):
+            extras["Episode_Termination/" + key] = int(count)
         for term_cfg in self._class_term_cfgs:
             term_cfg.func.reset(env_ids=env_ids)
         return extras
 
-    def compute(self) -> np.ndarray:
+    def compute(self) -> torch.Tensor:
+        timing = getattr(self, "last_step_timing_ms", None)
+        if timing is None:
+            timing = {}
+            self.last_step_timing_ms = timing
+        timing.clear()
         self._truncated_buf[:] = False
         self._terminated_buf[:] = False
+        dispatch_ms = 0.0
+        aggregation_ms = 0.0
         for name, term_cfg in zip(self._term_names, self._term_cfgs, strict=False):
-            value = term_cfg.func(self._env, **term_cfg.params)
-            self._check_term_shape(name, value)
-            if value.dtype != np.bool_:
-                raise TypeError(
-                    f"TerminationManager term '{name}' returned dtype {value.dtype}, expected bool."
-                )
+            dispatch_started = time.perf_counter()
+            value = self._compute_term(name, term_cfg)
+            dispatch_ms += time.perf_counter() - dispatch_started
+            aggregation_started = time.perf_counter()
             if term_cfg.time_out:
                 self._truncated_buf |= value
             else:
                 self._terminated_buf |= value
             self._term_dones[name][:] = value
+            aggregation_ms += time.perf_counter() - aggregation_started
+        timing["update_state_termination_term_dispatch_ms"] = dispatch_ms * 1000.0
+        timing["update_state_termination_aggregation_ms"] = aggregation_ms * 1000.0
         return self._truncated_buf | self._terminated_buf
 
-    def get_term(self, name: str) -> np.ndarray:
+    def get_term(self, name: str) -> torch.Tensor:
         return self._term_dones[name]
 
     def get_term_cfg(self, term_name: str) -> TerminationTermCfg:
@@ -124,7 +141,7 @@ class TerminationManager(ManagerBase):
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:
         terms = []
         for key in self._term_dones.keys():
-            terms.append((key, [float(self._term_dones[key][env_idx])]))
+            terms.append((key, [self._term_dones[key][env_idx].item()]))
         return terms
 
     def _prepare_terms(self) -> None:
@@ -137,3 +154,58 @@ class TerminationManager(ManagerBase):
             self._term_cfgs.append(term_cfg)
             if hasattr(term_cfg.func, "reset") and callable(term_cfg.func.reset):
                 self._class_term_cfgs.append(term_cfg)
+
+    def _compute_term(self, name: str, term_cfg: TerminationTermCfg) -> torch.Tensor:
+        value = term_cfg.func(self._env, **term_cfg.params)
+        if isinstance(value, torch.Tensor):
+            if value.dtype != torch.bool:
+                raise TypeError(
+                    f"TerminationManager term '{name}' returned dtype {value.dtype}, expected bool."
+                )
+            if value.device != self._device:
+                raise ValueError(
+                    f"TerminationManager term '{name}' returned device {value.device}, "
+                    f"expected {self._device}."
+                )
+            if getattr(term_cfg.func, "returns_transient_tensor", False):
+                result = value
+            else:
+                result = value.clone()
+        else:
+            host = np.asarray(value)
+            if host.dtype != np.bool_:
+                raise TypeError(
+                    f"TerminationManager term '{name}' returned dtype {host.dtype}, expected bool."
+                )
+            result = torch.from_numpy(np.array(host, order="C", copy=True)).to(self._device)
+        if result.shape != (self.num_envs,):
+            raise ValueError(
+                f"TerminationManager term '{name}' returned shape {tuple(result.shape)}; "
+                f"expected ({self.num_envs},)."
+            )
+        return result
+
+    def _reset_mask(self, env_ids: torch.Tensor | slice) -> torch.Tensor:
+        if env_ids is None:
+            return torch.ones(self.num_envs, dtype=torch.bool, device=self._device)
+        if isinstance(env_ids, slice):
+            indices = torch.arange(self.num_envs, dtype=torch.int64, device=self._device)[env_ids]
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self._device).index_fill(
+                0, indices, True
+            )
+        if (
+            not isinstance(env_ids, torch.Tensor)
+            or env_ids.ndim != 1
+            or env_ids.dtype
+            not in {
+                torch.int32,
+                torch.int64,
+            }
+        ):
+            raise TypeError("TerminationManager reset rows must be one-dimensional integers")
+        rows = env_ids.to(self._device)
+        if rows.numel() and (rows.min() < 0 or rows.max() >= self.num_envs):
+            raise IndexError(f"TerminationManager reset rows out of range: {rows.tolist()}")
+        return torch.zeros(self.num_envs, dtype=torch.bool, device=self._device).index_fill(
+            0, rows.to(torch.int64), True
+        )

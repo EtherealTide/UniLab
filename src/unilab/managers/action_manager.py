@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, Sequence
 
-import numpy as np
+import torch
 from prettytable import PrettyTable
 
 from unilab.managers.manager_base import ManagerBase, ManagerTermBase
@@ -55,6 +55,15 @@ class ActionTerm(ManagerTermBase):
     backend step. State-feedback terms must override this declaration with ``True``.
     """
 
+    uses_tensor_actions: ClassVar[bool] = True
+    """Whether this term consumes raw actions as Torch tensors.
+
+    The tensor-only Manager runtime requires this declaration to remain true.
+    """
+
+    uses_tensor_state_packet: ClassVar[bool] = False
+    """Whether ``apply_actions`` consumes the current packed tensor state packet."""
+
     def __init__(self, cfg: ActionTermCfg, env: ManagerBasedRlEnv):
         self.cfg = cfg
         super().__init__(env)
@@ -66,7 +75,7 @@ class ActionTerm(ManagerTermBase):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def process_actions(self, actions: np.ndarray) -> None:
+    def process_actions(self, actions: Any) -> None:
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -75,7 +84,7 @@ class ActionTerm(ManagerTermBase):
 
     @property
     @abc.abstractmethod
-    def raw_action(self) -> np.ndarray:
+    def raw_action(self) -> torch.Tensor:
         raise NotImplementedError
 
 
@@ -92,9 +101,12 @@ class ActionManager(ManagerBase):
         super().__init__(env=env)
 
         # Create buffers to store actions.
-        self._action = np.zeros((self.num_envs, self.total_action_dim), dtype=np.float32)
-        self._prev_action = np.zeros_like(self._action)
-        self._prev_prev_action = np.zeros_like(self._action)
+        self._device = getattr(env, "device", torch.device("cpu"))
+        self._action = torch.zeros(
+            (self.num_envs, self.total_action_dim), dtype=torch.float32, device=self._device
+        )
+        self._prev_action = torch.zeros_like(self._action)
+        self._prev_prev_action = torch.zeros_like(self._action)
 
     def __str__(self) -> str:
         msg = f"<ActionManager> contains {len(self._term_names)} active terms.\n"
@@ -120,19 +132,19 @@ class ActionManager(ManagerBase):
         return [term.action_dim for term in self._terms.values()]
 
     @property
-    def action(self) -> np.ndarray:
+    def action(self) -> torch.Tensor:
         """Raw policy output from the current step, before per-term
         scale/offset. Shape: ``(num_envs, total_action_dim)``."""
         return self._action
 
     @property
-    def prev_action(self) -> np.ndarray:
+    def prev_action(self) -> torch.Tensor:
         """Raw policy output from the previous step, before per-term
         scale/offset. Shape: ``(num_envs, total_action_dim)``."""
         return self._prev_action
 
     @property
-    def prev_prev_action(self) -> np.ndarray:
+    def prev_prev_action(self) -> torch.Tensor:
         """Raw policy output from two steps ago, before per-term
         scale/offset. Shape: ``(num_envs, total_action_dim)``."""
         return self._prev_prev_action
@@ -146,24 +158,41 @@ class ActionManager(ManagerBase):
         """Return whether any active action term needs per-substep state feedback."""
         return any(term.requires_substep_state_feedback for term in self._terms.values())
 
+    @property
+    def uses_tensor_state_packet(self) -> bool:
+        """Return whether any action term consumes the packed state packet."""
+        return any(term.uses_tensor_state_packet for term in self._terms.values())
+
     # Methods.
 
     def get_term(self, name: str) -> ActionTerm:
         return self._terms[name]
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> dict[str, float]:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
+        if env_ids is None:
+            env_ids = slice(None)
+        self.clear_action_state(env_ids)
+        return {}
+
+    def clear_action_state(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        """Clear selected manager and term action state without logging.
+
+        Reset owners consume this boundary when they own the action reset pass.
+        It preserves the exact generic reset state mutation while leaving the
+        ordinary reset extras contract to the caller.
+        """
         if env_ids is None:
             env_ids = slice(None)
         # Reset action history.
-        self._prev_action[env_ids] = 0.0
-        self._prev_prev_action[env_ids] = 0.0
-        self._action[env_ids] = 0.0
+        selector = self._reset_selector(env_ids)
+        self._prev_action[selector] = 0.0
+        self._prev_prev_action[selector] = 0.0
+        self._action[selector] = 0.0
         # Reset action terms.
         for term in self._terms.values():
             term.reset(env_ids=env_ids)
-        return {}
 
-    def process_action(self, action: np.ndarray) -> None:
+    def process_action(self, action: torch.Tensor) -> None:
         """Store the raw policy output and route slices to each action term.
 
         Called once per policy step. The raw action tensor is saved into the
@@ -172,28 +201,59 @@ class ActionManager(ManagerBase):
         independently applies its own affine transformation via
         :meth:`ActionTerm.process_actions`.
         """
-        if not isinstance(action, np.ndarray):
-            raise TypeError(f"ActionManager expected np.ndarray, received {type(action).__name__}.")
+        if not isinstance(action, torch.Tensor):
+            raise TypeError(
+                f"ActionManager expected torch.Tensor, received {type(action).__name__}."
+            )
         expected_shape = (self.num_envs, self.total_action_dim)
         if action.shape != expected_shape:
             raise ValueError(
                 f"Invalid action shape, expected {expected_shape}, received {action.shape}."
             )
-        if not np.isfinite(action).all():
+        if action.dtype != torch.float32 or not action.is_contiguous():
+            raise TypeError("ActionManager action must be contiguous float32")
+        if action.device != self._device:
+            raise ValueError(
+                f"ActionManager action device must be {self._device}, received {action.device}"
+            )
+        if not bool(torch.isfinite(action).all()):
             raise ValueError("ActionManager received an action containing NaN or Inf.")
         # Shift history: prev_prev ← prev ← current ← new.
         self._prev_prev_action[:] = self._prev_action
         self._prev_action[:] = self._action
-        self._action[:] = action
-        # Split the flat action vector and route each slice to its term.
+        self._action.copy_(action)
+        # Split the flat action vector and route each tensor slice to its term.
         idx = 0
         for name, term in self._terms.items():
-            term_actions = self._action[:, idx : idx + term.action_dim]
+            term_actions = action[:, idx : idx + term.action_dim]
             try:
                 term.process_actions(term_actions)
+                validator = getattr(term, "validate_actions", None)
+                if callable(validator):
+                    validator()
             except (TypeError, ValueError, NotImplementedError) as exc:
                 raise type(exc)(f"ActionManager term '{name}': {exc}") from exc
             idx += term.action_dim
+
+    def _reset_selector(self, env_ids: torch.Tensor | slice) -> torch.Tensor | slice:
+        if env_ids is None:
+            return slice(None)
+        if isinstance(env_ids, slice):
+            return env_ids
+        if (
+            not isinstance(env_ids, torch.Tensor)
+            or env_ids.ndim != 1
+            or env_ids.dtype
+            not in {
+                torch.int32,
+                torch.int64,
+            }
+        ):
+            raise TypeError("ActionManager reset rows must be one-dimensional integers")
+        rows = env_ids.to(self._device)
+        if rows.numel() and (rows.min() < 0 or rows.max() >= self.num_envs):
+            raise IndexError(f"ActionManager reset rows out of range: {rows.tolist()}")
+        return rows.to(torch.int64)
 
     def apply_action(self) -> None:
         """Write processed actions to entity actuator targets.
@@ -241,6 +301,18 @@ class ActionManager(ManagerBase):
                     "ActionManager term "
                     f"'{term_name}' requires_substep_state_feedback must be bool, "
                     f"got {type(feedback).__name__}."
+                )
+            uses_tensor_actions = term.uses_tensor_actions
+            if not isinstance(uses_tensor_actions, bool):
+                raise TypeError(
+                    "ActionManager term "
+                    f"'{term_name}' uses_tensor_actions must be bool, got "
+                    f"{type(uses_tensor_actions).__name__}."
+                )
+            if not uses_tensor_actions:
+                raise TypeError(
+                    "ActionManager requires tensor action terms; legacy NumPy action "
+                    f"term '{term_name}' is unsupported"
                 )
             self._term_names.append(term_name)
             self._terms[term_name] = term

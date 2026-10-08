@@ -1,11 +1,11 @@
 """Per-phase wall/CPU attribution for a full task env step (issue #1328).
 
-Builds a real task env through the same Hydra compose + ``BackendAdapter``
-override path the off-policy collector uses, wraps ``backend.step`` /
-``update_state`` / ``_reset_done_envs`` with process-wide CPU-time measurement
-(``os.times``), and reports each phase's wall share and the average number of
-cores it kept busy. This makes low-parallelism host phases visible next to the
-thread-pool physics phase.
+Builds a real task env through the same Hydra compose and ``BackendAdapter``
+override path the off-policy collector uses. The environment owns its phase
+timings; this script only consumes ``state.info["timing"]`` after public
+``env.step()`` calls, then reports each phase's wall share and the average
+number of cores it kept busy. This keeps the benchmark independent of runtime
+and backend-private methods.
 
 ``--cpu-ids 0-31`` additionally injects ``EnvCfg.cpu_ids`` into the env
 override (the same key the multi-GPU DP collector path uses), which both pins
@@ -32,10 +32,25 @@ import time
 from collections import defaultdict
 from collections.abc import Sequence
 
-import numpy as np
+import torch
 
 REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
+
+PHASE_KEYS = (
+    "apply_action_ms",
+    "step_core_ms",
+    "update_state_ms",
+    "reset_done_ms",
+    "env_step_other_ms",
+)
+PHASE_CPU_KEYS = (
+    "apply_action_cpu_ms",
+    "step_core_cpu_ms",
+    "update_state_cpu_ms",
+    "reset_done_cpu_ms",
+    "env_step_other_cpu_ms",
 )
 
 
@@ -99,64 +114,47 @@ def main(argv: Sequence[str] | None = None) -> int:
     if env.state is None:
         env.init_state()
 
-    wall_ms: defaultdict[str, float] = defaultdict(float)
-    cpu_ms: defaultdict[str, float] = defaultdict(float)
-    counts: defaultdict[str, int] = defaultdict(int)
-
-    def wrap(name, fn):
-        def wrapped(*a, **kw):
-            w0 = time.perf_counter()
-            c0 = _cpu_time()
-            out = fn(*a, **kw)
-            wall_ms[name] += (time.perf_counter() - w0) * 1000.0
-            cpu_ms[name] += (_cpu_time() - c0) * 1000.0
-            counts[name] += 1
-            return out
-
-        return wrapped
-
-    env._backend.step = wrap("backend_step", env._backend.step)
-    env.update_state = wrap("update_state", env.update_state)
-    env._reset_done_envs = wrap("reset_done", env._reset_done_envs)
-
     action_dim = env.action_space.shape[-1]
-    rng = np.random.default_rng(0)
 
-    def actions():
-        return rng.uniform(-0.2, 0.2, size=(args.num_envs, action_dim)).astype(np.float32)
+    def actions() -> torch.Tensor:
+        return (
+            torch.rand((args.num_envs, action_dim), dtype=torch.float32, device=env.device).mul_(
+                0.4
+            )
+            - 0.2
+        )
 
     for _ in range(args.warmup):
         env.step(actions())
-    wall_ms.clear()
-    cpu_ms.clear()
-    counts.clear()
 
+    wall_ms: dict[str, float] = defaultdict(float)
+    cpu_ms: dict[str, float] = defaultdict(float)
+    counts: dict[str, int] = defaultdict(int)
     n_reset = 0
     wall0 = time.perf_counter()
     cpu0 = _cpu_time()
     for _ in range(args.iters):
         state = env.step(actions())
-        n_reset += int(np.count_nonzero(state.terminated | state.truncated))
+        timing = state.info.get("timing", {})
+        total_ms = float(timing["env_step_total_ms"])
+        measured_ms = sum(float(timing[key]) for key in PHASE_KEYS[:-1])
+        timing["env_step_other_ms"] = max(total_ms - measured_ms, 0.0)
+        for wall_key, cpu_key in zip(PHASE_KEYS, PHASE_CPU_KEYS, strict=True):
+            wall_ms[wall_key] += float(timing[wall_key])
+            cpu_ms[cpu_key] += float(timing[cpu_key])
+            counts[wall_key] += 1
+        n_reset += int((state.terminated | state.truncated).sum().item())
     total_wall = (time.perf_counter() - wall0) * 1000.0
     total_cpu = (_cpu_time() - cpu0) * 1000.0
 
-    print(
-        f"pool nthread={env._backend._n_threads} num_envs={args.num_envs} "
-        f"cpu_ids={'None' if args.cpu_ids is None else args.cpu_ids}"
-    )
+    print(f"num_envs={args.num_envs} cpu_ids={'None' if args.cpu_ids is None else args.cpu_ids}")
     print(f"iters={args.iters} total_resets={n_reset}")
     print(f"{'phase':>16s} {'wall_ms':>9s} {'cpu_ms':>9s} {'cores':>6s} {'wall%':>6s}")
     step_wall = total_wall / args.iters
-    for name in ("backend_step", "update_state", "reset_done"):
-        w = wall_ms[name] / args.iters
-        c = cpu_ms[name] / args.iters
+    for name in PHASE_KEYS:
+        w = wall_ms[name] / max(counts[name], 1)
+        c = cpu_ms[name] / max(counts[name], 1)
         print(f"{name:>16s} {w:9.2f} {c:9.2f} {c / w if w else 0:6.2f} {100 * w / step_wall:6.1f}")
-    other_w = total_wall - sum(wall_ms.values())
-    other_c = total_cpu - sum(cpu_ms.values())
-    print(
-        f"{'other(step glue)':>16s} {other_w / args.iters:9.2f} {other_c / args.iters:9.2f} "
-        f"{(other_c / other_w) if other_w > 0 else 0:6.2f} {100 * other_w / total_wall:6.1f}"
-    )
     print(
         f"{'TOTAL step':>16s} {step_wall:9.2f} {total_cpu / args.iters:9.2f} "
         f"{total_cpu / total_wall:6.2f} {100.0:6.1f}"

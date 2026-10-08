@@ -1,5 +1,5 @@
 # Linux NVIDIA/CUDA training image.
-# Physics backends: MuJoCo and Motrix.
+# Physics backends: the scoped tensor Manager runtime (MuJoCo and MJWarp).
 FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -34,7 +34,7 @@ WORKDIR /workspace/UniLab
 
 COPY . /workspace/UniLab
 
-RUN uv sync --dev --extra mujoco --extra motrix \
+RUN uv sync --dev --extra mujoco --extra mjwarp \
     && uv cache clean \
     && rm -rf /root/.cache/uv
 

@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 
 from unilab.envs import make_manager_based_rl_env
 from unilab.tasks.manipulation.simtool_real import (
@@ -82,16 +83,16 @@ def test_cpu_manager_rollout_uses_immutable_variant_identity_and_reset_dr(
 
         state = env.init_state()
         assert state.obs["obs"].shape == (6, 2)
-        assert np.isfinite(state.obs["obs"]).all()
-        state = env.step(np.zeros((6, 1), dtype=np.float32))
-        assert np.isfinite(state.obs["obs"]).all()
-        assert np.isfinite(state.reward).all()
+        assert torch.isfinite(state.obs["obs"]).all()
+        state = env.step(torch.zeros((6, 1), dtype=torch.float32))
+        assert torch.isfinite(state.obs["obs"]).all()
+        assert torch.isfinite(state.reward).all()
 
         playback_mass = [float(env.get_playback_model(index).body_mass[1]) for index in range(3)]
         np.testing.assert_allclose(playback_mass, [0.4 + 0.25 * index for index in range(3)])
 
         env.reset()
-        assert np.isfinite(env.state.obs["obs"]).all()
+        assert torch.isfinite(env.state.obs["obs"]).all()
     finally:
         env.close()
 
@@ -127,12 +128,13 @@ def test_cpu_and_mjwarp_representative_rollouts_match_on_cuda(
             Path(variant.model_file).resolve() for variant in plan.variants
         ]
 
-        actions = np.zeros((3, 1), dtype=np.float32)
         cpu_env.init_state()
-        mjwarp_state = mjwarp_env.step(actions)
-        cpu_state = cpu_env.step(actions)
-        assert np.isfinite(mjwarp_state.obs["obs"]).all()
-        assert np.isfinite(cpu_state.obs["obs"]).all()
+        mjwarp_state = mjwarp_env.step(
+            torch.zeros((3, 1), dtype=torch.float32, device=mjwarp_env.device)
+        )
+        cpu_state = cpu_env.step(torch.zeros((3, 1), dtype=torch.float32))
+        assert torch.isfinite(mjwarp_state.obs["obs"]).all()
+        assert torch.isfinite(cpu_state.obs["obs"]).all()
         np.testing.assert_allclose(
             mjwarp_env.scene["tool"].data.joint_pos,
             cpu_env.scene["tool"].data.joint_pos,

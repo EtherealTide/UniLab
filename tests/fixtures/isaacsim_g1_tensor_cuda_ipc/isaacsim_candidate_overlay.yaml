@@ -1,0 +1,138 @@
+# @package _global_
+# Test-fixture-only FlashSAC IsaacSim tensor overlay. It is intentionally not
+# a discoverable production Hydra owner: the current mapped-entity compiler
+# cannot compose a task keyframe without a temporary full robot-source copy,
+# and a shipped owner could otherwise resolve unisim-core 1.7.10 without the
+# CUDA IPC tensor lifecycle. Kit/PhysX stay in the external Python 3.11
+# worker; tensor_cuda_ipc replaces bulk CPU shared memory with a same-GPU CUDA
+# IPC arena. The static backend matrix remains unsupported until #1675 closes.
+
+training:
+  task_name: G1MotionTrackingSAC
+  sim_backend: isaacsim
+  play_render_mode: auto
+env:
+  isaacsim_device_id: 0
+  isaacsim_worker_timeout_s: 300.0
+  isaacsim_tensor_cuda_ipc: true
+  # This throughput fixture does not use geom-friction reset DR. Sharing equal
+  # initial native materials keeps 2048 clones below PhysX's 64K material cap.
+  isaacsim_share_friction_materials: true
+  scene:
+    # IsaacSim consumes the mapped physical-scene profile.  The task source,
+    # not an all-zero EntityInitialState, remains authoritative for the 29
+    # stand joint/ctrl values; the explicit root pose mirrors that keyframe.
+    model_file: null
+    primary_entity: robot
+    entity_assets:
+      - name: robot
+        source:
+          model_file: tests/fixtures/isaacsim_g1_tensor_cuda_ipc/g1_stand_entity.xml
+        root_mode: floating
+        initial_state:
+          position: [0.0, 0.0, 0.754]
+          quaternion: [1.0, 0.0, 0.0, 0.0]
+      - name: floor
+        source:
+          model_file: tests/fixtures/isaacsim_g1_tensor_cuda_ipc/flat_floor_entity.xml
+        kind: rigid
+        root_mode: fixed
+    entities:
+      robot:
+        root_body_name: robot/pelvis
+        physical_entity: robot
+        joint_names: &mapped_g1_joints
+          - robot/left_hip_pitch_joint
+          - robot/left_hip_roll_joint
+          - robot/left_hip_yaw_joint
+          - robot/left_knee_joint
+          - robot/left_ankle_pitch_joint
+          - robot/left_ankle_roll_joint
+          - robot/right_hip_pitch_joint
+          - robot/right_hip_roll_joint
+          - robot/right_hip_yaw_joint
+          - robot/right_knee_joint
+          - robot/right_ankle_pitch_joint
+          - robot/right_ankle_roll_joint
+          - robot/waist_yaw_joint
+          - robot/waist_roll_joint
+          - robot/waist_pitch_joint
+          - robot/left_shoulder_pitch_joint
+          - robot/left_shoulder_roll_joint
+          - robot/left_shoulder_yaw_joint
+          - robot/left_elbow_joint
+          - robot/left_wrist_roll_joint
+          - robot/left_wrist_pitch_joint
+          - robot/left_wrist_yaw_joint
+          - robot/right_shoulder_pitch_joint
+          - robot/right_shoulder_roll_joint
+          - robot/right_shoulder_yaw_joint
+          - robot/right_elbow_joint
+          - robot/right_wrist_roll_joint
+          - robot/right_wrist_pitch_joint
+          - robot/right_wrist_yaw_joint
+        actuator_names: *mapped_g1_joints
+        body_names: &mapped_tracked_bodies
+          - robot/pelvis
+          - robot/left_hip_roll_link
+          - robot/left_knee_link
+          - robot/left_ankle_roll_link
+          - robot/right_hip_roll_link
+          - robot/right_knee_link
+          - robot/right_ankle_roll_link
+          - robot/torso_link
+          - robot/left_shoulder_roll_link
+          - robot/left_elbow_link
+          - robot/left_wrist_yaw_link
+          - robot/right_shoulder_roll_link
+          - robot/right_elbow_link
+          - robot/right_wrist_yaw_link
+        geom_names: null
+  observations:
+    actor:
+      terms:
+        base_lin_vel:
+          params:
+            sensor_name: robot/pelvis_local_linvel
+        base_ang_vel:
+          params:
+            sensor_name: robot/torso_gyro
+    critic:
+      terms:
+        base_lin_vel:
+          params:
+            sensor_name: robot/pelvis_local_linvel
+        base_ang_vel:
+          params:
+            sensor_name: robot/torso_gyro
+        sac_base_lin_vel:
+          params:
+            sensor_name: robot/pelvis_local_linvel
+  commands:
+    motion:
+      params:
+        anchor_body_name: robot/torso_link
+        body_names: *mapped_tracked_bodies
+  terminations:
+    ee_body_pos:
+      params:
+        body_names:
+          - robot/left_ankle_roll_link
+          - robot/right_ankle_roll_link
+          - robot/left_wrist_yaw_link
+          - robot/right_wrist_yaw_link
+
+reward:
+  undesired_contacts:
+    params:
+      body_names:
+        - robot/pelvis
+        - robot/left_hip_roll_link
+        - robot/left_knee_link
+        - robot/right_hip_roll_link
+        - robot/right_knee_link
+        - robot/torso_link
+        - robot/left_shoulder_roll_link
+        - robot/left_elbow_link
+        - robot/right_shoulder_roll_link
+        - robot/right_elbow_link

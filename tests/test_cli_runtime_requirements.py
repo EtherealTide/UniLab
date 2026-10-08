@@ -23,42 +23,62 @@ def test_check_runtime_requirements_mujoco_needs_mjbatch(
         cli._check_runtime_requirements("ppo", "mujoco")
 
 
-def test_check_runtime_requirements_requires_motrix_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("sim", cli._SHELVED_SIMS)
+def test_shelved_sims_fail_closed_before_dependency_detection(sim: str) -> None:
+    with pytest.raises(SystemExit, match="temporarily outside the tensor-only Manager runtime"):
+        cli._check_runtime_requirements("ppo", sim)
+
+
+def test_check_runtime_requirements_requires_newton_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "find_spec", lambda name: None if name == "newton" else object())
+
+    with pytest.raises(SystemExit, match="sim=newton requires the newton extra"):
+        cli._check_runtime_requirements("sac", "newton")
+
+
+def test_check_runtime_requirements_requires_motrix_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(cli, "find_spec", lambda name: None if name == "motrixsim" else object())
 
-    with pytest.raises(SystemExit, match="sim=motrix requires the Motrix extra"):
-        cli._check_runtime_requirements("ppo", "motrix")
+    with pytest.raises(SystemExit, match="sim=motrix requires the motrix extra"):
+        cli._check_runtime_requirements("sac", "motrix")
 
 
-def test_check_runtime_requirements_requires_drake_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_runtime_requirements_requires_drake_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(cli, "find_spec", lambda name: None if name == "drake_uni" else object())
 
     with pytest.raises(SystemExit, match="sim=drake requires the Drake extra"):
         cli._check_runtime_requirements("ppo", "drake")
 
 
-def test_check_runtime_requirements_requires_isolated_newton_extra(
+def test_check_runtime_requirements_rejects_unusable_drake_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        cli,
-        "find_spec",
-        lambda name: None if name == "newton" else object(),
+    def fake_find_spec(name: str):
+        return object() if name == "drake_uni" else None
+
+    def unavailable() -> tuple[bool, ImportError | None]:
+        return False, ImportError("native extension unavailable")
+
+    monkeypatch.setattr(cli, "find_spec", fake_find_spec)
+    monkeypatch.setattr("unisim.backend.drake.backend.ensure_drake_batch_available", unavailable)
+
+    with pytest.raises(SystemExit, match="could not load the DrakeUni batch extension"):
+        cli._check_runtime_requirements("ppo", "drake")
+
+
+def test_cli_backend_choices_are_tensor_manager_scope() -> None:
+    assert cli.SUPPORTED_SIMS == (
+        "mujoco",
+        "mjwarp",
+        "genesis",
+        "newton",
+        "motrix",
+        "superdex",
+        "drake",
     )
-
-    with pytest.raises(SystemExit, match=r"sim=newton.*uv sync --extra newton"):
-        cli._check_runtime_requirements("ppo", "newton")
-
-
-def test_newton_is_a_supported_sim() -> None:
-    assert "newton" in cli.SUPPORTED_SIMS
-
-
-def test_superdex_missing_runtime_reports_python_and_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
-    from unisim.backend.superdex import dependencies
-
-    monkeypatch.setattr(dependencies, "superdex_dependencies_available", lambda: False)
-    with pytest.raises(
-        SystemExit, match=r"Python 3\.12.*Physics/Robotics.*uv sync --extra superdex"
-    ):
-        cli._check_runtime_requirements("ppo", "superdex")

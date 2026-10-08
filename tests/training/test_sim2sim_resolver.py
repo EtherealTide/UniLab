@@ -294,8 +294,8 @@ def test_env_structural_denylist_is_the_env_subset():
 
 
 def test_env_field_present_in_source_absent_in_target_raises(tmp_path):
-    # Forward asymmetry: source (mujoco) sets action_scale, target (motrix) omits it
-    # and would fall back to a differing env default. Fail closed instead of skipping.
+    # Forward asymmetry: the source sets action_scale and the target omits it,
+    # falling back to a differing env default. Fail closed instead of skipping.
     _write_sidecar(tmp_path, {"env.control_config.action_scale": [0.5, 0.5, 0.5]})
     target = OmegaConf.create({"env": {"control_config": {}}})  # no action_scale set
     with pytest.raises(CrossBackendIncompatibleError) as excinfo:
@@ -426,29 +426,6 @@ def test_g1_walk_flat_mujoco_inherits_base_contract():
     assert OmegaConf.select(mujoco, "env.actions.joint_pos.scale") == 0.25
     assert OmegaConf.select(mujoco, "algo.actor.obs_normalization") is False
     assert OmegaConf.select(mujoco, "algo.obs_groups.actor") == ["actor"]
-
-
-def test_g1_walk_flat_cross_backend_play_is_guarded(tmp_path):
-    # Motrix intentionally overrides contract fields, so MuJoCo->Motrix is guarded.
-    snapshot = extract_contract_snapshot(_compose_task("g1_walk_flat/mujoco"))
-    (tmp_path / "run_config.json").write_text(
-        json.dumps({"contract_snapshot": snapshot}), encoding="utf-8"
-    )
-    motrix = _compose_task("g1_walk_flat/motrix")
-    with pytest.raises(CrossBackendIncompatibleError):
-        resolve_sim2sim_config(tmp_path, motrix)
-
-
-def test_g1_walk_flat_mujoco_to_isaacgym_play_passes_guard(tmp_path):
-    # The isaacgym owner keeps DENYLIST parity with the MuJoCo owner, so a
-    # MuJoCo-trained checkpoint passes the contract guard for isaacgym play.
-    snapshot = extract_contract_snapshot(_compose_task("g1_walk_flat/mujoco"))
-    (tmp_path / "run_config.json").write_text(
-        json.dumps({"contract_snapshot": snapshot}), encoding="utf-8"
-    )
-    isaacgym = _compose_task("g1_walk_flat/isaacgym")
-    assert OmegaConf.select(isaacgym, "training.sim_backend") == "isaacgym"
-    assert resolve_sim2sim_config(tmp_path, isaacgym) is isaacgym
 
 
 def test_g1_walk_flat_mujoco_to_genesis_play_passes_guard(tmp_path):

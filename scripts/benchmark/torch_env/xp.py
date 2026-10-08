@@ -3,7 +3,7 @@
 The workload kernels in this directory are written once against this shim and
 executed with either NumPy or Torch (cpu / cuda / mps) arrays, so every variant
 runs the same sequence of math ops on identically shaped float32 tensors as the
-real env code (`NpEnv.update_state` / `NpEnv._reset_done_envs` paths).
+real environment code (`update_state` / selected-row reset paths).
 
 Scope notes:
 - Backend physics (`backend.step`, `backend.set_state`) is excluded: it is not

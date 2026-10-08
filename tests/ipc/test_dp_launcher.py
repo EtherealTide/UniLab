@@ -16,7 +16,6 @@ from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
 from uni_rl.ipc.dp_launcher import (
-    UNILAB_DP_DEVICES,
     UNILAB_DP_LOG_DIR,
     UNILAB_DP_RANK,
     UNILAB_DP_WORLD_SIZE,
@@ -28,11 +27,10 @@ from uni_rl.ipc.dp_launcher import (
     current_torch_distributed_rank,
     current_torch_distributed_world_size,
     launch_torchrun_workers,
+    reject_removed_device_config,
     resolve_collector_cpu_ids,
-    resolve_cuda_visible_devices,
     resolve_dp_rank_device,
-    resolve_dp_topology,
-    validate_dp_launchable,
+    selected_visible_entries,
 )
 
 _ROOT = Path(__file__).parent.parent.parent
@@ -100,6 +98,7 @@ class _FakePopen:
 
 @pytest.fixture()
 def fake_popen(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
     _FakePopen.instances = []
     _FakePopen.wait_completes = False
     _FakePopen.interrupt_exits = True
@@ -117,27 +116,18 @@ def fake_popen(monkeypatch: pytest.MonkeyPatch):
 
 
 # ---------------------------------------------------------------------------
-# resolve_dp_topology
+# removed training.devices
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("devices_cfg", [None, []])
-def test_resolve_dp_topology_single_device_default(devices_cfg):
-    assert resolve_dp_topology(devices_cfg) is None
+def test_removed_device_config_accepts_empty_defaults(devices_cfg):
+    reject_removed_device_config(devices_cfg)
 
 
-def test_resolve_dp_topology_preserves_user_order():
-    assert resolve_dp_topology([0, 1]) == (0, 1)
-    assert resolve_dp_topology([2, 0]) == (2, 0)
-
-
-@pytest.mark.parametrize(
-    "devices_cfg",
-    [[0, 0], [-1], [0, "1"], [True], [0.5]],
-)
-def test_resolve_dp_topology_rejects_invalid_entries(devices_cfg):
-    with pytest.raises(ValueError, match="training.devices"):
-        resolve_dp_topology(devices_cfg)
+def test_removed_device_config_fails_closed():
+    with pytest.raises(ValueError, match="training.devices was removed"):
+        reject_removed_device_config((0, 1))
 
 
 # ---------------------------------------------------------------------------
@@ -176,20 +166,17 @@ def test_current_torch_distributed_rank_reads_torchrun_env(monkeypatch: pytest.M
     assert current_torch_distributed_world_size() == 4
 
 
-def test_resolve_cuda_visible_devices_preserves_parent_mapping():
-    assert resolve_cuda_visible_devices((2, 0)) == "2,0"
-    assert (
-        resolve_cuda_visible_devices(
-            (1, 0),
-            current_visible_devices="GPU-parent-0,GPU-parent-1",
-        )
-        == "GPU-parent-1,GPU-parent-0"
-    )
+def test_selected_visibility_preserves_parent_entries(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b,GPU-c")
+
+    assert selected_visible_entries(world_size=3) == ("GPU-a", "GPU-b", "GPU-c")
 
 
-def test_resolve_cuda_visible_devices_rejects_hidden_index():
-    with pytest.raises(ValueError, match="CUDA_VISIBLE_DEVICES"):
-        resolve_cuda_visible_devices((0, 2), current_visible_devices="4,7")
+def test_selected_visibility_requires_exact_rank_count(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
+
+    with pytest.raises(ValueError, match="one entry per data-parallel rank"):
+        selected_visible_entries(world_size=3)
 
 
 def test_launch_torchrun_workers_builds_standard_single_node_command(
@@ -202,17 +189,16 @@ def test_launch_torchrun_workers_builds_standard_single_node_command(
         captured.update(command=list(command), env=dict(env), check=check)
         return type("Result", (), {"returncode": 0})()
 
-    monkeypatch.setattr(dp_launcher, "validate_dp_launchable", lambda devices: None)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
     monkeypatch.setattr(dp_launcher.subprocess, "run", fake_run)
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b,GPU-c")
     monkeypatch.delenv("NCCL_P2P_DISABLE", raising=False)
     monkeypatch.delenv("NCCL_SHM_DISABLE", raising=False)
     script = tmp_path / "train_rsl_rl.py"
 
     launch_torchrun_workers(
-        (2, 0),
+        world_size=2,
         script_path=script,
-        argv=["task=go2_joystick_flat/mujoco", "training.devices=[2,0]"],
+        argv=["task=go2_joystick_flat/mujoco"],
         log_dir="/tmp/ppo_gpux2",
     )
 
@@ -222,10 +208,10 @@ def test_launch_torchrun_workers_builds_standard_single_node_command(
     assert "--standalone" in command
     assert "--nnodes=1" in command
     assert "--nproc_per_node=2" in command
-    assert command[-2:] == ["task=go2_joystick_flat/mujoco", "training.devices=[2,0]"]
+    assert command[-1:] == ["task=go2_joystick_flat/mujoco"]
     launch_env = captured["env"]
     assert isinstance(launch_env, dict)
-    assert launch_env["CUDA_VISIBLE_DEVICES"] == "GPU-c,GPU-a"
+    assert launch_env["CUDA_VISIBLE_DEVICES"] == "GPU-a,GPU-b"
     assert launch_env["NCCL_P2P_DISABLE"] == "1"
     assert launch_env["NCCL_SHM_DISABLE"] == "1"
     assert launch_env[UNILAB_DP_LOG_DIR] == "/tmp/ppo_gpux2"
@@ -233,7 +219,7 @@ def test_launch_torchrun_workers_builds_standard_single_node_command(
 
 
 def test_launch_torchrun_workers_propagates_failure(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(dp_launcher, "validate_dp_launchable", lambda devices: None)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
     monkeypatch.setattr(
         dp_launcher.subprocess,
         "run",
@@ -242,7 +228,7 @@ def test_launch_torchrun_workers_propagates_failure(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(RuntimeError, match="exit code 7"):
         launch_torchrun_workers(
-            (0, 1),
+            world_size=2,
             script_path="scripts/train_rsl_rl.py",
             argv=[],
             log_dir="/tmp/ppo_gpux2",
@@ -259,13 +245,13 @@ def test_launch_torchrun_workers_preserves_explicit_nccl_transport(
         captured.update(env)
         return type("Result", (), {"returncode": 0})()
 
-    monkeypatch.setattr(dp_launcher, "validate_dp_launchable", lambda devices: None)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
     monkeypatch.setattr(dp_launcher.subprocess, "run", fake_run)
     monkeypatch.setenv("NCCL_P2P_DISABLE", "0")
     monkeypatch.setenv("NCCL_SHM_DISABLE", "0")
 
     launch_torchrun_workers(
-        (0, 1),
+        world_size=2,
         script_path="scripts/train_rsl_rl.py",
         argv=[],
         log_dir="/tmp/ppo_gpux2",
@@ -280,15 +266,10 @@ def test_launch_torchrun_workers_preserves_explicit_nccl_transport(
 # ---------------------------------------------------------------------------
 
 
-def test_offpolicy_config_devices_defaults_to_null():
+def test_offpolicy_config_no_longer_exposes_devices():
     cfg = _offpolicy_cfg()
-    assert cfg.training.devices is None
-    assert resolve_dp_topology(cfg.training.devices) is None
 
-
-def test_offpolicy_config_devices_compose():
-    cfg = _offpolicy_cfg(["training.devices=[0,1]"])
-    assert resolve_dp_topology(cfg.training.devices) == (0, 1)
+    assert "devices" not in cfg.training
 
 
 # ---------------------------------------------------------------------------
@@ -296,35 +277,34 @@ def test_offpolicy_config_devices_compose():
 # ---------------------------------------------------------------------------
 
 
-def test_apply_dp_rank_config_maps_rank_to_device_and_seed():
-    cfg = _offpolicy_cfg(["training.devices=[0,1]", "algo.seed=42"])
+def test_apply_dp_rank_config_maps_rank_to_device_and_seed(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
+    cfg = _offpolicy_cfg(["algo.seed=42"])
     base_seed = int(cfg.algo.seed)
-    device = apply_dp_rank_config(cfg, (0, 1), rank=1)
-    assert device == "cuda:1"
+    device = apply_dp_rank_config(cfg, rank=1)
+    assert device == "cuda:0"
     assert "device" not in cfg.training
     assert int(cfg.algo.seed) == base_seed + 1
 
 
-def test_apply_dp_rank_config_rank_zero_keeps_seed():
-    cfg = _offpolicy_cfg(["training.devices=[0,1]", "algo.seed=42"])
-    assert apply_dp_rank_config(cfg, (0, 1), rank=0) == "cuda:0"
+def test_apply_dp_rank_config_rank_zero_keeps_seed(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
+    cfg = _offpolicy_cfg(["algo.seed=42"])
+    assert apply_dp_rank_config(cfg, rank=0) == "cuda:0"
     assert int(cfg.algo.seed) == 42
 
 
-def test_resolve_dp_rank_device_uses_auto_selection_without_devices():
-    assert resolve_dp_rank_device(None, rank=0) is None
-    assert resolve_dp_rank_device((2, 0), rank=1) == "cuda:0"
-    with pytest.raises(ValueError, match="out of range"):
-        resolve_dp_rank_device((0, 1), rank=2)
+def test_resolve_dp_rank_device_rejects_multiple_visible_entries(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
+
+    with pytest.raises(ValueError, match="exactly one CUDA_VISIBLE_DEVICES"):
+        resolve_dp_rank_device(rank=1)
 
 
 def test_single_device_topology_spawns_no_children(fake_popen, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv(UNILAB_DP_RANK, raising=False)
-    cfg = _offpolicy_cfg(["training.devices=[0]"])
-    devices = resolve_dp_topology(cfg.training.devices)
-    assert devices == (0,)
-    assert apply_dp_rank_config(cfg, devices, rank=0) == "cuda:0"
-    with DpRankSupervisor(devices, log_dir="/tmp/dp_test_log"):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
+    with DpRankSupervisor(world_size=1, log_dir="/tmp/dp_test_log"):
         assert fake_popen.instances == []
     assert os.environ.get(UNILAB_DP_RANK) is None
 
@@ -336,17 +316,18 @@ def test_single_device_topology_spawns_no_children(fake_popen, monkeypatch: pyte
 
 def test_supervisor_spawn_argv_and_env(fake_popen, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv(UNILAB_DP_RANK, raising=False)
-    monkeypatch.setattr(sys, "argv", ["train_sac.py", "training.devices=[0,1,2]"])
-    with DpRankSupervisor((0, 1, 2), log_dir="/tmp/dp_test_log"):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2")
+    monkeypatch.setattr(sys, "argv", ["train_sac.py", "task=g1_walk_flat/mujoco"])
+    with DpRankSupervisor(world_size=3, log_dir="/tmp/dp_test_log"):
         assert len(fake_popen.instances) == 2
         for rank, child in enumerate(fake_popen.instances, start=1):
             assert child.argv[0] == sys.executable
             assert child.argv[1] == sys.argv[0]
-            assert child.argv[2:] == ["training.devices=[0,1,2]"]
+            assert child.argv[2:] == ["task=g1_walk_flat/mujoco"]
             assert child.start_new_session is (os.name == "posix")
             assert child.env[UNILAB_DP_RANK] == str(rank)
             assert child.env[UNILAB_DP_WORLD_SIZE] == "3"
-            assert child.env[UNILAB_DP_DEVICES] == "0,1,2"
+            assert child.env["CUDA_VISIBLE_DEVICES"] == str(rank)
             assert child.env[UNILAB_DP_LOG_DIR] == "/tmp/dp_test_log"
         # Rank 0's own environment stays untouched.
         assert os.environ.get(UNILAB_DP_RANK) is None
@@ -358,7 +339,7 @@ def test_supervisor_spawn_argv_and_env(fake_popen, monkeypatch: pytest.MonkeyPat
 
 def test_supervisor_normal_exit_waits_for_children(fake_popen):
     _FakePopen.wait_completes = True
-    with DpRankSupervisor((0, 1), log_dir="/tmp/dp_test_log"):
+    with DpRankSupervisor(world_size=2, log_dir="/tmp/dp_test_log"):
         pass
     child = fake_popen.instances[0]
     assert child.returncode == 0
@@ -367,7 +348,7 @@ def test_supervisor_normal_exit_waits_for_children(fake_popen):
 
 def test_supervisor_grace_timeout_is_a_failure(fake_popen):
     with pytest.raises(RuntimeError, match="rank 1 exit code timeout"):
-        with DpRankSupervisor((0, 1), log_dir="/tmp/dp_test_log"):
+        with DpRankSupervisor(world_size=2, log_dir="/tmp/dp_test_log"):
             pass
     child = fake_popen.instances[0]
     assert child.terminated
@@ -375,35 +356,41 @@ def test_supervisor_grace_timeout_is_a_failure(fake_popen):
 
 
 def test_supervisor_clean_child_exit_is_not_a_failure(fake_popen):
-    with DpRankSupervisor((0, 1), log_dir="/tmp/dp_test_log"):
+    with DpRankSupervisor(world_size=2, log_dir="/tmp/dp_test_log"):
         fake_popen.instances[0].returncode = 0
 
 
 def test_supervisor_failed_child_makes_rank_zero_fail(fake_popen, monkeypatch: pytest.MonkeyPatch):
     # Keep the watchdog from polling so __exit__ observes the exit code first.
     monkeypatch.setattr(dp_launcher, "_WATCHDOG_INTERVAL_S", 60.0)
-    supervisor = DpRankSupervisor((0, 1), log_dir="/tmp/dp_test_log")
+    supervisor = DpRankSupervisor(world_size=2, log_dir="/tmp/dp_test_log")
     supervisor.__enter__()
     fake_popen.instances[0].returncode = 3
     with pytest.raises(RuntimeError, match="rank 1 exit code 3"):
         supervisor.__exit__(None, None, None)
 
 
-def test_supervisor_error_exit_terminates_live_children(fake_popen):
+def test_supervisor_error_exit_terminates_live_children(
+    fake_popen, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2")
     fake_popen.interrupt_exits = False
     with pytest.raises(ValueError, match="boom"):
-        with DpRankSupervisor((0, 1, 2), log_dir="/tmp/dp_test_log"):
+        with DpRankSupervisor(world_size=3, log_dir="/tmp/dp_test_log"):
             raise ValueError("boom")
     assert all(child.terminated for child in fake_popen.instances)
     assert all(child.returncode == -signal.SIGTERM for child in fake_popen.instances)
     assert all(child.signals == [signal.SIGINT, signal.SIGTERM] for child in fake_popen.instances)
 
 
-def test_supervisor_ctrl_c_forwards_sigint_for_cooperative_rank_cleanup(fake_popen):
+def test_supervisor_ctrl_c_forwards_sigint_for_cooperative_rank_cleanup(
+    fake_popen, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2")
     previous_sigint = signal.getsignal(signal.SIGINT)
 
     with pytest.raises(KeyboardInterrupt):
-        with DpRankSupervisor((0, 1, 2), log_dir="/tmp/dp_test_log") as supervisor:
+        with DpRankSupervisor(world_size=3, log_dir="/tmp/dp_test_log") as supervisor:
             installed = signal.getsignal(signal.SIGINT)
             assert getattr(installed, "__self__", None) is supervisor
             installed(signal.SIGINT, None)
@@ -420,7 +407,7 @@ def test_supervisor_watchdog_sigterms_rank_zero_on_child_death(
     killed: list[int] = []
     monkeypatch.setattr(dp_launcher.os, "kill", lambda pid, sig: killed.append(sig))
     with pytest.raises(RuntimeError, match="exit code 1"):
-        with DpRankSupervisor((0, 1), log_dir="/tmp/dp_test_log"):
+        with DpRankSupervisor(world_size=2, log_dir="/tmp/dp_test_log"):
             fake_popen.instances[0].returncode = 1
             deadline = time.monotonic() + 5.0
             while not killed and time.monotonic() < deadline:
@@ -431,7 +418,7 @@ def test_supervisor_watchdog_sigterms_rank_zero_on_child_death(
 def test_supervisor_restores_signal_handlers(fake_popen):
     previous_sigint = signal.getsignal(signal.SIGINT)
     previous_sigterm = signal.getsignal(signal.SIGTERM)
-    with DpRankSupervisor((0, 1), log_dir="/tmp/dp_test_log") as supervisor:
+    with DpRankSupervisor(world_size=2, log_dir="/tmp/dp_test_log") as supervisor:
         assert getattr(signal.getsignal(signal.SIGINT), "__self__", None) is supervisor
         assert getattr(signal.getsignal(signal.SIGTERM), "__self__", None) is supervisor
         fake_popen.instances[0].returncode = 0
@@ -444,7 +431,7 @@ def test_supervisor_restores_signal_handlers_when_group_reaping_fails(
 ):
     previous_sigint = signal.getsignal(signal.SIGINT)
     previous_sigterm = signal.getsignal(signal.SIGTERM)
-    supervisor = DpRankSupervisor((0, 1), log_dir="/tmp/dp_test_log")
+    supervisor = DpRankSupervisor(world_size=2, log_dir="/tmp/dp_test_log")
     supervisor.__enter__()
     fake_popen.instances[0].returncode = 0
 
@@ -549,7 +536,7 @@ def test_offpolicy_config_dp_collector_cpu_ids_compose():
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires >=2 CUDA devices")
 @pytest.mark.slow
-def test_dp_topology_validates_on_two_gpu_host():
-    devices = resolve_dp_topology([0, 1])
-    assert devices == (0, 1)
-    validate_dp_launchable(devices)
+def test_rank_local_visibility_validates_on_two_gpu_host(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
+
+    assert selected_visible_entries(world_size=2) == ("GPU-a", "GPU-b")

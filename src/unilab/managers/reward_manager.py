@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import time
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import torch
 from prettytable import PrettyTable
 
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
@@ -27,6 +29,9 @@ class RewardTermCfg(ManagerTermBaseCfg):
 
     weight: float
     """Weight multiplier for this reward term."""
+
+    reward_pack_names: tuple[str, ...] = ()
+    """Ordered outputs when ``func`` evaluates multiple terms in one carrier read."""
 
 
 class RewardManager(ManagerBase):
@@ -69,12 +74,11 @@ class RewardManager(ManagerBase):
 
         self.cfg = deepcopy(cfg)
         super().__init__(env=env)
-        self._reward_buf = np.zeros(self.num_envs, dtype=np.float32)
-        self._step_reward = np.zeros((self.num_envs, len(self._term_names)), dtype=np.float32)
-        # Scratch for the weighted term value, reused across terms to avoid a
-        # temporary per term per step (issue #1296). Re-allocated if a term
-        # returns a non-float32 dtype.
-        self._term_weight_scratch = np.zeros(self.num_envs, dtype=np.float32)
+        self._device = getattr(env, "device", torch.device("cpu"))
+        self._reward_buf = torch.zeros(self.num_envs, dtype=torch.float32, device=self._device)
+        self._step_reward = torch.zeros(
+            (self.num_envs, len(self._term_names)), dtype=torch.float32, device=self._device
+        )
 
     def __str__(self) -> str:
         msg = f"<RewardManager> contains {len(self._term_names)} active terms.\n"
@@ -99,40 +103,111 @@ class RewardManager(ManagerBase):
 
     # Methods.
 
-    def reset(self, env_ids: np.ndarray | slice | None = None) -> dict[str, float]:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
         if env_ids is None:
             env_ids = slice(None)
         for term_cfg in self._class_term_cfgs:
             term_cfg.func.reset(env_ids=env_ids)
         return {}
 
-    def compute(self, dt: float) -> np.ndarray:
+    def compute(self, dt: float) -> torch.Tensor:
+        timing = getattr(self, "last_step_timing_ms", None)
+        if timing is None:
+            timing = {}
+            self.last_step_timing_ms = timing
+        timing.clear()
         if not np.isfinite(dt) or (self._scale_by_dt and dt <= 0.0):
             raise ValueError(f"RewardManager received invalid dt {dt}.")
+        reset_started = time.perf_counter()
         self._reward_buf[:] = 0.0
+        reset_ms = time.perf_counter() - reset_started
+        dispatch_ms = 0.0
+        aggregation_ms = 0.0
         scale = dt if self._scale_by_dt else 1.0
+        packed_targets = {
+            packed_name
+            for term_cfg in self._term_cfgs
+            for packed_name in term_cfg.reward_pack_names
+        }
         for term_idx, (name, term_cfg) in enumerate(
             zip(self._term_names, self._term_cfgs, strict=False)
         ):
+            if term_cfg.reward_pack_names or name in packed_targets:
+                continue
             if term_cfg.weight == 0.0:
                 self._step_reward[:, term_idx] = 0.0
                 continue
-            value = term_cfg.func(self._env, **term_cfg.params)
-            self._check_term_shape(name, value)
-            self._check_term_finite(name, value)
-            # Weighted value goes through the shared scratch (same op order as
-            # ``value * weight * scale``); terms may return internal buffers, so
-            # ``value`` itself is never written to. Scratch dtype matches the
-            # expression result dtype (e.g. int term values promote to float64,
-            # as the pre-refactor temporary did).
-            scratch = self._term_weight_scratch
-            out_dtype = np.result_type(value, term_cfg.weight)
-            if scratch.dtype != out_dtype:
-                scratch = self._term_weight_scratch = np.empty(self.num_envs, dtype=out_dtype)
-            np.multiply(value, term_cfg.weight, out=scratch)
-            scratch *= scale
-            self._reward_buf += scratch
-            np.divide(scratch, scale, out=self._step_reward[:, term_idx])
+            term_timing = getattr(term_cfg.func, "last_step_timing_ms", None)
+            if term_timing is not None:
+                term_timing.clear()
+            dispatch_started = time.perf_counter()
+            value = self._compute_term(name, term_cfg, validate=False)
+            dispatch_ms += time.perf_counter() - dispatch_started
+            if term_timing is not None:
+                timing.update(term_timing)
+            aggregation_started = time.perf_counter()
+            weighted = value * float(term_cfg.weight) * scale
+            self._reward_buf += weighted
+            self._step_reward[:, term_idx] = weighted / scale
+            aggregation_ms += time.perf_counter() - aggregation_started
+        for term_idx, term_cfg in enumerate(self._term_cfgs):
+            if not term_cfg.reward_pack_names:
+                continue
+            dispatch_started = time.perf_counter()
+            pack_name = self._term_names[term_idx]
+            pack_value = term_cfg.func(self._env, **term_cfg.params)
+            if not isinstance(pack_value, torch.Tensor):
+                raise TypeError(
+                    f"RewardManager pack term '{pack_name}' must return a torch.Tensor; "
+                    f"got {type(pack_value).__name__}"
+                )
+            if pack_value.dtype != torch.float32:
+                raise TypeError(
+                    f"RewardManager pack term '{pack_name}' returned dtype "
+                    f"{pack_value.dtype}, expected float32."
+                )
+            if pack_value.device != self._device:
+                raise ValueError(
+                    f"RewardManager pack term '{pack_name}' returned device "
+                    f"{pack_value.device}, expected {self._device}."
+                )
+            packed = pack_value
+            dispatch_ms += time.perf_counter() - dispatch_started
+            if packed.ndim != 2 or packed.shape[1] != len(term_cfg.reward_pack_names):
+                raise ValueError(
+                    f"RewardManager pack term '{self._term_names[term_idx]}' returned "
+                    f"shape {tuple(packed.shape)}; expected "
+                    f"({self.num_envs}, {len(term_cfg.reward_pack_names)})."
+                )
+            aggregation_started = time.perf_counter()
+            for offset, packed_name in enumerate(term_cfg.reward_pack_names):
+                target_idx = self._term_names.index(packed_name)
+                target_cfg = self._term_cfgs[target_idx]
+                weighted = packed[:, offset] * float(target_cfg.weight) * scale
+                self._reward_buf += weighted
+                self._step_reward[:, target_idx] = weighted / scale
+            aggregation_ms += time.perf_counter() - aggregation_started
+        finite_started = time.perf_counter()
+        finite = bool(torch.isfinite(self._reward_buf).all())
+        finite_ms = time.perf_counter() - finite_started
+        if not finite:
+            finite = torch.isfinite(self._step_reward)
+            for term_idx, name in enumerate(self._term_names):
+                if not bool(finite[:, term_idx].all()):
+                    value = self._step_reward[:, term_idx]
+                    has_nan = bool(torch.isnan(value).any())
+                    has_inf = bool(torch.isinf(value).any())
+                    invalid_kind = "NaN/Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
+                    invalid_rows = torch.nonzero(~finite[:, term_idx]).flatten()[:10]
+                    raise ValueError(
+                        f"RewardManager term '{name}' returned {invalid_kind} for "
+                        f"environments {invalid_rows.tolist()}."
+                    )
+            raise ValueError("RewardManager returned a non-finite reward.")
+        timing["update_state_reward_term_dispatch_ms"] = dispatch_ms * 1000.0
+        timing["update_state_reward_aggregation_ms"] = aggregation_ms * 1000.0
+        timing["update_state_reward_finite_validation_ms"] = finite_ms * 1000.0
+        timing["update_state_reward_manager_residual_ms"] = reset_ms * 1000.0
         return self._reward_buf
 
     def step_reward_extras(self) -> dict[str, float]:
@@ -142,10 +217,28 @@ class RewardManager(ManagerBase):
         (raw_value * weight, before dt scaling), mirroring the legacy envs'
         per-step reward log format.
         """
+        if not self._term_names:
+            return {}
+        means = self.step_reward_means.detach()
+        if means.numel() == 0:
+            return {}
+        host_means = means.cpu().tolist()
         return {
-            f"reward/{name}": float(np.mean(self._step_reward[:, term_idx]))
-            for term_idx, name in enumerate(self._term_names)
+            f"reward/{name}": float(mean)
+            for name, mean in zip(self._term_names, host_means, strict=True)
         }
+
+    @property
+    def step_reward_names(self) -> tuple[str, ...]:
+        """Active per-term log names in Manager declaration order."""
+        return tuple(self._term_names)
+
+    @property
+    def step_reward_means(self) -> torch.Tensor:
+        """Latest per-term weighted means on the Manager device."""
+        if not self._term_names:
+            return torch.empty(0, dtype=torch.float32, device=self._device)
+        return self._step_reward.mean(dim=0)
 
     def get_active_iterable_terms(self, env_idx: int) -> list[tuple[str, list[float]]]:
         terms = []
@@ -172,3 +265,46 @@ class RewardManager(ManagerBase):
             self._term_cfgs.append(term_cfg)
             if hasattr(term_cfg.func, "reset") and callable(term_cfg.func.reset):
                 self._class_term_cfgs.append(term_cfg)
+
+    def _compute_term(
+        self, name: str, term_cfg: RewardTermCfg, *, validate: bool = True
+    ) -> torch.Tensor:
+        value = term_cfg.func(self._env, **term_cfg.params)
+        if isinstance(value, torch.Tensor):
+            if value.dtype != torch.float32:
+                raise TypeError(
+                    f"RewardManager term '{name}' returned dtype {value.dtype}, expected float32."
+                )
+            if value.device != self._device:
+                raise ValueError(
+                    f"RewardManager term '{name}' returned device {value.device}, "
+                    f"expected {self._device}."
+                )
+            if getattr(term_cfg.func, "returns_transient_tensor", False):
+                result = value
+            else:
+                result = value.clone()
+        else:
+            host = np.array(value, dtype=np.float32, order="C", copy=True)
+            result = torch.from_numpy(host).to(device=self._device)
+        if result.shape != (self.num_envs,):
+            raise ValueError(
+                f"RewardManager term '{name}' returned shape {tuple(result.shape)}; "
+                f"expected ({self.num_envs},)."
+            )
+        if validate and not bool(torch.isfinite(result).all()):
+            has_nan = bool(torch.isnan(result).any())
+            has_inf = bool(torch.isinf(result).any())
+            invalid_kind = "NaN/Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
+            invalid_rows = torch.nonzero(~torch.isfinite(result)).flatten()[:10]
+            raise ValueError(
+                f"RewardManager term '{name}' returned {invalid_kind} for "
+                f"environments {invalid_rows.tolist()}."
+            )
+        return result
+
+    @staticmethod
+    def _log_mean(values: torch.Tensor) -> float:
+        if values.numel() == 0:
+            return 0.0
+        return float(values.mean().item())

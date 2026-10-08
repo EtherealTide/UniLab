@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
@@ -16,7 +17,7 @@ from omegaconf import DictConfig, OmegaConf
 from unilab.base import registry
 from unilab.base.config_adapter import BackendAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
-from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg, make_manager_based_rl_env
+from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from unilab.managers import ObservationTermCfg, RewardTermCfg, TerminationTermCfg
 from unilab.tasks.manipulation.stewart.balance import (
     StewartBalanceState,
@@ -47,17 +48,7 @@ _BODY_NAMES = (
 )
 _ACTUATOR_NAMES = ("a0", "a1", "a2", "a3", "a4", "a5")
 
-_OWNER_CASES = (
-    pytest.param("ppo", ("task=stewart_balance/motrix",), "motrix", id="ppo-motrix"),
-    pytest.param("ppo", ("task=stewart_balance/mujoco",), "mujoco", id="ppo-mujoco"),
-    pytest.param("ppo", ("task=stewart_balance/drake",), "drake", id="ppo-drake"),
-    pytest.param(
-        "sac",
-        ("task=stewart_balance/drake",),
-        "drake",
-        id="sac-drake",
-    ),
-)
+_OWNER_CASES = (pytest.param("ppo", ("task=stewart_balance/mujoco",), "mujoco", id="ppo-mujoco"),)
 
 
 def _compose(config_group: str, overrides: Sequence[str]) -> DictConfig:
@@ -203,7 +194,7 @@ def test_stewart_registry_is_manager_only() -> None:
     registry.ensure_registries()
     assert registry.list_registered_envs()["StewartBalance"] == {
         "config_factory": "ManagerBasedRlEnvCfg",
-        "available_backends": ["mujoco", "motrix", "drake"],
+        "available_backends": ["mujoco"],
     }
 
 
@@ -226,7 +217,7 @@ def test_stewart_terms_do_not_access_physics_implementations() -> None:
         assert forbidden not in source
 
 
-@pytest.mark.parametrize("backend", ("motrix", "mujoco"))
+@pytest.mark.parametrize("backend", ("mujoco",))
 def test_stewart_real_manager_runtime_preserves_io_reset_and_level_ik(backend: str) -> None:
     try:
         env = _make_env(backend, num_envs=2)
@@ -240,7 +231,7 @@ def test_stewart_real_manager_runtime_preserves_io_reset_and_level_ik(backend: s
         obs, info = env.reset(seed=7)
         assert {name: value.shape for name, value in obs.items()} == {"obs": (2, 15)}
         assert isinstance(info, dict)
-        assert np.isfinite(obs["obs"]).all()
+        assert torch.isfinite(obs["obs"]).all()
 
         entity = env.scene["stewart"]
         ball_id = entity.find_bodies("ball")[0][0]
@@ -251,17 +242,26 @@ def test_stewart_real_manager_runtime_preserves_io_reset_and_level_ik(backend: s
 
         action = env.action_manager.get_term("tilt")
         assert isinstance(action, StewartTiltAction)
-        np.testing.assert_allclose(action.neutral_leg_lengths, 1.1, atol=1e-4)
-        level_control = action.leg_control_for_tilt(np.zeros((2, 2), dtype=np.float32))
-        np.testing.assert_allclose(level_control, 0.0, atol=1e-4)
+        torch.testing.assert_close(
+            action.neutral_leg_lengths,
+            torch.full_like(action.neutral_leg_lengths, 1.1),
+            atol=1e-4,
+            rtol=0,
+        )
+        level_control = action.leg_control_for_tilt(
+            torch.zeros((2, 2), dtype=torch.float32, device=env.device)
+        )
+        torch.testing.assert_close(
+            level_control, torch.zeros_like(level_control), atol=1e-4, rtol=0
+        )
 
-        state = env.step(np.zeros((2, 2), dtype=np.float32))
+        state = env.step(torch.zeros((2, 2), dtype=torch.float32))
         for _ in range(19):
-            state = env.step(np.zeros((2, 2), dtype=np.float32))
+            state = env.step(torch.zeros((2, 2), dtype=torch.float32))
         assert state.obs["obs"].shape == (2, 15)
-        assert np.isfinite(state.obs["obs"]).all()
-        assert np.isfinite(state.reward).all()
-        assert state.terminated.dtype == np.bool_
+        assert torch.isfinite(state.obs["obs"]).all()
+        assert torch.isfinite(state.reward).all()
+        assert state.terminated.dtype == torch.bool
         top_z = entity.data.body_link_pos_w[:, top_id, 2]
         assert np.all(np.abs(top_z - 1.0) < 0.1)
     finally:
@@ -270,9 +270,9 @@ def test_stewart_real_manager_runtime_preserves_io_reset_and_level_ik(backend: s
 
 def test_stewart_action_smoothing_and_center_authority_match_legacy_equations() -> None:
     try:
-        env = _make_env("motrix", num_envs=2)
+        env = _make_env("mujoco", num_envs=2)
     except ImportError as exc:
-        pytest.skip(f"motrix runtime unavailable: {exc}")
+        pytest.skip(f"mujoco runtime unavailable: {exc}")
 
     try:
         env.reset(seed=11)
@@ -281,30 +281,39 @@ def test_stewart_action_smoothing_and_center_authority_match_legacy_equations() 
         assert isinstance(action, StewartTiltAction)
         assert isinstance(observation, StewartObservation)
 
-        action.process_actions(np.full((2, 2), 2.0, dtype=np.float32))
-        np.testing.assert_allclose(action.executed_action, 0.6, atol=1e-6)
-        ratio = np.clip(observation.relative_xy / 0.25, 0.0, 1.0)
+        action.process_actions(torch.full((2, 2), 2.0, dtype=torch.float32, device=env.device))
+        torch.testing.assert_close(
+            action.executed_action, torch.full_like(action.executed_action, 0.6), atol=1e-6, rtol=0
+        )
+        ratio = torch.clamp(observation.relative_xy / 0.25, 0.0, 1.0)
         expected_gain = 0.15 + 0.85 * ratio
-        np.testing.assert_allclose(
+        torch.testing.assert_close(
             action.target_tilt_deg,
-            np.broadcast_to(0.6 * expected_gain[:, None] * 6.0, (2, 2)),
+            torch.broadcast_to(0.6 * expected_gain[:, None] * 6.0, (2, 2)).contiguous(),
             atol=1e-6,
+            rtol=0,
         )
 
-        action.process_actions(np.ones((2, 2), dtype=np.float32))
-        np.testing.assert_allclose(action.executed_action, 0.84, atol=1e-6)
+        action.process_actions(torch.ones((2, 2), dtype=torch.float32, device=env.device))
+        torch.testing.assert_close(
+            action.executed_action, torch.full_like(action.executed_action, 0.84), atol=1e-6, rtol=0
+        )
         action.reset(np.array([1], dtype=np.int32))
-        np.testing.assert_allclose(action.executed_action[1], 0.0)
-        np.testing.assert_allclose(action.executed_action[0], 0.84)
+        torch.testing.assert_close(
+            action.executed_action[1], torch.zeros_like(action.executed_action[1])
+        )
+        torch.testing.assert_close(
+            action.executed_action[0], torch.full_like(action.executed_action[0], 0.84)
+        )
     finally:
         env.close()
 
 
 def test_stewart_state_machine_and_fall_reward_are_exact() -> None:
     try:
-        env = _make_env("motrix", num_envs=2)
+        env = _make_env("mujoco", num_envs=2)
     except ImportError as exc:
-        pytest.skip(f"motrix runtime unavailable: {exc}")
+        pytest.skip(f"mujoco runtime unavailable: {exc}")
 
     try:
         env.reset(seed=3)
@@ -345,38 +354,23 @@ def test_stewart_state_machine_and_fall_reward_are_exact() -> None:
         env.close()
 
 
-def test_stewart_drake_materializes_or_fails_at_optional_runtime_boundary() -> None:
-    _, env_cfg, _ = _materialize("ppo", ("task=stewart_balance/drake",))
-    try:
-        env = make_manager_based_rl_env(env_cfg, num_envs=1, backend_type="drake")
-    except (ImportError, NotImplementedError) as exc:
-        # The optional runtime can be absent, lack its native extension, or
-        # expose no floating-root layout yet. All are actionable boundary
-        # failures for this backend owner.
-        message = str(exc)
-        assert (
-            "DrakeUni batch runtime is not installed" in message
-            or "DrakeEnvPool batch extension has not been built" in message
-            or "does not expose root-state layout" in message
-        )
-        return
-    try:
-        obs, _ = env.reset(seed=5)
-        assert obs["obs"].shape == (1, 15)
-    finally:
-        env.close()
+def test_stewart_drake_remains_owner_scoped() -> None:
+    """Only tasks with a Drake owner registration may select the backend."""
+    registry.ensure_registries()
+    backends = registry.list_registered_envs()["StewartBalance"]["available_backends"]
+    assert "drake" not in backends
 
 
 @pytest.mark.slow
 def test_stewart_solver_stable_under_random_actions() -> None:
     try:
-        env = _make_env("motrix", num_envs=8)
+        env = _make_env("mujoco", num_envs=8)
     except ImportError as exc:
         pytest.skip(f"motrix runtime unavailable: {exc}")
     try:
         rng = np.random.default_rng(0)
         for _ in range(400):
-            state = env.step(rng.uniform(-1.0, 1.0, (8, 2)).astype(np.float32))
-            assert np.isfinite(state.obs["obs"]).all()
+            state = env.step(torch.tensor(rng.uniform(-1.0, 1.0, (8, 2)), dtype=torch.float32))
+            assert torch.isfinite(state.obs["obs"]).all()
     finally:
         env.close()

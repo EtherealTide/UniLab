@@ -18,14 +18,16 @@ from typing import Any, cast
 from omegaconf import DictConfig, OmegaConf
 from uni_rl.ipc.dp_launcher import (
     UNILAB_DP_LOG_DIR,
+    UNILAB_DP_WORLD_SIZE,
     DpRankSupervisor,
     apply_dp_rank_config,
     current_dp_rank,
+    current_dp_world_size,
+    reject_removed_device_config,
     resolve_collector_cpu_ids,
     resolve_dp_rank_device,
     resolve_dp_rendezvous_path,
-    resolve_dp_topology,
-    validate_dp_launchable,
+    selected_visible_entries,
 )
 from unisim.backend.base import log_playback_plan
 
@@ -37,7 +39,7 @@ from unilab.base.process_device import (
     configure_backend_process_device,
     pin_genesis_device_before_cuda_init,
     resolve_backend_env_device_id,
-    warn_if_backend_device_collision,
+    resolve_backend_process_device,
 )
 from unilab.training import (
     assert_offpolicy_task_choice_matches_algo,
@@ -48,6 +50,10 @@ from unilab.training import (
     nonfatal_play_step,
     resolve_nan_guard_cfg,
     should_run_playback,
+)
+from unilab.training.cuda_process_sharing import (
+    CudaProcessSharingEvidence,
+    probe_cuda_process_sharing,
 )
 from unilab.training.experiment import ExperimentTracker
 from unilab.training.onnx_export import export_policy_onnx, verify_policy_onnx
@@ -61,6 +67,82 @@ from unilab.visualization.interactive_playback import (
     default_device,
     resolve_play_obs_dims,
 )
+
+
+def _rank_local_cuda_device() -> str | None:
+    """Resolve local ``cuda:0`` without requiring a new sibling API export."""
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return None
+    entries = tuple(entry.strip() for entry in raw.split(",") if entry.strip())
+    return "cuda:0" if len(entries) == 1 else None
+
+
+def _prepare_rank_zero_dp_visibility(world_size: int) -> None:
+    """Give rank 0 its one-entry slice of a multi-entry parent CUDA mask.
+
+    ``DpRankSupervisor`` spawns ranks 1..N-1 with one opaque parent entry each.
+    Rank 0 previously retained the whole mask, so ``resolve_dp_rank_device``
+    rejected the multi-GPU launch before the supervisor could start. This is a
+    pre-CUDA, rank-0-only remap: child environments are derived from the parent
+    entries before this function changes the current process namespace.
+    """
+
+    if world_size <= 1 or current_dp_rank() != 0:
+        return
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    entries = tuple(entry.strip() for entry in (raw or "").split(",") if entry.strip())
+    if len(entries) != world_size:
+        return
+    if len(entries) <= 1:
+        return
+    global _DP_PARENT_VISIBLE_ENTRIES
+    _DP_PARENT_VISIBLE_ENTRIES = entries
+    os.environ["CUDA_VISIBLE_DEVICES"] = entries[0]
+
+
+_DP_PARENT_VISIBLE_ENTRIES: tuple[str, ...] | None = None
+
+
+def _build_dp_rank_supervisor(world_size: int, log_dir: str) -> DpRankSupervisor:
+    """Build the rank supervisor while preserving the original parent mask."""
+
+    previous = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if _DP_PARENT_VISIBLE_ENTRIES is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(_DP_PARENT_VISIBLE_ENTRIES)
+    try:
+        return DpRankSupervisor(world_size=world_size, log_dir=log_dir)
+    finally:
+        if previous is None:
+            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = previous
+
+
+def _export_inferred_dp_world_size(world_size: int) -> None:
+    """Make an inferred parent launch visible to runner assembly and children."""
+
+    if world_size > 1 and current_dp_rank() == 0 and not os.environ.get(UNILAB_DP_WORLD_SIZE):
+        os.environ[UNILAB_DP_WORLD_SIZE] = str(world_size)
+
+
+def _requested_dp_world_size() -> int:
+    """Infer a parent off-policy DP request from opaque CUDA visibility.
+
+    A parent with one entry is an ordinary single-rank launch. A parent with
+    multiple opaque entries requests one rank per entry, matching the
+    documented off-policy topology. Spawned ranks carry the authoritative
+    ``UNILAB_DP_*`` environment and have one-entry visibility, so they never
+    enter this inference path.
+    """
+
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None or not raw.strip() or raw.strip() == "-1":
+        return 1
+    entries = tuple(entry.strip() for entry in raw.split(",") if entry.strip())
+    return len(entries) or 1
+
+
 from unilab.visualization.interactive_playback import (
     build_offpolicy_env_cfg_override as _build_offpolicy_env_cfg_override,
 )
@@ -114,95 +196,83 @@ def _genesis_probe_para_level(sim_backend: str):
 
 def build_offpolicy_env_cfg_override(algo_name: str, cfg: DictConfig) -> dict[str, Any] | None:
     base = _build_offpolicy_env_cfg_override(algo_name, cfg, root_dir=Path.cwd())
-    devices = resolve_dp_topology(OmegaConf.select(cfg, "training.devices", default=None))
     rank = current_dp_rank()
     from unilab.utils.device import get_default_device
 
-    rank_device = resolve_dp_rank_device(devices, rank) or get_default_device()
+    rank_device = resolve_dp_rank_device(rank) or get_default_device()
     return apply_backend_env_device_override(
         base,
         str(cfg.training.sim_backend),
-        devices=devices,
-        rank=rank,
-        world_size=1,
         learner_device=rank_device,
     )
 
 
 def build_offpolicy_play_env_cfg_override(algo_name: str, cfg: DictConfig) -> dict[str, Any] | None:
     base = _build_offpolicy_play_env_cfg_override(algo_name, cfg, root_dir=Path.cwd())
-    devices = resolve_dp_topology(OmegaConf.select(cfg, "training.devices", default=None))
     rank = current_dp_rank()
     from unilab.utils.device import get_default_device
 
-    rank_device = resolve_dp_rank_device(devices, rank) or get_default_device()
+    rank_device = resolve_dp_rank_device(rank) or get_default_device()
     return apply_backend_env_device_override(
         base,
         str(cfg.training.sim_backend),
-        devices=devices,
-        rank=rank,
-        world_size=1,
         learner_device=rank_device,
     )
 
 
 def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
     """Build algorithm runner from unified Hydra config."""
-    env_factory = registry_env_factory(str(cfg.training.task_name), str(cfg.training.sim_backend))
-    from uni_rl.offpolicy.thread_budget import (
-        apply_torch_thread_runtime,
-        resolve_torch_thread_runtime,
-    )
-
     # Cold-path DP CPU partition: each rank's collector owns one contiguous
     # CPU block (single rank keeps the legacy unset behavior). The ids only
     # reach the collector env override — never the num_envs=1 probe envs,
     # whose MuJoCo pool would size itself from len(cpu_ids).
-    # world_size comes from training.devices (rank 0 has no UNILAB_DP_* env;
-    # only spawned ranks carry it), rank from the env (0 for rank 0).
-    dp_devices = resolve_dp_topology(cfg.training.devices)
-    dp_world_size = len(dp_devices) if dp_devices is not None else 1
+    # World size comes from the launcher environment (rank 0 has no UNILAB_DP_*
+    # env; spawned ranks carry it).
+    dp_world_size = current_dp_world_size()
     dp_rank = current_dp_rank()
     from unilab.utils.device import get_default_device
 
-    rank_device = resolve_dp_rank_device(dp_devices, dp_rank) or get_default_device()
-    routed_device_id = resolve_backend_env_device_id(
-        str(cfg.training.sim_backend),
-        devices=dp_devices,
-        rank=dp_rank,
-        world_size=1,
-        learner_device=rank_device,
-    )
-    warn_if_backend_device_collision(
-        str(cfg.training.sim_backend),
-        devices=dp_devices,
-        rank=dp_rank,
-        device_id=routed_device_id,
-        source="collector",
-    )
+    rank_device = resolve_dp_rank_device(dp_rank) or get_default_device()
     # Bind backend-global device state before algorithm builders materialize
     # their probe envs. The spawned collector repeats this binding in its own
     # process using the same rank-local device.  A non-zero Genesis request
     # pins CUDA_VISIBLE_DEVICES for the whole rank process (Quadrants only
     # honors the first visible device), so the bound in-process device
     # replaces rank_device for the learner, the probe, and the override below.
-    if str(rank_device).strip().lower().startswith("cuda"):
-        bound_device = configure_backend_process_device(str(cfg.training.sim_backend), rank_device)
-        if bound_device is not None:
-            rank_device = bound_device
-    # ``training.devices`` is host-visible for the off-policy supervisor.  The
-    # collector subprocess inherits that namespace, so pass the physical index
-    # through the owner EnvCfg rather than leaving Isaac/Genesis at YAML's
-    # historical device-0 default.  The same override reaches the learner-side
-    # dimension probe and the collector env.
+    bound_device = configure_backend_process_device(
+        str(cfg.training.sim_backend),
+        rank_device,
+    )
+    if bound_device is not None:
+        rank_device = bound_device
+    collector_device = resolve_backend_process_device(
+        str(cfg.training.sim_backend),
+        rank_device,
+    )
+    cuda_process_sharing = probe_cuda_process_sharing(
+        getattr(cfg.training, "cuda_process_sharing", None),
+        rank_device,
+        collector_device,
+        backend=str(cfg.training.sim_backend),
+        rank=dp_rank,
+        world_size=dp_world_size,
+    )
+
+    env_factory = registry_env_factory(str(cfg.training.task_name), str(cfg.training.sim_backend))
+    from uni_rl.offpolicy.thread_budget import (
+        apply_torch_thread_runtime,
+        resolve_torch_thread_runtime,
+    )
+
+    # Every rank is single-GPU; rank-local visibility routes the backend payload.
     env_cfg_override = apply_backend_env_device_override(
         build_offpolicy_env_cfg_override(algo_name, cfg),
         str(cfg.training.sim_backend),
-        devices=dp_devices,
-        rank=dp_rank,
-        world_size=1,
         learner_device=rank_device,
     )
+    # Device-resident backend capabilities and rank process-device binding own
+    # Manager public tensor placement (issue #1743); no environment switch or
+    # manual placement injection remains.
     host_cpu_count = os.cpu_count() or 1
     explicit_cpu_ids = getattr(cfg.training, "dp_collector_cpu_ids", None)
     if explicit_cpu_ids is not None:
@@ -240,6 +310,12 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
     apply_torch_thread_runtime(torch_thread_runtime, role="learner")
 
     _nan_guard_cfg = resolve_nan_guard_cfg(cfg.training)
+    if _nan_guard_cfg is None:
+        nan_guard_factory = None
+    else:
+        from unilab.training.tensor_runtime_hooks import build_tensor_nan_guard_factory
+
+        nan_guard_factory = build_tensor_nan_guard_factory()
 
     replay_prefetch_mode = getattr(cfg.training, "replay_prefetch_mode", "one_tick")
     if replay_prefetch_mode != "one_tick":
@@ -256,6 +332,7 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
         "replay_prefetch_mode": replay_prefetch_mode,
         "device": replay_device,
         "nan_guard_cfg": _nan_guard_cfg,
+        "nan_guard_factory": nan_guard_factory,
         "torch_thread_runtime": torch_thread_runtime,
         "collector_cpu_ids": collector_cpu_ids,
         "dp_sync": dp_sync,
@@ -282,15 +359,32 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
 
             runner = build_flashsac_double_buffer_runner(cfg, **builder_kwargs)
         elif algo_name == "warpsac":
-            from uni_rl.algos.warp_sac.double_buffer import (
-                build_warpsac_double_buffer_runner,
+            # unilab-rl 1.5.0 folded the age-biased runtime into FlashSAC.
+            # Keep the public UniLab task/config identity while dispatching to
+            # the maintained owner implementation.
+            from uni_rl.algos.flash_sac.double_buffer import (
+                build_flashsac_double_buffer_runner,
             )
 
-            runner = build_warpsac_double_buffer_runner(cfg, **builder_kwargs)
+            runner = build_flashsac_double_buffer_runner(cfg, **builder_kwargs)
         else:
             raise ValueError(f"Unsupported algo: {algo_name}")
 
+    _attach_cuda_process_sharing_manifest(runner, cuda_process_sharing)
     return runner
+
+
+def _attach_cuda_process_sharing_manifest(
+    runner: Any,
+    evidence: CudaProcessSharingEvidence,
+) -> None:
+    """Merge validated mode evidence into the producer-owned manifest."""
+
+    runtime_manifest = getattr(runner, "runtime_manifest", None)
+    if isinstance(runtime_manifest, dict):
+        runtime_manifest["cuda_process_sharing"] = evidence.manifest()
+        return
+    runner.runtime_manifest = {"cuda_process_sharing": evidence.manifest()}
 
 
 def play_offpolicy(
@@ -313,35 +407,17 @@ def play_offpolicy(
         print(f"Could not find checkpoint. load_path={load_path}")
         return None
 
-    devices = resolve_dp_topology(cfg.training.devices)
     dp_rank = current_dp_rank()
-    device = default_device(torch, resolve_dp_rank_device(devices, dp_rank))
-    play_device_id = resolve_backend_env_device_id(
-        str(cfg.training.sim_backend),
-        devices=devices,
-        rank=dp_rank,
-        world_size=1,
-        learner_device=device,
-    )
-    warn_if_backend_device_collision(
-        str(cfg.training.sim_backend),
-        devices=devices,
-        rank=dp_rank,
-        device_id=play_device_id,
-        source="playback",
-    )
-    if str(device).strip().lower().startswith("cuda"):
-        # Genesis pins CUDA_VISIBLE_DEVICES for a non-zero request; adopt the
-        # bound in-process device for the policy and the env override.
-        bound_device = configure_backend_process_device(str(cfg.training.sim_backend), device)
-        if bound_device is not None:
-            device = bound_device
+    device = default_device(torch, resolve_dp_rank_device(dp_rank))
+    # Genesis pins CUDA_VISIBLE_DEVICES for a non-zero request; adopt the bound
+    # in-process device for the policy and the env override.  CUDA-only
+    # backends also reject a CPU/MPS learner here, before playback constructs.
+    bound_device = configure_backend_process_device(str(cfg.training.sim_backend), device)
+    if bound_device is not None:
+        device = bound_device
     play_env_cfg_override = apply_backend_env_device_override(
         build_offpolicy_play_env_cfg_override(algo_name, cfg),
         str(cfg.training.sim_backend),
-        devices=devices,
-        rank=dp_rank,
-        world_size=1,
         learner_device=device,
     )
     print(f"Using device for play: {device}")
@@ -432,24 +508,30 @@ def play_offpolicy(
 
 def main(cfg: DictConfig) -> None:
     enable_faulthandler()
+    import torch
 
-    devices = resolve_dp_topology(cfg.training.devices)
+    reject_removed_device_config(OmegaConf.select(cfg, "training.devices", default=None))
     rank = current_dp_rank()
+    world_size = current_dp_world_size()
+    if world_size == 1 and rank == 0:
+        world_size = _requested_dp_world_size()
+    if world_size > 1:
+        if rank == 0:
+            selected_visible_entries(world_size=world_size)
+        _export_inferred_dp_world_size(world_size)
+    _prepare_rank_zero_dp_visibility(world_size)
     # Genesis/Quadrants binds the first CUDA_VISIBLE_DEVICES entry, and even
     # torch.cuda.is_available() latches the variable in the CUDA runtime, so
     # the pin must precede registry bootstrap and device auto-detection
     # (issue #1508).  Pure config topology resolves without touching torch.
     pinned_device = pin_genesis_device_before_cuda_init(
         str(cfg.training.sim_backend),
-        devices=devices,
-        rank=rank,
-        world_size=1,
         learner_device=OmegaConf.select(cfg, "training.device", default=None),
     )
 
     ensure_registries()
 
-    rank_device = apply_dp_rank_config(cfg, devices, rank)
+    rank_device = apply_dp_rank_config(cfg, rank)
     if pinned_device is not None:
         # The process was pinned to its rank GPU; use the in-process index.
         rank_device = pinned_device
@@ -459,10 +541,9 @@ def main(cfg: DictConfig) -> None:
     # it is also a public assembly seam used by tests and custom callers.  A
     # non-zero Genesis request pins CUDA_VISIBLE_DEVICES here; the bound
     # in-process device replaces rank_device for the tracker and runner.
-    if rank_device is not None and str(rank_device).strip().lower().startswith("cuda"):
-        bound_device = configure_backend_process_device(str(cfg.training.sim_backend), rank_device)
-        if bound_device is not None:
-            rank_device = bound_device
+    bound_device = configure_backend_process_device(str(cfg.training.sim_backend), rank_device)
+    if bound_device is not None:
+        rank_device = bound_device
 
     seed_info = apply_configured_training_seed(cfg, torch_runtime=True, cuda=True)
     algo_name = cfg.algo.algo
@@ -474,7 +555,7 @@ def main(cfg: DictConfig) -> None:
         run_dir_name = build_run_dir_name(
             timestamp,
             str(cfg.training.sim_backend),
-            world_size=len(devices) if devices is not None else 1,
+            world_size=world_size,
         )
         log_dir = str(get_log_root(Path.cwd(), cfg) / task_name / run_dir_name)
     else:
@@ -485,11 +566,8 @@ def main(cfg: DictConfig) -> None:
         log_dir = os.environ[UNILAB_DP_LOG_DIR]
 
     supervisor: DpRankSupervisor | None = None
-    if devices is not None and rank == 0 and len(devices) > 1:
-        validate_dp_launchable(devices)
-        supervisor = DpRankSupervisor(devices, log_dir)
-
-    import torch
+    if rank == 0 and world_size > 1:
+        supervisor = _build_dp_rank_supervisor(world_size=world_size, log_dir=log_dir)
 
     tracker = None
     if not cfg.training.play_only and rank == 0:

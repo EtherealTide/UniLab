@@ -3,7 +3,7 @@
 
 This standalone benchmark composes the same off-policy owner config used by:
 
-    uv run train --algo sac --task g1_motion_tracking --sim motrix
+    uv run train --algo sac --task g1_motion_tracking --sim mujoco
 
 It does not run training.  It measures only the replay sampling boundary:
 
@@ -16,7 +16,7 @@ available are recorded as skipped.
 
 Usage:
     uv run scripts/benchmark/rl/benchmark_sac_replay_buffer_sampling.py
-    uv run scripts/benchmark/rl/benchmark_sac_replay_buffer_sampling.py --task g1_motion_tracking --sim motrix
+    uv run scripts/benchmark/rl/benchmark_sac_replay_buffer_sampling.py --task g1_motion_tracking --sim mujoco
     uv run scripts/benchmark/rl/benchmark_sac_replay_buffer_sampling.py --gpu-counts 1,2
     uv run scripts/benchmark/rl/benchmark_sac_replay_buffer_sampling.py --capacity-multipliers 0.25,0.5,1,2
     uv run scripts/benchmark/rl/benchmark_sac_replay_buffer_sampling.py --warmup 3 --repeat 10
@@ -66,9 +66,9 @@ DEFAULT_OUTPUT_JSON = (
     ROOT_DIR / "scripts" / "benchmark" / "outputs" / "sac_replay_buffer_sampling" / "results.json"
 )
 DEFAULT_TASK = "g1_motion_tracking"
-DEFAULT_SIM = "motrix"
+DEFAULT_SIM = "mujoco"
 LEGACY_DEFAULT_TASK = "g1_walk_flat"
-KNOWN_SIMS = ("mujoco", "motrix")
+KNOWN_SIMS = ("mujoco", "mjwarp")
 DEFAULT_GPU_COUNTS = "1,2,4,8"
 DEFAULT_CAPACITY_MULTIPLIERS = "0.25,0.5,1.0"
 FLOAT_BYTES = 4

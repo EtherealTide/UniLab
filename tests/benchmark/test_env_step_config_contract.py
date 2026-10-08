@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
 from hydra.errors import ConfigCompositionException
 from scripts.benchmark.env import benchmark_env_step as bench
@@ -62,3 +64,10 @@ def test_only_owner_config_overrides_are_forwarded() -> None:
     assert bench._owner_config_overrides(overrides) == overrides[1:]
     with pytest.raises(ValueError, match="Unsupported benchmark config override"):
         bench._owner_config_overrides(["algo.learning_rate=0.1"])
+
+
+def test_step_benchmark_uses_device_resident_tensor_actions() -> None:
+    source = inspect.getsource(bench._run_single)
+    assert "torch.rand(" in source
+    assert "device=device" in source
+    assert "np.random.uniform" not in source

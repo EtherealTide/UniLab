@@ -19,7 +19,6 @@ from unilab.base.process_device import (
     configure_backend_process_device,
     pin_genesis_device_before_cuda_init,
     resolve_backend_env_device_id,
-    warn_if_backend_device_collision,
 )
 from unilab.base.run_control import RunComplete
 from unilab.rl import (
@@ -32,11 +31,10 @@ from unilab.rl import (
     finish_rsl_rl_distributed,
     launch_torchrun_workers,
     ppo_samples_per_iteration,
+    reject_removed_device_config,
     resolve_collector_cpu_ids,
-    resolve_dp_topology,
     resolve_rsl_rl_device,
     rsl_rl_single_process_topology,
-    validate_dp_launchable,
 )
 from unilab.training import (
     algo_config_dict,
@@ -90,23 +88,18 @@ def _backend_adapter(cfg: DictConfig) -> BackendAdapter:
 
 def build_ppo_env_cfg_override(cfg: DictConfig) -> dict[str, Any]:
     base = cast(dict[str, Any], _backend_adapter(cfg).build_task_env_cfg_override())
-    devices = resolve_dp_topology(OmegaConf.select(cfg, "training.devices", default=None))
     rank = current_torch_distributed_rank()
     local_rank = current_torch_distributed_local_rank()
     world_size = current_torch_distributed_world_size()
-    configured_device = OmegaConf.select(cfg, "training.device", default=None)
-    learner_device = (
-        f"cuda:{local_rank}"
-        if world_size > 1
-        else (f"cuda:{devices[0]}" if devices else configured_device)
+    learner_device = resolve_rsl_rl_device(
+        configured_device=OmegaConf.select(cfg, "training.device", default=None),
+        world_size=world_size,
+        local_rank=local_rank,
+        default_device="cpu",
     )
     result = apply_backend_env_device_override(
         base,
         str(cfg.training.sim_backend),
-        devices=devices,
-        rank=local_rank,
-        local_rank=local_rank,
-        world_size=world_size,
         learner_device=learner_device,
     )
     if world_size > 1:
@@ -123,22 +116,17 @@ def build_ppo_env_cfg_override(cfg: DictConfig) -> dict[str, Any]:
 
 def build_ppo_play_env_cfg_override(cfg: DictConfig) -> dict[str, Any]:
     base = cast(dict[str, Any], _backend_adapter(cfg).build_play_env_cfg_override())
-    devices = resolve_dp_topology(OmegaConf.select(cfg, "training.devices", default=None))
     local_rank = current_torch_distributed_local_rank()
     world_size = current_torch_distributed_world_size()
-    configured_device = OmegaConf.select(cfg, "training.device", default=None)
-    learner_device = (
-        f"cuda:{local_rank}"
-        if world_size > 1
-        else (f"cuda:{devices[0]}" if devices else configured_device)
+    learner_device = resolve_rsl_rl_device(
+        configured_device=OmegaConf.select(cfg, "training.device", default=None),
+        world_size=world_size,
+        local_rank=local_rank,
+        default_device="cpu",
     )
     return apply_backend_env_device_override(
         base,
         str(cfg.training.sim_backend),
-        devices=devices,
-        rank=local_rank,
-        local_rank=local_rank,
-        world_size=world_size,
         learner_device=learner_device,
     )
 
@@ -195,7 +183,6 @@ def resolve_ppo_log_dir(
 def validate_ppo_run_completion_topology(
     cfg: DictConfig,
     *,
-    devices: tuple[int, ...] | None,
     world_size: int,
 ) -> None:
     """Reject grasp collection on a topology without run-completion coordination."""
@@ -203,7 +190,7 @@ def validate_ppo_run_completion_topology(
         return
     if OmegaConf.select(cfg, "env.grasp_collection_target", default=None) is None:
         return
-    effective_world_size = len(devices) if devices is not None and world_size == 1 else world_size
+    effective_world_size = world_size
     if effective_world_size > 1:
         raise ValueError(
             "Grasp collection run completion currently requires one process; "
@@ -322,37 +309,15 @@ def play_rsl_rl(cfg: DictConfig, device: str) -> str | None:
         log_root=None,
         num_envs=cfg.training.play_env_num,
     )
-    play_devices = resolve_dp_topology(OmegaConf.select(cfg, "training.devices", default=None))
-    play_world_size = current_torch_distributed_world_size()
-    play_local_rank = current_torch_distributed_local_rank()
-    play_device_id = resolve_backend_env_device_id(
-        str(cfg.training.sim_backend),
-        devices=play_devices,
-        rank=play_local_rank,
-        local_rank=play_local_rank,
-        world_size=play_world_size,
-        learner_device=device,
-    )
-    warn_if_backend_device_collision(
-        str(cfg.training.sim_backend),
-        devices=play_devices,
-        rank=play_local_rank,
-        device_id=play_device_id,
-        source="playback",
-    )
-    if str(device).strip().lower().startswith("cuda"):
-        # A non-zero Genesis request pins CUDA_VISIBLE_DEVICES here; adopt the
-        # bound in-process device for both the policy and the env override.
-        bound_device = configure_backend_process_device(str(cfg.training.sim_backend), device)
-        if bound_device is not None:
-            device = bound_device
+    # A non-zero Genesis request pins CUDA_VISIBLE_DEVICES here; adopt the bound
+    # in-process device for both the policy and the env override.  CUDA-only
+    # backends reject CPU/MPS learners before playback construction.
+    bound_device = configure_backend_process_device(str(cfg.training.sim_backend), device)
+    if bound_device is not None:
+        device = bound_device
     play_env_cfg_override = apply_backend_env_device_override(
         build_ppo_play_env_cfg_override(cfg),
         str(cfg.training.sim_backend),
-        devices=play_devices,
-        rank=play_local_rank,
-        local_rank=play_local_rank,
-        world_size=play_world_size,
         learner_device=device,
     )
     session, _policy_obs_mode, _checkpoint_path = create_rsl_rl_playback_session(
@@ -428,14 +393,12 @@ def play_rsl_rl(cfg: DictConfig, device: str) -> str | None:
 
 @hydra.main(version_base="1.3", config_path="../conf/ppo", config_name="config")
 def main(cfg: DictConfig) -> None:
-    devices = resolve_dp_topology(cfg.training.devices)
+    reject_removed_device_config(OmegaConf.select(cfg, "training.devices", default=None))
     rank = current_torch_distributed_rank()
     local_rank = current_torch_distributed_local_rank()
     world_size = current_torch_distributed_world_size()
     configured_device = OmegaConf.select(cfg, "training.device", default=None)
 
-    if configured_device is not None and devices is not None:
-        raise ValueError("Set either training.device or training.devices, not both")
     if rank < 0 or rank >= world_size:
         raise ValueError(f"RANK={rank} is out of range for WORLD_SIZE={world_size}")
     if cfg.training.play_only and world_size > 1:
@@ -443,22 +406,18 @@ def main(cfg: DictConfig) -> None:
             "Distributed play-only execution is not supported; launch eval normally and "
             "select one device"
         )
-    validate_ppo_run_completion_topology(cfg, devices=devices, world_size=world_size)
+    validate_ppo_run_completion_topology(cfg, world_size=world_size)
 
-    # The parent only composes config and invokes torchrun. CUDA, registry,
-    # env, tracker, and runner construction all happen inside workers.
-    if devices is not None and len(devices) > 1 and world_size == 1:
-        if not cfg.training.play_only:
-            launch_torchrun_workers(
-                devices,
-                script_path=Path(__file__),
-                argv=sys.argv[1:],
-                log_dir=resolve_ppo_log_dir(cfg, world_size=len(devices)),
-            )
-            return
-        validate_dp_launchable(devices)
-    elif devices is not None and world_size == 1:
-        validate_dp_launchable(devices)
+    if world_size > 1 and os.environ.get("LOCAL_RANK") == "0":
+        # A launcher parent invokes this branch once. World size comes from the
+        # torchrun environment; selected parent visibility has one entry/rank.
+        launch_torchrun_workers(
+            world_size=world_size,
+            script_path=Path(__file__),
+            argv=sys.argv[1:],
+            log_dir=resolve_ppo_log_dir(cfg, world_size=world_size),
+        )
+        return
 
     if (
         world_size > 1
@@ -466,8 +425,8 @@ def main(cfg: DictConfig) -> None:
         and OmegaConf.select(cfg, "training.log_dir", default=None) is None
     ):
         raise ValueError(
-            "Distributed RSL-RL workers require one shared run directory; use "
-            "training.devices or set training.log_dir explicitly"
+            "Distributed RSL-RL workers require one shared run directory; set "
+            "training.log_dir explicitly or use the launcher"
         )
 
     # Genesis/Quadrants binds the first CUDA_VISIBLE_DEVICES entry, and even
@@ -476,10 +435,6 @@ def main(cfg: DictConfig) -> None:
     # (issue #1508).  Pure config topology resolves without touching torch.
     pinned_device = pin_genesis_device_before_cuda_init(
         str(cfg.training.sim_backend),
-        devices=devices,
-        rank=local_rank,
-        local_rank=local_rank,
-        world_size=world_size,
         learner_device=str(configured_device) if configured_device is not None else None,
     )
 
@@ -495,7 +450,6 @@ def main(cfg: DictConfig) -> None:
     apply_rsl_rl_rank_seed(cfg, rank)
     device = resolve_rsl_rl_device(
         configured_device=str(configured_device) if configured_device is not None else None,
-        devices=devices,
         world_size=world_size,
         local_rank=local_rank,
         default_device=get_default_device(),
@@ -503,41 +457,25 @@ def main(cfg: DictConfig) -> None:
     if pinned_device is not None:
         # The process was pinned to its rank GPU; use the in-process index.
         device = pinned_device
-    # PPO workers launched by torchrun inherit the launcher's remapped
-    # CUDA_VISIBLE_DEVICES, so LOCAL_RANK (not the host index in
-    # training.devices) is the simulator payload id.  Single-process workers
-    # retain the configured host-visible index.  Route this before env
+    # PPO workers inherit one launcher-selected CUDA_VISIBLE_DEVICES entry, so
+    # the rank-local ordinal 0 is the simulator payload id.  Route this before env
     # construction and before Genesis/torch global initialization.
-    env_device_id = resolve_backend_env_device_id(
+    # Payload routing is handled by the env override; there is no separate
+    # non-Genesis payload binding at this layer.
+    # Genesis pins CUDA_VISIBLE_DEVICES for a non-zero request (Quadrants only
+    # honors the first visible device); the bound value is the device this
+    # process must actually use afterwards.  CUDA-only backends reject CPU/MPS
+    # learners before training construction.
+    bound_device = configure_backend_process_device(
         str(cfg.training.sim_backend),
-        devices=devices,
-        rank=local_rank,
-        local_rank=local_rank,
-        world_size=world_size,
-        learner_device=device,
+        device,
     )
-    warn_if_backend_device_collision(
-        str(cfg.training.sim_backend),
-        devices=devices,
-        rank=local_rank,
-        device_id=env_device_id,
-        source="training",
-    )
-    if str(device).strip().lower().startswith("cuda"):
-        # Genesis pins CUDA_VISIBLE_DEVICES for a non-zero request (Quadrants
-        # only honors the first visible device); the bound value is the device
-        # this process must actually use afterwards.
-        bound_device = configure_backend_process_device(str(cfg.training.sim_backend), device)
-        if bound_device is not None:
-            device = bound_device
+    if bound_device is not None:
+        device = bound_device
     print(f"[rank {rank}/{world_size}] Using device: {device}")
     env_cfg_override = apply_backend_env_device_override(
         build_ppo_env_cfg_override(cfg),
         str(cfg.training.sim_backend),
-        devices=devices,
-        rank=local_rank,
-        local_rank=local_rank,
-        world_size=world_size,
         learner_device=device,
     )
     seed_info = apply_configured_training_seed(cfg, torch_runtime=True, cuda=True)

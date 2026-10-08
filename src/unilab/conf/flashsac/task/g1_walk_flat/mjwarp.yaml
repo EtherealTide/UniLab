@@ -21,10 +21,16 @@ algo:
   replay_buffer_n: 256
   tau: 0.05
 env:
+  # MJWarp is DEVICE_RESIDENT/DIRECT. Mirror the SAC owner's CUDA tensor
+  # lifecycle so this owner-selected path does not depend on caller defaults.
   mjwarp_nconmax: 128
   mjwarp_njmax: 256
   render_spacing: 2.0
   events:
+    reset_scene_to_default:
+      func: unilab.envs.mdp.reset_scene_to_default_tensor
+    reset_root_state_uniform:
+      func: unilab.envs.mdp.reset_root_state_uniform_tensor
     # Legacy mjwarp owners disable kp/kd and armature randomization.
     pd_gains: null
 reward:

@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.base import SimBackend
 
 from unilab.base.entity import EntityCfg, EntityScene
@@ -113,7 +114,21 @@ def test_public_exports_and_cfg_build_are_canonical() -> None:
     assert UniformVelocityCommandCfg is ExportedUniformVelocityCommandCfg
     assert isinstance(term, UniformVelocityCommand)
     assert term.command.shape == (env.num_envs, 3)
-    assert term.command.dtype == np.float32
+    assert term.command.dtype == torch.float32
+
+
+def test_manager_boundary_publishes_torch_commands() -> None:
+    env, _ = _env()
+    manager = _manager(env)
+    manager.reset(torch.arange(env.num_envs, dtype=torch.int64))
+
+    command = manager.get_command("twist")
+    term = manager.get_term("twist")
+    assert isinstance(command, torch.Tensor)
+    assert command.dtype == torch.float32
+    assert command.shape == (env.num_envs, 3)
+    assert term.time_left.dtype == torch.float32
+    assert term.command_counter.dtype == torch.int64
 
 
 def test_resampling_is_seeded_and_partial_reset_is_local() -> None:
@@ -121,7 +136,7 @@ def test_resampling_is_seeded_and_partial_reset_is_local() -> None:
     right_env, _ = _env(seed=19)
     left = _manager(left_env, resampling_time_range=(0.5, 1.5))
     right = _manager(right_env, resampling_time_range=(0.5, 1.5))
-    all_ids = np.arange(left_env.num_envs, dtype=np.int32)
+    all_ids = torch.arange(left_env.num_envs, dtype=torch.int64)
 
     left.reset(all_ids)
     right.reset(all_ids)
@@ -131,9 +146,9 @@ def test_resampling_is_seeded_and_partial_reset_is_local() -> None:
         right.get_term("twist").time_left,
     )
 
-    before_command = left.get_command("twist").copy()
-    before_counter = left.get_term("twist").command_counter.copy()
-    left.reset(np.asarray([1, 3], dtype=np.int32))
+    before_command = left.get_command("twist").clone()
+    before_counter = left.get_term("twist").command_counter.clone()
+    left.reset(torch.tensor([1, 3], dtype=torch.int64))
     np.testing.assert_array_equal(left.get_command("twist")[[0, 2]], before_command[[0, 2]])
     np.testing.assert_array_equal(
         left.get_term("twist").command_counter[[0, 2]], before_counter[[0, 2]]
@@ -154,7 +169,7 @@ def test_metrics_and_fixed_interval_resampling_follow_manager_schedule() -> None
             ang_vel_z=(0.2, 0.2),
         ),
     )
-    all_ids = np.arange(env.num_envs, dtype=np.int32)
+    all_ids = torch.arange(env.num_envs, dtype=torch.int64)
     manager.reset(all_ids)
     term = manager.get_term("twist")
 
@@ -168,7 +183,7 @@ def test_metrics_and_fixed_interval_resampling_follow_manager_schedule() -> None
 
 
 def test_heading_world_forward_and_standing_modes() -> None:
-    all_ids = np.arange(4, dtype=np.int32)
+    all_ids = torch.arange(4, dtype=torch.int64)
 
     heading_env, _ = _env()
     heading = _manager(
