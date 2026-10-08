@@ -53,6 +53,7 @@ def test_appo_runner_learn_two_iterations(env_name):
         env_factory=registry_env_factory(env_name, "mujoco"),
         env_cfg_overrides=env_cfg_overrides,
         rl_cfg=cfg,
+        device="cpu",
         num_envs=128,
         steps_per_env=8,
     )

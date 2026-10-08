@@ -1,0 +1,21 @@
+# @package _global_
+defaults:
+  - /task/go2_joystick_flat/base
+  - _self_
+
+training:
+  task_name: Go2JoystickFlat
+  sim_backend: motrix
+algo:
+  num_envs: 512
+  steps_per_env: 24
+  max_iterations: 180
+env:
+  # Motrix's packed HOST_BRIDGE uses the canonical tensor selected-reset terms.
+  events:
+    reset_scene_to_default:
+      func: unilab.envs.mdp.reset_scene_to_default_tensor
+    reset_root_state_uniform:
+      func: unilab.envs.mdp.reset_root_state_uniform_tensor
+    # Motrix tensor selected reset does not support PD-gain randomization.
+    pd_gains: null
