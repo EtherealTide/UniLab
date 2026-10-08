@@ -33,12 +33,9 @@ def _materialize_task(task: str, *, algo: str = "flashsac") -> ManagerBasedRlEnv
 def test_flashsac_owner_fingerprint_accepts_canonical_backends() -> None:
     mujoco = _materialize_task("g1_motion_tracking/mujoco")
     mjwarp = _materialize_task("g1_motion_tracking/mjwarp")
-    assert module._torch_g1_flashsac_owner_identity(mujoco) == (
-        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V21
-    )
-    assert module._torch_g1_flashsac_owner_identity(mjwarp) == (
-        module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V23
-    )
+    expected = module._TORCH_G1_MANAGER_TERMS_OWNER_IDENTITY_V1
+    assert module._torch_g1_flashsac_owner_identity(mujoco) == expected
+    assert module._torch_g1_flashsac_owner_identity(mjwarp) == expected
 
 
 def test_flashsac_motrix_owner_uses_generic_manager_runtime() -> None:
@@ -46,16 +43,11 @@ def test_flashsac_motrix_owner_uses_generic_manager_runtime() -> None:
     assert "motrix" in registry._envs["G1MotionTracking"].env_factory_dict
 
 
-def test_reusable_tensor_runtime_accepts_second_g1_manager_owner() -> None:
-    cfg = _materialize_task("g1_motion_tracking/mjwarp_tensor", algo="sac")
-    assert module._torch_g1_flashsac_owner_identity(cfg) == module._TORCH_G1_SAC_OWNER_IDENTITY_V2
-
-
 @pytest.mark.parametrize(
     "mutate",
     [
         lambda cfg: setattr(cfg.observations["actor"].terms["base_lin_vel"].noise, "n_min", -0.2),
-        lambda cfg: setattr(cfg.rewards["motion_reward_pack"], "root_pos_std", 0.4),
+        lambda cfg: cfg.rewards["motion_global_root_pos"].params.__setitem__("std", 0.4),
         lambda cfg: setattr(cfg.actions["joint_pos"], "clip", {"joint": (0.0, 1.0)}),
         lambda cfg: setattr(cfg.commands["motion"].params, "adaptive_alpha", 0.1),
     ],
@@ -67,25 +59,16 @@ def test_flashsac_owner_fingerprint_fails_closed(mutate) -> None:
         module._validate_torch_g1_flashsac_owner_contract(cfg)
 
 
-def test_fused_motion_reward_pack_owner_identity_is_canonical() -> None:
-    """The fused Manager reward is the canonical FlashSAC semantic owner."""
+def test_motion_reward_manager_terms_share_owner_identity() -> None:
     for backend in ("mujoco", "mjwarp", "newton"):
         cfg = _materialize_task(f"g1_motion_tracking/{backend}")
         identity = module._torch_g1_flashsac_owner_identity(cfg)
-        expected = {
-            "mujoco": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V21,
-            "genesis": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V21,
-            "newton": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V21,
-            "mjwarp": module._TORCH_G1_FLASHSAC_OWNER_IDENTITY_V23,
-        }[backend]
-        assert identity == expected
+        assert identity == module._TORCH_G1_MANAGER_TERMS_OWNER_IDENTITY_V1
 
 
-def test_fused_motion_reward_pack_names_stay_contract_aligned() -> None:
-    """Packed FlashSAC execution and semantic reward declarations stay aligned."""
+def test_motion_reward_terms_stay_contract_aligned() -> None:
     cfg = _materialize_task("g1_motion_tracking/mujoco")
 
-    packed = cfg.rewards["motion_reward_pack"]
     expected = (
         "motion_global_root_pos",
         "motion_global_root_ori",
@@ -94,8 +77,6 @@ def test_fused_motion_reward_pack_names_stay_contract_aligned() -> None:
         "motion_body_lin_vel",
         "motion_body_ang_vel",
     )
-    assert tuple(packed.reward_pack_names) == expected
-    assert packed.weight == 0.0
     for name in expected:
         assert name in cfg.rewards
 
