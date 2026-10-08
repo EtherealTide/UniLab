@@ -60,6 +60,32 @@ def _is_cuda_device(device: str | None) -> bool:
     return device is not None and str(device).strip().lower().split(":", 1)[0] == "cuda"
 
 
+def _env_carrier_device(
+    cfg: DictConfig,
+    collector_device: str | None,
+    *,
+    runner_device: str | None = None,
+) -> str | None:
+    """Resolve the process device used by Manager Torch carriers.
+
+    The APPO collector owns the environment even when its actor runs on another
+    accelerator family. An explicit CUDA collector request therefore wins;
+    otherwise fall back to the runner request. Device auto-detection is handled
+    separately and must not opt CPU-authoritative HOST_BRIDGE managers into CUDA.
+    """
+    if collector_device is not None and _is_cuda_device(collector_device):
+        return collector_device
+    return (
+        runner_device
+        if runner_device is not None
+        else OmegaConf.select(
+            cfg,
+            "training.device",
+            default=None,
+        )
+    )
+
+
 def build_appo_runner_kwargs(
     cfg: DictConfig,
     env_cfg_override: dict | None,
@@ -72,20 +98,12 @@ def build_appo_runner_kwargs(
     routed_env_cfg_override = apply_backend_env_device_override(
         env_cfg_override,
         str(cfg.training.sim_backend),
-        learner_device=(
-            collector_device
-            if collector_device is not None and _is_cuda_device(collector_device)
-            else OmegaConf.select(cfg, "training.device", default=None)
-        ),
+        learner_device=_env_carrier_device(cfg, collector_device),
     )
     routed_env_cfg_override = apply_manager_torch_device_override(
         routed_env_cfg_override,
         str(cfg.training.sim_backend),
-        learner_device=(
-            collector_device
-            if collector_device is not None and _is_cuda_device(collector_device)
-            else OmegaConf.select(cfg, "training.device", default=None)
-        ),
+        learner_device=_env_carrier_device(cfg, collector_device),
     )
 
     runner_kwargs = {
@@ -409,20 +427,12 @@ def main(cfg: DictConfig) -> None:
     env_cfg_override = apply_backend_env_device_override(
         BackendAdapter(cfg, root_dir=Path.cwd(), algo_name="appo").build_task_env_cfg_override(),
         str(cfg.training.sim_backend),
-        learner_device=(
-            collector_device
-            if collector_device is not None and _is_cuda_device(collector_device)
-            else learner_device
-        ),
+        learner_device=_env_carrier_device(cfg, collector_device, runner_device=learner_device),
     )
     env_cfg_override = apply_manager_torch_device_override(
         env_cfg_override,
         str(cfg.training.sim_backend),
-        learner_device=(
-            collector_device
-            if collector_device is not None and _is_cuda_device(collector_device)
-            else learner_device
-        ),
+        learner_device=_env_carrier_device(cfg, collector_device, runner_device=learner_device),
     )
     seed_info = apply_configured_training_seed(cfg, torch_runtime=True, cuda=True)
 

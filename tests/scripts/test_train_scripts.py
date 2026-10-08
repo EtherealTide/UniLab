@@ -933,6 +933,37 @@ def test_build_appo_runner_kwargs_forwards_sim_backend():
     assert runner_kwargs["env_cfg_overrides"]["rewards"] == {}
 
 
+def test_appo_host_bridge_carriers_require_explicit_cuda(monkeypatch):
+    mod = _train_appo()
+    cfg = _appo_cfg(["task=g1_motion_tracking/mujoco"])
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    auto = mod.build_appo_runner_kwargs(cfg, env_cfg_override={}, collector_device=None)
+    assert "manager_torch_device" not in auto["env_cfg_overrides"]
+
+    collector_cpu = mod.build_appo_runner_kwargs(
+        cfg,
+        env_cfg_override={},
+        collector_device="cpu",
+    )
+    assert "manager_torch_device" not in collector_cpu["env_cfg_overrides"]
+
+    explicit_cpu_cfg = _appo_cfg(["task=g1_motion_tracking/mujoco", "training.device=cpu"])
+    explicit_cpu = mod.build_appo_runner_kwargs(
+        explicit_cpu_cfg,
+        env_cfg_override={},
+        collector_device=None,
+    )
+    assert explicit_cpu["env_cfg_overrides"]["manager_torch_device"] == "cpu"
+
+    collector_cuda = mod.build_appo_runner_kwargs(
+        cfg,
+        env_cfg_override={},
+        collector_device="cuda:1",
+    )
+    assert collector_cuda["env_cfg_overrides"]["manager_torch_device"] == "cuda:1"
+
+
 def test_run_motrix_play_loop_runs_without_physics_state():
     mod = _train_appo()
 

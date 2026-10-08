@@ -92,6 +92,9 @@ def test_appo_task_configs_load(task, tmp_path):
             f"task={task}",
             "algo.max_iterations=1",
             "training.no_play=true",
+            # HOST_BRIDGE Torch carriers are opt-in; do not let the smoke test
+            # vary with the host's accelerator availability.
+            "training.device=cpu",
             *motion_overrides,
         ],
         capture_output=True,
