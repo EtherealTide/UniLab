@@ -875,6 +875,9 @@ def create_playback_session(
         env_cfg_override = apply_manager_torch_device_override(
             env_cfg_override,
             sim_backend,
+            collector_tensor_device=str(
+                OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+            ),
             learner_device=device,
         )
         try:

@@ -213,6 +213,9 @@ def build_offpolicy_env_cfg_override(algo_name: str, cfg: DictConfig) -> dict[st
     return apply_manager_torch_device_override(
         routed,
         str(cfg.training.sim_backend),
+        collector_tensor_device=str(
+            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+        ),
         learner_device=rank_device,
     )
 
@@ -231,6 +234,9 @@ def build_offpolicy_play_env_cfg_override(algo_name: str, cfg: DictConfig) -> di
     return apply_manager_torch_device_override(
         routed,
         str(cfg.training.sim_backend),
+        collector_tensor_device=str(
+            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+        ),
         learner_device=rank_device,
     )
 
