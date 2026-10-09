@@ -1483,7 +1483,11 @@ class TensorMotionCommand(MotionCommand):
         """Gather motion rows and publish the device-resident command carrier."""
         frames: np.ndarray | torch.Tensor
         if rows is None:
-            frames = self.sampler.current_frames
+            frames = (
+                cast(torch.Tensor, self.time_steps)
+                if isinstance(self.time_steps, torch.Tensor)
+                else self.sampler.current_frames
+            )
         elif isinstance(self.time_steps, torch.Tensor):
             frames = cast(torch.Tensor, self.time_steps)[rows]
         else:
