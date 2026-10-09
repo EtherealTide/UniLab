@@ -5273,9 +5273,9 @@ requires-dist = [
     { name = "trimesh", specifier = ">=3.21.7" },
     { name = "typing-extensions" },
     { name = "unilab-rl", marker = "extra == 'uni-rl'", specifier = "==1.4.11" },
-    { name = "unisim-core", specifier = ">=1.7.12" },
-    { name = "unisim-core", extras = ["motrix"], marker = "extra == 'motrix'", specifier = ">=1.7.12" },
-    { name = "unisim-core", extras = ["superdex"], marker = "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'superdex'", specifier = ">=1.7.12" },
+    { name = "unisim-core", specifier = ">=1.7.13" },
+    { name = "unisim-core", extras = ["motrix"], marker = "extra == 'motrix'", specifier = ">=1.7.13" },
+    { name = "unisim-core", extras = ["superdex"], marker = "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'superdex'", specifier = ">=1.7.13" },
     { name = "viser", specifier = ">=1.0.26" },
     { name = "wandb" },
     { name = "warp-lang", marker = "extra == 'mjwarp'", specifier = "==1.16.0" },
@@ -5318,13 +5318,13 @@ wheels = [
 
 [[package]]
 name = "unisim-core"
-version = "1.7.12"
+version = "1.7.13"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fe/fe/7834bd1e87446dedbb5f4f7838e108c00578f6256fba52aa247f2f4943ab/unisim_core-1.7.12.tar.gz", hash = "sha256:d91824c2916266d2ad12f887c2b96f768664aba9957b4218801c0c9933b70ddd", size = 650420, upload-time = "2026-10-08T15:05:02.037Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ab/d2/41bbd993b33be92d116da0d55e0d8e1e85c6cb0a3522624b745696168775/unisim_core-1.7.13.tar.gz", hash = "sha256:11a734a2cefc4225f95a7d39b4415e59e63ca88501bfdcd1515e2097705a0381", size = 650721, upload-time = "2026-10-09T16:17:40.269Z" }
 
 [package.optional-dependencies]
 motrix = [
