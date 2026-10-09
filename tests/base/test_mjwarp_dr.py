@@ -385,7 +385,7 @@ def test_low_friction_world_changes_kick_response(backend: Any) -> None:
     rows = np.asarray([1, 3], dtype=np.int32)
     qpos, qvel = _stand_state(backend, rows.size)
     geom_friction = _broadcast_rows(backend.get_geom_friction(), rows.size)
-    geom_friction[..., 0] = 0.01
+    geom_friction[..., 0] = 0.1
     backend.set_state(
         rows,
         qpos,
@@ -405,7 +405,7 @@ def test_low_friction_world_changes_kick_response(backend: Any) -> None:
         backend.step(_stand_ctrl(backend), nsteps=3)
     assert np.isfinite(backend.get_base_pos()).all()
     displacement = np.linalg.norm(backend.get_base_pos()[:, :2] - start, axis=1)
-    # Near-zero slide friction changes the kick response of the mutated worlds
+    # Low slide friction changes the kick response of the mutated worlds
     # while the default-friction worlds stay pairwise consistent.
     assert abs(displacement[1] - displacement[0]) > 0.003
     # Same-condition worlds agree up to contact-solver reduction noise.
