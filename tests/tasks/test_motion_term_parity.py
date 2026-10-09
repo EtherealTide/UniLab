@@ -969,6 +969,59 @@ def test_tensor_command_publishes_sampler_advance_exactly_once() -> None:
     torch.testing.assert_close(command.time_steps, torch.tensor([5, 1, 10], dtype=torch.int32))
 
 
+def test_tensor_command_full_refresh_gathers_advanced_frames() -> None:
+    command = mt.TensorMotionCommand.__new__(mt.TensorMotionCommand)
+    command._device = torch.device("cpu")
+    command.time_steps = torch.tensor([4, 0, 9], dtype=torch.int32)
+    command.tensor_sampler = mt.TensorMotionSampler(
+        mode="adaptive",
+        num_envs=3,
+        num_frames=11,
+        clip_offsets=np.asarray([0], dtype=np.int64),
+        clip_end_frames=np.asarray([100], dtype=np.int32),
+        bin_count=1,
+        adaptive_lambda=0.8,
+        adaptive_kernel_size=1,
+        adaptive_uniform_ratio=0.1,
+        adaptive_alpha=0.001,
+        start_ratio=0.0,
+        initial_frames=np.asarray([4, 0, 9], dtype=np.int32),
+        initial_clip_end_frames=np.asarray([100, 100, 100], dtype=np.int32),
+        device=torch.device("cpu"),
+    )
+    command.tensor_sampler.current_frames.copy_(command.time_steps)
+    command.current_clip_end_frames = torch.tensor([90, 90, 90], dtype=torch.int32)
+    command._clip_offsets_torch = torch.tensor([0], dtype=torch.int64)
+    command._clip_end_frames_torch = torch.tensor([100], dtype=torch.int64)
+    command._tensor_all_rows = torch.arange(3, dtype=torch.int64)
+    command.cfg = SimpleNamespace(params=SimpleNamespace(truncate_on_clip_end=True))
+    command._tensor_post_compute_env_ids = None
+    command._resample_ingested_ids = None
+    command._tensor_resample_ingested = None
+    command._env = SimpleNamespace(
+        termination_manager=SimpleNamespace(terminated=torch.tensor([False, False, False])),
+        reset_buf=torch.tensor([False, False, False]),
+    )
+    # The host NumPy sampler is never stepped on the tensor path; keep it frozen
+    # at frame 0 so the refresh must gather from the device carrier instead.
+    command.sampler = SimpleNamespace(current_frames=np.zeros(3, dtype=np.int64))
+
+    captured: dict[str, Any] = {}
+    command._motion_packet = lambda frames: frames
+
+    def _capture_ingest(rows: torch.Tensor, packet: torch.Tensor) -> None:
+        captured["rows"] = rows
+        captured["frames"] = packet
+
+    command._ingest_motion_packet = _capture_ingest
+    command._update_command(None)
+
+    torch.testing.assert_close(captured["rows"], torch.arange(3, dtype=torch.int64))
+    torch.testing.assert_close(
+        captured["frames"].to(torch.int64), torch.tensor([5, 1, 10], dtype=torch.int64)
+    )
+
+
 def test_tensor_command_syncs_sampler_mirrors_on_selected_rows_only() -> None:
     command = mt.TensorMotionCommand.__new__(mt.TensorMotionCommand)
     command._device = torch.device("cpu")
