@@ -42,10 +42,9 @@ BACKEND_ENV_DEVICE_STR_FIELDS: dict[str, str] = {
 # integer payload sent to that worker before construction.
 _EXTERNAL_CUDA_IPC_BACKENDS = {"isaacgym", "isaacsim"}
 
-# HOST_BRIDGE backends accept optional accelerator Torch carriers across their packed
-# boundary. A process may explicitly request those carriers on its learner Torch
-# device; unset non-accelerator requests retain the owner/default CPU placement.
-_HOST_BRIDGE_TORCH_BACKENDS = {"mujoco", "motrix", "drake", "superdex"}
+# MuJoCo is the scoped HOST_BRIDGE backend whose training collector may explicitly
+# request accelerator Torch carriers across its packed boundary.
+_COLLECTOR_TENSOR_BACKENDS = {"mujoco"}
 
 
 # Set once ``bind_genesis_process_device`` has pinned CUDA_VISIBLE_DEVICES for
@@ -180,18 +179,37 @@ def apply_manager_torch_device_override(
     env_cfg_override: Mapping[str, Any] | None,
     backend_type: str,
     *,
+    collector_tensor_device: str | None = None,
     learner_device: str | None = None,
 ) -> dict[str, Any]:
     """Return an env override selecting optional HOST_BRIDGE Torch carriers.
 
-    The input mapping is never mutated. Explicit CPU requests force CPU carriers.
-    Unset and non-CUDA learner requests retain owner/default placement. A CUDA request
-    is validated against backend capabilities when the environment binds.
-    DEVICE_RESIDENT backends own placement and never receive this synthetic field.
+    The input mapping is never mutated. ``collector_tensor_device`` is the explicit
+    training contract: ``cpu`` remains on CPU and unindexed ``cuda`` is resolved to
+    the current device by the environment. The legacy ``learner_device`` argument is
+    used only by callers without a composed training configuration.
     """
 
     result = dict(env_cfg_override) if env_cfg_override is not None else {}
-    if _normalize_backend(backend_type) not in _HOST_BRIDGE_TORCH_BACKENDS:
+    backend = _normalize_backend(backend_type)
+    if collector_tensor_device is not None:
+        device = str(collector_tensor_device).strip().lower()
+        if device not in {"cpu", "cuda"}:
+            raise ValueError(
+                "training.collector_tensor_device must be 'cpu' or 'cuda'; "
+                f"got {collector_tensor_device!r}"
+            )
+        if backend not in _COLLECTOR_TENSOR_BACKENDS:
+            if device == "cuda":
+                raise ValueError(
+                    "training.collector_tensor_device=cuda is supported only for "
+                    f"the MuJoCo HOST_BRIDGE backend; got {backend_type!r}"
+                )
+            return result
+        result["manager_torch_device"] = device
+        return result
+
+    if backend not in _COLLECTOR_TENSOR_BACKENDS:
         return result
     if learner_device is None:
         return result

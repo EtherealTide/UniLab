@@ -106,6 +106,9 @@ def build_ppo_env_cfg_override(cfg: DictConfig) -> dict[str, Any]:
     result = apply_manager_torch_device_override(
         result,
         str(cfg.training.sim_backend),
+        collector_tensor_device=str(
+            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+        ),
         learner_device=learner_device,
     )
     if world_size > 1:
@@ -138,6 +141,9 @@ def build_ppo_play_env_cfg_override(cfg: DictConfig) -> dict[str, Any]:
     return apply_manager_torch_device_override(
         result,
         str(cfg.training.sim_backend),
+        collector_tensor_device=str(
+            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+        ),
         learner_device=learner_device,
     )
 
@@ -334,6 +340,9 @@ def play_rsl_rl(cfg: DictConfig, device: str) -> str | None:
     play_env_cfg_override = apply_manager_torch_device_override(
         play_env_cfg_override,
         str(cfg.training.sim_backend),
+        collector_tensor_device=str(
+            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+        ),
         learner_device=device,
     )
     session, _policy_obs_mode, _checkpoint_path = create_rsl_rl_playback_session(
@@ -497,6 +506,9 @@ def main(cfg: DictConfig) -> None:
     env_cfg_override = apply_manager_torch_device_override(
         env_cfg_override,
         str(cfg.training.sim_backend),
+        collector_tensor_device=str(
+            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+        ),
         learner_device=device,
     )
     seed_info = apply_configured_training_seed(cfg, torch_runtime=True, cuda=True)

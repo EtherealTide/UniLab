@@ -151,7 +151,39 @@ def test_backend_env_device_override_routes_rank_local_zero(
     assert routed["nested"] is owner_override["nested"]
 
 
-def test_manager_torch_device_override_routes_only_explicit_cuda() -> None:
+def test_collector_tensor_device_override_is_explicit_and_rank_local() -> None:
+    owner_override = {"manager_torch_device": "owner-cpu", "nested": {"keep": True}}
+
+    routed = apply_manager_torch_device_override(
+        owner_override,
+        "mujoco",
+        collector_tensor_device="cpu",
+        learner_device="cuda:3",
+    )
+    assert routed["manager_torch_device"] == "cpu"
+
+    routed = apply_manager_torch_device_override(
+        owner_override,
+        "mujoco",
+        collector_tensor_device="cuda",
+        learner_device="cuda:3",
+    )
+    assert routed["manager_torch_device"] == "cuda"
+    assert routed["nested"] is owner_override["nested"]
+    assert owner_override["manager_torch_device"] == "owner-cpu"
+
+    with pytest.raises(ValueError, match="training.collector_tensor_device"):
+        apply_manager_torch_device_override(
+            owner_override, "mujoco", collector_tensor_device="cuda:3"
+        )
+
+    with pytest.raises(ValueError, match="supported only for the MuJoCo"):
+        apply_manager_torch_device_override(
+            owner_override, "motrix", collector_tensor_device="cuda"
+        )
+
+
+def test_legacy_manager_torch_device_override_uses_playback_device() -> None:
     owner_override = {"manager_torch_device": "owner-cpu", "nested": {"keep": True}}
 
     routed = apply_manager_torch_device_override(owner_override, "mujoco", learner_device=None)
@@ -163,8 +195,6 @@ def test_manager_torch_device_override_routes_only_explicit_cuda() -> None:
 
     routed = apply_manager_torch_device_override(owner_override, "mujoco", learner_device="cuda:3")
     assert routed["manager_torch_device"] == "cuda:3"
-    assert routed["nested"] is owner_override["nested"]
-    assert owner_override["manager_torch_device"] == "owner-cpu"
 
     routed = apply_manager_torch_device_override(owner_override, "mujoco", learner_device="mps")
     assert routed["manager_torch_device"] == "owner-cpu"

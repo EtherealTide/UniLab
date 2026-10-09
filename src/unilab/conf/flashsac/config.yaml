@@ -65,6 +65,9 @@ training:
   wandb_notes: null
   wandb_mode: null
   sim_backend: mujoco
+  # Explicit MuJoCo HOST_BRIDGE Manager carrier family. CPU remains the default
+  # even when automatic learner selection resolves to CUDA.
+  collector_tensor_device: cpu
   # null preserves independent CUDA contexts; 'mps' explicitly requests CUDA
   # process sharing and fails closed if the host daemon is not already valid.
   # Manage an explicit user-owned daemon with `uni-cumps`.

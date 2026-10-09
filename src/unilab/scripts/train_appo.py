@@ -103,6 +103,9 @@ def build_appo_runner_kwargs(
     routed_env_cfg_override = apply_manager_torch_device_override(
         routed_env_cfg_override,
         str(cfg.training.sim_backend),
+        collector_tensor_device=str(
+            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+        ),
         learner_device=_env_carrier_device(cfg, collector_device),
     )
 
@@ -289,6 +292,9 @@ def play_appo(
     play_env_cfg_override = apply_manager_torch_device_override(
         play_env_cfg_override,
         str(cfg.training.sim_backend),
+        collector_tensor_device=str(
+            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+        ),
         learner_device=device,
     )
     session, _policy_obs_mode, _checkpoint_path = create_appo_playback_session(
@@ -432,6 +438,9 @@ def main(cfg: DictConfig) -> None:
     env_cfg_override = apply_manager_torch_device_override(
         env_cfg_override,
         str(cfg.training.sim_backend),
+        collector_tensor_device=str(
+            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+        ),
         learner_device=_env_carrier_device(cfg, collector_device, runner_device=learner_device),
     )
     seed_info = apply_configured_training_seed(cfg, torch_runtime=True, cuda=True)
