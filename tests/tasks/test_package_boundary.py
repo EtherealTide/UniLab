@@ -345,3 +345,51 @@ def test_production_numpy_imports_are_explicit_leaves() -> None:
     ]
 
     assert violations == [], f"unallowlisted production NumPy imports remain: {violations}"
+
+
+_MANAGER_HOST_FIELD_PREFIXES = ("root_link_", "body_link_")
+_MANAGER_HOST_FIELD_NAMES = frozenset(
+    {
+        "joint_pos",
+        "joint_vel",
+        "joint_pos_biased",
+        "projected_gravity_b",
+        "gravity_vec_w",
+        "soft_joint_pos_limits",
+    }
+)
+
+
+def test_manager_runtime_does_not_read_entity_public_host_carriers() -> None:
+    """Generic Manager terms must not resurrect hidden Entity host fallbacks."""
+
+    runtime_roots = (
+        _REPO_ROOT / "src" / "unilab" / "managers",
+        _REPO_ROOT / "src" / "unilab" / "envs",
+        _REPO_ROOT / "src" / "unilab" / "tasks",
+    )
+    offenders: list[tuple[str, int, str]] = []
+    for root in runtime_roots:
+        for path in sorted(root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not (
+                    isinstance(node, ast.Attribute)
+                    and node.attr in _MANAGER_HOST_FIELD_NAMES
+                    or (
+                        isinstance(node, ast.Attribute)
+                        and node.attr.startswith(_MANAGER_HOST_FIELD_PREFIXES)
+                    )
+                ):
+                    continue
+                value = node.value
+                if isinstance(value, ast.Attribute) and value.attr == "data":
+                    offenders.append(
+                        (
+                            path.relative_to(_REPO_ROOT).as_posix(),
+                            node.lineno,
+                            node.attr,
+                        )
+                    )
+
+    assert offenders == [], f"Manager Entity host-carrier reads remain: {offenders}"

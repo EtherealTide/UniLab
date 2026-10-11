@@ -136,17 +136,23 @@ class UniformVelocityCommand(CommandTerm):
         packed = read_plan.sensor_names.get(self.cfg.entity_name, ()) if read_plan else ()
         # The scene pack negotiates backend-local aliases (Go2 ``local_linvel``/
         # ``gyro``) but the semantic metric remains the canonical IMU contract.
-        if len(names) == 2 and names[0] in packed and names[1] in packed:
+        if read_plan is None:
+            # Manager construction and command reset before plan compilation do
+            # not consume metrics; defer to the compiled packed phase.
+            return torch.zeros((self.num_envs, 3)), torch.zeros((self.num_envs, 3))
+        aliases = self.packed_sensor_aliases
+        resolved_names = tuple(
+            next((local for local in aliases.get(name, (name,)) if local in packed), name)
+            for name in names
+        )
+        if len(names) == 2 and set(resolved_names).issubset(packed):
             entity = self._env.scene[self.cfg.entity_name]
-            assert read_plan is not None
-            views = read_plan.sensor_tensor_views(entity, names).values
-            return views[names[0]], views[names[1]]
-        # HOST_BRIDGE owners use their public entity facade. This is an
-        # explicit carrier choice, not a hidden device transfer.
-        device = getattr(self._env, "device", torch.device("cpu"))
-        return (
-            torch.as_tensor(self.robot.data.root_link_lin_vel_b, device=device),
-            torch.as_tensor(self.robot.data.root_link_ang_vel_b, device=device),
+            views = read_plan.sensor_tensor_views(entity, resolved_names).values
+            return views[resolved_names[0]], views[resolved_names[1]]
+        raise NotImplementedError(
+            "UniformVelocityCommand term 'twist' requires sensors "
+            f"{names} in the Manager packed Torch read plan; "
+            f"compiled={tuple(packed)}"
         )
 
     def _update_metrics(self, env_ids: torch.Tensor | None = None) -> None:

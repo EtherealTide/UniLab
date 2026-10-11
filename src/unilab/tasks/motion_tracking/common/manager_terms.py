@@ -1594,14 +1594,15 @@ def joint_pos_limits(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """Penalize selected joint-limit violations through the entity facade."""
+    """Penalize selected joint-limit violations through the packed joint read."""
     asset = cast("Entity", env.scene[asset_cfg.name])
     read_plan = getattr(env.scene, "_tensor_read_plan", None)
-    joint_pos = (
-        read_plan.joint_tensor_view(asset).joint_pos
-        if read_plan is not None
-        else torch.as_tensor(asset.data.joint_pos, dtype=torch.float32, device=env.device)
-    )[:, asset_cfg.joint_ids]
+    if read_plan is None:
+        raise NotImplementedError(
+            "Motion tracking term 'joint_pos_limits' requires the Manager packed "
+            "joint-state read plan"
+        )
+    joint_pos = read_plan.joint_tensor_view(asset).joint_pos[:, asset_cfg.joint_ids]
     limits = asset.data.soft_joint_pos_limits_torch(env.device)[asset_cfg.joint_ids]
     lower_violation = (limits[:, 0] - joint_pos).clamp_min(0.0)
     upper_violation = (joint_pos - limits[:, 1]).clamp_min(0.0)

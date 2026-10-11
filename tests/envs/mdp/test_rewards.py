@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 import torch
 
+from unilab.base.entity import EntityTensorBodyStateView, EntityTensorStateView
 from unilab.envs import mdp
 from unilab.managers import RewardManager, RewardTermCfg
 from unilab.managers._types import ManagerBasedRlEnv
@@ -20,6 +21,8 @@ class _Entity:
     body_names = ("base", "torso")
     num_joints = 3
     num_bodies = 2
+    name = "robot"
+    _root_body_name = "base"
 
     def __init__(self) -> None:
         self.data = SimpleNamespace(
@@ -59,10 +62,18 @@ class _Entity:
                 ],
                 dtype=np.float32,
             ),
+            body_link_lin_vel_w=np.asarray(
+                [
+                    [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                    [[0.0, 0.5, 0.25], [0.0, 0.5, 0.25]],
+                    [[-0.5, 0.0, -0.2], [-0.5, 0.0, -0.2]],
+                ],
+                dtype=np.float32,
+            ),
             body_link_quat_w=np.asarray(
                 [
                     [[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
-                    [[0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+                    [[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
                     [[np.sqrt(0.5), 0.0, np.sqrt(0.5), 0.0], [1.0, 0.0, 0.0, 0.0]],
                 ],
                 dtype=np.float32,
@@ -73,6 +84,9 @@ class _Entity:
             ),
             soft_joint_pos_limits_torch=lambda device: torch.as_tensor(
                 [[-0.15, 0.15], [-0.3, 0.3], [-0.4, 0.4]], dtype=torch.float32, device=device
+            ),
+            gravity_vec_w_torch=lambda device: torch.as_tensor(
+                [[0.0, 0.0, -1.0]] * 3, dtype=torch.float32, device=device
             ),
         )
 
@@ -96,11 +110,13 @@ class _CommandManager:
 
 def _env() -> ManagerBasedRlEnv:
     action = torch.tensor([[1.0, 2.0], [0.5, -0.5], [-1.0, 0.25]], dtype=torch.float32)
+    entity = _Entity()
+    plan = _ReadPlan(entity)
     return cast(
         ManagerBasedRlEnv,
         SimpleNamespace(
             num_envs=3,
-            scene={"robot": _Entity()},
+            scene=_Scene(entity, plan),
             action_manager=SimpleNamespace(
                 action=action,
                 prev_action=action - 0.25,
@@ -111,6 +127,54 @@ def _env() -> ManagerBasedRlEnv:
             max_episode_length_s=2.0,
         ),
     )
+
+
+class _ReadPlan:
+    def __init__(self, entity: _Entity):
+        self.entity = entity
+
+    def joint_tensor_view(self, entity):
+        assert entity is self.entity
+        return EntityTensorStateView(
+            joint_pos=torch.as_tensor(self.entity.data.joint_pos, dtype=torch.float32),
+            joint_vel=torch.as_tensor(self.entity.data.joint_vel, dtype=torch.float32),
+        )
+
+    def body_tensor_view(self, entity, body_names):
+        assert entity is self.entity
+        names = tuple(body_names)
+        indices = [self.entity.body_names.index(name) for name in names]
+        return EntityTensorBodyStateView(
+            body_names=names,
+            pos_w=torch.zeros((3, len(names), 3), dtype=torch.float32),
+            quat_w=torch.as_tensor(
+                self.entity.data.body_link_quat_w[:, indices], dtype=torch.float32
+            ),
+            lin_vel_w=_world_vectors(self.entity.data.body_link_lin_vel_w, indices),
+            ang_vel_w=_world_vectors(self.entity.data.body_link_ang_vel_w, indices),
+        )
+
+
+def _world_vectors(values: np.ndarray, indices: list[int]) -> torch.Tensor:
+    return torch.as_tensor(values[:, indices], dtype=torch.float32)
+
+
+def _world_to_body(quat: np.ndarray, vector: np.ndarray) -> np.ndarray:
+    q = np.asarray(quat, dtype=np.float32)
+    conjugate = np.concatenate((q[:, 0:1], -q[:, 1:4]), axis=-1)
+    xyz = conjugate[:, 1:4]
+    cross = np.cross(xyz, vector)
+    return vector + 2.0 * conjugate[:, 0:1] * cross + 2.0 * np.cross(xyz, cross)
+
+
+def _projected_gravity(quat: np.ndarray) -> np.ndarray:
+    return _world_to_body(quat, np.asarray([[0.0, 0.0, -1.0]] * len(quat), dtype=np.float32))
+
+
+class _Scene(dict):
+    def __init__(self, entity: _Entity, plan: _ReadPlan):
+        super().__init__({"robot": entity})
+        self._tensor_read_plan = plan
 
 
 def test_generic_reward_terms_match_pinned_numpy_semantics() -> None:
@@ -127,7 +191,8 @@ def test_generic_reward_terms_match_pinned_numpy_semantics() -> None:
     np.testing.assert_allclose(mdp.action_acc_l2(env), 2 * 0.25**2)
     np.testing.assert_allclose(
         mdp.flat_orientation_l2(env),
-        np.sum(np.square(entity.data.projected_gravity_b[:, :2]), axis=1),
+        [0.0, 0.0, 1.0],
+        atol=1e-6,
     )
 
 
@@ -165,11 +230,17 @@ def test_velocity_tracking_terms_match_pinned_equations() -> None:
     entity = cast(Any, env.scene["robot"])
     command = cast(np.ndarray, env.command_manager.get_command("twist"))
 
-    linear_error = np.sum(
-        np.square(command[:, :2] - entity.data.root_link_lin_vel_b[:, :2]), axis=1
-    ) + np.square(entity.data.root_link_lin_vel_b[:, 2])
-    angular_error = np.square(command[:, 2] - entity.data.root_link_ang_vel_b[:, 2]) + np.sum(
-        np.square(entity.data.root_link_ang_vel_b[:, :2]), axis=1
+    linvel_b = _world_to_body(
+        entity.data.body_link_quat_w[:, 0], entity.data.body_link_lin_vel_w[:, 0]
+    )
+    angvel_b = _world_to_body(
+        entity.data.body_link_quat_w[:, 0], entity.data.body_link_ang_vel_w[:, 0]
+    )
+    linear_error = np.sum(np.square(command[:, :2] - linvel_b[:, :2]), axis=1) + np.square(
+        linvel_b[:, 2]
+    )
+    angular_error = np.square(command[:, 2] - angvel_b[:, 2]) + np.sum(
+        np.square(angvel_b[:, :2]), axis=1
     )
     np.testing.assert_allclose(
         mdp.track_linear_velocity(env, std=0.5, command_name="twist"),

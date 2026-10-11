@@ -820,6 +820,7 @@ class EntityData:
         self._soft_joint_pos_limits = soft_joint_pos_limits
         self._soft_joint_pos_limits_tensor: torch.Tensor | None = None
         self._gravity_vec_w = gravity_vec_w
+        self._gravity_vec_w_tensor: torch.Tensor | None = None
         self._encoder_bias = (
             None
             if default_joint_pos is None
@@ -932,6 +933,20 @@ class EntityData:
     def gravity_vec_w(self) -> np.ndarray:
         """Read-only world-frame unit gravity vector for every environment."""
         return self._require(self._gravity_vec_w, "world-frame gravity")
+
+    def gravity_vec_w_torch(self, device: str | torch.device) -> torch.Tensor:
+        """Return the immutable world-frame gravity vector as a cached Torch table."""
+        resolved = torch.device(device)
+        if self._gravity_vec_w_tensor is None or self._gravity_vec_w_tensor.device != resolved:
+            source = self.gravity_vec_w
+            self._gravity_vec_w_tensor = (
+                source.to(device=resolved, dtype=torch.float32)
+                if isinstance(source, torch.Tensor)
+                else torch.from_numpy(np.array(source, copy=True)).to(
+                    device=resolved, dtype=torch.float32
+                )
+            )
+        return self._gravity_vec_w_tensor
 
     @property
     def root_link_pose_w(self) -> np.ndarray:
