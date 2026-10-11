@@ -183,6 +183,19 @@ class EventManager(ManagerBase):
                     )
         return {}
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        """Clear class-term state through the issue #2285 fixed-width mask."""
+        for mode_cfg in self._mode_class_term_cfgs.values():
+            for term_cfg in mode_cfg:
+                reset_mask_impl = getattr(term_cfg.func, "reset_mask", None)
+                if not callable(reset_mask_impl):
+                    raise NotImplementedError(
+                        f"EventManager stateful term '{type(term_cfg.func).__name__}' "
+                        "does not define the issue #2285 mask-preserving reset boundary"
+                    )
+                reset_mask_impl(reset_mask)
+        return {}
+
     def apply(
         self,
         mode: EventMode,
