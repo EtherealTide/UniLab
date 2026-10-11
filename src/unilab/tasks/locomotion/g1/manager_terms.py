@@ -838,6 +838,9 @@ class weighted_pose(ManagerTermBase):
             )
         return (self._weights * (position - default).square()).sum(dim=1)
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+        del reset_mask
+
 
 class upper_body_pose(weighted_pose):
     """Weighted L2 pose penalty with the twelve leg joints zeroed out."""
