@@ -139,8 +139,57 @@ class _TensorResetBackend(_Backend):
         return {"ok": True}
 
 
+class _PackedTensorResetBackend(_TensorResetBackend):
+    """CPU fake delegating composition to the public UniSim transaction."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.mocap_poses = np.tile([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], (self.num_envs, 1))
+        self.tensor_mocap_calls: list[tuple[str, torch.Tensor, torch.Tensor]] = []
+
+    def get_tensor_capabilities(self):
+        capabilities = super().get_tensor_capabilities()
+        return replace(
+            capabilities,
+            packed_reset=True,
+            packed_reset_mocap=True,
+            packed_reset_fields=frozenset(
+                (RESET_TERM_KP, RESET_TERM_KD, RESET_TERM_BODY_MASS, "gravity")
+            ),
+        )
+
+    def begin_packed_reset(self, *, device=None):
+        from unisim.backend.packed_reset import TorchPackedResetComposer
+
+        return TorchPackedResetComposer(self, device=device)
+
+    def bind_mocap_pose(self, body_name: str):
+        return BackendMocapPoseBinding(
+            self.backend_type,
+            body_name,
+            self.num_envs,
+            self.mocap_poses[0].copy(),
+            lambda: self.mocap_poses,
+            lambda ids, poses: self.mocap_poses.__setitem__(ids, poses),
+        )
+
+    def set_mocap_pose_tensor(self, body_name, env_indices, poses):
+        self.tensor_mocap_calls.append((body_name, env_indices.clone(), poses.clone()))
+        ids = env_indices.detach().cpu().numpy()
+        self.mocap_poses[ids] = poses.detach().cpu().numpy()
+
+
 def _transaction(backend: _Backend) -> ResetStateTransaction:
     return ResetStateTransaction(cast(SimBackend, backend))
+
+
+_requires_packed_reset = pytest.mark.skipif(
+    not hasattr(
+        TensorLifecycleCapabilities(execution=TensorExecution.UNSUPPORTED),
+        "packed_reset",
+    ),
+    reason="public packed reset transaction requires a newer unisim-core release",
+)
 
 
 class _ManipulationBackend(_Backend):
@@ -1392,6 +1441,130 @@ def test_tensor_reset_randomization_merges_column_disjoint_terms() -> None:
         torch.tensor([[11.0, 20.0, 31.0], [12.0, 20.0, 32.0]]),
     )
     assert randomization.kd is None
+
+
+@_requires_packed_reset
+def test_packed_transaction_commits_state_through_public_composer() -> None:
+    backend = _PackedTensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    rows = torch.tensor([1, 3], dtype=torch.int64)
+
+    with transaction.scoped_device_event_tensor(rows):
+        transaction.write_joint_state_tensor(
+            rows,
+            np.array([1], dtype=np.int64),
+            np.array([2], dtype=np.int64),
+            torch.tensor([[0.25], [0.5]]),
+            torch.tensor([[1.5], [2.5]]),
+            term_name="joint_reset",
+        )
+
+    assert len(backend.tensor_reset_calls) == 1
+    committed_rows, qpos, qvel, randomization = backend.tensor_reset_calls[0]
+    torch.testing.assert_close(committed_rows, rows)
+    torch.testing.assert_close(qpos[:, 1], torch.tensor([0.25, 0.5]))
+    torch.testing.assert_close(qvel[:, 2], torch.tensor([1.5, 2.5]))
+    assert randomization is None
+    assert transaction.last_set_state_timing_ms["packed_reset_total_ms"] >= 0.0
+
+
+@_requires_packed_reset
+def test_packed_tensor_transaction_commits_mocap_only_through_public_composer() -> None:
+    backend = _PackedTensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    transaction.bind_mocap_pose("palm")
+    rows = torch.tensor([1, 3], dtype=torch.int64)
+    poses = np.array(
+        ((1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0), (4.0, 5.0, 6.0, 1.0, 0.0, 0.0, 0.0)),
+        dtype=np.float32,
+    )
+
+    with transaction.scoped_device_event_tensor(rows):
+        transaction.write_mocap_pose("palm", rows, poses, term_name="mocap_reset")
+
+    assert backend.tensor_reset_calls == []
+    assert len(backend.tensor_mocap_calls) == 1
+    body_name, committed_rows, committed_poses = backend.tensor_mocap_calls[0]
+    assert body_name == "palm"
+    torch.testing.assert_close(committed_rows, rows)
+    torch.testing.assert_close(committed_poses, torch.as_tensor(poses))
+    np.testing.assert_allclose(backend.mocap_poses[[1, 3]], poses, rtol=0.0)
+    assert transaction.last_commit_had_writes
+    assert transaction.last_set_state_timing_ms["packed_reset_total_ms"] >= 0.0
+
+
+@_requires_packed_reset
+def test_packed_transaction_owns_dr_merge_and_baselines() -> None:
+    backend = _PackedTensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    _bind_device_mass(transaction)
+
+    with transaction.scoped_device_event_tensor(torch.tensor([0, 1], dtype=torch.int64)):
+        transaction.write_randomization_tensor(
+            RESET_TERM_BODY_MASS,
+            torch.tensor([0, 1], dtype=torch.int64),
+            np.array([0], dtype=np.int32),
+            torch.tensor([[7.0], [8.0]]),
+            term_name="randomize_rigid_body_mass",
+        )
+    with transaction.scoped_device_event_tensor(torch.tensor([1, 2], dtype=torch.int64)):
+        transaction.write_randomization_tensor(
+            RESET_TERM_BODY_MASS,
+            torch.tensor([1, 2], dtype=torch.int64),
+            np.array([1], dtype=np.int32),
+            torch.tensor([[9.0], [10.0]]),
+            term_name="randomize_rigid_body_mass",
+        )
+
+    assert len(backend.tensor_reset_calls) == 2
+    randomization = backend.tensor_reset_calls[1][3]
+    assert isinstance(randomization, TensorResetRandomizationPayload)
+    torch.testing.assert_close(
+        randomization.body_mass,
+        torch.tensor([[8.0, 9.0], [2.0, 10.0]]),
+    )
+
+
+@_requires_packed_reset
+def test_host_commit_promotes_public_packed_reset_baseline() -> None:
+    backend = _PackedTensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    rows = torch.arange(backend.num_envs, dtype=torch.int64)
+    columns = np.array([0, 1], dtype=np.int32)
+    transaction.bind_body_mass_write(columns, term_name="startup_mass")
+
+    with transaction.scoped(rows):
+        startup_mass = torch.full((backend.num_envs, 2), 6.0)
+        transaction.write_body_mass(rows, columns, startup_mass, term_name="startup_mass")
+        transaction.record_startup_randomization(
+            RESET_TERM_BODY_MASS,
+            rows,
+            columns,
+            startup_mass,
+            term_name="startup_mass",
+        )
+
+    selected = torch.tensor([1, 2], dtype=torch.int64)
+    with transaction.scoped_device_event_tensor(selected):
+        transaction.write_randomization_tensor(
+            RESET_TERM_BODY_MASS,
+            selected,
+            np.array([1], dtype=np.int32),
+            torch.tensor([[9.0], [10.0]]),
+            term_name="later_reset_mass",
+        )
+
+    randomization = backend.tensor_reset_calls[0][3]
+    assert isinstance(randomization, TensorResetRandomizationPayload)
+    torch.testing.assert_close(
+        randomization.body_mass[:, 0],
+        torch.tensor([6.0, 6.0]),
+    )
+    torch.testing.assert_close(randomization.body_mass[:, 1], torch.tensor([9.0, 10.0]))
 
 
 def test_tensor_reset_device_randomization_requires_declared_capability() -> None:
