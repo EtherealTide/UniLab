@@ -1663,6 +1663,10 @@ class _BodyTerm(ManagerTermBase):
             )
         return _command(self._env, command_name), _positive_std(std, term_name=type(self).__name__)
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+        """Issue #2285 mask boundary for stateless motion reward reads."""
+        del reset_mask
+
     @staticmethod
     def _body_reduce(
         command: MotionCommand,
