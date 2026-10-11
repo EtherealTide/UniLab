@@ -1023,6 +1023,10 @@ class G1PenaltyCurriculum(ManagerTermBase):
             "penalty_scale": self._current_scale,
         }
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+        """Issue #2285 mask boundary for the global curriculum state."""
+        del reset_mask
+
     def __call_mask__(
         self,
         env: _G1Env,
