@@ -362,6 +362,9 @@ class NullMetricsManager:
         del reset_mask
         return {}
 
+    def clear_episode_state_mask(self, reset_mask: torch.Tensor) -> None:
+        del reset_mask
+
     def compute_substep(self) -> None:
         pass
 
