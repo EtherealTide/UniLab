@@ -911,15 +911,15 @@ def _reward(env: _TestEnv) -> np.ndarray:
 
 
 def _joint_state_obs(env: _TestEnv) -> np.ndarray:
-    return torch.as_tensor(env.scene["robot"].data.joint_pos, dtype=torch.float32)
+    return torch.as_tensor(env.scene["robot"].data._host_joint_pos, dtype=torch.float32)
 
 
 def _joint_state_reward(env: _TestEnv) -> torch.Tensor:
-    return torch.as_tensor(env.scene["robot"].data.joint_pos[:, 0], dtype=torch.float32)
+    return torch.as_tensor(env.scene["robot"].data._host_joint_pos[:, 0], dtype=torch.float32)
 
 
 def _joint_state_termination(env: _TestEnv) -> torch.Tensor:
-    return torch.as_tensor(env.scene["robot"].data.joint_pos[:, 0]) > 100.0
+    return torch.as_tensor(env.scene["robot"].data._host_joint_pos[:, 0]) > 100.0
 
 
 def _mutate_joint_state_step_event(env: _TestEnv, env_ids: np.ndarray | None) -> None:
@@ -1719,8 +1719,9 @@ def test_named_keyframe_snapshot_is_shared_by_entity_and_reset_cold_path() -> No
     assert selected_qpos is not source_qpos
     assert selected_qpos is not None
     assert not selected_qpos.flags.writeable
-    np.testing.assert_array_equal(env.scene["robot"].data.default_joint_pos, 0.75)
-    assert not env.scene["robot"].data.default_joint_pos.flags.writeable
+    torch.testing.assert_close(
+        env.scene["robot"].data.default_joint_pos_torch(env.device), torch.full((2, 1), 0.75)
+    )
 
     source_qpos[:] = 9.0
     env.reset()
@@ -1850,14 +1851,20 @@ def test_real_mujoco_default_state_matches_qpos0_or_named_home(
     env = ManagerBasedRlEnv(cfg, backend, 2)
     try:
         robot = env.scene["robot"]
-        np.testing.assert_allclose(robot.data.default_root_state[:, 2], expected_root_z)
+        torch.testing.assert_close(
+            robot.data.default_root_state_torch(env.device)[:, 2],
+            torch.full((2,), expected_root_z, dtype=torch.float32),
+        )
         expected_batch = np.broadcast_to(expected_joint_pos, (2, expected_joint_pos.size))
-        np.testing.assert_allclose(robot.data.default_joint_pos, expected_batch)
+        torch.testing.assert_close(
+            robot.data.default_joint_pos_torch(env.device),
+            torch.as_tensor(np.broadcast_to(expected_joint_pos, (2, expected_joint_pos.size))),
+        )
 
         env.init_state()
 
-        np.testing.assert_allclose(robot.data.root_link_pos_w[:, 2], expected_root_z)
-        np.testing.assert_allclose(robot.data.joint_pos, expected_batch)
+        np.testing.assert_allclose(robot.data._host_root_link_pos_w[:, 2], expected_root_z)
+        np.testing.assert_allclose(robot.data._host_joint_pos, expected_batch)
     finally:
         env.close()
 

@@ -218,10 +218,18 @@ class UniformVelocityCommand(CommandTerm):
         return rng_owner.uniform(lower, upper, (count,), dtype=torch.float32)
 
     def _heading(self) -> torch.Tensor:
-        heading = self.robot.data.heading_w
-        if isinstance(heading, torch.Tensor):
-            return heading.to(device=self._device, dtype=torch.float32)
-        return torch.as_tensor(heading, dtype=torch.float32, device=self._device)
+        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        root_body_name = getattr(self.robot, "_root_body_name", None)
+        if read_plan is None or not isinstance(root_body_name, str) or not root_body_name:
+            # Command construction/reset does not consume heading; return the
+            # cold neutral value until the packed read plan is compiled.
+            return torch.zeros((self.num_envs,), dtype=torch.float32, device=self._device)
+        quat = read_plan.body_tensor_view(self.robot, (root_body_name,)).quat_w[:, 0, :]
+        w, x, y, z = quat.unbind(dim=-1)
+        return torch.atan2(
+            2.0 * (w * z + x * y),
+            1.0 - 2.0 * (y * y + z * z),
+        ).to(dtype=torch.float32)
 
     def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
         del env_ids

@@ -1160,13 +1160,13 @@ class MotionCommand(CommandTerm):
 
     def _seed_robot_state_torch_from_defaults(self) -> None:
         """Cold proxy path: seed immutable defaults before CUDA view binding."""
-        default_root = self.robot.data.default_root_state
-        if default_root is None:
+        try:
+            root = self.robot.data.default_root_state_torch(self._device)
+        except NotImplementedError:
             self._robot_body_pos_w.zero_()
             self._robot_body_quat_w.zero_()
             self._robot_body_quat_w[..., 0] = 1.0
         else:
-            root = self.robot.data.default_root_state_torch(self._device)
             self._robot_body_pos_w.copy_(root[:, None, 0:3])
             self._robot_body_quat_w.copy_(root[:, None, 3:7])
         self._robot_body_lin_vel_w.zero_()

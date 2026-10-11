@@ -89,24 +89,24 @@ def test_mjlab_fixture_real_mujoco_reset_step_and_reward() -> None:
         assert state.obs["obs"].shape == state.obs["critic"].shape == (8, 5)
         assert env.action_space.shape == (1,)
 
-        before = env.scene["cartpole"].data.joint_pos.copy()
+        before = env.scene["cartpole"].data._host_joint_pos.copy()
         ids = np.asarray([1, 6], dtype=np.int32)
         reset_obs, _ = env.reset(
             env_indices=torch.tensor(ids, dtype=torch.int64, device=env.device)
         )
-        after = env.scene["cartpole"].data.joint_pos.copy()
+        after = env.scene["cartpole"].data._host_joint_pos.copy()
         np.testing.assert_array_equal(after[[0, 2, 3, 4, 5, 7]], before[[0, 2, 3, 4, 5, 7]])
         assert reset_obs["obs"].shape == reset_obs["critic"].shape == (2, 5)
         assert np.all(np.abs(after[ids, 0]) <= 0.1)
         assert np.all(np.abs(after[ids, 1]) <= 0.034)
-        assert np.all(np.abs(env.scene["cartpole"].data.joint_vel[ids]) <= 0.01)
+        assert np.all(np.abs(env.scene["cartpole"].data._host_joint_vel[ids]) <= 0.01)
 
         actions = torch.full((8, 1), 0.25, dtype=torch.float32, device=env.device)
         state = env.step(actions)
         entity = env.scene["cartpole"]
-        hinge = entity.data.joint_pos[:, 1]
-        cart = entity.data.joint_pos[:, 0]
-        hinge_vel = entity.data.joint_vel[:, 1]
+        hinge = entity.data._host_joint_pos[:, 1]
+        cart = entity.data._host_joint_pos[:, 0]
+        hinge_vel = entity.data._host_joint_vel[:, 1]
         gaussian_scale = np.sqrt(-2.0 * np.log(0.1))
         quadratic_scale = np.sqrt(0.9)
         expected = (np.cos(hinge) + 1.0) / 2.0

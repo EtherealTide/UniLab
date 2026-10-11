@@ -38,7 +38,7 @@ from unisim.dr.types import (
     IntervalRandomizationPlan,
 )
 
-from unilab.base.rotation import np_quat_apply, np_quat_apply_inverse, np_yaw_from_quat
+from unilab.base.rotation import np_quat_apply
 
 if TYPE_CHECKING:
     from unilab.base.reset_state import ResetStateTransaction
@@ -270,7 +270,7 @@ class SceneTensorReadPlan:
         self._entities = MappingProxyType(dict(entities))
         self._sensor_names = MappingProxyType(dict(sensor_names))
         self._body_names = MappingProxyType(dict(body_names))
-        self._host_plan = host_plan
+        self._host_plan_value = host_plan
         self._packet_names = self._aggregate_packet_names()
         self._aggregate_body_views: dict[str, EntityTensorBodyStateView] = {}
         self._joint_column_indices: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
@@ -311,7 +311,7 @@ class SceneTensorReadPlan:
 
     @property
     def host_plan(self) -> HostBridgeTransferPlan | None:
-        return self._host_plan
+        return self._host_plan_value
 
     @property
     def ready(self) -> bool:
@@ -326,8 +326,8 @@ class SceneTensorReadPlan:
     def refresh(self) -> None:
         """Publish one full-batch packet for the current read phase."""
         self._require_not_closed()
-        if self._host_plan is not None:
-            packet = self._read_packet(self._host_plan.read_state_sensors)
+        if self._host_plan_value is not None:
+            packet = self._read_packet(self._host_plan_value.read_state_sensors)
         else:
             packet = self._reuse_stable_device_packet()
         self._publish_packet(packet)
@@ -340,8 +340,8 @@ class SceneTensorReadPlan:
         their stable public views through the same normal read path.
         """
         self._require_not_closed()
-        if self._host_plan is not None:
-            packet = self._read_packet(self._host_plan.read_selected_state_sensors)
+        if self._host_plan_value is not None:
+            packet = self._read_packet(self._host_plan_value.read_selected_state_sensors)
         else:
             packet = self._reuse_stable_device_packet()
         self._publish_packet(packet)
@@ -596,24 +596,24 @@ class SceneTensorReadPlan:
     @property
     def transfer_stats(self) -> dict[str, int]:
         self._require_open()
-        if self._host_plan is None:
+        if self._host_plan_value is None:
             return {}
-        return dict(self._host_plan.transfer_stats)
+        return dict(self._host_plan_value.transfer_stats)
 
     @property
     def last_timing(self) -> dict[str, float]:
         self._require_open()
-        if self._host_plan is None:
+        if self._host_plan_value is None:
             return {}
-        return dict(self._host_plan.last_timing)
+        return dict(self._host_plan_value.last_timing)
 
     def close(self) -> None:
         """Release the backend-owned packed read plan."""
         if self._closed:
             return
         try:
-            if self._host_plan is not None:
-                self._host_plan.close()
+            if self._host_plan_value is not None:
+                self._host_plan_value.close()
         finally:
             self._packet = MappingProxyType({})
             self._refreshed = False
@@ -774,12 +774,12 @@ def _state_selector_key(ids: np.ndarray | None) -> tuple[int, ...] | None:
 
 
 class EntityData:
-    """Hot-path NumPy state surface backed by cached backend IDs.
+    """Backend host adapter plus Torch cold tables owned by the entity facade.
 
-    Control writes use the environment's Torch control tensor. NumPy callers
-    remain supported for Manager terms that have not yet crossed that tensor
-    boundary; both paths publish into the same actuator layout without touching
-    backend-private state.
+    The remaining host getters and default arrays are explicit adapter internals;
+    Manager runtime reads use packed Torch views or cached Torch tables. Control
+    writes publish into the same actuator layout without touching backend-private
+    state.
     """
 
     def __init__(
@@ -859,7 +859,8 @@ class EntityData:
         return value
 
     @property
-    def root_link_pos_w(self) -> np.ndarray:
+    def _host_root_link_pos_w(self) -> np.ndarray:
+        """Root world position host adapter (explicit backend/test-only path)."""
         ids = self._require(self._root_body_ids, "root body state")
         return self._cached_getter(
             "body_pos_w",
@@ -869,7 +870,8 @@ class EntityData:
         )[:, 0]
 
     @property
-    def root_link_quat_w(self) -> np.ndarray:
+    def _host_root_link_quat_w(self) -> np.ndarray:
+        """Root world quaternion host adapter (explicit backend/test-only path)."""
         ids = self._require(self._root_body_ids, "root body state")
         return self._cached_getter(
             "body_quat_w",
@@ -879,7 +881,8 @@ class EntityData:
         )[:, 0]
 
     @property
-    def root_link_lin_vel_w(self) -> np.ndarray:
+    def _host_root_link_lin_vel_w(self) -> np.ndarray:
+        """Root world linear velocity host adapter (backend/test-only path)."""
         ids = self._require(self._root_body_ids, "root body state")
         return self._cached_getter(
             "body_lin_vel_w",
@@ -889,7 +892,8 @@ class EntityData:
         )[:, 0]
 
     @property
-    def root_link_ang_vel_w(self) -> np.ndarray:
+    def _host_root_link_ang_vel_w(self) -> np.ndarray:
+        """Root world angular velocity host adapter (backend/test-only path)."""
         ids = self._require(self._root_body_ids, "root body state")
         return self._cached_getter(
             "body_ang_vel_w",
@@ -899,7 +903,8 @@ class EntityData:
         )[:, 0]
 
     @property
-    def root_link_lin_vel_b(self) -> np.ndarray:
+    def _host_root_link_lin_vel_b(self) -> np.ndarray:
+        """Root body-frame linear velocity host adapter (backend/test-only)."""
         ids = self._require(self._root_body_ids, "root body state")
         return self._cached_getter(
             "body_lin_vel_b",
@@ -909,7 +914,8 @@ class EntityData:
         )[:, 0]
 
     @property
-    def root_link_ang_vel_b(self) -> np.ndarray:
+    def _host_root_link_ang_vel_b(self) -> np.ndarray:
+        """Root body-frame angular velocity host adapter (backend/test-only)."""
         ids = self._require(self._root_body_ids, "root body state")
         return self._cached_getter(
             "body_ang_vel_b",
@@ -919,26 +925,15 @@ class EntityData:
         )[:, 0]
 
     @property
-    def heading_w(self) -> np.ndarray:
-        """Root yaw in the world frame, derived from the backend quaternion view."""
-        return np_yaw_from_quat(self.root_link_quat_w)
-
-    @property
-    def projected_gravity_b(self) -> np.ndarray:
-        """Unit gravity vector projected into the root link frame."""
-        gravity = self._require(self._gravity_vec_w, "projected gravity")
-        return np_quat_apply_inverse(self.root_link_quat_w, gravity)
-
-    @property
-    def gravity_vec_w(self) -> np.ndarray:
-        """Read-only world-frame unit gravity vector for every environment."""
+    def _host_gravity_vec_w(self) -> np.ndarray:
+        """World gravity host source (backend/test-only; Torch table is public)."""
         return self._require(self._gravity_vec_w, "world-frame gravity")
 
     def gravity_vec_w_torch(self, device: str | torch.device) -> torch.Tensor:
         """Return the immutable world-frame gravity vector as a cached Torch table."""
         resolved = torch.device(device)
         if self._gravity_vec_w_tensor is None or self._gravity_vec_w_tensor.device != resolved:
-            source = self.gravity_vec_w
+            source = self._host_gravity_vec_w
             self._gravity_vec_w_tensor = (
                 source.to(device=resolved, dtype=torch.float32)
                 if isinstance(source, torch.Tensor)
@@ -948,25 +943,6 @@ class EntityData:
             )
         return self._gravity_vec_w_tensor
 
-    @property
-    def root_link_pose_w(self) -> np.ndarray:
-        return np.concatenate((self.root_link_pos_w, self.root_link_quat_w), axis=-1)
-
-    @property
-    def root_link_vel_w(self) -> np.ndarray:
-        return np.concatenate((self.root_link_lin_vel_w, self.root_link_ang_vel_w), axis=-1)
-
-    @property
-    def default_root_state(self) -> np.ndarray:
-        """Read-only 13-D community root state for every environment."""
-        if self._default_root_state is None:
-            detail = self._default_root_state_error or "root_body_name was not declared"
-            raise NotImplementedError(
-                f"Entity '{self._entity_name}' data capability 'default root state' is "
-                f"unavailable on backend '{self._backend_type}': {detail}"
-            )
-        return self._default_root_state
-
     def default_root_state_torch(self, device: str | torch.device) -> torch.Tensor:
         """Return the immutable default root state as a cached Torch table."""
         resolved = torch.device(device)
@@ -974,7 +950,13 @@ class EntityData:
             self._default_root_state_tensor is None
             or self._default_root_state_tensor.device != resolved
         ):
-            source = self.default_root_state
+            source = self._default_root_state
+            if source is None:
+                detail = self._default_root_state_error or "root_body_name was not declared"
+                raise NotImplementedError(
+                    f"Entity '{self._entity_name}' data capability 'default root state' is "
+                    f"unavailable on backend '{self._backend_type}': {detail}"
+                )
             self._default_root_state_tensor = (
                 source.to(device=resolved, dtype=torch.float32)
                 if isinstance(source, torch.Tensor)
@@ -985,31 +967,23 @@ class EntityData:
         return self._default_root_state_tensor
 
     @property
-    def joint_pos(self) -> np.ndarray:
+    def _host_joint_pos(self) -> np.ndarray:
+        """Joint position host adapter (backend/test-only; packed views are public)."""
         index = self._require(self._joint_pos_index, "joint position")
         return self._cached_getter("dof_pos", self._backend.get_dof_pos)[:, index]
 
     @property
-    def joint_vel(self) -> np.ndarray:
+    def _host_joint_vel(self) -> np.ndarray:
+        """Joint velocity host adapter (backend/test-only; packed views are public)."""
         index = self._require(self._joint_vel_index, "joint velocity")
         return self._cached_getter("dof_vel", self._backend.get_dof_vel)[:, index]
-
-    @property
-    def joint_pos_biased(self) -> np.ndarray:
-        """Joint positions with the manager-owned encoder bias applied."""
-        return self.joint_pos + self.encoder_bias
-
-    @property
-    def default_joint_pos(self) -> np.ndarray:
-        """Read-only per-environment default joint positions."""
-        return self._require(self._default_joint_pos, "default joint position")
 
     def default_joint_pos_torch(self, device: str | torch.device) -> torch.Tensor:
         """Return the cold-path default joint positions as a cached Torch tensor."""
         resolved = torch.device(device)
         cached = self._default_joint_pos_tensor
         if cached is None or cached.device != resolved:
-            source = self.default_joint_pos
+            source = self._require(self._default_joint_pos, "default joint position")
             cached = (
                 source.to(device=resolved, dtype=torch.float32)
                 if isinstance(source, torch.Tensor)
@@ -1020,17 +994,12 @@ class EntityData:
             self._default_joint_pos_tensor = cached
         return cached
 
-    @property
-    def default_joint_vel(self) -> np.ndarray:
-        """Read-only zero default velocities from the UniLab reset contract."""
-        return self._require(self._default_joint_vel, "default joint velocity")
-
     def default_joint_vel_torch(self, device: str | torch.device) -> torch.Tensor:
         """Return the cold-path default joint velocities as a cached Torch tensor."""
         resolved = torch.device(device)
         cached = self._default_joint_vel_tensor
         if cached is None or cached.device != resolved:
-            source = self.default_joint_vel
+            source = self._require(self._default_joint_vel, "default joint velocity")
             cached = (
                 source.to(device=resolved, dtype=torch.float32)
                 if isinstance(source, torch.Tensor)
@@ -1041,18 +1010,18 @@ class EntityData:
             self._default_joint_vel_tensor = cached
         return cached
 
-    @property
-    def soft_joint_pos_limits(self) -> np.ndarray:
-        """Read-only joint position limits in the declared entity joint order."""
-        return self._require(self._soft_joint_pos_limits, "joint position limits")
-
     def soft_joint_pos_limits_torch(self, device: str | torch.device) -> torch.Tensor:
         """Return the cold-path joint position limits as a cached Torch tensor."""
         resolved = torch.device(device)
         cached = self._soft_joint_pos_limits_tensor
         if cached is None or cached.device != resolved:
-            cached = torch.from_numpy(np.array(self.soft_joint_pos_limits, copy=True)).to(
-                device=resolved, dtype=torch.float32
+            source = self._require(self._soft_joint_pos_limits, "joint position limits")
+            cached = (
+                source.to(device=resolved, dtype=torch.float32)
+                if isinstance(source, torch.Tensor)
+                else torch.from_numpy(np.array(source, copy=True)).to(
+                    device=resolved, dtype=torch.float32
+                )
             )
             self._soft_joint_pos_limits_tensor = cached
         return cached
@@ -1097,22 +1066,6 @@ class EntityData:
             )
         self._encoder_bias_tensor = values
 
-    def update_encoder_bias(
-        self,
-        rows: np.ndarray,
-        columns: Sequence[int],
-        values: np.ndarray,
-    ) -> None:
-        """Update selected host-authoritative encoder-bias cells."""
-        bias = self.encoder_bias
-        column_array = np.asarray(columns, dtype=np.intp)
-        expected = (rows.size, column_array.size)
-        if values.shape != expected:
-            raise ValueError(f"encoder-bias values have shape {values.shape}; expected {expected}")
-        if not np.issubdtype(values.dtype, np.floating) or not np.isfinite(values).all():
-            raise ValueError("encoder-bias values must be finite floating data")
-        bias[np.ix_(rows, column_array)] = values
-
     def update_encoder_bias_tensor(
         self,
         rows: torch.Tensor,
@@ -1151,7 +1104,8 @@ class EntityData:
         return self._control_buffer
 
     @property
-    def body_link_pos_w(self) -> np.ndarray:
+    def _host_body_link_pos_w(self) -> np.ndarray:
+        """Body world position host adapter (backend/test-only)."""
         ids = self._require(self._body_ids, "body state")
         return self._cached_getter(
             "body_pos_w",
@@ -1161,7 +1115,8 @@ class EntityData:
         )
 
     @property
-    def body_link_quat_w(self) -> np.ndarray:
+    def _host_body_link_quat_w(self) -> np.ndarray:
+        """Body world quaternion host adapter (backend/test-only)."""
         ids = self._require(self._body_ids, "body state")
         return self._cached_getter(
             "body_quat_w",
@@ -1171,7 +1126,8 @@ class EntityData:
         )
 
     @property
-    def body_link_lin_vel_w(self) -> np.ndarray:
+    def _host_body_link_lin_vel_w(self) -> np.ndarray:
+        """Body world linear velocity host adapter (backend/test-only)."""
         ids = self._require(self._body_ids, "body state")
         return self._cached_getter(
             "body_lin_vel_w",
@@ -1181,7 +1137,8 @@ class EntityData:
         )
 
     @property
-    def body_link_ang_vel_w(self) -> np.ndarray:
+    def _host_body_link_ang_vel_w(self) -> np.ndarray:
+        """Body world angular velocity host adapter (backend/test-only)."""
         ids = self._require(self._body_ids, "body state")
         return self._cached_getter(
             "body_ang_vel_w",
@@ -1189,38 +1146,6 @@ class EntityData:
             ids,
             selector=self._body_state_key,
         )
-
-    @property
-    def body_link_pose_w(self) -> np.ndarray:
-        return np.concatenate((self.body_link_pos_w, self.body_link_quat_w), axis=-1)
-
-    def body_link_pos_w_rows(self, env_ids: np.ndarray) -> np.ndarray:
-        """Row-scoped variant of body_link_pos_w for partial-reset rebuilds."""
-        ids = self._require(self._body_ids, "body state")
-        return self._backend.get_body_pose_w_rows(env_ids, ids)[0]
-
-    def body_link_quat_w_rows(self, env_ids: np.ndarray) -> np.ndarray:
-        """Row-scoped variant of body_link_quat_w for partial-reset rebuilds."""
-        ids = self._require(self._body_ids, "body state")
-        return self._backend.get_body_pose_w_rows(env_ids, ids)[1]
-
-    def body_link_lin_vel_w_rows(self, env_ids: np.ndarray) -> np.ndarray:
-        """Row-scoped variant of body_link_lin_vel_w for partial-reset rebuilds."""
-        ids = self._require(self._body_ids, "body state")
-        return self._backend.get_body_lin_vel_w_rows(env_ids, ids)
-
-    def body_link_ang_vel_w_rows(self, env_ids: np.ndarray) -> np.ndarray:
-        """Row-scoped variant of body_link_ang_vel_w for partial-reset rebuilds."""
-        ids = self._require(self._body_ids, "body state")
-        return self._backend.get_body_ang_vel_w_rows(env_ids, ids)
-
-    @property
-    def body_link_vel_w(self) -> np.ndarray:
-        return np.concatenate((self.body_link_lin_vel_w, self.body_link_ang_vel_w), axis=-1)
-
-    @property
-    def actuator_ctrl_range(self) -> np.ndarray:
-        return self._require(self._actuator_ctrl_range, "actuator control range")
 
     def write_ctrl(
         self,
@@ -3720,8 +3645,7 @@ class Entity:
         """Resolve entity-local and backend body columns for interval wrench writes.
 
         Returns readonly ``(local_ids, backend_ids)``; ``local_ids`` index the
-        entity's body-state views (e.g. ``data.body_link_quat_w``) and
-        ``backend_ids`` are the columns accepted by
+        entity's declared body order and ``backend_ids`` are the columns accepted by
         :meth:`apply_body_wrench_to_sim`.
         """
         if self._body_ids is None:
@@ -4295,16 +4219,11 @@ class EntityScene(Mapping[str, Entity]):
         """Pinned community-style read-only entity mapping."""
         return self._entities
 
-    @property
-    def env_origins(self) -> np.ndarray:
-        """Read-only per-environment origins; flat UniLab scenes default to zero."""
-        return self._env_origins
-
     def env_origins_torch(self, device: str | torch.device) -> torch.Tensor:
         """Return immutable per-environment origins as a cached Torch table."""
         resolved = torch.device(device)
         if self._env_origins_tensor is None or self._env_origins_tensor.device != resolved:
-            self._env_origins_tensor = torch.from_numpy(np.array(self.env_origins, copy=True)).to(
+            self._env_origins_tensor = torch.from_numpy(np.array(self._env_origins, copy=True)).to(
                 device=resolved, dtype=torch.float32
             )
         return self._env_origins_tensor

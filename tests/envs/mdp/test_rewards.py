@@ -283,8 +283,8 @@ def test_upright_matches_mjlab_projected_gravity_kernel() -> None:
 def test_joint_pos_limits_matches_mjlab_soft_limit_equation() -> None:
     env = _env()
     entity = cast(Any, env.scene["robot"])
-    joint_pos = entity.data.joint_pos
-    limits = entity.data.soft_joint_pos_limits
+    joint_pos = entity.data.joint_pos = np.asarray(entity.data.joint_pos)
+    limits = entity.data.soft_joint_pos_limits_torch(torch.device("cpu")).numpy()
     expected = -np.clip(joint_pos - limits[:, 0], min=None, max=0.0)
     expected += np.clip(joint_pos - limits[:, 1], min=0.0, max=None)
     np.testing.assert_allclose(mdp.joint_pos_limits(env), np.sum(expected, axis=1))
@@ -296,7 +296,8 @@ def test_joint_pos_limits_matches_mjlab_soft_limit_equation() -> None:
 
 def _posture_expected(entity: Any, std: np.ndarray, joint_ids: list[int]) -> np.ndarray:
     error_squared = np.square(
-        entity.data.joint_pos[:, joint_ids] - entity.data.default_joint_pos[:, joint_ids]
+        entity.data.joint_pos[:, joint_ids]
+        - entity.data.default_joint_pos_torch(torch.device("cpu")).numpy()[:, joint_ids]
     )
     return np.exp(-np.mean(error_squared / np.square(std), axis=1))
 

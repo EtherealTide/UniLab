@@ -307,11 +307,11 @@ def test_go2_flat_registry_executes_real_manager_runtime(backend: str, owner: st
         }
         assert isinstance(info, dict)
         np.testing.assert_allclose(
-            env.scene["robot"].data.default_joint_pos,
-            np.broadcast_to(_HOME_JOINT_POS, (2, 12)),
+            env.scene["robot"].data.default_joint_pos_torch(env.device),
+            torch.as_tensor(np.broadcast_to(_HOME_JOINT_POS, (2, 12))),
         )
         np.testing.assert_allclose(
-            env.scene["robot"].data.joint_pos,
+            env.scene["robot"].data._host_joint_pos,
             np.broadcast_to(_HOME_JOINT_POS, (2, 12)),
         )
 

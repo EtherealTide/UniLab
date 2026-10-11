@@ -86,6 +86,9 @@ def _env(seed: int = 7) -> tuple[ManagerBasedRlEnv, _Backend]:
     )
     scene._tensor_read_plan = SimpleNamespace(
         sensor_names={"robot": ("pelvis_local_linvel", "torso_gyro")},
+        body_tensor_view=lambda entity, names: SimpleNamespace(
+            quat_w=torch.from_numpy(backend.body_quat[:, 0]).unsqueeze(1)
+        ),
         sensor_tensor_views=lambda entity, names: SimpleNamespace(
             values={
                 name: torch.from_numpy(
