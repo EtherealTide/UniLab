@@ -1824,6 +1824,10 @@ class bad_anchor_pos_z_only(ManagerTermBase):
             - robot_anchor_pos[:, command.anchor_body_idx, 2]
         ).abs() > threshold
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+        """Issue #2285 mask boundary for the stateless termination read."""
+        del reset_mask
+
 
 def bad_anchor_ori(
     env: ManagerBasedRlEnv,
