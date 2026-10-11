@@ -1466,9 +1466,15 @@ class ManagerBasedRlEnv(TorchEnv):
             raise NotImplementedError(
                 "backend does not declare the temporary mask_selected_reset capability"
             )
-        full_refresh = self._cfg.reset_row_flow == "mask_full_refresh" and getattr(
-            capabilities, "mask_selected_reset_full_refresh", False
-        )
+        full_refresh = self._cfg.reset_row_flow == "mask_full_refresh"
+        if full_refresh and not getattr(capabilities, "mask_selected_reset_full_refresh", False):
+            raise NotImplementedError(
+                "mask_full_refresh requires the backend's declared "
+                "'mask_selected_reset_full_refresh' capability"
+            )
+        # Match the selected-row lifecycle: curriculum consumes the terminal
+        # episode state before reset clears the public counters.
+        self.curriculum_manager.compute_mask(reset_mask)
         self._reset_state.declare_packed_reset_device(read_plan.device)
         reset_context = self._reset_state.scoped_device_event_tensor_mask(
             reset_mask, full_refresh=full_refresh
@@ -1513,7 +1519,28 @@ class ManagerBasedRlEnv(TorchEnv):
             self.command_manager.compute_mask(dt=0.0, reset_mask=reset_mask)
             self.command_manager.post_compute_mask()
             reset_timing.update(getattr(self.command_manager, "last_post_compute_timing_ms", {}))
+            if reset_owner is None or not reset_owner.cfg.owns_observation_reset:
+                self.observation_manager.reset_mask(reset_mask)
             manager_obs = self.observation_manager.compute(update_history=True)
+
+        reset_managers: tuple[Any, ...] = (
+            *(() if reset_owner is not None and reset_owner.cfg.owns_action_reset else ()),
+            self.reward_manager,
+            *(() if reset_owner is not None and reset_owner.cfg.owns_metric_reset else ()),
+            self.curriculum_manager,
+            self.event_manager,
+            self.termination_manager,
+        )
+        for manager in reset_managers:
+            reset_mask_impl = getattr(manager, "reset_mask", None)
+            if not callable(reset_mask_impl):
+                raise NotImplementedError(
+                    f"{type(manager).__name__} does not define the issue #2285 "
+                    "mask-preserving reset boundary"
+                )
+            log.update(reset_mask_impl(reset_mask))
+        if reset_owner is not None:
+            log.update(reset_owner.reset_committed_mask(reset_mask))
 
         mapped_obs = self._map_observations(manager_obs)
         reset_obs = {
@@ -1526,6 +1553,9 @@ class ManagerBasedRlEnv(TorchEnv):
                 torch.where(reset_mask[:, None], reset_obs[name], self._state.obs[name])
             )
         self._autoreset_scattered_reset_obs = True
+        step_log = self._state.info.get("log")
+        if step_log:
+            log = {**step_log, **log}
         self._state.info["log"] = log
         self._state.terminated.logical_and_(~reset_mask)
         self._state.truncated.logical_and_(~reset_mask)
@@ -1549,6 +1579,20 @@ class ManagerBasedRlEnv(TorchEnv):
         seed: int | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+        if self._research_mask_reset:
+            reset_mask = torch.ones(
+                self.num_envs,
+                dtype=torch.bool,
+                device=self.device,
+            )
+            if env_indices is not None:
+                reset_mask.fill_(False)
+                reset_mask[self._normalize_reset_indices(env_indices)] = True
+            return self.reset_mask(
+                reset_mask,
+                seed=seed,
+                options=options,
+            )
         del options
         reset_timing: dict[str, float] = {}
         rows = self._normalize_reset_indices(env_indices)

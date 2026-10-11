@@ -103,6 +103,7 @@ class _TensorResetBackend(_Backend):
         self.default_body_mass = np.array([2.0, 4.0])
         self.tensor_reset_calls: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
         self.tensor_mask_reset_calls: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        self.tensor_mask_full_refresh_calls: list[bool] = []
 
     def tensor_execution(self):
         return TensorExecution.DEVICE_RESIDENT
@@ -146,9 +147,12 @@ class _TensorResetBackend(_Backend):
         self.tensor_reset_calls.append((rows.clone(), qpos.clone(), qvel.clone(), randomization))
         return {"ok": True}
 
-    def set_state_tensor_mask(self, reset_mask, qpos, qvel, randomization=None) -> dict:
+    def set_state_tensor_mask(
+        self, reset_mask, qpos, qvel, randomization=None, full_refresh=False
+    ) -> dict:
         assert randomization is None
         self.tensor_mask_reset_calls.append((reset_mask.clone(), qpos.clone(), qvel.clone()))
+        self.tensor_mask_full_refresh_calls.append(bool(full_refresh))
         return {"ok": True}
 
 
@@ -1543,3 +1547,16 @@ def test_tensor_reset_mask_commit_preserves_full_width_carrier() -> None:
     torch.testing.assert_close(committed_mask, mask)
     assert qpos.shape == (4, 9)
     assert qvel.shape == (4, 8)
+
+
+def test_tensor_reset_mask_full_refresh_uses_declared_capability() -> None:
+    if "mask_selected_reset" not in TensorLifecycleCapabilities.__dataclass_fields__:
+        pytest.skip("temporary mask reset capability is provided by the issue #2285 unisim sibling")
+    backend = _TensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    mask = torch.tensor([False, True, False, True])
+    with transaction.scoped_device_event_tensor_mask(mask, full_refresh=True):
+        transaction._tensor_has_writes = True  # noqa: SLF001 - research fixture
+
+    assert backend.tensor_mask_full_refresh_calls == [True]

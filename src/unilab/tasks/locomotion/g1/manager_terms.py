@@ -1143,6 +1143,12 @@ class G1WalkResetOwner(ResetOwner):
                 "G1WalkResetOwner requires ActionManager.clear_action_state_mask"
             )
         clear_action_state_mask(reset_mask)
+        clear_metrics_mask = getattr(env.metrics_manager, "clear_episode_state_mask", None)
+        if not callable(clear_metrics_mask):
+            raise NotImplementedError(
+                "G1WalkResetOwner requires MetricsManager.clear_episode_state_mask"
+            )
+        clear_metrics_mask(reset_mask)
         return {}
 
 

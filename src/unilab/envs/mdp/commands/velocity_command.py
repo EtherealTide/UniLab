@@ -300,7 +300,50 @@ class UniformVelocityCommand(CommandTerm):
             metric_value.masked_fill_(reset_mask, 0.0)
 
     def _update_command_mask(self, reset_mask: torch.Tensor) -> None:
-        del reset_mask
+        tensor = self._tensor_command
+        assert tensor is not None
+
+        if self.cfg.heading_command:
+            heading_error = (
+                torch.remainder(
+                    self._heading_target - self._heading() + torch.pi,
+                    2.0 * torch.pi,
+                )
+                - torch.pi
+            )
+            heading_command = torch.clamp(
+                self.cfg.heading_control_stiffness * heading_error,
+                min=self.cfg.ranges.ang_vel_z[0],
+                max=self.cfg.ranges.ang_vel_z[1],
+            )
+            tensor[:, 2] = torch.where(self._is_heading_env, heading_command, tensor[:, 2])
+
+        if bool(self._is_world_env.any()):
+            heading = self._heading()
+            cos_heading = torch.cos(heading)
+            sin_heading = torch.sin(heading)
+            velocity_x_w = self._world_command[:, 0]
+            velocity_y_w = self._world_command[:, 1]
+            world_x = cos_heading * velocity_x_w + sin_heading * velocity_y_w
+            world_y = -sin_heading * velocity_x_w + cos_heading * velocity_y_w
+            tensor[:, 0] = torch.where(self._is_world_env, world_x, tensor[:, 0])
+            tensor[:, 1] = torch.where(self._is_world_env, world_y, tensor[:, 1])
+
+        if bool(self._is_standing_env.any()):
+            tensor.copy_(
+                torch.where(
+                    self._is_standing_env[:, None],
+                    torch.zeros_like(tensor),
+                    tensor,
+                )
+            )
+            self._world_command.copy_(
+                torch.where(
+                    self._is_standing_env[:, None],
+                    torch.zeros_like(self._world_command),
+                    self._world_command,
+                )
+            )
 
     def post_compute_mask(self) -> None:
         self.post_compute()

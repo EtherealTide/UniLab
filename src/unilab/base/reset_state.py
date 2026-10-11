@@ -459,7 +459,6 @@ class ResetStateTransaction:
         self._tensor_has_writes = False
         self._tensor_owner_subset = False
         self._tensor_written_rows = None
-        self._tensor_domain_mask.copy_(reset_mask)
         self._tensor_dr_dense.clear()
         self._requesting_terms.clear()
         self._tensor_active = True

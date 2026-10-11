@@ -74,6 +74,27 @@ def test_reset_committed_mask_requires_action_manager_boundary() -> None:
         owner.reset_committed_mask(mask)
 
 
+def test_reset_committed_mask_clears_action_and_metric_state() -> None:
+    env = _env()
+    mask = torch.tensor([False, True, False, True])
+    cleared_actions: list[torch.Tensor] = []
+    cleared_metrics: list[torch.Tensor] = []
+
+    def clear_action_state_mask(reset_mask):
+        cleared_actions.append(reset_mask)
+
+    def clear_episode_state_mask(reset_mask):
+        cleared_metrics.append(reset_mask)
+
+    env.action_manager.clear_action_state_mask = clear_action_state_mask
+    env.metrics_manager.clear_episode_state_mask = clear_episode_state_mask
+    owner = G1WalkResetOwner(G1WalkResetOwnerCfg(func=lambda **kwargs: None), env)
+
+    assert owner.reset_committed_mask(mask) == {}
+    assert cleared_actions == [mask]
+    assert cleared_metrics == [mask]
+
+
 def test_owner_validates_command_and_rng_contract() -> None:
     cfg = G1WalkResetOwnerCfg(func=lambda **kwargs: None)
     env = _env()

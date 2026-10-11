@@ -36,21 +36,18 @@ class EpisodeLengthTracker:
         """
         if mask.shape != episode_lengths.shape:
             raise ValueError("episode lengths and update mask must share one shape")
-        count = int(mask.shape[0])
-        if count == 0:
+        selected_mask = mask.to(device=self._average.device, dtype=torch.bool)
+        count = selected_mask.sum()
+        if bool(count == 0):
             return
         lengths = episode_lengths.to(dtype=torch.float64, device=self._average.device)
         selected = torch.where(
-            mask.to(device=self._average.device),
+            selected_mask,
             lengths,
             torch.zeros_like(lengths),
         )
-        batch_average = selected.sum() / mask.sum().clamp(min=1)
-        weight = torch.as_tensor(
-            min(count / self.window_size, 1.0),
-            dtype=torch.float64,
-            device=self._average.device,
-        )
+        batch_average = selected.sum() / count.clamp(min=1)
+        weight = (count.to(dtype=torch.float64) / float(self.window_size)).clamp(max=1.0)
         self._average.add_((batch_average - self._average) * weight)
 
     @property

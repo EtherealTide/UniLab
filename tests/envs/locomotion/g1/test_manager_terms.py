@@ -337,6 +337,30 @@ def test_penalty_curriculum_repeated_construction_never_mutates_source_cfg():
         assert weight == pytest.approx(-0.0625)
 
 
+def test_penalty_curriculum_mask_weights_by_selected_episode_count():
+    env = _curriculum_env({"pose": -0.5}, num_envs=2048)
+    term = G1PenaltyCurriculum(
+        RewardTermCfg(
+            func=G1PenaltyCurriculum,
+            weight=1.0,
+            params={"initial_scale": 0.5, "min_scale": 0.0, "max_scale": 1.0},
+        ),
+        cast(Any, env),
+    )
+    env.episode_length_buf[:] = 500
+    env.reset_buf.zero_()
+    env.reset_buf[7] = True
+    mask = torch.zeros(2048, dtype=torch.bool)
+    mask[7] = True
+
+    term.__call_mask__(cast(Any, env), mask)
+
+    assert term._tracker.average.item() == pytest.approx(500.0)
+    # A single selected episode must receive the same moving-average weight
+    # as the selected-row lifecycle, not the full-batch carrier width.
+    assert term._tracker.average.item() != 0.0
+
+
 def test_penalty_curriculum_shrinks_scale_below_initial_when_min_allows():
     env = _curriculum_env({"pose": -0.5})
     term = G1PenaltyCurriculum(

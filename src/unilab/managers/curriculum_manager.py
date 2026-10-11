@@ -111,6 +111,18 @@ class CurriculumManager(ManagerBase):
             term_cfg.func.reset(env_ids=env_ids)
         return extras
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        """Clear state through the issue #2285 fixed-width mask."""
+        for term_name, term_cfg in zip(self._term_names, self._term_cfgs, strict=False):
+            reset_mask_impl = getattr(term_cfg.func, "reset_mask", None)
+            if not callable(reset_mask_impl):
+                raise NotImplementedError(
+                    f"CurriculumManager term '{term_name}' does not define the issue "
+                    "#2285 mask-preserving reset boundary"
+                )
+            reset_mask_impl(reset_mask)
+        return {}
+
     def compute(self, env_ids: torch.Tensor | slice | None = None) -> None:
         if env_ids is None:
             env_ids = slice(None)
@@ -181,3 +193,7 @@ class NullCurriculumManager:
 
     def compute_mask(self, reset_mask: torch.Tensor) -> None:
         del reset_mask
+
+    def reset_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        del reset_mask
+        return {}

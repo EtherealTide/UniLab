@@ -365,6 +365,50 @@ def test_metrics_reductions_substeps_reset_and_finite_failure(fake_env: FakeEnv)
     assert NullMetricsManager().reset() == {}
 
 
+def test_metrics_mask_reset_publishes_and_clears_only_selected_rows(fake_env: FakeEnv) -> None:
+    class MaskMetric:
+        def __init__(self) -> None:
+            self.cleared: torch.Tensor | None = None
+
+        def __call__(self, env: FakeEnv) -> torch.Tensor:
+            return torch.as_tensor(env.value)
+
+        def reset_mask(self, reset_mask: torch.Tensor) -> None:
+            self.cleared = reset_mask.clone()
+
+        def reset(self, env_ids: torch.Tensor | slice | None) -> None:
+            del env_ids
+
+    term = MaskMetric()
+    term_configs = [
+        MetricsTermCfg(func=term, reduce=reduce) for reduce in ("mean", "max", "sum", "last")
+    ]
+    manager = MetricsManager(
+        {name: cfg for name, cfg in zip(("mean", "max", "sum", "last"), term_configs)},
+        fake_env,
+    )
+    manager.compute_substep()
+    fake_env.value += 2
+    manager.compute_substep()
+    manager.compute()
+    before = {key: value.clone() for key, value in manager._episode_sums.items()}
+    mask = torch.tensor([False, True, False, True])
+
+    extras = manager.reset_mask(mask)
+
+    assert extras["Episode_Metrics/mean"] == pytest.approx(4.0)
+    assert extras["Episode_Metrics/max"] == pytest.approx(4.0)
+    assert extras["Episode_Metrics/sum"] == pytest.approx(4.0)
+    assert extras["Episode_Metrics/last"] == pytest.approx(4.0)
+    # The same callable backs all four reductions; manager-owned carriers
+    # prove selected-row clearing without requiring a stateful metric term.
+    for key, values in manager._episode_sums.items():
+        assert values[mask].sum().item() == 0.0
+        torch.testing.assert_close(values[~mask], before[key][~mask])
+    assert manager._step_count[mask].sum().item() == 0
+    assert manager._step_count[~mask].sum().item() > 0
+
+
 class TraceRecorder(RecorderTerm):
     def __init__(self, cfg: RecorderTermCfg, env: FakeEnv):
         super().__init__(cfg, env)

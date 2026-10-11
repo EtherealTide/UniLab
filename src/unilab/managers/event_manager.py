@@ -310,12 +310,11 @@ class EventManager(ManagerBase):
             min_step_count = term_cfg.min_step_count_between_reset
             term_mask = reset_mask
             if min_step_count:
-                last_triggered_step = self._reset_term_last_triggered_step_id[index]
-                triggered_at_least_once = self._reset_term_last_triggered_once[index]
-                term_mask = reset_mask & (
-                    (global_env_step_count - last_triggered_step) >= min_step_count
+                raise NotImplementedError(
+                    f"EventManager reset term '{self._mode_term_names['reset'][index]}' "
+                    "uses min_step_count_between_reset, which is not supported by the "
+                    "issue #2285 mask transaction"
                 )
-                term_mask |= reset_mask & (last_triggered_step == 0) & ~triggered_at_least_once
             self._reset_term_last_triggered_step_id[index].masked_fill_(
                 term_mask, global_env_step_count
             )
