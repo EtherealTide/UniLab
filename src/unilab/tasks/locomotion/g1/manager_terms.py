@@ -1375,6 +1375,10 @@ class G1WalkTerminationPack(ManagerTermBase):
     def entity_name(self) -> str:
         return self.cfg.entity_name
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+        """Issue #2285 mask boundary for the stateless termination pack."""
+        del reset_mask
+
     def __call__(self, env: _G1Env) -> torch.Tensor:
         read_plan = getattr(env.scene, "_tensor_read_plan", None)
         if read_plan is None or read_plan.device.type != self._device.type:
