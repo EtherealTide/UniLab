@@ -200,7 +200,7 @@ class ActionManager(ManagerBase):
         fallback in the experiment.
         """
         self._validate_reset_mask(reset_mask)
-        expanded = reset_mask.reshape(-1, *([1] * self._prev_action.ndim))
+        expanded = reset_mask[:, None]
         self._prev_action.copy_(
             torch.where(expanded, torch.zeros_like(self._prev_action), self._prev_action)
         )
