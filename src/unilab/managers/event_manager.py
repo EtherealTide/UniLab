@@ -285,6 +285,43 @@ class EventManager(ManagerBase):
             else:
                 term_cfg.func(self._env, env_ids, **term_cfg.params)
 
+    def apply_reset_mask(
+        self,
+        reset_mask: torch.Tensor,
+        *,
+        global_env_step_count: int,
+    ) -> None:
+        """Dispatch issue #2285's research-only fixed-shape reset events."""
+        if reset_mask.ndim != 1 or reset_mask.shape[0] != self.num_envs:
+            raise ValueError(f"EventManager research reset mask must have shape {(self.num_envs,)}")
+        if reset_mask.dtype != torch.bool or reset_mask.device != self._device:
+            raise ValueError(f"EventManager research reset mask must be bool on {self._device}")
+        for index, term_cfg in enumerate(self._mode_term_cfgs["reset"]):
+            term_func = getattr(term_cfg, "func", None)
+            term_mask_impl = getattr(term_func, "reset_mask", None)
+            if term_mask_impl is None:
+                term_mask_impl = getattr(term_func, "__call_mask__", None)
+            if not callable(term_mask_impl):
+                raise NotImplementedError(
+                    f"EventManager term '{self._mode_term_names['reset'][index]}' does not "
+                    "define the issue #2285 mask-preserving reset boundary; func="
+                    f"{getattr(term_func, '__name__', type(term_func).__name__)}"
+                )
+            min_step_count = term_cfg.min_step_count_between_reset
+            term_mask = reset_mask
+            if min_step_count:
+                last_triggered_step = self._reset_term_last_triggered_step_id[index]
+                triggered_at_least_once = self._reset_term_last_triggered_once[index]
+                term_mask = reset_mask & (
+                    (global_env_step_count - last_triggered_step) >= min_step_count
+                )
+                term_mask |= reset_mask & (last_triggered_step == 0) & ~triggered_at_least_once
+            self._reset_term_last_triggered_step_id[index].masked_fill_(
+                term_mask, global_env_step_count
+            )
+            self._reset_term_last_triggered_once[index].masked_fill_(term_mask, True)
+            term_mask_impl(self._env, term_mask, **term_cfg.params)
+
     def _prepare_terms(self) -> None:
         self._interval_term_time_left: list[torch.Tensor] = list()
         self._reset_term_last_triggered_step_id: list[torch.Tensor] = list()

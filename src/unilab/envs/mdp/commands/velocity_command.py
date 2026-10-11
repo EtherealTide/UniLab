@@ -209,6 +209,102 @@ class UniformVelocityCommand(CommandTerm):
         tensor.index_copy_(0, rows, samples)
         self._world_command.index_copy_(0, rows, samples)
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+        """Issue #2285 research-only full-width command resampling.
+
+        Samples are generated at full width, then merged into every public
+        command carrier only where the reset mask is true. The RNG stream is
+        intentionally full-width and differs from the production selected-row
+        stream; throughput—not seed parity—is the experiment's acceptance.
+        """
+        if (
+            reset_mask.shape != (self.num_envs,)
+            or reset_mask.dtype != torch.bool
+            or reset_mask.device != self._device
+        ):
+            raise ValueError(
+                f"{self.name} research reset mask must have shape {(self.num_envs,)}, "
+                f"bool dtype, and device {self._device}"
+            )
+        tensor = self._tensor_command
+        assert tensor is not None
+        samples = self._sample_full_width()
+        if self.cfg.heading_command:
+            assert self.cfg.ranges.heading is not None
+            self._heading_target.copy_(
+                torch.where(
+                    reset_mask,
+                    self._sample_uniform(
+                        self.cfg.ranges.heading[0],
+                        self.cfg.ranges.heading[1],
+                        self.num_envs,
+                    ),
+                    self._heading_target,
+                )
+            )
+            self._is_heading_env.copy_(
+                torch.where(
+                    reset_mask,
+                    self._sample_uniform(0.0, 1.0, self.num_envs) <= self.cfg.rel_heading_envs,
+                    self._is_heading_env,
+                )
+            )
+        self._is_standing_env.copy_(
+            torch.where(
+                reset_mask,
+                self._sample_uniform(0.0, 1.0, self.num_envs) <= self.cfg.rel_standing_envs,
+                self._is_standing_env,
+            )
+        )
+        self._is_world_env.copy_(
+            torch.where(
+                reset_mask,
+                self._sample_uniform(0.0, 1.0, self.num_envs) <= self.cfg.rel_world_envs,
+                self._is_world_env,
+            )
+        )
+        self._is_forward_env.copy_(
+            torch.where(
+                reset_mask,
+                self._sample_uniform(0.0, 1.0, self.num_envs) <= self.cfg.rel_forward_envs,
+                self._is_forward_env,
+            )
+        )
+        forward = self._is_forward_env & reset_mask
+        samples[:, 0] = torch.where(forward, samples[:, 0].abs().clamp(min=0.3), samples[:, 0])
+        samples[:, 1:] = torch.where(
+            forward[:, None], torch.zeros_like(samples[:, 1:]), samples[:, 1:]
+        )
+        self._merge_samples_masked(samples, reset_mask)
+        self.command_counter.masked_fill_(reset_mask, 0)
+        self.clear_episode_metrics_masked(reset_mask)
+
+    def _sample_full_width(self) -> torch.Tensor:
+        ranges = self.cfg.ranges
+        samples = torch.empty((self.num_envs, 3), dtype=torch.float32, device=self._device)
+        for column, bounds in enumerate((ranges.lin_vel_x, ranges.lin_vel_y, ranges.ang_vel_z)):
+            samples[:, column] = self._sample_uniform(bounds[0], bounds[1], self.num_envs)
+        return samples
+
+    def _merge_samples_masked(self, samples: torch.Tensor, reset_mask: torch.Tensor) -> None:
+        tensor = self._tensor_command
+        assert tensor is not None
+        expanded = reset_mask.reshape(-1, *([1] * (tensor.ndim - 1)))
+        tensor.copy_(torch.where(expanded, samples, tensor))
+        self._world_command.copy_(torch.where(expanded, samples, self._world_command))
+
+    def clear_episode_metrics_masked(self, reset_mask: torch.Tensor) -> None:
+        for metric_value in self.metrics.values():
+            if not isinstance(metric_value, torch.Tensor):
+                raise TypeError("CommandTerm metrics must be torch.Tensor carriers")
+            metric_value.masked_fill_(reset_mask, 0.0)
+
+    def _update_command_mask(self, reset_mask: torch.Tensor) -> None:
+        del reset_mask
+
+    def post_compute_mask(self) -> None:
+        self.post_compute()
+
     def _sample_uniform(self, lower: float, upper: float, count: int) -> torch.Tensor:
         rng_owner = getattr(self._env, "torch_rng", None)
         if not isinstance(rng_owner, TorchManagerRng):

@@ -11,6 +11,7 @@ import torch
 from unisim.backend.base import (
     BackendMocapPoseBinding,
     BackendRootStateLayout,
+    SelectedResetPublication,
     SimBackend,
     TensorDataPlane,
     TensorExecution,
@@ -101,6 +102,7 @@ class _TensorResetBackend(_Backend):
         )
         self.default_body_mass = np.array([2.0, 4.0])
         self.tensor_reset_calls: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        self.tensor_mask_reset_calls: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
 
     def tensor_execution(self):
         return TensorExecution.DEVICE_RESIDENT
@@ -118,6 +120,10 @@ class _TensorResetBackend(_Backend):
         return super().get_reset_term_default(term)
 
     def get_tensor_capabilities(self):
+        kwargs = {}
+        if "mask_selected_reset" in TensorLifecycleCapabilities.__dataclass_fields__:
+            kwargs["mask_selected_reset"] = True
+            kwargs["mask_selected_reset_full_refresh"] = True
         return TensorLifecycleCapabilities(
             execution=TensorExecution.DEVICE_RESIDENT,
             state_views=True,
@@ -131,11 +137,18 @@ class _TensorResetBackend(_Backend):
             stream_event_ownership="fake synchronous stream",
             torch_devices=("cpu",),
             device_reset_randomization=True,
+            selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
+            **kwargs,
         )
 
     def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> dict:
         rows = torch.as_tensor(env_indices, dtype=torch.int64)
         self.tensor_reset_calls.append((rows.clone(), qpos.clone(), qvel.clone(), randomization))
+        return {"ok": True}
+
+    def set_state_tensor_mask(self, reset_mask, qpos, qvel, randomization=None) -> dict:
+        assert randomization is None
+        self.tensor_mask_reset_calls.append((reset_mask.clone(), qpos.clone(), qvel.clone()))
         return {"ok": True}
 
 
@@ -1510,3 +1523,23 @@ def test_tensor_reset_without_randomization_writes_skips_payload_build(
 
     assert len(backend.tensor_reset_calls) == 1
     assert backend.tensor_reset_calls[0][3] is None
+
+
+def test_tensor_reset_mask_commit_preserves_full_width_carrier() -> None:
+    if "mask_selected_reset" not in TensorLifecycleCapabilities.__dataclass_fields__:
+        pytest.skip("temporary mask reset capability is provided by the issue #2285 unisim sibling")
+    backend = _TensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    mask = torch.tensor([False, True, False, True])
+    with transaction.scoped_device_event_tensor_mask(mask):
+        # Existing selected-row writes are intentionally not valid in the mask
+        # transaction; this smoke pins the public full-width commit contract.
+        assert transaction.tensor_active
+        transaction._tensor_has_writes = True  # noqa: SLF001 - research fixture
+
+    assert len(backend.tensor_mask_reset_calls) == 1
+    committed_mask, qpos, qvel = backend.tensor_mask_reset_calls[0]
+    torch.testing.assert_close(committed_mask, mask)
+    assert qpos.shape == (4, 9)
+    assert qvel.shape == (4, 8)

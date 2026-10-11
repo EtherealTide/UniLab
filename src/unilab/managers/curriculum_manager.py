@@ -119,6 +119,19 @@ class CurriculumManager(ManagerBase):
             self._validate_state(name, state)
             self._curriculum_state[name] = state
 
+    def compute_mask(self, reset_mask: torch.Tensor) -> None:
+        """Issue #2285 research-only fixed-shape curriculum compute."""
+        for name, term_cfg in zip(self._term_names, self._term_cfgs, strict=False):
+            callable_mask = getattr(term_cfg.func, "__call_mask__", None)
+            if not callable(callable_mask):
+                raise NotImplementedError(
+                    f"CurriculumManager term '{name}' does not define the issue #2285 "
+                    "mask-preserving compute boundary"
+                )
+            state = callable_mask(self._env, reset_mask, **term_cfg.params)
+            self._validate_state(name, state)
+            self._curriculum_state[name] = state
+
     def _validate_state(self, term_name: str, state: Any) -> None:
         values = state.values() if isinstance(state, dict) else (state,)
         for value in values:
@@ -165,3 +178,6 @@ class NullCurriculumManager:
 
     def compute(self, env_ids: torch.Tensor | None = None) -> None:
         pass
+
+    def compute_mask(self, reset_mask: torch.Tensor) -> None:
+        del reset_mask

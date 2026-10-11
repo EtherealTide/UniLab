@@ -99,6 +99,7 @@ class TorchEnv(ABEnv):
         self._last_initial_episode_steps: torch.Tensor | None = None
         self.step_counter = 0
         self._autoreset = True
+        self._research_mask_reset = False
         self._autoreset_reset_active = False
         self._autoreset_scattered_reset_obs = False
         self._rgb_array_renderer_ready = False
@@ -193,7 +194,10 @@ class TorchEnv(ABEnv):
             info={"steps": initial_steps},
         )
         self._last_initial_episode_steps = initial_steps.clone()
-        self._reset_done_envs()
+        if self._research_mask_reset:
+            self._reset_done_envs_mask()
+        else:
+            self._reset_done_envs()
         self._clear_step_final_observation()
         return self._state
 
@@ -303,7 +307,10 @@ class TorchEnv(ABEnv):
         phase_cpu = _cpu_time()
         did_reset = self._autoreset and bool((self._state.terminated | self._state.truncated).any())
         if did_reset:
-            self._reset_done_envs()
+            if self._research_mask_reset:
+                self._reset_done_envs_mask()
+            else:
+                self._reset_done_envs()
         reset_done_ms = (time.perf_counter() - phase) * 1000.0
         reset_done_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
 
@@ -535,6 +542,115 @@ class TorchEnv(ABEnv):
         timing = self._state.info.setdefault("timing", {})
         self._clear_reset_done_detail_timing(timing)
         timing.update(detail_timing)
+
+    def _reset_done_envs_mask(self) -> None:
+        """Run issue #2285's temporary research fixed-shape autoreset.
+
+        The host gate remains intentionally: this experiment measures replacing
+        the dynamic-row reset lifecycle, not a complete collector graph path.
+        """
+        assert self._state is not None
+        reset_total_started = time.perf_counter()
+        detail_timing = {key: 0.0 for key in RESET_DONE_DETAIL_TIMING_KEYS}
+        done = self._state.terminated | self._state.truncated
+        if not bool(done.any()):
+            self._clear_reset_done_detail_timing(self._state.info.setdefault("timing", {}))
+            return
+
+        terminal_started = time.perf_counter()
+        detail_timing["reset_done_count"] = float(done.sum().item())
+        self._state.info["steps"].masked_fill_(done, 0)
+        final_observation = self._ensure_final_observation_scratch()
+        for name, values in self._state.obs.items():
+            final_observation[name].copy_(values)
+        self._state.final_observation = final_observation
+        detail_timing["reset_done_terminal_obs_ms"] = (
+            time.perf_counter() - terminal_started
+        ) * 1000.0
+
+        reset_started = time.perf_counter()
+        self._autoreset_reset_active = True
+        self._autoreset_scattered_reset_obs = False
+        try:
+            new_obs, reset_info = self.reset_mask(done)
+        finally:
+            self._autoreset_reset_active = False
+        detail_timing["reset_done_reset_call_ms"] = (time.perf_counter() - reset_started) * 1000.0
+        collected = self._collect_reset_backend_timing_ms()
+        detail_timing.update(
+            {key: value for key, value in collected.items() if key in detail_timing}
+        )
+
+        scatter_started = time.perf_counter()
+        if not self._autoreset_scattered_reset_obs:
+            self._validate_reset_observation_mask(new_obs)
+            for name, values in new_obs.items():
+                self._state.obs[name].copy_(
+                    torch.where(done[:, None], values, self._state.obs[name])
+                )
+        self._scatter_reset_info_mask(reset_info)
+        detail_timing["reset_done_obs_scatter_ms"] = (
+            time.perf_counter() - scatter_started
+        ) * 1000.0
+        detail_timing["reset_done_info_scatter_ms"] = 0.0
+        measured = (
+            detail_timing["reset_done_terminal_obs_ms"]
+            + detail_timing["reset_done_reset_call_ms"]
+            + detail_timing["reset_done_obs_scatter_ms"]
+            + detail_timing["reset_done_info_scatter_ms"]
+        )
+        detail_timing["reset_done_internal_gap_ms"] = (
+            time.perf_counter() - reset_total_started
+        ) * 1000.0 - measured
+
+        timing = self._state.info.setdefault("timing", {})
+        self._clear_reset_done_detail_timing(timing)
+        timing.update(detail_timing)
+
+    def reset_mask(
+        self, reset_mask: torch.Tensor
+    ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+        """Issue #2285 research-only reset entry point."""
+        raise NotImplementedError(f"{type(self).__name__} must define a mask reset lifecycle")
+
+    def _validate_reset_observation_mask(self, obs: Mapping[str, torch.Tensor]) -> None:
+        if not isinstance(obs, dict) or set(obs) != set(self.obs_groups_spec):
+            raise ValueError("TorchEnv mask reset observations do not match obs_groups_spec")
+        for name, dim in self.obs_groups_spec.items():
+            value = obs[name]
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(f"TorchEnv mask reset obs[{name!r}] must be a torch.Tensor")
+            if value.dtype != self._dtype:
+                raise TypeError(
+                    f"TorchEnv mask reset obs[{name!r}] dtype must be {self._dtype}; "
+                    f"got {value.dtype}"
+                )
+            if value.shape != (self._num_envs, dim):
+                raise ValueError(
+                    f"TorchEnv mask reset obs[{name!r}] has shape {tuple(value.shape)}; "
+                    f"expected {(self._num_envs, dim)}"
+                )
+            if value.device != self.device:
+                raise ValueError(f"TorchEnv mask reset obs[{name!r}] device must be {self.device}")
+            self._require_floating_float(value)
+        if not bool(
+            torch.isfinite(
+                torch.cat(
+                    tuple(value.reshape(value.shape[0], -1) for value in obs.values()),
+                    dim=1,
+                )
+            ).all()
+        ):
+            for name, value in obs.items():
+                if not bool(torch.isfinite(value).all()):
+                    raise ValueError(f"TorchEnv mask reset obs[{name!r}] contains NaN or Inf")
+
+    def _scatter_reset_info_mask(self, reset_info: Mapping[str, Any]) -> None:
+        assert self._state is not None
+        for key, value in reset_info.items():
+            current = self._state.info.get(key)
+            if isinstance(current, torch.Tensor) and current.shape[:1] == (self._num_envs,):
+                current.copy_(value.to(device=self.device))
 
     def _ensure_final_observation_scratch(self) -> dict[str, torch.Tensor]:
         assert self._state is not None
@@ -791,6 +907,10 @@ class TorchEnv(ABEnv):
 
     def set_autoreset(self, enabled: bool) -> None:
         self._autoreset = bool(enabled)
+
+    def set_research_mask_reset(self, enabled: bool) -> None:
+        """Select issue #2285's temporary fixed-shape autoreset fixture."""
+        self._research_mask_reset = bool(enabled)
 
     def set_nan_guard(self, guard: TensorNanGuard) -> None:
         """Attach the owner-provided diagnostic guard.

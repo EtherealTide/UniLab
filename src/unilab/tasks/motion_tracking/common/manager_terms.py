@@ -621,6 +621,7 @@ class MotionCommand(CommandTerm):
         )
         self._bind_read_phase = False
         self._tensor_all_rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._device)
+        self._tensor_resample_ingested_mask: torch.Tensor | None = None
         self.last_step_timing_ms: dict[str, float] = {}
         self.last_post_compute_timing_ms: dict[str, float] = {}
         self.last_reset_timing_ms: dict[str, float] = {}
@@ -915,6 +916,34 @@ class MotionCommand(CommandTerm):
         self._last_reset_payload_validated = False
         return CommandTerm.reset(self, rows, publish_metrics=publish_metrics)
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+        """Issue #2285 research-only full-width motion command reset."""
+        if reset_mask.shape != (self.num_envs,) or reset_mask.dtype != torch.bool:
+            raise ValueError("MotionCommand reset mask must be full-width bool")
+        if self._env.torch_rng is None:
+            raise NotImplementedError(
+                "MotionCommand reset requires the Manager-owned Torch generator"
+            )
+        self._update_torch_error_metrics_mask(reset_mask)
+        lower, upper = self._joint_default_position_range
+        self.joint_default_bias.copy_(
+            torch.where(
+                reset_mask[:, None],
+                self._env.torch_rng.uniform(
+                    lower, upper, self.joint_default_bias.shape, dtype=torch.float32
+                ),
+                self.joint_default_bias,
+            )
+        )
+        self._resample_command_mask(reset_mask)
+        self._tensor_resample_ingested_mask = reset_mask
+        self._last_reset_payload_validated = False
+
+    def _update_torch_error_metrics_mask(self, reset_mask: torch.Tensor) -> None:
+        """Update error metrics for masked rows with fixed-shape where ops."""
+        self._update_torch_error_metrics(self._tensor_all_rows)
+        del reset_mask
+
     def sampler_reset_diagnostics(self) -> dict[str, float]:
         dispatches = self.tensor_sampler.diagnostics.reset_dispatches
         dispatch_count = dispatches - self._sampler_dispatch_diagnostic_offset
@@ -1042,6 +1071,68 @@ class MotionCommand(CommandTerm):
             time.perf_counter() - sync_started
         ) * 1000.0
 
+    def _resample_command_mask(self, reset_mask: torch.Tensor) -> None:
+        """Full-width motion sampling and masked state publication."""
+        sampler_started = time.perf_counter()
+        frames = self.tensor_sampler.sample_frames_mask(reset_mask, self._env.torch_rng.generator)
+        packet = self._motion_packet(frames)
+        tails, offsets = self._cached_motion_feature_shapes()
+        pose = self._env.torch_rng.uniform(
+            self._pose_range_torch[:, 0],
+            self._pose_range_torch[:, 1],
+            (self.num_envs, 6),
+            dtype=torch.float32,
+        )
+        velocity = self._env.torch_rng.uniform(
+            self._velocity_range_torch[:, 0],
+            self._velocity_range_torch[:, 1],
+            (self.num_envs, 6),
+            dtype=torch.float32,
+        )
+        joint_noise = self._env.torch_rng.uniform(
+            self._joint_position_range_torch[0],
+            self._joint_position_range_torch[1],
+            self._reset_joint_values.shape,
+            dtype=torch.float32,
+        )
+        joint_start, joint_end = offsets["joint_pos"]
+        vel_start, vel_end = offsets["joint_vel"]
+        joint_pos = self._reset_joint_values.clone()
+        root_state = self._reset_root_state.clone()
+        _bind_compiled_motion_reset_values()(
+            packet[:, joint_start:joint_end],
+            packet[:, vel_start:vel_end].contiguous(),
+            packet[:, offsets["body_pos_w"][0] : offsets["body_pos_w"][1]].view(
+                self.num_envs, *tails["body_pos_w"]
+            ),
+            packet[:, offsets["body_quat_w"][0] : offsets["body_quat_w"][1]].view(
+                self.num_envs, *tails["body_quat_w"]
+            ),
+            packet[:, offsets["body_lin_vel_w"][0] : offsets["body_lin_vel_w"][1]].view(
+                self.num_envs, *tails["body_lin_vel_w"]
+            ),
+            packet[:, offsets["body_ang_vel_w"][0] : offsets["body_ang_vel_w"][1]].view(
+                self.num_envs, *tails["body_ang_vel_w"]
+            ),
+            self._env_origins,
+            pose,
+            velocity,
+            joint_noise,
+            self._soft_joint_limits,
+            joint_pos,
+            root_state,
+        )
+        self.robot.write_motion_state_tensor_to_sim_mask(
+            root_state=root_state,
+            position=joint_pos,
+            velocity=packet[:, vel_start:vel_end].contiguous(),
+            reset_mask=reset_mask,
+        )
+        self._ingest_motion_packet_mask(reset_mask, packet)
+        self.last_reset_timing_ms["reset_done_motion_reset_values_ms"] = (
+            time.perf_counter() - sampler_started
+        ) * 1000.0
+
     def _update_command(self, env_ids: torch.Tensor | None) -> None:
         self._tensor_post_compute_env_ids = env_ids
         timing = self.last_step_timing_ms
@@ -1078,6 +1169,24 @@ class MotionCommand(CommandTerm):
         timing["update_state_motion_refresh_current_ms"] = (
             time.perf_counter() - refresh_started
         ) * 1000.0
+
+    def _update_command_mask(self, reset_mask: torch.Tensor) -> None:
+        """Consume issue #2285's full-width reset mask without row comparison."""
+        timing = self.last_step_timing_ms
+        self._tensor_post_compute_env_ids = None
+        ingested = self._tensor_resample_ingested_mask
+        self._tensor_resample_ingested_mask = None
+        update_started = time.perf_counter()
+        if ingested is None or ingested.data_ptr() != reset_mask.data_ptr():
+            self._refresh_motion_torch()
+        timing["update_state_command_update_dispatch_ms"] = (
+            time.perf_counter() - update_started
+        ) * 1000.0
+
+    def post_compute_mask(self) -> None:
+        """Run full-width post-compute after an issue #2285 reset."""
+        self._tensor_post_compute_env_ids = None
+        self.post_compute()
 
     def _step_tensor_sampler(self) -> torch.Tensor:
         """Advance the device frame carrier once without a host row transfer."""
@@ -1233,6 +1342,58 @@ class MotionCommand(CommandTerm):
             num_joints=self.motion.num_joints,
         )
 
+    def _ingest_motion_packet_mask(self, reset_mask: torch.Tensor, packet: torch.Tensor) -> None:
+        """Merge a full-width motion packet into only selected rows."""
+        joint_pos = cast(torch.Tensor, self._motion_data.joint_pos)
+        joint_vel = cast(torch.Tensor, self._motion_data.joint_vel)
+        body_pos = cast(torch.Tensor, self._motion_data.body_pos_w)
+        body_quat = cast(torch.Tensor, self._motion_data.body_quat_w)
+        body_lin_vel = cast(torch.Tensor, self._motion_data.body_lin_vel_w)
+        body_ang_vel = cast(torch.Tensor, self._motion_data.body_ang_vel_w)
+        num_bodies = len(self.cfg.body_names)
+        num_joints = self.motion.num_joints
+        joint_end = num_joints
+        vel_end = num_joints * 2
+        body_end = vel_end + num_bodies * 3
+        quat_end = body_end + num_bodies * 4
+        lin_end = quat_end + num_bodies * 3
+        ang_end = lin_end + num_bodies * 3
+        self._motion_data.joint_pos = torch.where(
+            reset_mask[:, None], packet[:, :joint_end], joint_pos
+        )
+        self._motion_data.joint_vel = torch.where(
+            reset_mask[:, None], packet[:, joint_end:vel_end], joint_vel
+        )
+        self._motion_data.body_pos_w = torch.where(
+            reset_mask[:, None, None],
+            packet[:, vel_end:body_end].view(self.num_envs, num_bodies, 3),
+            body_pos,
+        )
+        self._motion_data.body_quat_w = torch.where(
+            reset_mask[:, None, None],
+            packet[:, body_end:quat_end].view(self.num_envs, num_bodies, 4),
+            body_quat,
+        )
+        self._motion_data.body_lin_vel_w = torch.where(
+            reset_mask[:, None, None],
+            packet[:, quat_end:lin_end].view(self.num_envs, num_bodies, 3),
+            body_lin_vel,
+        )
+        self._motion_data.body_ang_vel_w = torch.where(
+            reset_mask[:, None, None],
+            packet[:, lin_end:ang_end].view(self.num_envs, num_bodies, 3),
+            body_ang_vel,
+        )
+        self._body_pos_w.copy_(
+            torch.where(
+                reset_mask[:, None, None],
+                packet[:, vel_end:body_end].view(self.num_envs, num_bodies, 3)
+                + self._env_origins[:, None, :],
+                self._body_pos_w,
+            )
+        )
+        self._command.copy_(torch.where(reset_mask[:, None], packet[:, :vel_end], self._command))
+
     def _refresh_relative_state_torch(self, rows: torch.Tensor | None = None) -> None:
         row_selector = self._tensor_all_rows if rows is None else rows
         _bind_compiled_motion_relative_state()(
@@ -1355,6 +1516,10 @@ class MotionJointPositionAction(JointPositionAction):
             )
         )
         self._previous_raw_actions[selector] = 0.0
+
+    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+        super().reset_mask(reset_mask)
+        self._previous_raw_actions.masked_fill_(reset_mask.reshape(-1, 1), 0.0)
 
     def apply_actions(self) -> None:
         if isinstance(self._entity.data.control_buffer, torch.Tensor):

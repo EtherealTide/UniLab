@@ -199,6 +199,48 @@ def test_command_resample_metrics_validation_and_null(fake_env: FakeEnv) -> None
     assert null.reset() == {}
 
 
+def test_command_mask_reset_fails_closed_without_owner_boundary(fake_env: FakeEnv) -> None:
+    manager = CommandManager({"goal": DummyCommandCfg(resampling_time_range=(1.0, 1.0))}, fake_env)
+    with pytest.raises(NotImplementedError, match="mask-preserving reset"):
+        manager.reset_mask(torch.tensor([False, True, False, True]))
+
+
+def test_command_mask_reset_uses_owner_mask_boundary(fake_env: FakeEnv) -> None:
+    class MaskCommand(DummyCommand):
+        def reset_mask(self, reset_mask: torch.Tensor) -> None:
+            self._command.copy_(
+                torch.where(
+                    reset_mask.reshape(-1, 1),
+                    torch.full_like(self._command, 7.0),
+                    self._command,
+                )
+            )
+            self.command_counter.masked_fill_(reset_mask, 0)
+
+    @dataclass(kw_only=True)
+    class MaskCfg(DummyCommandCfg):
+        def build(self, env: FakeEnv) -> MaskCommand:
+            return MaskCommand(self, env)
+
+    manager = CommandManager({"goal": MaskCfg(resampling_time_range=(1.0, 1.0))}, fake_env)
+    manager.get_term("goal")._command[:] = torch.arange(4, dtype=torch.float32).reshape(-1, 1)
+    manager.get_term("goal").command_counter[:] = torch.arange(4, dtype=torch.int64)
+    mask = torch.tensor([False, True, False, True])
+
+    manager.reset_mask(mask)
+
+    torch.testing.assert_close(
+        manager.get_term("goal").command,
+        torch.tensor([[0.0], [7.0], [2.0], [7.0]]),
+    )
+    torch.testing.assert_close(
+        manager.get_term("goal").command_counter,
+        torch.tensor([0, 0, 2, 0], dtype=torch.int64),
+    )
+    with pytest.raises(ValueError, match="research reset mask"):
+        manager.reset_mask(torch.zeros((fake_env.num_envs + 1,), dtype=torch.bool))
+
+
 def test_tensor_metric_clearing_does_not_mirror_reset_rows_on_host(
     fake_env: FakeEnv,
 ) -> None:

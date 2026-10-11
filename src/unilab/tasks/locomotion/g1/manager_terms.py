@@ -308,6 +308,22 @@ def _resample_gait(env: _G1Env, context: _G1GaitContext, env_ids: torch.Tensor) 
     context.phase.index_copy_(0, rows, samples.to(dtype=context.phase.dtype))
 
 
+def _resample_gait_mask(env: _G1Env, context: _G1GaitContext, reset_mask: torch.Tensor) -> None:
+    rng_owner = getattr(env, "torch_rng", None)
+    if not isinstance(rng_owner, TorchManagerRng):
+        raise RuntimeError("G1 gait phase reset requires the Manager-owned Torch generator")
+    count = context.phase.shape[0]
+    left = rng_owner.uniform(0.0, 2.0 * math.pi, (count,), dtype=torch.float32)
+    if context.init_mode == "independent":
+        right = rng_owner.uniform(0.0, 2.0 * math.pi, (count,), dtype=torch.float32)
+    else:
+        right = left + torch.pi
+    samples = torch.stack((left, right), dim=1)
+    context.phase.copy_(
+        torch.where(reset_mask[:, None], samples.to(dtype=context.phase.dtype), context.phase)
+    )
+
+
 class G1GaitPhase(ManagerTermBase):
     """Two-foot gait phase observation in radians, with per-reset phase sampling."""
 
@@ -339,6 +355,9 @@ class G1GaitPhase(ManagerTermBase):
         else:
             rows = env_ids.to(dtype=torch.int64, device=self._env.device).reshape(-1)
         _resample_gait(cast("_G1Env", self._env), self._context, rows)
+
+    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+        _resample_gait_mask(cast("_G1Env", self._env), self._context, reset_mask)
 
 
 class _GaitRewardTerm(_SensorTerm):
@@ -530,6 +549,9 @@ class feet_air_time(_FootContactTerm):
 
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         self._air_time[env_ids if env_ids is not None else slice(None)] = 0.0
+
+    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+        self._air_time.masked_fill_(reset_mask.reshape(-1, 1), 0.0)
 
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
@@ -869,6 +891,12 @@ class G1VelocityCommand(UniformVelocityCommand):
         moving = torch.linalg.vector_norm(planar, dim=1) > self._planar_dead_zone
         tensor[env_ids, :2] = planar * moving[:, None]
 
+    def _merge_samples_masked(self, samples: torch.Tensor, reset_mask: torch.Tensor) -> None:
+        moving = torch.linalg.vector_norm(samples[:, :2], dim=1) > self._planar_dead_zone
+        samples = samples.clone()
+        samples[:, :2] *= moving[:, None]
+        super()._merge_samples_masked(samples, reset_mask)
+
 
 # ---------------------------------------------------------------------------
 # Penalty curriculum (ports the legacy G1 penalty-curriculum semantics)
@@ -992,6 +1020,42 @@ class G1PenaltyCurriculum(ManagerTermBase):
             "penalty_scale": self._current_scale,
         }
 
+    def __call_mask__(
+        self,
+        env: _G1Env,
+        reset_mask: torch.Tensor,
+        **params: Any,
+    ) -> dict[str, float]:
+        """Issue #2285 research-only fixed-shape curriculum update."""
+        del params
+        reset_buf = env.reset_buf
+        if not isinstance(reset_buf, torch.Tensor):
+            raise TypeError(f"{self.name} requires reset_buf to be a Torch tensor")
+        done_mask = reset_buf & reset_mask
+        episode_lengths = env.episode_length_buf
+        if not isinstance(episode_lengths, torch.Tensor):
+            raise TypeError(f"{self.name} requires episode_length_buf to be a Torch tensor")
+        done_count = done_mask.sum()
+        self._tracker.update_mask(episode_lengths, done_mask)
+
+        average = self._tracker.average
+        average_value = float(average.item())
+        changed = False
+        if bool(done_count.item() > 0):
+            if average_value < self._level_down_threshold:
+                self._current_scale *= 1.0 - self._degree
+                changed = True
+            elif average_value > self._level_up_threshold:
+                self._current_scale *= 1.0 + self._degree
+                changed = True
+        if changed:
+            self._current_scale = min(max(self._current_scale, self._min_scale), self._max_scale)
+            self._apply_scale()
+        return {
+            "average_episode_length": average_value,
+            "penalty_scale": self._current_scale,
+        }
+
 
 # ---------------------------------------------------------------------------
 # G1 Manager-Based env: Registry-owned production runtime on the single
@@ -1050,6 +1114,18 @@ class G1WalkResetOwner(ResetOwner):
         )
         return cast(dict[str, float], extras)
 
+    def reset_transaction_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        env = cast("_G1Env", self._env)
+        command = env.command_manager.get_term(self.cfg.command_name)
+        reset_mask_impl = getattr(command, "reset_mask", None)
+        if not callable(reset_mask_impl):
+            raise NotImplementedError(
+                f"G1WalkResetOwner command '{self.cfg.command_name}' does not define "
+                "the issue #2285 mask-preserving reset boundary"
+            )
+        reset_mask_impl(reset_mask)
+        return {}
+
     def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         env = cast("_G1Env", self._env)
         rows = self._rows(env_ids)
@@ -1057,6 +1133,16 @@ class G1WalkResetOwner(ResetOwner):
         clear_metrics = getattr(env.metrics_manager, "clear_episode_state", None)
         if callable(clear_metrics):
             clear_metrics(rows)
+        return {}
+
+    def reset_committed_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        env = cast("_G1Env", self._env)
+        clear_action_state_mask = getattr(env.action_manager, "clear_action_state_mask", None)
+        if not callable(clear_action_state_mask):
+            raise NotImplementedError(
+                "G1WalkResetOwner requires ActionManager.clear_action_state_mask"
+            )
+        clear_action_state_mask(reset_mask)
         return {}
 
 
