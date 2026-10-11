@@ -594,7 +594,7 @@ class _DriveCfg(ActionTermCfg):
 class _DriveAction(ActionTerm):
     def __init__(self, cfg: _DriveCfg, env) -> None:
         super().__init__(cfg, env)
-        self._processed = torch.zeros((self.num_envs, 1), dtype=torch.float32)
+        self._processed = torch.zeros((self.num_envs, 1), dtype=torch.float32, device=env.device)
 
     @property
     def action_dim(self) -> int:
@@ -911,15 +911,15 @@ def _reward(env: _TestEnv) -> np.ndarray:
 
 
 def _joint_state_obs(env: _TestEnv) -> np.ndarray:
-    return torch.as_tensor(env.scene["robot"].data.joint_pos, dtype=torch.float32)
+    return torch.as_tensor(env.scene["robot"].data._host_joint_pos, dtype=torch.float32)
 
 
 def _joint_state_reward(env: _TestEnv) -> torch.Tensor:
-    return torch.as_tensor(env.scene["robot"].data.joint_pos[:, 0], dtype=torch.float32)
+    return torch.as_tensor(env.scene["robot"].data._host_joint_pos[:, 0], dtype=torch.float32)
 
 
 def _joint_state_termination(env: _TestEnv) -> torch.Tensor:
-    return torch.as_tensor(env.scene["robot"].data.joint_pos[:, 0]) > 100.0
+    return torch.as_tensor(env.scene["robot"].data._host_joint_pos[:, 0]) > 100.0
 
 
 def _mutate_joint_state_step_event(env: _TestEnv, env_ids: np.ndarray | None) -> None:
@@ -1719,8 +1719,9 @@ def test_named_keyframe_snapshot_is_shared_by_entity_and_reset_cold_path() -> No
     assert selected_qpos is not source_qpos
     assert selected_qpos is not None
     assert not selected_qpos.flags.writeable
-    np.testing.assert_array_equal(env.scene["robot"].data.default_joint_pos, 0.75)
-    assert not env.scene["robot"].data.default_joint_pos.flags.writeable
+    torch.testing.assert_close(
+        env.scene["robot"].data.default_joint_pos_torch(env.device), torch.full((2, 1), 0.75)
+    )
 
     source_qpos[:] = 9.0
     env.reset()
@@ -1850,14 +1851,20 @@ def test_real_mujoco_default_state_matches_qpos0_or_named_home(
     env = ManagerBasedRlEnv(cfg, backend, 2)
     try:
         robot = env.scene["robot"]
-        np.testing.assert_allclose(robot.data.default_root_state[:, 2], expected_root_z)
+        torch.testing.assert_close(
+            robot.data.default_root_state_torch(env.device)[:, 2],
+            torch.full((2,), expected_root_z, dtype=torch.float32),
+        )
         expected_batch = np.broadcast_to(expected_joint_pos, (2, expected_joint_pos.size))
-        np.testing.assert_allclose(robot.data.default_joint_pos, expected_batch)
+        torch.testing.assert_close(
+            robot.data.default_joint_pos_torch(env.device),
+            torch.as_tensor(np.broadcast_to(expected_joint_pos, (2, expected_joint_pos.size))),
+        )
 
         env.init_state()
 
-        np.testing.assert_allclose(robot.data.root_link_pos_w[:, 2], expected_root_z)
-        np.testing.assert_allclose(robot.data.joint_pos, expected_batch)
+        np.testing.assert_allclose(robot.data._host_root_link_pos_w[:, 2], expected_root_z)
+        np.testing.assert_allclose(robot.data._host_joint_pos, expected_batch)
     finally:
         env.close()
 
@@ -2263,6 +2270,114 @@ def test_scene_read_plan_compiles_named_sensor_observation_requests() -> None:
             torch.tensor([[5.1, 5.2, 6.2], [5.3, 5.4, 6.2]], dtype=torch.float32),
         )
         assert backend.selected_reads == 1
+    finally:
+        if env.scene._tensor_read_plan is not None:
+            env.scene._tensor_read_plan.close()
+            env.scene._tensor_read_plan = None
+        env.close()
+
+
+def test_generic_root_and_joint_terms_compile_packed_views() -> None:
+    cfg = _make_cfg(include_optional_managers=False)
+    cfg.scene.entities["robot"] = EntityCfg(
+        root_body_name="base",
+        joint_names=("joint",),
+        body_names=("base",),
+        actuator_names=("motor",),
+    )
+    cfg.observations = {
+        "actor": ObservationGroupCfg(
+            terms={
+                "gravity": ObservationTermCfg(
+                    func=mdp.projected_gravity_from_sensor,
+                    params={"sensor_name": "track_pos_w_base", "entity_name": "robot"},
+                ),
+                "joint": ObservationTermCfg(func=_episode_step_observation),
+            }
+        ),
+        "value": ObservationGroupCfg(
+            terms={"critic": ObservationTermCfg(func=_episode_step_observation)}
+        ),
+    }
+    cfg.rewards = {
+        "height": RewardTermCfg(func=mdp.root_height, weight=1.0),
+        "velocity": RewardTermCfg(func=mdp.joint_vel_l2, weight=-0.1),
+    }
+    cfg.terminations = {"low": TerminationTermCfg(func=mdp.root_height_below_minimum, params={})}
+    cfg.critic_observation_group = "value"
+    backend = _ScenePlanBackend(2)
+    env = _TestEnv(cfg, cast(SimBackend, backend), 2)
+    try:
+        plan = env.scene._tensor_read_plan
+        assert plan is not None
+        assert plan.body_names["robot"] == ("base",)
+        assert "robot" in plan.entities
+        plan.refresh()
+        view = plan.body_tensor_view("robot", ("base",))
+        assert view.pos_w.shape == (2, 1, 3)
+        joints = plan.joint_tensor_view("robot")
+        assert joints.joint_pos.shape == (2, 1)
+    finally:
+        if env.scene._tensor_read_plan is not None:
+            env.scene._tensor_read_plan.close()
+            env.scene._tensor_read_plan = None
+        env.close()
+
+
+def test_generic_root_term_requires_declared_root_and_body_namespace() -> None:
+    cfg = _make_cfg(include_optional_managers=False)
+    cfg.scene.entities["robot"] = EntityCfg(
+        root_body_name="base",
+        joint_names=("joint",),
+        actuator_names=("motor",),
+    )
+    cfg.terminations = {
+        "low": TerminationTermCfg(
+            func=mdp.root_height_below_minimum, params={"minimum_height": 0.1}
+        )
+    }
+
+    with pytest.raises(NotImplementedError, match="capability 'body'.*not declared"):
+        _TestEnv(cfg, cast(SimBackend, _ScenePlanBackend(2)), 2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA packed MDP placement test")
+def test_device_resident_generic_packed_terms_keep_carriers_on_device() -> None:
+    cfg = _make_cfg(include_optional_managers=False)
+    cfg.scene.entities["robot"] = EntityCfg(
+        root_body_name="base",
+        joint_names=("joint",),
+        body_names=("base",),
+        actuator_names=("motor",),
+    )
+    cfg.observations = {
+        "actor": ObservationGroupCfg(
+            terms={"policy": ObservationTermCfg(func=_tensor_runtime_policy_obs)}
+        ),
+        "value": ObservationGroupCfg(
+            terms={"critic": ObservationTermCfg(func=_tensor_runtime_critic_obs)}
+        ),
+    }
+    cfg.critic_observation_group = "value"
+    cfg.rewards = {
+        "height": RewardTermCfg(func=mdp.root_height, weight=1.0),
+        "velocity": RewardTermCfg(func=mdp.joint_vel_l2, weight=-0.1),
+    }
+    cfg.terminations = {
+        "low": TerminationTermCfg(
+            func=mdp.root_height_below_minimum, params={"minimum_height": -1.0}
+        )
+    }
+    env = _TestEnv(cfg, cast(SimBackend, _DeviceResidentScenePlanBackend(2)), 2)
+    try:
+        assert env.device.type == "cuda"
+        assert env.scene._tensor_read_plan is not None
+        assert env.scene._tensor_read_plan.device == env.device
+        state = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+        assert state.obs["obs"].device == env.device
+        assert state.obs["critic"].device == env.device
+        assert state.reward.device == env.device
+        assert state.terminated.device == env.device
     finally:
         if env.scene._tensor_read_plan is not None:
             env.scene._tensor_read_plan.close()

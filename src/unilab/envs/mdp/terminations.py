@@ -11,7 +11,11 @@ from typing import TYPE_CHECKING, cast
 
 import torch
 
-from unilab.envs.mdp.observations import _quat_apply_inverse, _root_body_view
+from unilab.envs.mdp.observations import (
+    _joint_view,
+    _quat_apply_inverse,
+    _root_body_view,
+)
 from unilab.managers.scene_entity_config import SceneEntityCfg
 
 if TYPE_CHECKING:
@@ -54,18 +58,12 @@ def bad_orientation(
         raise TypeError("bad_orientation limit_angle must be a real number")
     if not math.isfinite(limit_angle):
         raise ValueError("bad_orientation limit_angle must be finite")
-    asset, view = _root_body_view(env, asset_cfg)
-    if view is not None:
-        gravity = torch.as_tensor(
-            asset.data.gravity_vec_w,
-            dtype=torch.float32,
-            device=getattr(env, "device", torch.device("cpu")),
-        ).expand((view.quat_w.shape[0], 3))
-        projected_gravity = _quat_apply_inverse(view.quat_w[:, 0, :], gravity)
-    else:
-        projected_gravity = _state_tensor(
-            "bad_orientation", asset.data.projected_gravity_b, env.num_envs, width=3
-        )
+    asset, view = _root_body_view(env, asset_cfg, "bad_orientation")
+    gravity = asset.data.gravity_vec_w_torch(getattr(env, "device", torch.device("cpu")))[0]
+    projected_gravity = _quat_apply_inverse(
+        view.quat_w[:, 0, :], gravity.expand((view.quat_w.shape[0], 3))
+    )
+    _state_tensor("bad_orientation", projected_gravity, env.num_envs, width=3)
     angle = torch.acos((-projected_gravity[:, 2]).clamp(-1.0, 1.0)).abs()
     return angle > limit_angle
 
@@ -80,13 +78,9 @@ def root_height_below_minimum(
         raise TypeError("root_height_below_minimum minimum_height must be a real number")
     if not math.isfinite(minimum_height):
         raise ValueError("root_height_below_minimum minimum_height must be finite")
-    asset, view = _root_body_view(env, asset_cfg)
-    if view is not None:
-        root_pos_w = view.pos_w[:, 0, :]
-    else:
-        root_pos_w = _state_tensor(
-            "root_height_below_minimum", asset.data.root_link_pos_w, env.num_envs, width=3
-        )
+    _, view = _root_body_view(env, asset_cfg, "root_height_below_minimum")
+    root_pos_w = view.pos_w[:, 0, :]
+    _state_tensor("root_height_below_minimum", root_pos_w, env.num_envs, width=3)
     return root_pos_w[:, 2] < minimum_height
 
 
@@ -100,29 +94,15 @@ def nan_detection(
     is reduced on the Torch carrier so a non-finite physics state terminates the
     episode explicitly.
     """
-    asset, view = _root_body_view(env, asset_cfg)
-    read_plan = getattr(env.scene, "_tensor_read_plan", None)
-    joint_view = (
-        read_plan.joint_tensor_view(asset)
-        if read_plan is not None and getattr(asset, "_joint_names", None) is not None
-        else None
+    _, view = _root_body_view(env, asset_cfg, "nan_detection")
+    joint_view = _joint_view(env, asset_cfg, "nan_detection")
+    states = (
+        view.pos_w[:, 0, :],
+        view.lin_vel_w[:, 0, :],
+        view.ang_vel_w[:, 0, :],
+        joint_view.joint_pos,
+        joint_view.joint_vel,
     )
-    if view is not None and joint_view is not None:
-        states = (
-            view.pos_w[:, 0, :],
-            view.lin_vel_w[:, 0, :],
-            view.ang_vel_w[:, 0, :],
-            joint_view.joint_pos,
-            joint_view.joint_vel,
-        )
-    else:
-        states = (
-            asset.data.root_link_pos_w,
-            asset.data.root_link_lin_vel_w,
-            asset.data.root_link_ang_vel_w,
-            asset.data.joint_pos,
-            asset.data.joint_vel,
-        )
     invalid = torch.zeros(env.num_envs, dtype=torch.bool, device=getattr(env, "device", "cpu"))
     for state_value in states:
         state = torch.as_tensor(state_value, dtype=torch.float32, device=invalid.device)

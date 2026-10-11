@@ -12,7 +12,13 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import torch
 
-from unilab.envs.mdp.observations import _quat_apply_inverse, _root_body_view
+from unilab.envs.mdp.observations import (
+    _joint_view,
+    _quat_apply_inverse,
+    _read_plan,
+    _root_body_view,
+    _world_to_body_vector,
+)
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
 
@@ -109,10 +115,8 @@ def root_height(
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """Return the world-frame root height as a scalar reward or metric term."""
-    asset, view = _root_body_view(env, asset_cfg)
-    if view is not None:
-        return _reward(view.pos_w[:, 0, 2])
-    return _reward(asset.data.root_link_pos_w[:, 2])
+    _, view = _root_body_view(env, asset_cfg, "root_height")
+    return _reward(view.pos_w[:, 0, 2])
 
 
 def joint_vel_l2(
@@ -120,12 +124,7 @@ def joint_vel_l2(
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """Penalize selected joint velocities with an L2-squared kernel."""
-    asset = cast("Entity", env.scene[asset_cfg.name])
-    joint_vel = torch.as_tensor(
-        asset.data.joint_vel[:, asset_cfg.joint_ids],
-        dtype=torch.float32,
-        device=getattr(env, "device", torch.device("cpu")),
-    )
+    joint_vel = _joint_view(env, asset_cfg, "joint_vel_l2").joint_vel[:, asset_cfg.joint_ids]
     return torch.sum(torch.square(joint_vel), dim=1)
 
 
@@ -150,21 +149,10 @@ def flat_orientation_l2(
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """Penalize non-flat base orientation."""
-    asset, view = _root_body_view(env, asset_cfg)
-    if view is not None:
-        gravity_w = torch.as_tensor(
-            asset.data.gravity_vec_w,
-            dtype=torch.float32,
-            device=getattr(env, "device", torch.device("cpu")),
-        ).expand((view.quat_w.shape[0], 3))
-        gravity = _quat_apply_inverse(view.quat_w[:, 0, :], gravity_w)
-    else:
-        gravity = torch.as_tensor(
-            asset.data.projected_gravity_b[:, :2],
-            dtype=torch.float32,
-            device=getattr(env, "device", torch.device("cpu")),
-        )
-    return torch.sum(torch.square(gravity), dim=1)
+    asset, view = _root_body_view(env, asset_cfg, "flat_orientation_l2")
+    gravity_w = asset.data.gravity_vec_w_torch(getattr(env, "device", torch.device("cpu")))[0]
+    gravity = _quat_apply_inverse(view.quat_w[:, 0, :], gravity_w.expand((view.quat_w.shape[0], 3)))
+    return torch.sum(torch.square(gravity[:, :2]), dim=1)
 
 
 def upright(
@@ -180,12 +168,8 @@ def upright(
     """
     scale = _positive_std("upright", std)
     asset = cast("Entity", env.scene[asset_cfg.name])
-    read_plan = getattr(env.scene, "_tensor_read_plan", None)
-    if read_plan is not None and getattr(asset, "_body_names", None) is not None:
-        selected_names = _selected_body_names(asset, asset_cfg)
-        body_quat_w = read_plan.body_tensor_view(asset, selected_names).quat_w
-    else:
-        body_quat_w = asset.data.body_link_quat_w[:, asset_cfg.body_ids, :]
+    selected_names = _selected_body_names(asset, asset_cfg)
+    body_quat_w = _read_plan(env, "upright").body_tensor_view(asset, selected_names).quat_w
     if body_quat_w.shape != (env.num_envs, 1, 4):
         raise ValueError(
             f"upright requires exactly one body; received state shape {body_quat_w.shape}"
@@ -195,11 +179,8 @@ def upright(
         dtype=torch.float32,
         device=getattr(env, "device", torch.device("cpu")),
     )
-    gravity = torch.as_tensor(
-        asset.data.gravity_vec_w,
-        dtype=torch.float32,
-        device=getattr(env, "device", torch.device("cpu")),
-    ).expand((quat.shape[0], 3))
+    gravity = asset.data.gravity_vec_w_torch(getattr(env, "device", torch.device("cpu")))[0]
+    gravity = gravity.expand((quat.shape[0], 3))
     quat_w, quat_xyz = quat[:, 0:1], quat[:, 1:4]
     cross = 2.0 * torch.linalg.cross(quat_xyz.expand_as(gravity), gravity, dim=-1)
     projected_gravity_b = gravity - (
@@ -217,17 +198,9 @@ def track_linear_velocity(
 ) -> torch.Tensor:
     """Reward commanded base linear velocity, assuming commanded z is zero."""
     scale = _positive_std("track_linear_velocity", std)
-    asset, view = _root_body_view(env, asset_cfg)
+    _, view = _root_body_view(env, asset_cfg, "track_linear_velocity")
     command = _command(env, command_name)
-    actual = (
-        view.lin_vel_w[:, 0, :]
-        if view is not None
-        else torch.as_tensor(
-            asset.data.root_link_lin_vel_b,
-            dtype=torch.float32,
-            device=getattr(env, "device", torch.device("cpu")),
-        )
-    )
+    actual = _world_to_body_vector(view.quat_w[:, 0, :], view.lin_vel_w[:, 0, :])
     command_t = torch.as_tensor(
         command, dtype=torch.float32, device=getattr(env, "device", torch.device("cpu"))
     )
@@ -244,17 +217,9 @@ def track_angular_velocity(
 ) -> torch.Tensor:
     """Reward commanded yaw rate while keeping roll/pitch rates near zero."""
     scale = _positive_std("track_angular_velocity", std)
-    asset, view = _root_body_view(env, asset_cfg)
+    _, view = _root_body_view(env, asset_cfg, "track_angular_velocity")
     command = _command(env, command_name)
-    actual = (
-        view.ang_vel_w[:, 0, :]
-        if view is not None
-        else torch.as_tensor(
-            asset.data.root_link_ang_vel_b,
-            dtype=torch.float32,
-            device=getattr(env, "device", torch.device("cpu")),
-        )
-    )
+    actual = _world_to_body_vector(view.quat_w[:, 0, :], view.ang_vel_w[:, 0, :])
     command_t = torch.as_tensor(
         command, dtype=torch.float32, device=getattr(env, "device", torch.device("cpu"))
     )
@@ -269,12 +234,12 @@ def body_angular_velocity_penalty(
 ) -> torch.Tensor:
     """Penalize roll/pitch angular velocity of one selected body."""
     asset = cast("Entity", env.scene[asset_cfg.name])
-    read_plan = getattr(env.scene, "_tensor_read_plan", None)
-    if read_plan is not None and getattr(asset, "_body_names", None) is not None:
-        selected_names = _selected_body_names(asset, asset_cfg)
-        ang_vel = read_plan.body_tensor_view(asset, selected_names).ang_vel_w
-    else:
-        ang_vel = asset.data.body_link_ang_vel_w[:, asset_cfg.body_ids, :]
+    selected_names = _selected_body_names(asset, asset_cfg)
+    ang_vel = (
+        _read_plan(env, "body_angular_velocity_penalty")
+        .body_tensor_view(asset, selected_names)
+        .ang_vel_w
+    )
     if ang_vel.shape != (env.num_envs, 1, 3):
         raise ValueError(
             "body_angular_velocity_penalty requires exactly one body; "
@@ -291,15 +256,11 @@ def joint_pos_limits(
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """Penalize joint positions if they cross the soft limits."""
-    asset = cast("Entity", env.scene[asset_cfg.name])
+    asset = env.scene[asset_cfg.name]
     limits = asset.data.soft_joint_pos_limits_torch(getattr(env, "device", torch.device("cpu")))[
         asset_cfg.joint_ids
     ]
-    joint_pos = torch.as_tensor(
-        asset.data.joint_pos[:, asset_cfg.joint_ids],
-        dtype=torch.float32,
-        device=getattr(env, "device", torch.device("cpu")),
-    )
+    joint_pos = _joint_view(env, asset_cfg, "joint_pos_limits").joint_pos[:, asset_cfg.joint_ids]
     lower_violation = torch.clamp_min(limits[None, :, 0] - joint_pos, 0.0)
     upper_violation = torch.clamp_min(joint_pos - limits[None, :, 1], 0.0)
     return torch.sum(lower_violation + upper_violation, dim=1)
@@ -350,9 +311,8 @@ class posture(ManagerTermBase):
 
     def __call__(self, env: ManagerBasedRlEnv, **params: object) -> torch.Tensor:
         del params
-        asset = cast("Entity", env.scene[self._asset_cfg.name])
         current = torch.as_tensor(
-            asset.data.joint_pos[:, self._asset_cfg.joint_ids],
+            _joint_view(env, self._asset_cfg, self.name).joint_pos[:, self._asset_cfg.joint_ids],
             dtype=torch.float32,
             device=getattr(env, "device", torch.device("cpu")),
         )
@@ -426,7 +386,6 @@ class variable_posture(ManagerTermBase):
 
     def __call__(self, env: ManagerBasedRlEnv, **params: object) -> torch.Tensor:
         del params
-        asset = cast("Entity", env.scene[self._asset_cfg.name])
         command = torch.as_tensor(
             _command(env, self._command_name),
             dtype=torch.float32,
@@ -442,11 +401,9 @@ class variable_posture(ManagerTermBase):
             + self._std_walking[None, :] * walking[:, None]
             + self._std_running[None, :] * running[:, None]
         )
-        current = torch.as_tensor(
-            asset.data.joint_pos[:, self._asset_cfg.joint_ids],
-            dtype=torch.float32,
-            device=getattr(env, "device", torch.device("cpu")),
-        )
+        current = _joint_view(env, self._asset_cfg, self.name).joint_pos[
+            :, self._asset_cfg.joint_ids
+        ]
         desired = self._default_joint_pos[:, self._asset_cfg.joint_ids]
         error_squared = torch.square(current - desired)
         return torch.exp(-torch.mean(error_squared / torch.square(std), dim=1))

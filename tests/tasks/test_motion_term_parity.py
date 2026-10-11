@@ -542,13 +542,23 @@ def test_joint_pos_limits_matches_reference_equation() -> None:
     limits = np.asarray([[-1.0, 1.0]] * 5, dtype=np.float32)
     asset = SimpleNamespace(
         data=SimpleNamespace(
-            joint_pos=joint_pos,
             soft_joint_pos_limits_torch=lambda device: torch.as_tensor(
                 limits, dtype=torch.float32, device=device
             ),
         )
     )
-    env = SimpleNamespace(scene={"robot": asset}, device=torch.device("cpu"))
+
+    class _Scene(SimpleNamespace):
+        def __getitem__(self, name):
+            return self.__dict__[name]
+
+    scene = _Scene(
+        robot=asset,
+        _tensor_read_plan=SimpleNamespace(
+            joint_tensor_view=lambda entity: SimpleNamespace(joint_pos=torch.from_numpy(joint_pos))
+        ),
+    )
+    env = SimpleNamespace(scene=scene, device=torch.device("cpu"))
     asset_cfg = SimpleNamespace(name="robot", joint_ids=np.array([4, 2, 0], dtype=np.intp))
 
     out = mt.joint_pos_limits(env, asset_cfg)

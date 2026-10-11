@@ -11,6 +11,7 @@ env:
     entities:
       cartpole:
         root_body_name: cart
+        body_names: [cart]
         joint_names: [slider, hinge_1]
         actuator_names: [slide]
   sim_dt: 0.01

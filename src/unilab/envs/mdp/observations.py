@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import torch
 
+from unilab.base.entity import EntityTensorStateView
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
 from unilab.managers.torch_rng import TorchManagerRng
@@ -35,18 +36,59 @@ def _quat_apply_inverse(quat_wxyz: torch.Tensor, vector: torch.Tensor) -> torch.
     return vector + 2.0 * quat[..., 0:1] * cross + 2.0 * second_cross
 
 
+def _read_plan(env: ManagerBasedRlEnv, term_name: str) -> Any:
+    read_plan = getattr(env.scene, "_tensor_read_plan", None)
+    if read_plan is None:
+        raise NotImplementedError(
+            f"Observation term '{term_name}' requires the Manager packed Torch read plan"
+        )
+    return read_plan
+
+
+def _root_body_name(asset: "Entity", term_name: str) -> str:
+    root_body_name = getattr(asset, "_root_body_name", None)
+    if not isinstance(root_body_name, str) or not root_body_name:
+        raise NotImplementedError(
+            f"Observation term '{term_name}' requires entity '{asset.name}' "
+            "to declare root_body_name"
+        )
+    return root_body_name
+
+
 def _root_body_view(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg,
-) -> tuple["Entity", Any]:
+    term_name: str,
+) -> tuple[Entity, Any]:
     asset = cast("Entity", env.scene[asset_cfg.name])
+    read_plan = _read_plan(env, term_name)
+    return asset, read_plan.body_tensor_view(asset, (_root_body_name(asset, term_name),))
+
+
+def _joint_view(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg, term_name: str) -> Any:
+    asset = env.scene[asset_cfg.name]
     read_plan = getattr(env.scene, "_tensor_read_plan", None)
-    root_body_name = getattr(asset, "_root_body_name", None)
-    if read_plan is None or not isinstance(root_body_name, str) or not root_body_name:
-        return asset, None
-    if getattr(asset, "_body_names", None) is None:
-        return asset, None
-    return asset, read_plan.body_tensor_view(asset, (root_body_name,))
+    if read_plan is None:
+        # ObservationManager probes shape before cold packed-read compilation.
+        # Return a zeros-shaped probe from the immutable declared joint namespace.
+        width = len(asset.joint_names)
+        return EntityTensorStateView(
+            joint_pos=torch.zeros(
+                (env.num_envs, width),
+                dtype=torch.float32,
+                device=getattr(env, "device", torch.device("cpu")),
+            ),
+            joint_vel=torch.zeros(
+                (env.num_envs, width),
+                dtype=torch.float32,
+                device=getattr(env, "device", torch.device("cpu")),
+            ),
+        )
+    return _read_plan(env, term_name).joint_tensor_view(asset)
+
+
+def _world_to_body_vector(quat_wxyz: torch.Tensor, vector_w: torch.Tensor) -> torch.Tensor:
+    return _quat_apply_inverse(quat_wxyz, vector_w)
 
 
 class _NamedSensorObservation(ManagerTermBase):
@@ -99,17 +141,20 @@ class _NamedSensorObservation(ManagerTermBase):
     def _read_tensor(self, env: ManagerBasedRlEnv) -> torch.Tensor:
         read_plan = getattr(env.scene, "_tensor_read_plan", None)
         if read_plan is None:
+            # Manager construction probes immutable observation shape before
+            # cold packed-read compilation. This is not a hot-path read.
             device = getattr(env, "device", torch.device("cpu"))
             return torch.as_tensor(self._read(), device=device)
+        read_plan = _read_plan(env, self._term_name)
         entity = env.scene[self._entity_name]
         sensor_names = self._tensor_sensor_names
         compiled = set(read_plan.sensor_names.get(self._entity_name, ()))
-        if read_plan.device.type == "cuda" and not set(sensor_names).issubset(compiled):
-            # Narrow device-resident adapters still expose only their audited
-            # scalar sensor subset. Keep the validated backend host/cache view
-            # rather than fabricating a packed packet entry.
-            device = getattr(env, "device", torch.device("cpu"))
-            return torch.as_tensor(self._read(), device=device)
+        if not set(sensor_names).issubset(compiled):
+            raise NotImplementedError(
+                f"Observation term '{self._term_name}' requires entity "
+                f"'{self._entity_name}' sensors {sensor_names} in the packed Torch "
+                f"read plan; compiled={tuple(sorted(compiled))}"
+            )
         views = read_plan.sensor_tensor_views(entity, sensor_names)
         value = views.values[self._sensor_name]
         if not bool(torch.isfinite(value).all()):
@@ -170,47 +215,25 @@ def base_lin_vel(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    asset, view = _root_body_view(env, asset_cfg)
-    if view is not None:
-        return view.lin_vel_w[:, 0, :]
-    return torch.as_tensor(
-        asset.data.root_link_lin_vel_b,
-        dtype=torch.float32,
-        device=getattr(env, "device", torch.device("cpu")),
-    )
+    _, view = _root_body_view(env, asset_cfg, "base_lin_vel")
+    return _world_to_body_vector(view.quat_w[:, 0, :], view.lin_vel_w[:, 0, :])
 
 
 def base_ang_vel(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    asset, view = _root_body_view(env, asset_cfg)
-    if view is not None:
-        return view.ang_vel_w[:, 0, :]
-    return torch.as_tensor(
-        asset.data.root_link_ang_vel_b,
-        dtype=torch.float32,
-        device=getattr(env, "device", torch.device("cpu")),
-    )
+    _, view = _root_body_view(env, asset_cfg, "base_ang_vel")
+    return _world_to_body_vector(view.quat_w[:, 0, :], view.ang_vel_w[:, 0, :])
 
 
 def projected_gravity(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    asset, view = _root_body_view(env, asset_cfg)
-    if view is not None:
-        gravity = torch.as_tensor(
-            asset.data.gravity_vec_w,
-            dtype=torch.float32,
-            device=getattr(env, "device", torch.device("cpu")),
-        ).expand((view.quat_w.shape[0], 3))
-        return _quat_apply_inverse(view.quat_w[:, 0, :], gravity)
-    return torch.as_tensor(
-        asset.data.projected_gravity_b,
-        dtype=torch.float32,
-        device=getattr(env, "device", torch.device("cpu")),
-    )
+    asset, view = _root_body_view(env, asset_cfg, "projected_gravity")
+    gravity = asset.data.gravity_vec_w_torch(getattr(env, "device", torch.device("cpu")))[0]
+    return _quat_apply_inverse(view.quat_w[:, 0, :], gravity.expand((view.quat_w.shape[0], 3)))
 
 
 # Per-env constant IMU mounting-misalignment quaternions, keyed by env instance
@@ -306,8 +329,8 @@ class base_ang_vel_imu_misaligned(_ImuMisalignedObservation):
         asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     ) -> torch.Tensor:
         self._validate_max_angle(max_angle_deg)
-        asset = cast("Entity", env.scene[asset_cfg.name])
-        return self._rotate(asset.data.root_link_ang_vel_b)
+        _, view = _root_body_view(env, asset_cfg, self._term_name)
+        return self._rotate(_world_to_body_vector(view.quat_w[:, 0, :], view.ang_vel_w[:, 0, :]))
 
 
 class projected_gravity_imu_misaligned(_ImuMisalignedObservation):
@@ -322,8 +345,12 @@ class projected_gravity_imu_misaligned(_ImuMisalignedObservation):
         asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     ) -> torch.Tensor:
         self._validate_max_angle(max_angle_deg)
-        asset = cast("Entity", env.scene[asset_cfg.name])
-        return self._rotate(asset.data.projected_gravity_b)
+        asset, view = _root_body_view(env, asset_cfg, self._term_name)
+        gravity = asset.data.gravity_vec_w_torch(getattr(env, "device", torch.device("cpu")))[0]
+        projected = _quat_apply_inverse(
+            view.quat_w[:, 0, :], gravity.expand((view.quat_w.shape[0], 3))
+        )
+        return self._rotate(projected)
 
 
 def joint_pos_rel(
@@ -333,15 +360,10 @@ def joint_pos_rel(
 ) -> torch.Tensor:
     if not isinstance(biased, bool):
         raise TypeError(f"joint_pos_rel biased must be bool, got {type(biased).__name__}")
-    asset = cast("Entity", env.scene[asset_cfg.name])
     joint_ids = asset_cfg.joint_ids
     device = getattr(env, "device", torch.device("cpu"))
-    read_plan = getattr(env.scene, "_tensor_read_plan", None)
-    if read_plan is None:
-        joint_pos = asset.data.joint_pos_biased if biased else asset.data.joint_pos
-        result = joint_pos[:, joint_ids] - asset.data.default_joint_pos[:, joint_ids]
-        return torch.as_tensor(result, dtype=torch.float32, device=device)
-    state = read_plan.joint_tensor_view(asset)
+    asset = env.scene[asset_cfg.name]
+    state = _joint_view(env, asset_cfg, "joint_pos_rel")
     result = (
         state.joint_pos[:, joint_ids] - asset.data.default_joint_pos_torch(device)[:, joint_ids]
     )
@@ -356,14 +378,10 @@ def joint_vel_rel(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    asset = cast("Entity", env.scene[asset_cfg.name])
     joint_ids = asset_cfg.joint_ids
     device = getattr(env, "device", torch.device("cpu"))
-    read_plan = getattr(env.scene, "_tensor_read_plan", None)
-    if read_plan is None:
-        result = asset.data.joint_vel[:, joint_ids] - asset.data.default_joint_vel[:, joint_ids]
-        return torch.as_tensor(result, dtype=torch.float32, device=device)
-    state = read_plan.joint_tensor_view(asset)
+    asset = env.scene[asset_cfg.name]
+    state = _joint_view(env, asset_cfg, "joint_vel_rel")
     return state.joint_vel[:, joint_ids] - asset.data.default_joint_vel_torch(device)[:, joint_ids]
 
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, cast
 
-import numpy as np
 import torch
 
 from tests.fixtures.cartpole_manager_adapters import (
@@ -39,9 +38,11 @@ def joint_pos_target_l2(
     """Penalize wrapped joint-position deviation from a target value."""
     target_value = finite_real(target, label="joint_pos_target_l2 target")
     asset = cast("Entity", env.scene[asset_cfg.name])
-    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
-    wrapped = np.remainder(joint_pos + math.pi, 2.0 * math.pi) - math.pi
-    return torch.as_tensor(np.sum(np.square(wrapped - target_value), axis=1))
+    joint_pos = asset.joint_tensor_view(getattr(env, "device", torch.device("cpu"))).joint_pos[
+        :, asset_cfg.joint_ids
+    ]
+    wrapped = torch.remainder(joint_pos + math.pi, 2.0 * math.pi) - math.pi
+    return torch.sum(torch.square(wrapped - target_value), dim=1)
 
 
 def joint_vel_l1(
@@ -50,7 +51,14 @@ def joint_vel_l1(
 ) -> torch.Tensor:
     """Penalize the absolute velocity of selected joints."""
     asset = cast("Entity", env.scene[asset_cfg.name])
-    return torch.as_tensor(np.sum(np.abs(asset.data.joint_vel[:, asset_cfg.joint_ids]), axis=1))
+    return torch.sum(
+        torch.abs(
+            asset.joint_tensor_view(getattr(env, "device", torch.device("cpu"))).joint_vel[
+                :, asset_cfg.joint_ids
+            ]
+        ),
+        dim=1,
+    )
 
 
 def joint_pos_out_of_manual_limit(
@@ -61,8 +69,10 @@ def joint_pos_out_of_manual_limit(
     """Terminate when a selected joint leaves the configured manual bounds."""
     lower, upper = numeric_range(bounds, label="joint_pos_out_of_manual_limit bounds")
     asset = cast("Entity", env.scene[asset_cfg.name])
-    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
-    return torch.as_tensor(np.any((joint_pos < lower) | (joint_pos > upper), axis=1))
+    joint_pos = asset.joint_tensor_view(getattr(env, "device", torch.device("cpu"))).joint_pos[
+        :, asset_cfg.joint_ids
+    ]
+    return torch.any((joint_pos < lower) | (joint_pos > upper), dim=1)
 
 
 def register_fixture() -> None:

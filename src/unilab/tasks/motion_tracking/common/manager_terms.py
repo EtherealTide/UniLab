@@ -1160,13 +1160,13 @@ class MotionCommand(CommandTerm):
 
     def _seed_robot_state_torch_from_defaults(self) -> None:
         """Cold proxy path: seed immutable defaults before CUDA view binding."""
-        default_root = self.robot.data.default_root_state
-        if default_root is None:
+        try:
+            root = self.robot.data.default_root_state_torch(self._device)
+        except NotImplementedError:
             self._robot_body_pos_w.zero_()
             self._robot_body_quat_w.zero_()
             self._robot_body_quat_w[..., 0] = 1.0
         else:
-            root = self.robot.data.default_root_state_torch(self._device)
             self._robot_body_pos_w.copy_(root[:, None, 0:3])
             self._robot_body_quat_w.copy_(root[:, None, 3:7])
         self._robot_body_lin_vel_w.zero_()
@@ -1594,14 +1594,15 @@ def joint_pos_limits(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """Penalize selected joint-limit violations through the entity facade."""
+    """Penalize selected joint-limit violations through the packed joint read."""
     asset = cast("Entity", env.scene[asset_cfg.name])
     read_plan = getattr(env.scene, "_tensor_read_plan", None)
-    joint_pos = (
-        read_plan.joint_tensor_view(asset).joint_pos
-        if read_plan is not None
-        else torch.as_tensor(asset.data.joint_pos, dtype=torch.float32, device=env.device)
-    )[:, asset_cfg.joint_ids]
+    if read_plan is None:
+        raise NotImplementedError(
+            "Motion tracking term 'joint_pos_limits' requires the Manager packed "
+            "joint-state read plan"
+        )
+    joint_pos = read_plan.joint_tensor_view(asset).joint_pos[:, asset_cfg.joint_ids]
     limits = asset.data.soft_joint_pos_limits_torch(env.device)[asset_cfg.joint_ids]
     lower_violation = (limits[:, 0] - joint_pos).clamp_min(0.0)
     upper_violation = (joint_pos - limits[:, 1]).clamp_min(0.0)

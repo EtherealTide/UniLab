@@ -58,11 +58,11 @@ def test_go2_superdex_native_rollout_and_free_root_reset() -> None:
             assert torch.isfinite(state.reward).all()
             assert all(torch.isfinite(value).all() for value in state.obs.values())
         robot = env.scene["robot"]
-        before = robot.data.root_link_pos_w.copy()
+        before = robot.data._host_root_link_pos_w.copy()
         obs, _ = env.reset(torch.tensor([0], dtype=torch.int64, device=env.device))
         assert obs["obs"].shape == (1, 49)
-        np.testing.assert_array_equal(robot.data.root_link_pos_w[1], before[1])
-        root_quat = robot.data.root_link_quat_w
+        np.testing.assert_array_equal(robot.data._host_root_link_pos_w[1], before[1])
+        root_quat = robot.data._host_root_link_quat_w
         np.testing.assert_allclose(np.linalg.norm(root_quat, axis=-1), 1.0, atol=1e-5)
     finally:
         env.close()
@@ -103,7 +103,7 @@ def test_go2_superdex_parallel_matches_serial_env_and_unsorted_reset() -> None:
             np.testing.assert_allclose(
                 result.reward.cpu(), reference.reward.cpu(), atol=2e-5, rtol=2e-5
             )
-        before = parallel.scene["robot"].data.root_link_pos_w.copy()
+        before = parallel.scene["robot"].data._host_root_link_pos_w.copy()
         # Non-monotonic IDs span both shards and must retain caller row order.
         selected = torch.tensor([3, 0], dtype=torch.int64, device=parallel.device)
         ref_obs, _ = serial.reset(selected)
@@ -111,7 +111,7 @@ def test_go2_superdex_parallel_matches_serial_env_and_unsorted_reset() -> None:
         for key in ref_obs:
             np.testing.assert_allclose(out_obs[key].cpu(), ref_obs[key].cpu(), atol=2e-5, rtol=2e-5)
         np.testing.assert_array_equal(
-            parallel.scene["robot"].data.root_link_pos_w[[1, 2]], before[[1, 2]]
+            parallel.scene["robot"].data._host_root_link_pos_w[[1, 2]], before[[1, 2]]
         )
     finally:
         for env in reversed(envs):

@@ -190,12 +190,15 @@ def test_per_environment_entity_defaults_are_not_broadcast_from_first_variant():
     env = make_manager_based_rl_env(cfg, 2, "mujoco")
     try:
         env.init_state()
-        np.testing.assert_allclose(env.scene["object"].data.default_joint_pos[:, 0], [0.1, 0.3])
-        np.testing.assert_allclose(env.scene["object"].data.joint_pos[:, 0], [0.1, 0.3])
+        torch.testing.assert_close(
+            env.scene["object"].data.default_joint_pos_torch(torch.device("cpu"))[:, 0],
+            torch.tensor([0.1, 0.3]),
+        )
+        np.testing.assert_allclose(env.scene["object"].data._host_joint_pos[:, 0], [0.1, 0.3])
         np.testing.assert_allclose(env._control[:, 0].cpu(), [0.37, 0.37])
         env.step(torch.full((2, 1), 0.1, dtype=torch.float32, device=env.device))
         env.reset(env_indices=torch.tensor([1], dtype=torch.int64, device=env.device))
-        np.testing.assert_allclose(env.scene["object"].data.joint_pos[1, 0], 0.3)
+        np.testing.assert_allclose(env.scene["object"].data._host_joint_pos[1, 0], 0.3)
         np.testing.assert_allclose(env._control[:, 0].cpu(), [0.1, 0.37])
     finally:
         env.close()

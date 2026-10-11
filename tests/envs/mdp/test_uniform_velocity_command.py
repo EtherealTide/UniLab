@@ -70,12 +70,36 @@ class _Backend:
     def get_body_ang_vel_b(self, ids: np.ndarray) -> np.ndarray:
         return self.body_ang_vel_b[:, ids]
 
+    def get_sensor_view(self, name: str, device=None) -> torch.Tensor:
+        values = {
+            "pelvis_local_linvel": self.body_lin_vel_b[:, 0],
+            "torso_gyro": self.body_ang_vel_b[:, 0],
+        }[name]
+        return torch.from_numpy(values).to(device=device)
+
 
 def _env(seed: int = 7) -> tuple[ManagerBasedRlEnv, _Backend]:
     backend = _Backend()
     scene = EntityScene(
         {"robot": EntityCfg(root_body_name="base")},
         cast(SimBackend, backend),
+    )
+    scene._tensor_read_plan = SimpleNamespace(
+        sensor_names={"robot": ("pelvis_local_linvel", "torso_gyro")},
+        body_tensor_view=lambda entity, names: SimpleNamespace(
+            quat_w=torch.from_numpy(backend.body_quat[:, 0]).unsqueeze(1)
+        ),
+        sensor_tensor_views=lambda entity, names: SimpleNamespace(
+            values={
+                name: torch.from_numpy(
+                    {
+                        "pelvis_local_linvel": backend.body_lin_vel_b[:, 0],
+                        "torso_gyro": backend.body_ang_vel_b[:, 0],
+                    }[name]
+                )
+                for name in names
+            }
+        ),
     )
     env = cast(
         ManagerBasedRlEnv,

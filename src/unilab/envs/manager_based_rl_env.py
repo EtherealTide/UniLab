@@ -543,8 +543,6 @@ class ManagerBasedRlEnv(TorchEnv):
                     mdp.nan_detection,
                 ):
                     entity_name = self._manager_term_entity_name(manager, name)
-                    if not self._entity_declares_packed_root(entity_name):
-                        continue
                     specs.append(
                         SceneTensorReadSpec(
                             entity=entity_name,
@@ -562,12 +560,6 @@ class ManagerBasedRlEnv(TorchEnv):
                 f"'{entity_name}' requires a declared root_body_name"
             )
         return root_body_name
-
-    def _entity_declares_packed_root(self, entity_name: str) -> bool:
-        entity = self.scene[entity_name]
-        root_body_name = getattr(entity, "_root_body_name", None)
-        body_names = getattr(entity, "_body_names", None)
-        return isinstance(root_body_name, str) and bool(root_body_name) and body_names is not None
 
     @staticmethod
     def _manager_term_entity_name(manager: RewardManager | TerminationManager, name: str) -> str:

@@ -29,7 +29,9 @@ _QUADRATIC_SCALE = math.sqrt(1.0 - 0.1)
 def pole_angle_cos_sin(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     """Return cosine and sine of the selected pole angle."""
     asset = cast("Entity", env.scene[asset_cfg.name])
-    angle = asset.joint_tensor_view(env.device).joint_pos[:, asset_cfg.joint_ids]
+    angle = asset.joint_tensor_view(getattr(env, "device", torch.device("cpu"))).joint_pos[
+        :, asset_cfg.joint_ids
+    ]
     return torch.cat((torch.cos(angle), torch.sin(angle)), dim=-1)
 
 
@@ -54,15 +56,20 @@ def cartpole_smooth_reward(
 ) -> torch.Tensor:
     """Port mjlab's dm_control-style smooth Cartpole reward to NumPy."""
     asset = cast("Entity", env.scene[cart_cfg.name])
-    hinge_angle = asset.data.joint_pos[:, hinge_cfg.joint_ids].squeeze(-1)
+    joint_state = asset.joint_tensor_view(getattr(env, "device", torch.device("cpu")))
+    hinge_angle = joint_state.joint_pos[:, hinge_cfg.joint_ids].squeeze(-1)
     upright = (np.cos(hinge_angle) + 1.0) / 2.0
-    cart_pos = asset.data.joint_pos[:, cart_cfg.joint_ids].squeeze(-1)
+    cart_pos = joint_state.joint_pos[:, cart_cfg.joint_ids].squeeze(-1)
     centered = (1.0 + _gaussian_tolerance(cart_pos, margin=2.0)) / 2.0
     control = env.action_manager.action.squeeze(-1)
     if hasattr(control, "detach"):
         control = control.detach().cpu().numpy()
     small_control = (4.0 + _quadratic_tolerance(control, margin=1.0)) / 5.0
-    hinge_vel = asset.data.joint_vel[:, hinge_cfg.joint_ids].squeeze(-1)
+    hinge_vel = (
+        asset.joint_tensor_view(getattr(env, "device", torch.device("cpu")))
+        .joint_vel[:, hinge_cfg.joint_ids]
+        .squeeze(-1)
+    )
     small_velocity = (1.0 + _gaussian_tolerance(hinge_vel, margin=5.0)) / 2.0
     return torch.as_tensor(upright * centered * small_control * small_velocity, dtype=torch.float32)
 

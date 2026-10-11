@@ -36,6 +36,26 @@ class _Backend:
             "gyro": np.asarray([[0.1, 0.2, 0.3], [-0.1, -0.2, -0.3]], dtype=np.float32),
             "upvector": np.asarray([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0]], dtype=np.float32),
         }
+        self.sensor_values.update(
+            {
+                "track_pos_w_base": torch.from_numpy(np.zeros((2, 3), dtype=np.float32)),
+                "track_quat_w_base": torch.from_numpy(
+                    np.asarray(
+                        [
+                            [1.0, 0.0, 0.0, 0.0],
+                            [np.sqrt(0.5), np.sqrt(0.5), 0.0, 0.0],
+                        ],
+                        dtype=np.float32,
+                    )
+                ),
+                "track_linvel_w_base": torch.from_numpy(
+                    np.asarray([[0.5, 0.25, 0.0], [-0.5, -0.25, 0.1]], dtype=np.float32)
+                ),
+                "track_angvel_w_base": torch.from_numpy(
+                    np.asarray([[0.1, 0.2, 0.3], [-0.1, -0.2, -0.3]], dtype=np.float32)
+                ),
+            }
+        )
         self.joint_names = ("hip", "knee", "ankle")
         self.dof_pos = np.asarray(
             [[0.4, 0.1, -0.2], [0.0, 0.3, 0.7]],
@@ -50,8 +70,12 @@ class _Backend:
         self.body_quat[0, 0, 0] = 1.0
         half = np.sqrt(0.5)
         self.body_quat[1, 0] = [half, half, 0.0, 0.0]
-        self.body_lin_vel_w = np.zeros((2, 1, 3), dtype=np.float32)
-        self.body_ang_vel_w = np.zeros((2, 1, 3), dtype=np.float32)
+        self.body_lin_vel_w = np.asarray(
+            [[[0.5, 0.25, 0.0]], [[-0.5, -0.25, 0.1]]], dtype=np.float32
+        )
+        self.body_ang_vel_w = np.asarray(
+            [[[0.1, 0.2, 0.3]], [[-0.1, -0.2, -0.3]]], dtype=np.float32
+        )
         self.body_lin_vel_b = np.asarray(
             [[[0.5, 0.25, 0.0]], [[-0.5, -0.25, 0.1]]], dtype=np.float32
         )
@@ -182,6 +206,7 @@ def _env() -> tuple[ManagerBasedRlEnv, _Backend]:
             "robot": EntityCfg(
                 root_body_name="base",
                 joint_names=backend.joint_names,
+                body_names=("base",),
             )
         },
         cast(SimBackend, backend),
@@ -201,7 +226,7 @@ def _env() -> tuple[ManagerBasedRlEnv, _Backend]:
     env.scene._tensor_read_plan = scene_plan = env.scene.compile_tensor_reads(
         env.device,
         (
-            SceneTensorReadSpec(entity="robot"),
+            SceneTensorReadSpec(entity="robot", body_names=("base",)),
             SceneTensorReadSpec(entity="robot", sensor_names=("gyro", "upvector")),
         ),
     )
@@ -211,6 +236,15 @@ def _env() -> tuple[ManagerBasedRlEnv, _Backend]:
 
 def _tensor_observation(env: ManagerBasedRlEnv) -> torch.Tensor:
     return torch.asarray([[0.1], [-0.1]], dtype=torch.float32, device=env.device)
+
+
+def _world_to_body_reference(quat: np.ndarray, vector: np.ndarray) -> torch.Tensor:
+    quat_t = torch.from_numpy(quat)
+    vector_t = torch.from_numpy(vector)
+    conjugate = torch.cat((quat_t[:, 0:1], -quat_t[:, 1:4]), dim=-1)
+    xyz = conjugate[:, 1:4]
+    cross = torch.linalg.cross(xyz, vector_t, dim=-1)
+    return vector_t + 2.0 * conjugate[:, 0:1] * cross + 2.0 * torch.linalg.cross(xyz, cross, dim=-1)
 
 
 def _host_observation(env: ManagerBasedRlEnv) -> np.ndarray:
@@ -223,8 +257,14 @@ def test_root_joint_action_and_command_terms_match_numpy_contract() -> None:
     robot = cast(Any, env.scene["robot"])
     robot.data.encoder_bias[:] = [[0.01, 0.02, 0.03], [-0.01, -0.02, -0.03]]
 
-    np.testing.assert_array_equal(mdp.base_lin_vel(env), backend.body_lin_vel_b[:, 0])
-    np.testing.assert_array_equal(mdp.base_ang_vel(env), backend.body_ang_vel_b[:, 0])
+    torch.testing.assert_close(
+        mdp.base_lin_vel(env),
+        _world_to_body_reference(backend.body_quat[:, 0], backend.body_lin_vel_w[:, 0]),
+    )
+    torch.testing.assert_close(
+        mdp.base_ang_vel(env),
+        _world_to_body_reference(backend.body_quat[:, 0], backend.body_ang_vel_w[:, 0]),
+    )
     np.testing.assert_allclose(
         mdp.projected_gravity(env),
         [[0.0, 0.0, -1.0], [0.0, -1.0, 0.0]],
@@ -497,7 +537,7 @@ def test_missing_entity_capability_fails_instead_of_returning_zeros() -> None:
             command_manager=_CommandManager(),
         ),
     )
-    with pytest.raises(NotImplementedError, match="projected gravity.*not materialized"):
+    with pytest.raises(NotImplementedError, match="requires the Manager packed Torch read plan"):
         mdp.projected_gravity(env)
 
 
@@ -551,7 +591,11 @@ def test_imu_misaligned_terms_share_one_per_env_constant_quaternion() -> None:
     gyro_rot, gravity_rot = policy[:, :3], policy[:, 3:]
 
     # The critic group keeps the true (unrotated) values.
-    np.testing.assert_array_equal(gyro_raw, backend.body_ang_vel_b[:, 0])
+    assert isinstance(gyro_raw, torch.Tensor)
+    expected_body_ang_vel = _world_to_body_reference(
+        backend.body_quat[:, 0], backend.body_ang_vel_w[:, 0]
+    )
+    torch.testing.assert_close(gyro_raw, expected_body_ang_vel)
     np.testing.assert_allclose(gravity_raw, [[0.0, 0.0, -1.0], [0.0, -1.0, 0.0]], atol=1e-6)
 
     # A rotation preserves vector norms...
@@ -613,7 +657,11 @@ def test_imu_misalignment_zero_angle_is_identity() -> None:
     policy = _imu_misalignment_manager(env, max_angle_deg=0.0).compute_group("policy")
 
     assert isinstance(policy, torch.Tensor)
-    np.testing.assert_array_equal(policy[:, :3], backend.body_ang_vel_b[:, 0])
+    assert isinstance(policy, torch.Tensor)
+    torch.testing.assert_close(
+        policy[:, :3],
+        _world_to_body_reference(backend.body_quat[:, 0], backend.body_ang_vel_w[:, 0]),
+    )
     np.testing.assert_allclose(policy[:, 3:], [[0.0, 0.0, -1.0], [0.0, -1.0, 0.0]], atol=1e-6)
 
 

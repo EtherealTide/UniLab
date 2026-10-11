@@ -345,3 +345,92 @@ def test_production_numpy_imports_are_explicit_leaves() -> None:
     ]
 
     assert violations == [], f"unallowlisted production NumPy imports remain: {violations}"
+
+
+_MANAGER_HOST_FIELD_PREFIXES = ("root_link_", "body_link_")
+_MANAGER_HOST_FIELD_NAMES = frozenset(
+    {
+        "joint_pos",
+        "joint_vel",
+        "joint_pos_biased",
+        "projected_gravity_b",
+        "gravity_vec_w",
+        "soft_joint_pos_limits",
+    }
+)
+
+
+def test_manager_runtime_does_not_read_entity_public_host_carriers() -> None:
+    """Generic Manager terms must not resurrect hidden Entity host fallbacks."""
+
+    runtime_roots = (
+        _REPO_ROOT / "src" / "unilab" / "managers",
+        _REPO_ROOT / "src" / "unilab" / "envs",
+        _REPO_ROOT / "src" / "unilab" / "tasks",
+    )
+    offenders: list[tuple[str, int, str]] = []
+    for root in runtime_roots:
+        for path in sorted(root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not (
+                    isinstance(node, ast.Attribute)
+                    and node.attr in _MANAGER_HOST_FIELD_NAMES
+                    or (
+                        isinstance(node, ast.Attribute)
+                        and node.attr.startswith(_MANAGER_HOST_FIELD_PREFIXES)
+                    )
+                ):
+                    continue
+                value = node.value
+                if isinstance(value, ast.Attribute) and value.attr == "data":
+                    offenders.append(
+                        (
+                            path.relative_to(_REPO_ROOT).as_posix(),
+                            node.lineno,
+                            node.attr,
+                        )
+                    )
+
+    assert offenders == [], f"Manager Entity host-carrier reads remain: {offenders}"
+
+
+_ENTITY_PUBLIC_HOST_FIELD_PREFIXES = ("root_link_", "body_link_")
+_ENTITY_PUBLIC_HOST_FIELD_NAMES = frozenset(
+    {
+        "joint_pos",
+        "joint_vel",
+        "joint_pos_biased",
+        "projected_gravity_b",
+        "gravity_vec_w",
+        "soft_joint_pos_limits",
+        "default_joint_pos",
+        "default_joint_vel",
+        "default_root_state",
+        "heading_w",
+        "root_link_pose_w",
+        "root_link_vel_w",
+        "body_link_pose_w",
+        "body_link_vel_w",
+    }
+)
+
+
+def test_entity_does_not_reintroduce_public_manager_host_carriers() -> None:
+    path = _REPO_ROOT / "src" / "unilab" / "base" / "entity.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    entity_data = next(
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "EntityData"
+    )
+    violations: list[tuple[int, str]] = []
+    for node in entity_data.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name.startswith("_"):
+            continue
+        if node.name in _ENTITY_PUBLIC_HOST_FIELD_NAMES or node.name.startswith(
+            _ENTITY_PUBLIC_HOST_FIELD_PREFIXES
+        ):
+            violations.append((node.lineno, node.name))
+
+    assert violations == [], f"public Entity host carriers remain: {violations}"

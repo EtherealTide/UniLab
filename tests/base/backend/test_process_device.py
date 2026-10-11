@@ -133,7 +133,10 @@ def test_multi_visible_rank_fails_closed(
         resolve_backend_env_device_id(backend_type)
 
 
-def test_rank_local_visibility_entries_are_opaque() -> None:
+def test_rank_local_visibility_entries_are_opaque(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     assert rank_local_visible_cuda_entries(None) == ()
     assert visible_cuda_entries("GPU-a,MIG-b") == ("GPU-a", "MIG-b")
 
