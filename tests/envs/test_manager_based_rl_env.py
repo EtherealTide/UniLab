@@ -1316,7 +1316,7 @@ def test_manager_torch_device_rejects_non_tensor_device_and_invalid_syntax() -> 
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
-def test_mujoco_host_bridge_fails_closed_for_mask_reset(
+def test_mujoco_host_bridge_declares_and_commits_mask_reset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, device: str
 ) -> None:
     pytest.importorskip("unisim.backend.mujoco.backend")
@@ -1363,10 +1363,17 @@ def test_mujoco_host_bridge_fails_closed_for_mask_reset(
         "mujoco", scene, 2, cfg.sim_dt, base_name="base", add_body_sensors=True
     )
     try:
-        assert backend.get_tensor_capabilities().execution is TensorExecution.HOST_BRIDGE
-        with pytest.raises(NotImplementedError, match="mask_selected_reset"):
-            ManagerBasedRlEnv(cfg, backend, 2)
+        capabilities = backend.get_tensor_capabilities()
+        assert capabilities.execution is TensorExecution.HOST_BRIDGE
+        assert capabilities.mask_selected_reset
+        assert capabilities.mask_selected_reset_full_refresh
+        env = ManagerBasedRlEnv(cfg, backend, 2)
+        obs, _ = env.reset()
+        assert obs
+        assert all(torch.isfinite(values).all() for values in obs.values())
     finally:
+        if "env" in locals():
+            env.close()
         backend.close()
 
 
@@ -1888,7 +1895,7 @@ def test_named_keyframe_snapshot_is_shared_by_entity_and_reset_cold_path() -> No
     )
 
 
-def test_real_mujoco_backend_fails_closed_before_first_reset() -> None:
+def test_real_mujoco_backend_is_materialized_before_first_reset() -> None:
     pytest.importorskip(
         "unisim.backend.mujoco.backend",
         reason="unisim-core MuJoCo adapter (mjbatch build) not available",
@@ -1913,8 +1920,17 @@ def test_real_mujoco_backend_fails_closed_before_first_reset() -> None:
         terminations={"time_out": TerminationTermCfg(func=mdp.time_out, time_out=True)},
         policy_observation_group="actor",
     )
-    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
-        make_manager_based_rl_env(cfg, num_envs=2, backend_type="mujoco")
+    env = make_manager_based_rl_env(cfg, num_envs=2, backend_type="mujoco")
+    try:
+        state = env.init_state()
+        assert state.obs["obs"].shape == (2, 1)
+        assert torch.isfinite(state.obs["obs"]).all()
+
+        state = env.step(torch.empty((2, 0), dtype=torch.float32, device=env.device))
+        assert torch.isfinite(state.obs["obs"]).all()
+        assert torch.isfinite(state.reward).all()
+    finally:
+        env.close()
 
 
 @pytest.mark.parametrize(
@@ -1931,7 +1947,7 @@ def test_real_mujoco_backend_fails_closed_before_first_reset() -> None:
         ),
     ],
 )
-def test_real_mujoco_default_state_fails_closed_without_mask_reset(
+def test_real_mujoco_default_state_matches_qpos0_or_named_home(
     default_keyframe_name: str | None,
     expected_root_z: float,
     expected_joint_pos: np.ndarray,
@@ -1989,11 +2005,25 @@ def test_real_mujoco_default_state_fails_closed_without_mask_reset(
         add_body_sensors=True,
         **env_backend_kwargs(cfg),
     )
-    del expected_root_z, expected_joint_pos
     try:
-        with pytest.raises(NotImplementedError, match="mask_selected_reset"):
-            ManagerBasedRlEnv(cfg, backend, 2)
+        env = ManagerBasedRlEnv(cfg, backend, 2)
+        robot = env.scene["robot"]
+        torch.testing.assert_close(
+            robot.data.default_root_state_torch(env.device)[:, 2],
+            torch.full((2,), expected_root_z, dtype=torch.float32),
+        )
+        expected_batch = np.broadcast_to(expected_joint_pos, (2, expected_joint_pos.size))
+        torch.testing.assert_close(
+            robot.data.default_joint_pos_torch(env.device),
+            torch.as_tensor(expected_batch),
+        )
+
+        env.init_state()
+
+        np.testing.assert_allclose(robot.data._host_root_link_pos_w[:, 2], expected_root_z)
+        np.testing.assert_allclose(robot.data._host_joint_pos, expected_batch)
     finally:
+        env.close()
         backend.close()
 
 

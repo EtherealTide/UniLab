@@ -82,19 +82,23 @@ def test_fixture_hydra_owner_materializes_source_order_as_plain_manager_cfg() ->
     _assert_plain(env_cfg)
 
 
-def test_fixture_real_mujoco_manager_fails_closed_without_mask_reset() -> None:
+def test_fixture_real_mujoco_manager_uses_mask_reset() -> None:
     pytest.importorskip(
         "unisim.backend.mujoco.backend",
         reason="unisim-core MuJoCo adapter (mjbatch build) not available",
     )
     _, _, override = _materialize_fixture()
-    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
-        registry.make(
-            FIXTURE_ENV_NAME,
-            sim_backend="mujoco",
-            env_cfg_override=override,
-            num_envs=8,
-        )
+    env = registry.make(
+        FIXTURE_ENV_NAME,
+        sim_backend="mujoco",
+        env_cfg_override=override,
+        num_envs=8,
+    )
+    try:
+        state = env.init_state()
+        assert all(torch.isfinite(values).all() for values in state.obs.values())
+    finally:
+        env.close()
 
 
 def test_fixture_missing_actuator_fails_during_cold_path_binding() -> None:

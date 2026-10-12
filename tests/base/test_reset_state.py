@@ -208,6 +208,26 @@ class _PackedTensorResetBackend(_TensorResetBackend):
         self.mocap_poses[ids] = poses.detach().cpu().numpy()
 
 
+class _RecordingPackedTensorResetBackend(_PackedTensorResetBackend):
+    """Public-composer adapter that retains submitted state payload layouts."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.state_write_payloads: list[tuple[torch.Tensor, torch.Tensor]] = []
+
+    def begin_packed_reset(self, *, device=None):
+        composer = super().begin_packed_reset(device=device)
+        write_state = composer.write_state
+
+        def record_state_write(rows, *, qpos_values=None, qvel_values=None, **kwargs):
+            if qpos_values is not None and qvel_values is not None:
+                self.state_write_payloads.append((qpos_values, qvel_values))
+            return write_state(rows, qpos_values=qpos_values, qvel_values=qvel_values, **kwargs)
+
+        composer.write_state = record_state_write
+        return composer
+
+
 def _transaction(backend: _Backend) -> ResetStateTransaction:
     return ResetStateTransaction(cast(SimBackend, backend))
 
@@ -456,7 +476,7 @@ def test_owner_tensor_subset_keeps_full_width_contract() -> None:
         )
 
     committed_mask, qpos, qvel = backend.tensor_mask_reset_calls[0]
-    torch.testing.assert_close(committed_mask, active_mask)
+    torch.testing.assert_close(committed_mask, owner_mask)
     np.testing.assert_allclose(
         qpos[:, 7],
         [backend.qpos[7], 0.7, backend.qpos[7], backend.qpos[7]],
@@ -582,6 +602,131 @@ def test_packed_transaction_commits_state_through_public_composer() -> None:
     torch.testing.assert_close(qvel[:, 2], torch.tensor([1.5, 2.5]))
     assert randomization is None
     assert transaction.last_set_state_timing_ms["packed_reset_total_ms"] >= 0.0
+
+
+def test_packed_root_state_payloads_remain_contiguous() -> None:
+    backend = _RecordingPackedTensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    reset_mask = torch.tensor([False, True, False, True])
+    original_qpos = backend.qpos.copy()
+    original_qvel = backend.qvel.copy()
+    layout = BackendRootStateLayout(tuple(range(7)), tuple(range(6)))
+    root_state = torch.zeros((4, 13), dtype=torch.float32)
+    root_state[:, 3] = 1.0
+    root_state[1, :3] = torch.tensor([0.1, 0.2, 0.3])
+    root_state[3, :3] = torch.tensor([0.4, 0.5, 0.6])
+    root_state[1, 7:10] = torch.tensor([1.0, 2.0, 3.0])
+    root_state[3, 7:10] = torch.tensor([4.0, 5.0, 6.0])
+
+    with transaction.scoped_device_event_tensor(reset_mask):
+        transaction.write_root_state_tensor(reset_mask, layout, root_state, term_name="root_reset")
+
+    assert len(backend.state_write_payloads) == 1
+    qpos_payload, qvel_payload = backend.state_write_payloads[0]
+    assert tuple(qpos_payload.shape) == (2, 7)
+    assert tuple(qvel_payload.shape) == (2, 6)
+    assert qpos_payload.dtype is torch.float32 and qpos_payload.is_contiguous()
+    assert qvel_payload.dtype is torch.float32 and qvel_payload.is_contiguous()
+    assert len(backend.tensor_reset_calls) == 1
+    _, qpos, qvel, _ = backend.tensor_reset_calls[0]
+    torch.testing.assert_close(qpos[:, :3], torch.tensor([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]))
+    torch.testing.assert_close(qvel[:, :3], torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
+    np.testing.assert_allclose(backend.qpos[[0, 2]], original_qpos[[0, 2]])
+    np.testing.assert_allclose(backend.qvel[[0, 2]], original_qvel[[0, 2]])
+
+
+@pytest.mark.parametrize(
+    ("root_state", "error", "match"),
+    [
+        (torch.zeros((4, 12), dtype=torch.float32), ValueError, "shape"),
+        (torch.zeros((4, 13), dtype=torch.float64), TypeError, "contiguous float32"),
+        (torch.zeros((13, 4), dtype=torch.float32).T, TypeError, "contiguous float32"),
+        (torch.zeros((4, 13), device="meta"), ValueError, "must live on"),
+        (torch.full((4, 13), float("nan")), ValueError, "NaN or Inf"),
+    ],
+)
+def test_packed_root_state_rejects_invalid_payloads(root_state, error, match: str) -> None:
+    backend = _RecordingPackedTensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    reset_mask = torch.tensor([False, True, False, True])
+    layout = BackendRootStateLayout(tuple(range(7)), tuple(range(6)))
+
+    with transaction.scoped_device_event_tensor(reset_mask):
+        with pytest.raises(error, match=match):
+            transaction.write_root_state_tensor(
+                reset_mask, layout, root_state, term_name="invalid_root_reset"
+            )
+
+    assert backend.state_write_payloads == []
+    assert backend.tensor_reset_calls == []
+
+
+def test_packed_reset_rejects_invalid_mask_layout() -> None:
+    backend = _RecordingPackedTensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+
+    with pytest.raises(ValueError, match="bool dtype"):
+        transaction.begin_tensor(torch.zeros(4, dtype=torch.float32))
+
+    assert backend.state_write_payloads == []
+    assert backend.tensor_reset_calls == []
+
+
+def test_packed_motion_root_state_payloads_remain_contiguous() -> None:
+    backend = _RecordingPackedTensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    reset_mask = torch.tensor([False, True, False, True])
+    original_qpos = backend.qpos.copy()
+    original_qvel = backend.qvel.copy()
+    layout = BackendRootStateLayout(tuple(range(7)), tuple(range(6)))
+    root_state = torch.zeros((4, 13), dtype=torch.float32)
+    root_state[:, 3] = 1.0
+    root_state[1, 2] = 0.3
+    root_state[3, 2] = 0.6
+    joint_position = torch.zeros((4, 2), dtype=torch.float32)
+    joint_velocity = torch.zeros((4, 2), dtype=torch.float32)
+    joint_position[[1, 3]] = torch.tensor([[0.1, 0.2], [0.3, 0.4]])
+    joint_velocity[[1, 3]] = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+
+    with transaction.scoped_device_event_tensor(reset_mask):
+        transaction.write_motion_state_tensor(
+            reset_mask,
+            layout,
+            np.array([7, 8], dtype=np.int64),
+            np.array([6, 7], dtype=np.int64),
+            root_state,
+            joint_position,
+            joint_velocity,
+            term_name="motion_reset",
+        )
+
+    assert len(backend.state_write_payloads) == 2
+    root_qpos_payload, root_qvel_payload = backend.state_write_payloads[0]
+    joint_qpos_payload, joint_qvel_payload = backend.state_write_payloads[1]
+    assert tuple(root_qpos_payload.shape) == (2, 7)
+    assert tuple(root_qvel_payload.shape) == (2, 6)
+    assert tuple(joint_qpos_payload.shape) == (2, 2)
+    assert tuple(joint_qvel_payload.shape) == (2, 2)
+    assert all(
+        payload.dtype is torch.float32 and payload.is_contiguous()
+        for payload in (
+            root_qpos_payload,
+            root_qvel_payload,
+            joint_qpos_payload,
+            joint_qvel_payload,
+        )
+    )
+    assert len(backend.tensor_reset_calls) == 1
+    _, qpos, qvel, _ = backend.tensor_reset_calls[0]
+    torch.testing.assert_close(qpos[:, 2], torch.tensor([0.3, 0.6]))
+    torch.testing.assert_close(qpos[:, 7:], torch.tensor([[0.1, 0.2], [0.3, 0.4]]))
+    torch.testing.assert_close(qvel[:, 6:], torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
+    np.testing.assert_allclose(backend.qpos[[0, 2]], original_qpos[[0, 2]])
+    np.testing.assert_allclose(backend.qvel[[0, 2]], original_qvel[[0, 2]])
 
 
 def test_packed_tensor_transaction_commits_mocap_only_through_public_composer() -> None:

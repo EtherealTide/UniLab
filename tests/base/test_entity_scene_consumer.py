@@ -108,13 +108,21 @@ def test_hydra_constructs_new_scene_without_early_unisim_tuple_validation():
 
 
 def test_host_bridge_manager_entity_writes_fail_closed_before_runtime():
-    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
-        make_manager_based_rl_env(build_fixture_cfg(passive=False), 2, "mujoco")
+    env = make_manager_based_rl_env(build_fixture_cfg(passive=False), 2, "mujoco")
+    try:
+        with pytest.raises(NotImplementedError, match="mapped entity"):
+            env.init_state()
+    finally:
+        env.close()
 
 
 def test_host_bridge_manager_rejects_entity_row_runtime():
-    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
-        make_manager_based_rl_env(build_fixture_cfg(passive=False), 2, "mujoco")
+    env = make_manager_based_rl_env(build_fixture_cfg(passive=False), 2, "mujoco")
+    try:
+        with pytest.raises(NotImplementedError, match="mapped entity"):
+            env.init_state()
+    finally:
+        env.close()
 
 
 def test_per_environment_entity_defaults_are_not_broadcast_from_first_variant():
@@ -142,5 +150,9 @@ def test_per_environment_entity_defaults_are_not_broadcast_from_first_variant():
         )
         text = path.read_text().replace("</mujoco>", f"<keyframe>{key}</keyframe></mujoco>")
         path.write_text(text)
-    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
-        make_manager_based_rl_env(cfg, 2, "mujoco")
+    env = make_manager_based_rl_env(cfg, 2, "mujoco")
+    try:
+        with pytest.raises(NotImplementedError, match="mapped entity"):
+            env.init_state()
+    finally:
+        env.close()
