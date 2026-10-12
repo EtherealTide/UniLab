@@ -211,6 +211,12 @@ class _FakeBackend:
             )
         )
 
+    def set_state_tensor_mask(self, reset_mask, qpos, qvel, randomization=None, **_kwargs):
+        rows = torch.nonzero(reset_mask, as_tuple=False).flatten()
+        self.set_state_tensor(
+            rows, qpos.index_select(0, rows), qvel.index_select(0, rows), randomization
+        )
+
     def get_public_state_widths(self):
         from unisim.backend.base import PublicStateWidths
 

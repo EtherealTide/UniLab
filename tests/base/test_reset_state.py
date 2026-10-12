@@ -158,6 +158,12 @@ class _TensorResetBackend(_Backend):
         self.tensor_reset_calls.append((rows.clone(), qpos.clone(), qvel.clone(), randomization))
         return {"ok": True}
 
+    def set_state_tensor_mask(self, reset_mask, qpos, qvel, randomization=None, **_kwargs):
+        rows = torch.nonzero(reset_mask, as_tuple=False).flatten()
+        return self.set_state_tensor(
+            rows, qpos.index_select(0, rows), qvel.index_select(0, rows), randomization
+        )
+
     def get_public_state_widths(self):
         return PublicStateWidths(len(self.qpos), len(self.qvel))
 
@@ -203,13 +209,25 @@ class _RecordingPackedTensorResetBackend(_PackedTensorResetBackend):
     def begin_packed_reset(self, *, device=None):
         composer = super().begin_packed_reset(device=device)
         write_state = composer.write_state
+        write_state_mask = composer.write_state_mask
 
         def record_state_write(rows, *, qpos_values=None, qvel_values=None, **kwargs):
             if qpos_values is not None and qvel_values is not None:
                 self.state_write_payloads.append((qpos_values, qvel_values))
             return write_state(rows, qpos_values=qpos_values, qvel_values=qvel_values, **kwargs)
 
+        def record_state_write_mask(mask, *, qpos_values=None, qvel_values=None, **kwargs):
+            if qpos_values is not None and qvel_values is not None:
+                rows = torch.nonzero(mask, as_tuple=False).flatten()
+                self.state_write_payloads.append(
+                    (qpos_values.index_select(0, rows), qvel_values.index_select(0, rows))
+                )
+            return write_state_mask(
+                mask, qpos_values=qpos_values, qvel_values=qvel_values, **kwargs
+            )
+
         composer.write_state = record_state_write
+        composer.write_state_mask = record_state_write_mask
         return composer
 
 
