@@ -19,6 +19,7 @@ from unisim.backend.base import (
     TensorIOSpec,
     TensorLifecycleCapabilities,
     TensorProcessTopology,
+    TensorRuntimeDiagnostic,
     TrackedBodyStateViews,
 )
 from unisim.dr.types import DomainRandomizationCapabilities
@@ -201,6 +202,18 @@ class _FakeBackend:
         from unisim.backend.packed_reset import TorchPackedResetComposer
 
         return TorchPackedResetComposer(self, device=device)
+
+    def get_tensor_runtime_diagnostics(self):
+        return {
+            "deferred_fused_validation": TensorRuntimeDiagnostic(
+                requested=True,
+                enabled=True,
+                disable_reason=None,
+            )
+        }
+
+    def publish_torch_fused_validation(self) -> None:
+        return None
 
     def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> None:
         self.set_state_calls.append(
@@ -1289,6 +1302,16 @@ def test_deferred_validation_boundaries_propagate_to_owner_verdicts() -> None:
     env.reward_manager._finite_valid.fill_(False)
     with pytest.raises(ValueError, match="RewardManager returned a non-finite reward"):
         env.publish_validation_verdicts()
+    env.close()
+
+
+def test_deferred_validation_boundaries_fail_closed_without_backend_capability() -> None:
+    env, _backend = _make_env()
+    env._backend.get_tensor_runtime_diagnostics = lambda: {}
+
+    with pytest.raises(NotImplementedError, match="deferred_fused_validation"):
+        env.set_deferred_validation_boundaries(True)
+    assert env.deferred_validation_boundaries is True
     env.close()
 
 
