@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.base import (
     BackendRootStateLayout,
     BackendTerrainSpawnData,
@@ -264,13 +265,14 @@ def test_actuation_metadata_contract(backend_type: str) -> None:
     default_dof_pos = backend.get_default_dof_pos()
     reset_qpos_ids = backend.get_joint_state_qpos_indices(target_joint_names)
     reset_qvel_ids = backend.get_joint_state_qvel_indices(target_joint_names)
+    current_qpos = backend.get_state_views(("qpos",))["qpos"].detach().cpu().numpy()
 
     assert len(actuator_names) == backend.num_actuators
     assert len(set(actuator_names)) == len(actuator_names)
     assert all(actuator_names)
     assert len(target_joint_names) == backend.num_actuators
     assert all(target_joint_names)
-    assert default_dof_pos.shape == backend.get_dof_pos().shape[1:]
+    assert default_dof_pos.shape == current_qpos[:, reset_qpos_ids].shape[1:]
     assert np.issubdtype(default_dof_pos.dtype, np.floating)
     assert np.isfinite(default_dof_pos).all()
     assert reset_qpos_ids.shape == (backend.num_actuators,)
@@ -281,7 +283,7 @@ def test_actuation_metadata_contract(backend_type: str) -> None:
     assert np.unique(reset_qvel_ids).size == reset_qvel_ids.size
     assert np.all((reset_qpos_ids >= 0) & (reset_qpos_ids < backend.get_default_qpos().size))
     assert np.all((reset_qvel_ids >= 0) & (reset_qvel_ids < backend.get_init_qvel().size))
-    np.testing.assert_allclose(default_dof_pos, backend.get_dof_pos()[0], atol=1e-6)
+    np.testing.assert_allclose(default_dof_pos, current_qpos[0, reset_qpos_ids], atol=1e-6)
 
     qpos = np.broadcast_to(
         backend.get_default_qpos(), (NUM_ENVS, backend.get_default_qpos().size)
@@ -289,8 +291,13 @@ def test_actuation_metadata_contract(backend_type: str) -> None:
     qvel = np.broadcast_to(backend.get_init_qvel(), (NUM_ENVS, backend.get_init_qvel().size)).copy()
     expected_joint_pos = np.broadcast_to(default_dof_pos + 0.01, (NUM_ENVS, default_dof_pos.size))
     qpos[:, reset_qpos_ids] = expected_joint_pos
-    backend.set_state(np.arange(NUM_ENVS, dtype=np.int32), qpos, qvel)
-    np.testing.assert_allclose(backend.get_dof_pos(), expected_joint_pos, atol=1e-5)
+    backend.set_state_tensor(
+        torch.arange(NUM_ENVS, dtype=torch.int64),
+        torch.from_numpy(qpos.astype(np.float32, copy=False)),
+        torch.from_numpy(qvel.astype(np.float32, copy=False)),
+    )
+    joint_pos = backend.get_state_views(("qpos",))["qpos"].detach().cpu().numpy()
+    np.testing.assert_allclose(joint_pos[:, reset_qpos_ids], expected_joint_pos, atol=1e-5)
 
     detached = default_dof_pos.copy()
     default_dof_pos[:] = np.nan
@@ -320,12 +327,13 @@ def test_named_sensor_view_contract(backend_type: str, monkeypatch: pytest.Monke
     values = view.read()
     assert values.shape == (NUM_ENVS, 6)
     assert np.isfinite(values).all()
-    np.testing.assert_allclose(values, backend.get_sensor_data_batch(names))
+    sensor_values = [backend.get_sensor_view(name).detach().cpu().numpy() for name in names]
+    np.testing.assert_allclose(values, np.concatenate(sensor_values, axis=1))
 
     def fail_if_public_batch_getter_is_used(*_args, **_kwargs):
         raise AssertionError("materialized sensor view called the public batch getter")
 
-    monkeypatch.setattr(backend, "get_sensor_data_batch", fail_if_public_batch_getter_is_used)
+    monkeypatch.setattr(backend, "get_sensor_view", fail_if_public_batch_getter_is_used)
     np.testing.assert_allclose(view.read(), values)
 
     with pytest.raises((KeyError, ValueError), match="missing_sensor|Missing|missing"):
@@ -386,14 +394,14 @@ def test_root_qvel_body_angular_contract_reads_back_world_velocity(backend_type:
     qpos[0, qpos_indices[3:7]] = [half_sqrt, 0.0, 0.0, half_sqrt]
     qvel[0, qvel_indices[3:6]] = [0.0, -1.0, 0.0]
 
-    backend.set_state(np.array([0], dtype=np.int32), qpos, qvel)
-
-    root_body_id = backend.get_body_ids(["pelvis"])
-    np.testing.assert_allclose(
-        backend.get_body_ang_vel_w(root_body_id)[0, 0],
-        [1.0, 0.0, 0.0],
-        atol=2e-6,
+    backend.set_state_tensor(
+        torch.tensor([0], dtype=torch.int64),
+        torch.from_numpy(qpos.astype(np.float32, copy=False)),
+        torch.from_numpy(qvel.astype(np.float32, copy=False)),
     )
+
+    angular_velocity = backend.get_sensor_view("track_angvel_w_pelvis").detach().cpu().numpy()
+    np.testing.assert_allclose(angular_velocity[0], [1.0, 0.0, 0.0], atol=2e-6)
 
 
 def test_mujoco_root_layout_resolves_a_nonfirst_free_joint(tmp_path: Path) -> None:
@@ -466,7 +474,7 @@ def test_terrain_spawn_consumers_do_not_probe_private_backend_capabilities() -> 
 
 
 @pytest.mark.parametrize("backend_type", _BACKEND_PARAMS)
-def test_legacy_contract_step_set_state_and_state_reads(backend_type: str) -> None:
+def test_tensor_contract_step_set_state_and_state_reads(backend_type: str) -> None:
     _require_backend(backend_type)
 
     backend = _create_backend_for_test(
@@ -475,6 +483,7 @@ def test_legacy_contract_step_set_state_and_state_reads(backend_type: str) -> No
         NUM_ENVS,
         SIM_DT,
         base_name="pelvis",
+        add_body_sensors=True,
     )
     backend.materialize()
 
@@ -482,19 +491,25 @@ def test_legacy_contract_step_set_state_and_state_reads(backend_type: str) -> No
     assert backend.num_actuators > 0
     assert backend.get_terrain_spawn_data() is None
 
-    backend.step(np.zeros((NUM_ENVS, backend.num_actuators)), nsteps=2)
+    backend.step_tensor(
+        torch.zeros((NUM_ENVS, backend.num_actuators), dtype=torch.float32), nsteps=2
+    )
 
     default_qpos = np.asarray(backend.get_default_qpos())
     qpos = np.broadcast_to(default_qpos, (NUM_ENVS, default_qpos.shape[0])).copy()
     target_xyz = np.array([1.0, 2.0, 0.8])
     qpos[:, :3] = target_xyz
     qvel = np.zeros((NUM_ENVS, len(backend.get_init_qvel())))
-    backend.set_state(np.arange(NUM_ENVS, dtype=np.int32), qpos, qvel)
-
-    np.testing.assert_allclose(
-        backend.get_base_pos(), np.tile(target_xyz, (NUM_ENVS, 1)), atol=1e-4
+    backend.set_state_tensor(
+        torch.arange(NUM_ENVS, dtype=torch.int64),
+        torch.from_numpy(qpos.astype(np.float32, copy=False)),
+        torch.from_numpy(qvel.astype(np.float32, copy=False)),
     )
-    np.testing.assert_allclose(np.linalg.norm(backend.get_base_quat(), axis=-1), 1.0, atol=1e-5)
+
+    positions = backend.get_sensor_view("track_pos_w_pelvis").detach().cpu().numpy()
+    quaternions = backend.get_sensor_view("track_quat_w_pelvis").detach().cpu().numpy()
+    np.testing.assert_allclose(positions, np.tile(target_xyz, (NUM_ENVS, 1)), atol=1e-4)
+    np.testing.assert_allclose(np.linalg.norm(quaternions, axis=-1), 1.0, atol=1e-5)
 
 
 @pytest.mark.slow

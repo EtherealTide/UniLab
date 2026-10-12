@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import json
 import subprocess
 import sys
 import textwrap
@@ -17,16 +16,7 @@ _MATERIALIZER_CONSUMERS = (
 
 def test_unisim_dependency_uses_an_approved_source() -> None:
     direct_url = distribution("unisim-core").read_text("direct_url.json")
-    if direct_url is None:
-        return
-
-    metadata = json.loads(direct_url)
-    if metadata.get("url", "").endswith("/third_party/unisim-issue-2288"):
-        return
-    assert metadata.get("url") == "https://github.com/unilabsim/unisim.git"
-    vcs_info = metadata.get("vcs_info", {})
-    assert vcs_info.get("vcs") == "git"
-    assert vcs_info.get("commit_id"), "Git-sourced UniSim must be pinned to a commit"
+    assert direct_url is None, "UniSim must resolve from the published package registry"
 
 
 def test_materializer_consumers_use_unisim_owner_module() -> None:

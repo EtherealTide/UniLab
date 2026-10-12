@@ -19,6 +19,7 @@ from unisim.backend.base import (
     TensorIOSpec,
     TensorLifecycleCapabilities,
     TensorProcessTopology,
+    TrackedBodyStateViews,
 )
 from unisim.dr.types import DomainRandomizationCapabilities
 
@@ -106,6 +107,22 @@ class _FakeBackend:
         available = ("base",)
         return np.asarray([available.index(name) for name in names], dtype=np.int32)
 
+    def get_sensor_view(self, name: str, device=None) -> torch.Tensor:
+        target = torch.device(device) if device is not None else torch.device("cpu")
+        prefixes = ("track_pos_w_", "track_quat_w_", "track_linvel_w_", "track_angvel_w_")
+        if name.startswith(prefixes):
+            prefix = next(item for item in prefixes if name.startswith(item))
+            body_name = name[len(prefix) :]
+            field = {
+                "track_pos_w_": "pos_w",
+                "track_quat_w_": "quat_w",
+                "track_linvel_w_": "lin_vel_w",
+                "track_angvel_w_": "ang_vel_w",
+            }[prefix]
+            views = self.get_tracked_body_views((body_name,), device=target)
+            return getattr(views, field)[:, 0]
+        raise KeyError(name)
+
     def get_dr_capabilities(self):
         return DomainRandomizationCapabilities(
             supported_reset_terms=frozenset(("body_mass", "body_ipos", "geom_friction", "kp", "kd"))
@@ -129,34 +146,22 @@ class _FakeBackend:
             raise NotImplementedError(term)
         return np.array(defaults[term], copy=True)
 
-    def get_body_pos_w(self, body_ids) -> np.ndarray:
-        return np.zeros((self.num_envs, len(body_ids), 3), dtype=np.float32)
-
-    def get_body_quat_w(self, body_ids) -> np.ndarray:
-        values = np.zeros((self.num_envs, len(body_ids), 4), dtype=np.float32)
-        values[..., 0] = 1.0
-        return values
-
-    def get_body_lin_vel_w(self, body_ids) -> np.ndarray:
-        return np.zeros((self.num_envs, len(body_ids), 3), dtype=np.float32)
-
-    def get_body_ang_vel_w(self, body_ids) -> np.ndarray:
-        return np.zeros((self.num_envs, len(body_ids), 3), dtype=np.float32)
-
-    def get_body_lin_vel_b(self, body_ids) -> np.ndarray:
-        return self.get_body_lin_vel_w(body_ids)
-
-    def get_body_ang_vel_b(self, body_ids) -> np.ndarray:
-        return self.get_body_ang_vel_w(body_ids)
+    def get_tracked_body_views(self, body_names, device=None) -> TrackedBodyStateViews:
+        names = tuple(body_names)
+        count = self.num_envs
+        target = torch.device(device) if device is not None else torch.device("cpu")
+        quat = torch.zeros((count, len(names), 4), dtype=torch.float32, device=target)
+        quat[..., 0] = 1.0
+        return TrackedBodyStateViews(
+            body_names=names,
+            pos_w=torch.zeros((count, len(names), 3), dtype=torch.float32, device=target),
+            quat_w=quat,
+            lin_vel_w=torch.zeros((count, len(names), 3), dtype=torch.float32, device=target),
+            ang_vel_w=torch.zeros((count, len(names), 3), dtype=torch.float32, device=target),
+        )
 
     def get_actuator_ctrl_range(self) -> np.ndarray:
         return np.array([[-2.0, 2.0]], dtype=np.float32)
-
-    def get_dof_pos(self) -> np.ndarray:
-        return np.empty((self.num_envs, 0), dtype=np.float32)
-
-    def get_dof_vel(self) -> np.ndarray:
-        return np.empty((self.num_envs, 0), dtype=np.float32)
 
     def set_pre_step_control(self, fn) -> None:
         if fn is not None and self.reject_pre_step:
@@ -231,6 +236,9 @@ class _ResetBackend(_FakeBackend):
         self.set_state_calls: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         self.randomization_calls: list[Any] = []
         self.mask_reset_calls: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, Any, bool]] = []
+        self.qpos = torch.zeros((num_envs, 4), dtype=torch.float32)
+        self.qvel = torch.zeros((num_envs, 3), dtype=torch.float32)
+        self.state_view_calls = 0
 
     def get_default_qpos(self) -> np.ndarray:
         self.default_qpos_calls += 1
@@ -261,28 +269,31 @@ class _ResetBackend(_FakeBackend):
         self.joint_layout_calls += 1
         return np.array([2], dtype=np.int32)
 
-    def get_dof_pos(self) -> np.ndarray:
-        return np.zeros((self.num_envs, 1), dtype=np.float32)
-
     def get_default_dof_pos(self) -> np.ndarray:
         return np.zeros((1,), dtype=np.float32)
 
-    def get_dof_vel(self) -> np.ndarray:
-        return np.zeros((self.num_envs, 1), dtype=np.float32)
+    def get_state_views(self, fields, device=None) -> dict[str, torch.Tensor]:
+        self.state_view_calls += 1
+        target = torch.device(device) if device is not None else torch.device("cpu")
+        views: dict[str, torch.Tensor] = {}
+        if "qpos" in fields:
+            views["qpos"] = self.qpos.detach().clone().to(target)
+        if "qvel" in fields:
+            views["qvel"] = self.qvel.detach().clone().to(target)
+        return views
 
     def get_joint_range(self) -> np.ndarray:
         return np.array([[-1.0, 1.0]], dtype=np.float32)
 
-    def set_state(
-        self,
-        env_ids: np.ndarray,
-        qpos: np.ndarray,
-        qvel: np.ndarray,
-        randomization=None,
-    ) -> None:
+    def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> None:
         assert self.materialize_calls == 1
-        self.set_state_calls.append((env_ids.copy(), qpos.copy(), qvel.copy()))
+        rows = env_indices.detach().cpu().numpy().copy()
+        host_qpos = qpos.detach().cpu().numpy().copy()
+        host_qvel = qvel.detach().cpu().numpy().copy()
+        self.set_state_calls.append((rows, host_qpos, host_qvel))
         self.randomization_calls.append(randomization)
+        self.qpos[rows] = torch.as_tensor(host_qpos, device=self.qpos.device)
+        self.qvel[rows] = torch.as_tensor(host_qvel, device=self.qvel.device)
 
     def set_state_tensor_mask(
         self,
@@ -319,23 +330,19 @@ class _StateBackend(_ResetBackend):
         self.dof_pos = np.zeros((num_envs, 1), dtype=np.float32)
         self.dof_pos_calls = 0
 
-    def get_dof_pos(self) -> np.ndarray:
+    def get_state_views(self, fields, device=None) -> dict[str, torch.Tensor]:
         self.dof_pos_calls += 1
-        return self.dof_pos.copy()
+        return super().get_state_views(fields, device=device)
 
     def step(self, ctrl: np.ndarray, nsteps: int = 1) -> None:
         super().step(ctrl, nsteps)
         self.dof_pos += 1.0
+        self.qpos[:, 3] = torch.from_numpy(self.dof_pos[:, 0].copy()).to(self.qpos.device)
 
-    def set_state(
-        self,
-        env_ids: np.ndarray,
-        qpos: np.ndarray,
-        qvel: np.ndarray,
-        randomization=None,
-    ) -> None:
-        super().set_state(env_ids, qpos, qvel, randomization=randomization)
-        self.dof_pos[env_ids, 0] = qpos[:, 3]
+    def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> None:
+        super().set_state_tensor(env_indices, qpos, qvel, randomization=randomization)
+        rows = env_indices.detach().cpu().numpy()
+        self.dof_pos[rows, 0] = qpos.detach().cpu().numpy()[:, 3]
 
 
 class _KeyframeBackend(_ResetBackend):
@@ -362,21 +369,6 @@ class _KeyframeBackend(_ResetBackend):
         if name != "home":
             raise ValueError(f"unknown keyframe {name!r}")
         return self.keyframe_qpos
-
-
-class _LegacyWireBackend(_ResetBackend):
-    """Subprocess backend whose only public lifecycle is the NumPy wire."""
-
-    tensor_controls: list[torch.Tensor]
-
-    def tensor_execution(self) -> TensorExecution:
-        return TensorExecution.UNSUPPORTED
-
-    def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
-        return TensorLifecycleCapabilities(execution=TensorExecution.UNSUPPORTED)
-
-    def step_tensor(self, ctrl: torch.Tensor, nsteps: int = 1) -> None:
-        raise AssertionError("the legacy CPU wire must not call step_tensor")
 
 
 class _DeferredTensorBackend(_FakeBackend):
@@ -421,6 +413,9 @@ class _DeferredTensorBackend(_FakeBackend):
 class _ScenePlanBackend(_StateBackend):
     """State backend with the public packed scene-read contract."""
 
+    nq = 4
+    nv = 3
+
     def __init__(self, num_envs: int) -> None:
         super().__init__(num_envs)
         self.full_reads = 0
@@ -428,8 +423,6 @@ class _ScenePlanBackend(_StateBackend):
         self.plan_closes = 0
         self.reset_calls: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
         self.reset_randomization_calls: list[Any] = []
-        self.nq = 4
-        self.nv = 3
         self.sensors = {
             "track_pos_w_platform": torch.zeros((num_envs, 3), dtype=torch.float32),
             "track_quat_w_platform": torch.tile(
@@ -473,12 +466,9 @@ class _ScenePlanBackend(_StateBackend):
         )
 
     def get_state_views(self, fields, device=None) -> dict[str, torch.Tensor]:
-        assert tuple(fields) == ("qpos", "qvel")
+        assert set(fields) <= {"qpos", "qvel"}
         target = torch.device(device) if device is not None else torch.device("cpu")
-        return {
-            "qpos": self.qpos.to(device=target),
-            "qvel": self.qvel.to(device=target),
-        }
+        return super().get_state_views(fields, device=target)
 
     def bind_sensor_data(self, names):
         from unisim.backend.base import BackendSensorView
@@ -499,44 +489,23 @@ class _ScenePlanBackend(_StateBackend):
         available = ("base", "platform", "ball")
         return np.asarray([available.index(name) for name in names], dtype=np.int32)
 
-    def get_sensor_view(self, name: str, device=None) -> torch.Tensor:
-        return self.sensors[name].to(
-            device=torch.device(device) if device is not None else torch.device("cpu")
+    def get_tracked_body_views(self, body_names, device=None) -> TrackedBodyStateViews:
+        names = tuple(body_names)
+        target = torch.device(device) if device is not None else torch.device("cpu")
+
+        def field(prefix: str, width: int) -> torch.Tensor:
+            return torch.cat(
+                [self.sensors[prefix + name].reshape(self.num_envs, 1, width) for name in names],
+                dim=1,
+            ).to(target)
+
+        return TrackedBodyStateViews(
+            body_names=names,
+            pos_w=field("track_pos_w_", 3),
+            quat_w=field("track_quat_w_", 4),
+            lin_vel_w=field("track_linvel_w_", 3),
+            ang_vel_w=field("track_angvel_w_", 3),
         )
-
-    def get_sensor_names(self) -> tuple[str, ...]:
-        return tuple(self.sensors)
-
-    def get_body_pos_w(self, body_ids) -> np.ndarray:
-        positions = torch.zeros((self.num_envs, len(body_ids), 3), dtype=torch.float32)
-        for row, body_id in enumerate(body_ids):
-            name = ("base", "platform", "ball")[int(body_id)]
-            if name == "platform":
-                positions[:, row] = self.sensors["track_pos_w_platform"]
-            elif name == "base":
-                positions[:, row] = 0.1
-            elif name == "ball":
-                positions[:, row] = self.sensors["track_pos_w_ball"]
-        return positions.numpy()
-
-    def get_body_quat_w(self, body_ids) -> np.ndarray:
-        count = len(body_ids)
-        return np.broadcast_to(
-            np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
-            (self.num_envs, count, 4),
-        ).copy()
-
-    def get_body_lin_vel_w(self, body_ids) -> np.ndarray:
-        return np.zeros((self.num_envs, len(body_ids), 3), dtype=np.float32)
-
-    def get_body_ang_vel_w(self, body_ids) -> np.ndarray:
-        return np.zeros((self.num_envs, len(body_ids), 3), dtype=np.float32)
-
-    def get_body_lin_vel_b(self, body_ids) -> np.ndarray:
-        return self.get_body_lin_vel_w(body_ids)
-
-    def get_body_ang_vel_b(self, body_ids) -> np.ndarray:
-        return self.get_body_ang_vel_w(body_ids)
 
     def compile_host_bridge_io(self, spec: TensorIOSpec):
         backend = self
@@ -1103,7 +1072,9 @@ def _joint_state_termination(env: _TestEnv) -> torch.Tensor:
 
 def _mutate_joint_state_step_event(env: _TestEnv, env_ids: np.ndarray | None) -> None:
     assert env_ids is None
-    cast(_StateBackend, env._backend).dof_pos += 10.0
+    backend = cast(_StateBackend, env._backend)
+    backend.dof_pos += 10.0
+    backend.qpos[:, 3] = torch.from_numpy(backend.dof_pos[:, 0].copy()).to(backend.qpos.device)
 
 
 def _mutate_backend_tensor_state(env: _TestEnv, env_ids: np.ndarray | None) -> None:
@@ -2184,7 +2155,7 @@ def test_reset_events_compose_then_commit_default_state_once() -> None:
 
     assert backend.default_qpos_calls == 0
     assert backend.init_qvel_calls == 0
-    assert backend.joint_layout_calls == 0
+    assert backend.joint_layout_calls == 1
     env.reset()
 
     assert env.trace[-1] == ("commit_count_during_event", 0)

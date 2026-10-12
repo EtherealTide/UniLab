@@ -11,7 +11,12 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
-from unisim.dr.types import IntervalRandomizationPlan, ResetRandomizationPayload
+from unisim.dr.types import (
+    INTERVAL_TERM_PUSH,
+    IntervalRandomizationPlan,
+    IntervalTermOp,
+    ResetRandomizationPayload,
+)
 
 from unilab.assets import ASSETS_ROOT_PATH
 from unilab.base.scene import SceneCfg
@@ -177,7 +182,9 @@ class TestMuJoCoBasic:
         bkd.push_robots = _fake_push_robots  # type: ignore[method-assign]
         limit = np.array([0.7, 0.3, 0.2], dtype=np.float64)
 
-        bkd.apply_interval_randomization(IntervalRandomizationPlan(push_perturbation_limit=limit))
+        bkd.apply_interval_randomization(
+            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, limit),))
+        )
 
         np.testing.assert_allclose(called["force_range"], limit)
 
@@ -187,7 +194,9 @@ class TestMuJoCoBasic:
 
         monkeypatch.setattr(np.random, "uniform", lambda low, high, size: sampled.copy())
 
-        bkd.apply_interval_randomization(IntervalRandomizationPlan(push_perturbation_limit=limit))
+        bkd.apply_interval_randomization(
+            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, limit),))
+        )
 
         ctrl = np.zeros((NUM_ENVS, bkd.model.nu), dtype=np.float64)
         bkd.step(ctrl, nsteps=2)
@@ -224,7 +233,9 @@ class TestMuJoCoBasic:
 
         monkeypatch.setattr(np.random, "uniform", lambda low, high, size: sampled.copy())
 
-        bkd.apply_interval_randomization(IntervalRandomizationPlan(push_perturbation_limit=limit))
+        bkd.apply_interval_randomization(
+            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, limit),))
+        )
         bkd.step(np.zeros((NUM_ENVS, bkd.model.nu), dtype=np.float64))
 
         base_start = 6 * bkd._base_body_id
@@ -650,7 +661,9 @@ class TestMotrixBasic:
         bkd.push_robots = _fake_push_robots  # type: ignore[method-assign]
         limit = np.array([0.7, 0.3, 0.2], dtype=np.float64)
 
-        bkd.apply_interval_randomization(IntervalRandomizationPlan(push_perturbation_limit=limit))
+        bkd.apply_interval_randomization(
+            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, limit),))
+        )
 
         np.testing.assert_allclose(called["force_range"], limit)
 

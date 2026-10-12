@@ -8,9 +8,6 @@ from typing import Any, Callable, TypeVar, cast
 import numpy as np
 from unisim.backend.base import CameraCfg, DebugOverlayGetter
 from unisim.backend.mujoco.playback import (
-    materialize_visual_playback_model as _materialize_visual_playback_model,
-)
-from unisim.backend.mujoco.playback import (
     resolve_render_play_model_files as _resolve_render_play_model_files,
 )
 
@@ -83,6 +80,5 @@ def render_play_mode(
 __all__ = [
     "camera_cfg_from_training",
     "render_play_mode",
-    "_materialize_visual_playback_model",
     "_resolve_render_play_model_files",
 ]

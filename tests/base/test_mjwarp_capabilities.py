@@ -9,7 +9,12 @@ from typing import Any
 import numpy as np
 import pytest
 from unisim.backend.mjwarp.dependencies import load_mjwarp_dependencies
-from unisim.dr.types import IntervalRandomizationPlan
+from unisim.dr.types import (
+    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+    INTERVAL_TERM_PUSH,
+    IntervalRandomizationPlan,
+    IntervalTermOp,
+)
 
 from unilab.base.backend_factory import create_backend
 from unilab.base.scene import SceneCfg
@@ -63,17 +68,24 @@ def test_interval_push_and_velocity_require_named_bodies() -> None:
     scene = SceneCfg(model_file=str(ASSETS_ROOT_PATH / "robots" / "g1" / "scene_flat.xml"))
     backend = create_backend("mjwarp", scene, 1, 0.02 / 3.0)
     capabilities = backend.get_dr_capabilities()
-    assert not capabilities.supports_interval_push
-    assert not capabilities.supports_interval_body_velocity_delta
+    assert not capabilities.supports_interval_term(INTERVAL_TERM_PUSH)
+    assert not capabilities.supports_interval_term(INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA)
     with pytest.raises(NotImplementedError, match="push target body"):
         backend.apply_interval_randomization(
-            IntervalRandomizationPlan(push_perturbation_limit=np.ones((3,), dtype=np.float32))
+            IntervalRandomizationPlan(
+                ops=(IntervalTermOp(INTERVAL_TERM_PUSH, np.ones((3,), dtype=np.float32)),)
+            )
         )
     with pytest.raises(NotImplementedError, match="exactly one free joint"):
         backend.apply_interval_randomization(
             IntervalRandomizationPlan(
-                body_ids=np.asarray([1], dtype=np.int32),
-                body_linear_velocity_delta=np.zeros((1, 1, 3), dtype=np.float32),
+                ops=(
+                    IntervalTermOp(
+                        INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                        np.zeros((1, 1, 3), dtype=np.float32),
+                        body_ids=np.asarray([1], dtype=np.int32),
+                    ),
+                )
             )
         )
     with pytest.raises(ValueError, match="Push body 'missing' not found"):

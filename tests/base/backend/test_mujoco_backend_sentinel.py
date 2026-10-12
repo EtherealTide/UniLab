@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
+import torch
 
 _MODEL_FILE = str(
     Path(__file__).resolve().parents[2] / "fixtures" / "mjlab_cartpole" / "cartpole.xml"
@@ -43,6 +43,7 @@ def test_mujoco_backend_materializes_and_steps_under_suite_guard() -> None:
     )
     backend.materialize()
     nu = backend.model.nu
-    backend.step(np.zeros((1, nu), dtype=np.float64), nsteps=2)
-    assert np.all(np.isfinite(backend.get_dof_pos()))
-    assert np.all(np.isfinite(backend.get_dof_vel()))
+    backend.step_tensor(torch.zeros((1, nu), dtype=torch.float32), nsteps=2)
+    state = backend.get_state_views(("qpos", "qvel"))
+    assert torch.isfinite(state["qpos"]).all()
+    assert torch.isfinite(state["qvel"]).all()

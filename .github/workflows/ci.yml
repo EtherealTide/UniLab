@@ -20,7 +20,6 @@ permissions:
 
 env:
   UV_FROZEN: "1"
-  THIRD_PARTY_UNISIM_COMMIT: 6ff01dad704f28b901f563a01ca633fb1bf96a97
 
 jobs:
   ruff-lint:
@@ -50,10 +49,6 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || format('refs/pull/{0}/merge', github.event.pull_request.number) }}
           persist-credentials: false
-      - name: Materialize local unisim dependency
-        run: |
-          mkdir -p third_party/unisim-issue-2288
-          curl -fsSL "https://github.com/unilabsim/unisim/archive/${THIRD_PARTY_UNISIM_COMMIT}.tar.gz" | tar -xz -C third_party/unisim-issue-2288 --strip-components=1
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
         with:
@@ -72,10 +67,6 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || format('refs/pull/{0}/merge', github.event.pull_request.number) }}
           persist-credentials: false
-      - name: Materialize local unisim dependency
-        run: |
-          mkdir -p third_party/unisim-issue-2288
-          curl -fsSL "https://github.com/unilabsim/unisim/archive/${THIRD_PARTY_UNISIM_COMMIT}.tar.gz" | tar -xz -C third_party/unisim-issue-2288 --strip-components=1
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
         with:
@@ -112,10 +103,6 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || format('refs/pull/{0}/merge', github.event.pull_request.number) }}
           persist-credentials: false
-      - name: Materialize local unisim dependency
-        run: |
-          mkdir -p third_party/unisim-issue-2288
-          curl -fsSL "https://github.com/unilabsim/unisim/archive/${THIRD_PARTY_UNISIM_COMMIT}.tar.gz" | tar -xz -C third_party/unisim-issue-2288 --strip-components=1
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
         with:
@@ -152,10 +139,6 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || format('refs/pull/{0}/merge', github.event.pull_request.number) }}
           persist-credentials: false
-      - name: Materialize local unisim dependency
-        run: |
-          mkdir -p third_party/unisim-issue-2288
-          curl -fsSL "https://github.com/unilabsim/unisim/archive/${THIRD_PARTY_UNISIM_COMMIT}.tar.gz" | tar -xz -C third_party/unisim-issue-2288 --strip-components=1
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
         with:
@@ -199,10 +182,6 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || format('refs/pull/{0}/merge', github.event.pull_request.number) }}
           persist-credentials: false
-      - name: Materialize local unisim dependency
-        run: |
-          mkdir -p third_party/unisim-issue-2288
-          curl -fsSL "https://github.com/unilabsim/unisim/archive/${THIRD_PARTY_UNISIM_COMMIT}.tar.gz" | tar -xz -C third_party/unisim-issue-2288 --strip-components=1
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
         with:

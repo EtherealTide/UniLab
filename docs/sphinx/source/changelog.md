@@ -15,6 +15,11 @@ PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完
 
 ## Unreleased / 未发布
 
+### Manager reset ownership / Manager reset 所有权
+
+- `ResetStateTransaction` now delegates fixed-width tensor reset composition to UniSim's public `SimBackend.begin_packed_reset()` transaction whenever the backend declares `packed_reset` (initially MuJoCo/MJBatch and MJWarp). UniSim owns selected-row device qpos/qvel staging, selected-column merges, committed model-field baselines, startup/host-commit baseline promotion, selected mocap staging when `packed_reset_mocap` is declared, and the single public reset boundary; Manager code no longer maintains its own device-resident masks, dense tables, or committed baselines on that path. Backends without that declaration retain the explicit `SimBackend.set_state_tensor_mask()` transition boundary, which requires UniSim 1.7.16 or newer. Host-only `base_mass_delta`/`base_com_offset`, mapped-entity tensor commits, and mocap device writes on non-declaring backends remain explicit migration boundaries (#2280, #2289).
+  当 backend 声明 `packed_reset`（首批为 MuJoCo/MJBatch 与 MJWarp）时，`ResetStateTransaction` 将固定宽度 tensor reset 组合委托给 UniSim 公共 `SimBackend.begin_packed_reset()` 事务。UniSim 拥有 selected-row device qpos/qvel staging、选中列合并、已提交模型字段 baseline、startup/host-commit baseline 提升、声明 `packed_reset_mocap` 时的 selected mocap staging，以及唯一公共 reset 边界；Manager 代码在该路径上不再维护自己的 device mask、dense 表或 committed baseline。未声明该能力的 backend 保留显式 `SimBackend.set_state_tensor_mask()` 过渡边界，并要求 UniSim 1.7.16 或更高版本；host-only 的 `base_mass_delta`/`base_com_offset`、mapped-entity tensor 提交，以及未声明 backend 的 mocap device 写入仍是显式迁移边界（#2280、#2289）。
+
 ### Breaking changes / 破坏性变更
 
 - Moved the training seed contract from the `unilab.utils.seed` transition
