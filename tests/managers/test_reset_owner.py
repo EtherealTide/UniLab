@@ -17,11 +17,12 @@ from .conftest import FakeEnv
 class RecordingResetOwner(ResetOwner):
     def __init__(self, cfg: ResetOwnerCfg, env: FakeEnv):
         super().__init__(cfg, env)
-        self.rows: list[torch.Tensor] = []
+        self.masks: list[torch.Tensor] = []
 
-    def reset(self, env_ids: torch.Tensor | slice | None) -> None:
-        assert isinstance(env_ids, torch.Tensor)
-        self.rows.append(env_ids.clone())
+    def reset_transaction(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        assert isinstance(reset_mask, torch.Tensor)
+        self.masks.append(reset_mask.clone())
+        return {}
 
 
 @dataclass(kw_only=True)
@@ -39,16 +40,16 @@ def test_reset_owner_defaults_declare_ownership_explicitly() -> None:
     assert cfg.owns_metric_reset
 
 
-def test_reset_owner_manager_constructs_sole_owner_and_resets_rows() -> None:
+def test_reset_owner_manager_constructs_sole_owner_and_resets_mask() -> None:
     env = FakeEnv()
     manager = ResetOwnerManager({"motion": RecordingResetOwnerCfg(func=RecordingResetOwner)}, env)
-    rows = torch.tensor([1, 3], dtype=torch.int64)
-    manager.reset(rows)
+    reset_mask = torch.tensor([False, True, False, True])
+    manager.reset_transaction(reset_mask)
     owner = manager.get_term("motion")
 
     assert isinstance(owner, RecordingResetOwner)
-    assert len(owner.rows) == 1
-    torch.testing.assert_close(owner.rows[0], rows)
+    assert len(owner.masks) == 1
+    torch.testing.assert_close(owner.masks[0], reset_mask)
     assert manager.active_terms == ["motion"]
     assert manager.owner is owner
 
@@ -77,4 +78,6 @@ def test_reset_owner_manager_rejects_non_owner_builder() -> None:
 def test_base_reset_owner_fails_closed() -> None:
     owner = ResetOwner(ResetOwnerCfg(func=ResetOwner), FakeEnv())
     with pytest.raises(NotImplementedError):
-        owner.reset(None)
+        owner.reset_transaction(torch.ones(2, dtype=torch.bool))
+    with pytest.raises(NotImplementedError):
+        owner.reset_committed(torch.ones(2, dtype=torch.bool))

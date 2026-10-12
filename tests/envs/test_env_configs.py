@@ -301,13 +301,9 @@ def test_g1_motion_core_registrations_are_manager_only() -> None:
     }
 
 
-def test_g1_motion_manager_ppo_wraps_only_active_rows_in_one_state_commit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_g1_motion_manager_ppo_resets_only_active_mask_in_one_owner_commit() -> None:
     ensure_registries()
     _require_mujoco_runtime()
-    from unisim.backend.base import HostBridgeTransferPlan
-
     from unilab.base import registry
 
     _, override = _motion_manager_override("g1_motion_tracking", "mujoco")
@@ -323,30 +319,12 @@ def test_g1_motion_manager_ppo_wraps_only_active_rows_in_one_state_commit(
         command.time_steps[:] = command.tensor_sampler.current_clip_end_frames
         env.reset_buf.copy_(torch.tensor([True, False], device=env.device))
 
-        reset_rows: list[torch.Tensor] = []
-
-        def _record_host_apply_reset(
-            self: HostBridgeTransferPlan,
-            env_ids: torch.Tensor,
-            qpos: torch.Tensor,
-            qvel: torch.Tensor,
-            *,
-            randomization: Any = None,
-        ) -> Any:
-            reset_rows.append(env_ids.detach().clone())
-            return self.__dict__.setdefault("_recorded_host_resets", len(reset_rows))
-
-        host_plan = env.scene._tensor_read_plan.host_plan
-        assert host_plan is not None
+        assert torch.equal(env.reset_buf, torch.tensor([True, False], device=env.device))
         env._reset_state.declare_packed_reset_device(env.device)
-        monkeypatch.setattr(type(host_plan), "apply_reset", _record_host_apply_reset)
-        all_rows = torch.arange(env.num_envs, dtype=torch.int64, device=env.device)
-        with env._reset_state.scoped_device_owner_tensor_with_host_commit(all_rows, host_plan):
+        with env._reset_state.scoped_device_owner_tensor(env.reset_buf):
             env.command_manager.compute(dt=0.0)
         env.command_manager.post_compute()
 
-        assert len(reset_rows) == 1
-        torch.testing.assert_close(reset_rows[0], torch.tensor([1], device=env.device))
         assert command.time_steps[0] == command.tensor_sampler.current_clip_end_frames[0]
         assert command.time_steps[1] <= command.tensor_sampler.current_clip_end_frames[1]
         expected_joint_pos = command._motion_features[
@@ -451,7 +429,6 @@ def test_flashsac_g1_motion_mjwarp_anchor_observations_roll_out() -> None:
     assert isinstance(env, ManagerBasedRlEnv)
     command = env.command_manager.get_term("motion")
     assert command.tensor_carrier is True
-    assert env.command_manager.uses_tensor_reset_rows()
     try:
         assert env.obs_groups_spec == {"obs": 160, "critic": 289}
 
@@ -462,6 +439,7 @@ def test_flashsac_g1_motion_mjwarp_anchor_observations_roll_out() -> None:
         from unisim.backend.base import SelectedResetPublication
 
         capabilities = env.backend.get_tensor_capabilities()
+        assert capabilities.mask_selected_reset
         assert capabilities.selected_reset_publication is (
             SelectedResetPublication.AUTHORITATIVE_VIEWS
         )
@@ -474,7 +452,7 @@ def test_flashsac_g1_motion_mjwarp_anchor_observations_roll_out() -> None:
             return original_step(*args, **kwargs)
 
         env.backend.step_tensor = count_step  # type: ignore[method-assign]
-        env.reset(env_indices=torch.tensor([1], dtype=torch.int64, device=env.device))
+        env.reset(reset_mask=torch.tensor([False, True], dtype=torch.bool, device=env.device))
         assert step_calls == 0
         assert state.obs["obs"].shape == (2, 160)
         assert state.obs["critic"].shape == (2, 289)
@@ -534,7 +512,7 @@ def test_flashsac_g1_motion_mujoco_tensor_command_roll_out() -> None:
                 return original_step(*args, **kwargs)
 
             env.backend.step_tensor = count_step
-            env.reset(env_indices=torch.tensor([1], dtype=torch.int64))
+            env.reset(reset_mask=torch.tensor([False, True], dtype=torch.bool))
             assert not step_calls
             state = env.step(torch.zeros((2, 29), dtype=torch.float32))
             assert torch.isfinite(state.obs["obs"]).all()
@@ -651,7 +629,7 @@ def test_flashsac_g1_motion_mujoco_tensor_command_model_field_dr_roll_out(
         assert torch.isfinite(state.reward).all()
         assert all(torch.isfinite(values).all() for values in state.obs.values())
 
-        obs, _ = env.reset(env_indices=torch.tensor([1], dtype=torch.int64))
+        obs, _ = env.reset(reset_mask=torch.tensor([False, True], dtype=torch.bool))
         assert all(torch.isfinite(values).all() for values in obs.values())
     finally:
         env.close()
@@ -681,8 +659,6 @@ def test_flashsac_g1_motion_genesis_manager_tensor_command_roll_out() -> None:
         assert env.obs_groups_spec == {"obs": 160, "critic": 289}
         command = env.command_manager.get_term("motion")
         assert command.tensor_carrier is True
-        assert env.command_manager.uses_tensor_reset_rows()
-
         state = env.init_state()
         for _ in range(3):
             state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
@@ -719,8 +695,6 @@ def test_flashsac_g1_motion_newton_manager_tensor_command_roll_out() -> None:
         assert env.obs_groups_spec == {"obs": 160, "critic": 289}
         command = env.command_manager.get_term("motion")
         assert command.tensor_carrier is True
-        assert env.command_manager.uses_tensor_reset_rows()
-
         state = env.init_state()
         for _ in range(3):
             state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
@@ -757,8 +731,6 @@ def test_flashsac_g1_motion_motrix_manager_tensor_command_roll_out() -> None:
         assert env.obs_groups_spec == {"obs": 160, "critic": 289}
         command = env.command_manager.get_term("motion")
         assert command.tensor_carrier is True
-        assert env.command_manager.uses_tensor_reset_rows()
-
         state = env.init_state()
         for _ in range(3):
             state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
@@ -803,7 +775,7 @@ def test_selected_reset_publication_requires_no_manager_readiness_step(
     )
     try:
         capabilities = env.backend.get_tensor_capabilities()
-        assert capabilities.selected_reset
+        assert capabilities.mask_selected_reset
         assert (
             capabilities.selected_reset_publication is SelectedResetPublication.AUTHORITATIVE_VIEWS
         )
@@ -818,7 +790,7 @@ def test_selected_reset_publication_requires_no_manager_readiness_step(
             return original_step(*args, **kwargs)
 
         env.backend.step_tensor = count_step  # type: ignore[method-assign]
-        env.reset(env_indices=torch.tensor([1], dtype=torch.int64, device=env.device))
+        env.reset(reset_mask=torch.tensor([False, True], dtype=torch.bool, device=env.device))
         assert step_calls == 0
 
         state_views = env.backend.get_state_views(("qpos", "qvel"), device=env.device)
@@ -1000,7 +972,9 @@ def test_flashsac_motion_selected_reset_uses_generic_manager_lifecycle() -> None
         env.reset_time_outs[rows] = True
         env.reset_buf.fill_(False)
         env.reset_buf[rows] = True
-        obs, _info = env.reset(env_indices=rows)
+        reset_mask = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        reset_mask[rows] = True
+        obs, _info = env.reset(reset_mask=reset_mask)
 
         assert all(torch.isfinite(values).all() for values in obs.values())
         command = env.command_manager.get_term("motion")

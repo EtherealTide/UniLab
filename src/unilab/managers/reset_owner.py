@@ -41,16 +41,12 @@ class ResetOwner(ManagerTermBase):
         self.cfg = cfg
         super().__init__(env)
 
-    def reset(self, env_ids: torch.Tensor | slice | None) -> None:
-        """Execute the declared selected-reset ownership in Manager lifecycle."""
+    def reset_transaction(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        """Execute fixed-shape reset ownership before commit."""
         raise NotImplementedError(type(self).__name__)
 
-    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
-        """Execute reset ownership that must stage writes before commit."""
-        raise NotImplementedError(type(self).__name__)
-
-    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
-        """Execute reset ownership after the reset transaction commits."""
+    def reset_committed(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        """Execute fixed-shape reset ownership after commit."""
         raise NotImplementedError(type(self).__name__)
 
 
@@ -92,20 +88,16 @@ class ResetOwnerManager:
         except KeyError as exc:
             raise KeyError(f"Reset owner '{name}' is not configured") from exc
 
-    def reset(self, env_ids: torch.Tensor | slice | None) -> None:
-        for term in self._terms.values():
-            term.reset(env_ids)
-
-    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+    def reset_transaction(self, reset_mask: torch.Tensor) -> dict[str, float]:
         extras: dict[str, float] = {}
         for term in self._terms.values():
-            extras.update(term.reset_transaction(env_ids))
+            extras.update(term.reset_transaction(reset_mask))
         return extras
 
-    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+    def reset_committed(self, reset_mask: torch.Tensor) -> dict[str, float]:
         extras: dict[str, float] = {}
         for term in self._terms.values():
-            extras.update(term.reset_committed(env_ids))
+            extras.update(term.reset_committed(reset_mask))
         return extras
 
     def __str__(self) -> str:
@@ -129,15 +121,12 @@ class NullResetOwnerManager:
     def get_term(self, name: str) -> None:
         raise KeyError(f"Reset owner '{name}' is not configured")
 
-    def reset(self, env_ids: torch.Tensor | slice | None) -> None:
-        del env_ids
-
-    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
-        del env_ids
+    def reset_transaction(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        del reset_mask
         return {}
 
-    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
-        del env_ids
+    def reset_committed(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        del reset_mask
         return {}
 
     def __str__(self) -> str:

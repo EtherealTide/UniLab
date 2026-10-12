@@ -38,8 +38,8 @@ from unilab.training import (
 )
 from unilab.training.experiment import ExperimentTracker
 from unilab.training.onnx_export import export_policy_onnx, verify_policy_onnx
+from unilab.training.seed import apply_configured_training_seed
 from unilab.utils.checkpoint import resolve_appo_checkpoint_path
-from unilab.utils.seed import apply_configured_training_seed
 from unilab.visualization.interactive_playback import (
     RslRlPlaybackConfig,
     create_appo_playback_session,
@@ -172,7 +172,7 @@ def run_motrix_play_loop(
         env.run_playback(
             num_steps=num_steps,
             initialize=lambda: _motrix_playback_obs(
-                env.reset(torch.arange(play_env_num, dtype=torch.int64, device=env.device))
+                env.reset(torch.ones(play_env_num, dtype=torch.bool, device=env.device))
             ),
             step=lambda obs: _motrix_playback_step(
                 env=env,

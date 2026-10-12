@@ -56,9 +56,9 @@ from unilab.training.experiment import (
     patch_rsl_rl_tensorboard_logging,
     patch_rsl_rl_wandb_writer,
 )
+from unilab.training.seed import apply_configured_training_seed
 from unilab.utils.checkpoint import get_entrypoint_log_root
 from unilab.utils.device import get_default_device
-from unilab.utils.seed import apply_configured_training_seed
 from unilab.visualization.interactive_playback import (
     RslRlPlaybackConfig,
     create_rsl_rl_playback_session,

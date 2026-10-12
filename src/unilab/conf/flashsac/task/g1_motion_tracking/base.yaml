@@ -2,7 +2,7 @@
 # Canonical G1 Whole-Body Tracking (WBT) Manager-Based task declaration for
 # FlashSAC owners. It intentionally shares the SAC scene, command, reward, and
 # termination contract, but uses unbiased actor/critic joint observations and
-# a DR-free lifecycle baseline: the current mjwarp selected-row tensor reset
+# a DR-free lifecycle baseline: the current mjwarp tensor mask reset
 # does not negotiate reset randomization or interval wrenches. Backend owner
 # leaves inherit this file and only override backend/algo tuning.
 env:

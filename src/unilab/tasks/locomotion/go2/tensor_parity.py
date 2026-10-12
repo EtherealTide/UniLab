@@ -3,7 +3,7 @@
 This module is an M9 contract pilot only.  It is intentionally not registered as a
 production backend and does not change any backend support claim.  The runtime
 negotiates UniSim's public tensor lifecycle and keeps the canonical Go2
-observation, reward, termination, and selected-reset equations tensor-native.
+ observation, reward, termination, and mask-reset equations tensor-native.
 """
 
 from __future__ import annotations
@@ -238,7 +238,9 @@ class Go2TensorParityRuntime:
         if not capabilities.stepping:
             raise RuntimeError("backend did not negotiate tensor stepping")
         if not capabilities.selected_reset:
-            raise RuntimeError("backend did not negotiate selected-row tensor reset")
+            raise RuntimeError("backend did not negotiate selected tensor reset")
+        if not capabilities.mask_selected_reset:
+            raise RuntimeError("backend did not negotiate mask tensor reset")
         if not tensor_device_matches(
             capabilities.torch_devices,
             self.device,
@@ -276,55 +278,31 @@ class Go2TensorParityRuntime:
     def _validate_actions(self, actions: torch.Tensor) -> torch.Tensor:
         return self._require_input(actions, "actions", (self.num_envs, self.num_joints))
 
-    def _validate_rows(self, rows: torch.Tensor) -> torch.Tensor:
-        if rows.dtype is not torch.int64 or rows.ndim != 1:
-            raise TypeError("reset rows must be a one-dimensional int64 tensor")
-        if rows.device != self.device:
-            raise ValueError(f"reset rows live on {rows.device}, expected {self.device}")
-        if not rows.is_contiguous():
-            raise ValueError("reset rows must be contiguous")
-        if rows.numel() == 0:
-            return rows
-        unique_count = torch.unique(rows).numel()
-        minimum_row, maximum_row, validated_count = (
-            int(value)
-            for value in torch.stack(
-                (
-                    rows.min(),
-                    rows.max(),
-                    rows.new_full((), rows.numel(), dtype=torch.int64),
-                )
-            ).tolist()
-        )
-        if minimum_row < 0 or maximum_row >= self.num_envs:
+    def _validate_reset_mask(self, reset_mask: torch.Tensor) -> torch.Tensor:
+        if reset_mask.dtype is not torch.bool or reset_mask.ndim != 1:
+            raise TypeError("reset mask must be a one-dimensional bool tensor")
+        if reset_mask.device != self.device:
+            raise ValueError(f"reset mask lives on {reset_mask.device}, expected {self.device}")
+        if reset_mask.shape != (self.num_envs,):
             raise ValueError(
-                "reset rows are outside the environment range "
-                f"[0, {self.num_envs}); got [{minimum_row}, {maximum_row}]"
+                f"reset mask shape is {tuple(reset_mask.shape)}, expected {(self.num_envs,)}"
             )
-        if unique_count != validated_count:
-            raise ValueError(
-                f"reset rows must be unique; got {validated_count - unique_count} duplicate row(s)"
-            )
-        return rows
+        return reset_mask
 
-    def reset(self, rows: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
-        selected = (
-            torch.arange(self.num_envs, dtype=torch.int64, device=self.device)
-            if rows is None
-            else self._validate_rows(rows)
+    def reset(self, reset_mask: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
+        mask = (
+            torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+            if reset_mask is None
+            else self._validate_reset_mask(reset_mask)
         )
-        if selected.numel():
-            result = self.backend.set_state_tensor(
-                selected,
-                self.reset_qpos.index_select(0, selected),
-                self.reset_qvel.index_select(0, selected),
-            )
-            if result is not None and not isinstance(result, dict):
-                raise TypeError("backend tensor reset must return a dict or None")
-            self._raw_actions[selected] = 0.0
-            self._previous_raw_actions[selected] = 0.0
-            self._steps[selected] = 0
-            self._phase[selected] = 0.0
+        result = self.backend.set_state_tensor_mask(mask, self.reset_qpos, self.reset_qvel)
+        if result is not None and not isinstance(result, dict):
+            raise TypeError("backend tensor reset must return a dict or None")
+        action_mask = mask[:, None]
+        self._raw_actions.masked_fill_(action_mask, 0.0)
+        self._previous_raw_actions.masked_fill_(action_mask, 0.0)
+        self._steps.masked_fill_(mask, 0)
+        self._phase.masked_fill_(mask, 0.0)
         self._update_observation()
         return {name: values.clone() for name, values in self._obs.items()}
 

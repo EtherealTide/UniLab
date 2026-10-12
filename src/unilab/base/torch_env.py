@@ -70,7 +70,7 @@ class TorchEnv(ABEnv):
     """Backend-agnostic Torch environment lifecycle.
 
     Concrete owners implement action transformation, tensor state update, and
-    selected-row reset. The base deliberately rejects NumPy input and never
+    fixed-width mask reset. The base deliberately rejects NumPy input and never
     sanitizes non-finite tensors: invalid actions, controls, observations, and
     rewards fail closed.
     """
@@ -121,17 +121,13 @@ class TorchEnv(ABEnv):
         if self._backend.tensor_execution() is not execution:
             raise ValueError("backend tensor execution does not match its capabilities")
         if not capabilities.stepping or not capabilities.selected_reset:
-            raise ValueError("TorchEnv backend must support tensor stepping and selected reset")
+            raise ValueError("TorchEnv backend must support tensor stepping and mask reset")
         if execution is TensorExecution.HOST_BRIDGE and not capabilities.packed_host_bridge:
             raise ValueError("HOST_BRIDGE TorchEnv requires a packed host-bridge plan")
         if not tensor_device_matches(capabilities.torch_devices, self._device):
             raise ValueError(
                 f"backend did not accept Torch device {str(self._device)!r}; "
                 f"supported devices are {capabilities.torch_devices}"
-            )
-        if execution is TensorExecution.DEVICE_RESIDENT and self._device.type != "cuda":
-            raise ValueError(
-                f"DEVICE_RESIDENT TorchEnv requires a CUDA device; received {self._device}"
             )
         self._tensor_runtime_bound = True
 
@@ -202,48 +198,10 @@ class TorchEnv(ABEnv):
         return torch.zeros((self._num_envs,), dtype=torch.int64, device=self._device)
 
     def reset(
-        self, env_indices: torch.Tensor | None = None
+        self, reset_mask: torch.Tensor | None = None
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+        """Reset the true rows of a full-batch mask; ``None`` resets all rows."""
         raise NotImplementedError(f"{type(self).__name__} must define a tensor reset lifecycle")
-
-    def _normalize_reset_indices(self, env_indices: torch.Tensor | None) -> torch.Tensor:
-        rows = (
-            torch.arange(self._num_envs, device=self._device, dtype=torch.int64)
-            if env_indices is None
-            else env_indices
-        )
-        if not isinstance(rows, torch.Tensor):
-            raise TypeError(
-                f"TorchEnv reset indices must be a torch.Tensor, got {type(rows).__name__}"
-            )
-        if rows.ndim != 1:
-            raise ValueError(f"TorchEnv reset indices must be one-dimensional, got {rows.ndim}")
-        if rows.dtype not in {torch.int32, torch.int64}:
-            raise TypeError(f"TorchEnv reset indices must be integer dtype, got {rows.dtype}")
-        if rows.device != self._device:
-            raise ValueError(f"TorchEnv reset indices device must be {self._device}")
-        if rows.numel() != rows.unique().numel():
-            raise ValueError("TorchEnv reset indices must be unique")
-        if rows.numel() and (rows.min() < 0 or rows.max() >= self._num_envs):
-            raise ValueError(f"TorchEnv reset indices must be in [0, {self._num_envs})")
-        return rows.to(torch.int64)
-
-    def _reset_indices_from_mask(self, mask: torch.Tensor) -> torch.Tensor:
-        """Return validated int64 reset rows from a boolean full-batch mask.
-
-        ``nonzero`` output is already sorted, unique, and range-valid by
-        construction. Reusing the generic public reset normalizer here would
-        add three scalar reductions (including a device ``unique`` sort) after
-        every autoreset boundary.
-        """
-        if mask.ndim != 1 or mask.shape[0] != self._num_envs:
-            raise ValueError(f"TorchEnv reset mask must have shape ({self._num_envs},)")
-        if mask.dtype != torch.bool or mask.device != self._device:
-            raise ValueError(
-                f"TorchEnv reset mask must be a bool tensor on {self._device}; got "
-                f"{mask.dtype} on {mask.device}"
-            )
-        return mask.nonzero(as_tuple=False).flatten().to(torch.int64)
 
     def step(self, actions: torch.Tensor) -> TorchEnvState:
         started = time.perf_counter()
@@ -472,6 +430,11 @@ class TorchEnv(ABEnv):
         return self._truncated_scratch
 
     def _reset_done_envs(self) -> None:
+        """Run the fixed-shape mask-driven autoreset lifecycle.
+
+        The remaining scalar ``any()`` gate is a correctness/telemetry boundary,
+        not reset-row discovery; no reset env-id row carrier is materialized.
+        """
         assert self._state is not None
         reset_total_started = time.perf_counter()
         detail_timing = {key: 0.0 for key in RESET_DONE_DETAIL_TIMING_KEYS}
@@ -480,14 +443,12 @@ class TorchEnv(ABEnv):
             self._clear_reset_done_detail_timing(self._state.info.setdefault("timing", {}))
             return
 
-        rows = self._reset_indices_from_mask(done)
         terminal_started = time.perf_counter()
-        detail_timing["reset_done_count"] = float(rows.numel())
-        self._state.info["steps"][rows] = 0
-
+        detail_timing["reset_done_count"] = float(done.sum().item())
+        self._state.info["steps"].masked_fill_(done, 0)
         final_observation = self._ensure_final_observation_scratch()
         for name, values in self._state.obs.items():
-            final_observation[name].index_copy_(0, rows, values.index_select(0, rows))
+            final_observation[name].copy_(values)
         self._state.final_observation = final_observation
         detail_timing["reset_done_terminal_obs_ms"] = (
             time.perf_counter() - terminal_started
@@ -497,7 +458,7 @@ class TorchEnv(ABEnv):
         self._autoreset_reset_active = True
         self._autoreset_scattered_reset_obs = False
         try:
-            new_obs, reset_info = self.reset(rows)
+            new_obs, reset_info = self.reset(done)
         finally:
             self._autoreset_reset_active = False
         detail_timing["reset_done_reset_call_ms"] = (time.perf_counter() - reset_started) * 1000.0
@@ -507,17 +468,13 @@ class TorchEnv(ABEnv):
         )
 
         scatter_started = time.perf_counter()
-        if self._autoreset_scattered_reset_obs:
-            # The environment-specific reset owner already published selected
-            # observations into the full public state. Preserve the public
-            # reset return contract while avoiding a second selected-row finite
-            # reduction and scatter.
-            new_obs = {name: self._state.obs[name].index_select(0, rows) for name in new_obs}
-        else:
-            self._validate_reset_observation(new_obs, rows)
+        if not self._autoreset_scattered_reset_obs:
+            self._validate_reset_observation_mask(new_obs)
             for name, values in new_obs.items():
-                self._state.obs[name].index_copy_(0, rows, values)
-        self._scatter_reset_info(reset_info, rows)
+                self._state.obs[name].copy_(
+                    torch.where(done[:, None], values, self._state.obs[name])
+                )
+        self._scatter_reset_info_mask(reset_info, done)
         detail_timing["reset_done_obs_scatter_ms"] = (
             time.perf_counter() - scatter_started
         ) * 1000.0
@@ -536,6 +493,52 @@ class TorchEnv(ABEnv):
         self._clear_reset_done_detail_timing(timing)
         timing.update(detail_timing)
 
+    def _validate_reset_observation_mask(self, obs: Mapping[str, torch.Tensor]) -> None:
+        if not isinstance(obs, dict) or set(obs) != set(self.obs_groups_spec):
+            raise ValueError("TorchEnv mask reset observations do not match obs_groups_spec")
+        for name, dim in self.obs_groups_spec.items():
+            value = obs[name]
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(f"TorchEnv mask reset obs[{name!r}] must be a torch.Tensor")
+            if value.dtype != self._dtype:
+                raise TypeError(
+                    f"TorchEnv mask reset obs[{name!r}] dtype must be {self._dtype}; "
+                    f"got {value.dtype}"
+                )
+            if value.shape != (self._num_envs, dim):
+                raise ValueError(
+                    f"TorchEnv mask reset obs[{name!r}] has shape {tuple(value.shape)}; "
+                    f"expected {(self._num_envs, dim)}"
+                )
+            if value.device != self.device:
+                raise ValueError(f"TorchEnv mask reset obs[{name!r}] device must be {self.device}")
+            self._require_floating_float(value)
+        if not bool(
+            torch.isfinite(
+                torch.cat(
+                    tuple(value.reshape(value.shape[0], -1) for value in obs.values()),
+                    dim=1,
+                )
+            ).all()
+        ):
+            for name, value in obs.items():
+                if not bool(torch.isfinite(value).all()):
+                    raise ValueError(f"TorchEnv mask reset obs[{name!r}] contains NaN or Inf")
+
+    def _scatter_reset_info_mask(
+        self, reset_info: Mapping[str, Any], reset_mask: torch.Tensor
+    ) -> None:
+        assert self._state is not None
+        for key, value in reset_info.items():
+            current = self._state.info.get(key)
+            if not isinstance(value, torch.Tensor) or value.shape[:1] != (self._num_envs,):
+                continue
+            if not isinstance(current, torch.Tensor) or current.shape != value.shape:
+                current = torch.zeros_like(value, device=self.device)
+                self._state.info[key] = current
+            selected_reset_mask = reset_mask if value.ndim == 1 else reset_mask[:, None]
+            current.copy_(torch.where(selected_reset_mask, value.to(device=self.device), current))
+
     def _ensure_final_observation_scratch(self) -> dict[str, torch.Tensor]:
         assert self._state is not None
         obs = self._state.obs
@@ -553,52 +556,6 @@ class TorchEnv(ABEnv):
             scratch = {name: torch.zeros_like(value) for name, value in obs.items()}
             self._final_observation_scratch = scratch
         return scratch
-
-    def _validate_reset_observation(
-        self, obs: Mapping[str, torch.Tensor], rows: torch.Tensor
-    ) -> None:
-        if not isinstance(obs, dict) or set(obs) != set(self.obs_groups_spec):
-            raise ValueError("TorchEnv reset observations do not match obs_groups_spec")
-        for name, dim in self.obs_groups_spec.items():
-            value = obs[name]
-            if not isinstance(value, torch.Tensor):
-                raise TypeError(f"TorchEnv reset obs[{name!r}] must be a torch.Tensor")
-            if value.dtype != self._dtype:
-                raise TypeError(
-                    f"TorchEnv reset obs[{name!r}] dtype must be {self._dtype}, got {value.dtype}"
-                )
-            if value.shape != (rows.numel(), dim):
-                raise ValueError(
-                    f"TorchEnv reset obs[{name!r}] has shape {tuple(value.shape)}; "
-                    f"expected {(rows.numel(), dim)}"
-                )
-            if value.device != self.device:
-                raise ValueError(f"TorchEnv reset obs[{name!r}] device must be {self.device}")
-            self._require_floating_float(value)
-        if not bool(
-            torch.isfinite(
-                torch.cat(
-                    tuple(value.reshape(value.shape[0], -1) for value in obs.values()),
-                    dim=1,
-                )
-            ).all()
-        ):
-            for name, value in obs.items():
-                if not bool(torch.isfinite(value).all()):
-                    raise ValueError(f"TorchEnv reset obs[{name!r}] contains NaN or Inf")
-
-    def _scatter_reset_info(self, reset_info: Mapping[str, Any], rows: torch.Tensor) -> None:
-        assert self._state is not None
-        for key, value in reset_info.items():
-            current = self._state.info.get(key)
-            if isinstance(value, torch.Tensor) and value.shape and value.shape[0] == rows.numel():
-                if not isinstance(current, torch.Tensor) or current.shape[1:] != value.shape[1:]:
-                    full_shape = (self._num_envs, *value.shape[1:])
-                    current = torch.zeros(full_shape, dtype=value.dtype, device=self.device)
-                    self._state.info[key] = current
-                current.index_copy_(0, rows, value.to(device=self.device))
-            elif not isinstance(current, torch.Tensor):
-                self._state.info[key] = value
 
     def _clear_reset_done_detail_timing(self, timing: dict[str, Any]) -> None:
         for key in RESET_DONE_DETAIL_TIMING_KEYS:

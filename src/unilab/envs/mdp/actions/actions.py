@@ -218,26 +218,9 @@ class BaseAction(ActionTerm):
                 max=self._clip[..., 1],
             )
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        if env_ids is None:
-            env_ids = slice(None)
-        selector = self._reset_selector(env_ids)
-        self._raw_actions[selector] = 0.0
-
-    def _reset_selector(self, env_ids: torch.Tensor | slice) -> torch.Tensor | slice:
-        if isinstance(env_ids, slice):
-            return env_ids
-        if (
-            not isinstance(env_ids, torch.Tensor)
-            or env_ids.ndim != 1
-            or env_ids.dtype
-            not in {
-                torch.int32,
-                torch.int64,
-            }
-        ):
-            raise TypeError(f"{type(self).__name__} reset rows must be 1-D integers")
-        return env_ids.to(self._device, torch.int64)
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        """Mask-preserving raw-action reset."""
+        self._raw_actions.masked_fill_(reset_mask.reshape(-1, 1), 0.0)
 
     def _entity_values(self, values: torch.Tensor) -> torch.Tensor:
         """Publish processed controls on the public Torch control boundary."""

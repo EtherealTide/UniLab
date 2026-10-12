@@ -94,30 +94,41 @@ class CurriculumManager(ManagerBase):
                 terms.append((term_name, data))
         return terms
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
-        extras = {}
+    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        """Publish curriculum state and reset mask-aware term state."""
+        extras: dict[str, float] = {}
         for term_name, term_state in self._curriculum_state.items():
-            if term_state is not None:
-                if isinstance(term_state, dict):
-                    for key, value in term_state.items():
-                        if isinstance(value, torch.Tensor):
-                            value = value.detach().cpu().item()
-                        extras[f"Curriculum/{term_name}/{key}"] = value
-                else:
-                    if isinstance(term_state, torch.Tensor):
-                        term_state = term_state.detach().cpu().item()
-                    extras[f"Curriculum/{term_name}"] = term_state
+            if term_state is None:
+                continue
+            if isinstance(term_state, dict):
+                for key, value in term_state.items():
+                    if isinstance(value, torch.Tensor):
+                        value = value.detach().cpu().item()
+                    extras[f"Curriculum/{term_name}/{key}"] = value
+            else:
+                if isinstance(term_state, torch.Tensor):
+                    term_state = term_state.detach().cpu().item()
+                extras[f"Curriculum/{term_name}"] = term_state
         for term_cfg in self._class_term_cfgs:
-            term_cfg.func.reset(env_ids=env_ids)
+            term_cfg.func.reset(reset_mask)
         return extras
 
-    def compute(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        if env_ids is None:
-            env_ids = slice(None)
+    def compute(self, reset_mask: torch.Tensor | None = None) -> None:
+        """Compute global and, when declared, mask-scoped curriculum terms."""
         for name, term_cfg in zip(self._term_names, self._term_cfgs, strict=False):
-            state = term_cfg.func(self._env, env_ids, **term_cfg.params)
+            callable_mask = getattr(term_cfg.func, "__call_reset__", None)
+            if callable(callable_mask):
+                if reset_mask is None:
+                    raise ValueError(f"CurriculumManager term '{name}' requires a reset mask")
+                state = callable_mask(self._env, reset_mask, **term_cfg.params)
+            else:
+                state = term_cfg.func(self._env, slice(None), **term_cfg.params)
             self._validate_state(name, state)
             self._curriculum_state[name] = state
+
+    def compute_reset(self, reset_mask: torch.Tensor) -> None:
+        """Compute only terms that own a mask-scoped reset boundary."""
+        self.compute(reset_mask)
 
     def _validate_state(self, term_name: str, state: Any) -> None:
         values = state.values() if isinstance(state, dict) else (state,)
@@ -160,8 +171,9 @@ class NullCurriculumManager:
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:
         return []
 
-    def reset(self, env_ids: torch.Tensor | None = None) -> dict[str, float]:
+    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        del reset_mask
         return {}
 
-    def compute(self, env_ids: torch.Tensor | None = None) -> None:
-        pass
+    def compute(self, reset_mask: torch.Tensor | None = None) -> None:
+        del reset_mask

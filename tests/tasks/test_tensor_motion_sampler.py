@@ -47,19 +47,41 @@ def test_sampler_rejects_unsupported_mode_and_invalid_dimensions() -> None:
 def test_adaptive_reset_sampling_is_device_resident_and_deterministic() -> None:
     sampler = _sampler()
     generator = torch.Generator(device="cpu").manual_seed(7)
-    rows = torch.tensor([0, 2, 3], dtype=torch.int64)
+    reset_mask = torch.tensor([False, True, True, True])
 
-    first = sampler.sample_frames(rows, generator)
-    second = sampler.sample_frames(rows, generator)
-    assert first.shape == (3,)
+    first = sampler.sample_frames(reset_mask, generator)
+    second = sampler.sample_frames(reset_mask, generator)
+    assert first.shape == (4,)
     assert first.dtype == torch.int32
     assert first.device.type == "cpu"
     assert not torch.equal(first, second)
     assert sampler.diagnostics.total == 0
 
     generator.manual_seed(7)
-    repeat = sampler.sample_frames(rows, generator)
+    repeat = sampler.sample_frames(reset_mask, generator)
     torch.testing.assert_close(repeat, first)
+
+
+def test_all_false_reset_sampling_is_state_noop() -> None:
+    sampler = _sampler(initial_frames=torch.tensor([10, 11, 12, 13], dtype=torch.int32))
+    frames_before = sampler.current_frames.clone()
+    ends_before = sampler.current_clip_end_frames.clone()
+    reset_mask = torch.zeros(4, dtype=torch.bool)
+
+    sampled = sampler.sample_frames(reset_mask, torch.Generator(device="cpu").manual_seed(7))
+
+    assert sampled.shape == (4,)
+    torch.testing.assert_close(sampler.current_frames, frames_before)
+    torch.testing.assert_close(sampler.current_clip_end_frames, ends_before)
+
+
+def test_reset_sampling_rejects_non_full_width_non_bool_masks() -> None:
+    sampler = _sampler()
+    generator = torch.Generator(device="cpu")
+    with pytest.raises(ValueError, match="invalid shape/device"):
+        sampler.sample_frames(torch.tensor([0], dtype=torch.int64), generator)
+    with pytest.raises(ValueError, match="invalid shape/device"):
+        sampler.sample_frames(torch.tensor([0, 1, 2, 3], dtype=torch.int64), generator)
 
 
 def test_adaptive_failure_stats_match_bin_counts_without_host_sync() -> None:
@@ -80,31 +102,19 @@ def test_adaptive_failure_stats_match_bin_counts_without_host_sync() -> None:
     )
 
 
-def test_step_updates_frames_and_clip_ends_on_device() -> None:
+def test_step_full_updates_only_active_mask_rows() -> None:
     sampler = _sampler(initial_frames=torch.tensor([0, 1, 2, 3], dtype=torch.int32))
     active = torch.tensor([True, False, True, True])
-    done = sampler.step(active)
+    time_steps = torch.tensor([99, 99, 99, 99], dtype=torch.int32)
+    done = sampler.step_full(active, time_steps)
     torch.testing.assert_close(
         sampler.current_frames, torch.tensor([1, 1, 3, 4], dtype=torch.int32)
     )
-    assert done.numel() == 0
-    assert sampler.diagnostics.total == 0
-
-
-def test_step_selected_rows_does_not_touch_or_read_inactive_rows() -> None:
-    sampler = _sampler(initial_frames=torch.tensor([0, 1, 2, 3], dtype=torch.int32))
-    sampler.current_clip_end_frames.copy_(torch.tensor([9, 9, 9, 9], dtype=torch.int32))
-    active = torch.tensor([True, False, True, False])
-    rows = torch.tensor([0, 2], dtype=torch.int64)
-    done = sampler.step(active, rows=rows)
-
     torch.testing.assert_close(
-        sampler.current_frames, torch.tensor([1, 1, 3, 3], dtype=torch.int32)
+        sampler.current_clip_end_frames, torch.tensor([31, 31, 31, 31], dtype=torch.int32)
     )
-    torch.testing.assert_close(
-        sampler.current_clip_end_frames, torch.tensor([31, 9, 31, 9], dtype=torch.int32)
-    )
-    assert done.numel() == 0
+    torch.testing.assert_close(time_steps, torch.tensor([1, 1, 3, 4], dtype=torch.int32))
+    assert torch.equal(done, torch.zeros(4, dtype=torch.bool))
     assert sampler.diagnostics.total == 0
 
 
@@ -123,13 +133,13 @@ def test_step_full_publishes_mirrors_without_row_gathers() -> None:
         sampler.current_clip_end_frames,
         sampler._frame_clip_ends.index_select(0, sampler.current_frames),
     )
-    assert done.numel() == 0
+    assert torch.equal(done, torch.zeros(4, dtype=torch.bool))
     assert sampler.diagnostics.total == 0
 
 
 def test_sampling_metrics_stay_device_scalars() -> None:
     sampler = _sampler()
-    sampler.sample_frames(torch.tensor([0], dtype=torch.int64), torch.Generator().manual_seed(1))
+    sampler.sample_frames(torch.ones(4, dtype=torch.bool), torch.Generator().manual_seed(1))
     assert sampler.sampling_entropy.device.type == "cpu"
     assert sampler.sampling_top1_prob.device.type == "cpu"
     assert sampler.sampling_top1_bin.device.type == "cpu"
@@ -138,11 +148,11 @@ def test_sampling_metrics_stay_device_scalars() -> None:
 
 def test_sampling_dispatch_matches_eager_clip_lookup_and_publishes_timing() -> None:
     sampler = _sampler(initial_frames=torch.tensor([0, 1, 2, 3], dtype=torch.int32))
-    rows = torch.tensor([1, 3], dtype=torch.int64)
-    frames = torch.tensor([31, 7], dtype=torch.int32)
+    reset_mask = torch.tensor([False, True, False, True])
+    frames = torch.tensor([0, 31, 2, 7], dtype=torch.int32)
 
-    mt._sampling_dispatch_kernel(
-        rows,
+    mt._sampling_dispatch_mask_kernel(
+        reset_mask,
         frames,
         sampler._frame_clip_ends,
         sampler.current_frames,
@@ -153,11 +163,11 @@ def test_sampling_dispatch_matches_eager_clip_lookup_and_publishes_timing() -> N
         sampler.current_frames, torch.tensor([0, 31, 2, 7], dtype=torch.int32)
     )
     expected_ends = sampler._frame_clip_ends[frames]
-    torch.testing.assert_close(sampler.current_clip_end_frames[rows], expected_ends)
+    torch.testing.assert_close(sampler.current_clip_end_frames, expected_ends)
 
     sampler.last_reset_dispatch_ms = 0.0
     generator = torch.Generator(device="cpu").manual_seed(11)
-    sampler.sample_frames(rows, generator)
+    sampler.sample_frames(reset_mask, generator)
     assert sampler.last_reset_dispatch_ms >= 0.0
 
 

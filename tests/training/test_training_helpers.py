@@ -327,6 +327,21 @@ def test_backend_adapter_env_cfg_override_for_sac_g1_walk_flat():
     assert cfg.algo.max_iterations == 5000
 
 
+def test_backend_adapter_preserves_mask_reset_owner_yaml():
+    cfg = _offpolicy_cfg(["task=g1_walk_flat/mjwarp"])
+    override = BackendAdapter(
+        cfg, root_dir=_ROOT_DIR, algo_name="sac"
+    ).build_task_env_cfg_override()
+    assert (
+        override["events"]["reset_scene_to_default"]["func"]
+        == "unilab.envs.mdp.reset_scene_to_default_tensor"
+    )
+    assert (
+        override["events"]["reset_root_state_uniform"]["func"]
+        == "unilab.envs.mdp.reset_root_state_uniform_tensor"
+    )
+
+
 def test_backend_adapter_injects_superdex_serial_mode_only_for_interactive_play():
     interactive = _ppo_cfg(
         ["task=go2_joystick_flat/superdex", "training.play_render_mode=interactive"]

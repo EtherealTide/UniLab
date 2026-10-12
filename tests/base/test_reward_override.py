@@ -1,7 +1,6 @@
 """Test reward config override through registry."""
 
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 from hydra import compose, initialize_config_dir
@@ -14,8 +13,8 @@ from unilab.base.registry import ensure_registries
 ROOT_DIR = Path(__file__).parents[2]
 
 
-def test_reward_override_g1():
-    """Test G1 manager reward override through the registry."""
+def test_g1_reset_randomization_fails_closed_for_reward_override_fixture():
+    """Reward overrides cannot bypass the fixed-width reset contract."""
     pytest.importorskip(
         "unisim.backend.mujoco.backend",
         reason="unisim-core MuJoCo adapter (mjbatch build) not available",
@@ -35,17 +34,10 @@ def test_reward_override_g1():
         "weight": 20.0,
     }
 
-    env = cast(
-        Any,
+    with pytest.raises(NotImplementedError, match="reset randomization"):
         registry.make(
             "G1WalkFlat",
             num_envs=1,
             sim_backend="mujoco",
             env_cfg_override=env_cfg_override,
-        ),
-    )
-
-    assert env._cfg.rewards["tracking_lin_vel"].weight == 888.0
-    assert env._cfg.rewards["alive"].weight == 20.0
-    assert env.reward_manager.get_term_cfg("tracking_lin_vel").weight == 888.0
-    env.close()
+        )

@@ -7,7 +7,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import torch
 from omegaconf import OmegaConf
 from unisim.entities import EntityVariantBinding, SceneEntitySpec
 
@@ -108,62 +107,14 @@ def test_hydra_constructs_new_scene_without_early_unisim_tuple_validation():
     assert cfg.scene.entity_assets[0].initial_state.quaternion == (1.0, 0.0, 0.0, 0.0)
 
 
-def test_two_manager_entity_writes_commit_once_and_late_failure_commits_nothing(monkeypatch):
-    env = make_manager_based_rl_env(build_fixture_cfg(passive=False), 2, "mujoco")
-    try:
-        env.init_state()
-        commits = []
-        native = env._backend.reset_entities
-        monkeypatch.setattr(
-            env._backend,
-            "reset_entities",
-            lambda request: (commits.append(request), native(request))[-1],
-        )
-        ids = torch.tensor([1], dtype=torch.int64)
-        with env._reset_state.scoped(ids):
-            env.scene["object"].write_root_link_pose_to_sim(
-                np.array([[0, 0, 2, 1, 0, 0, 0.0]]), env_ids=ids
-            )
-            env.scene["target"].write_root_link_pose_to_sim(
-                np.array([[3, 2, 1, 1, 0, 0, 0.0]]), env_ids=ids
-            )
-        assert len(commits) == 1
-        assert {patch.entity for patch in commits[0].patches} == {"object", "target"}
-        before = {
-            name: value.detach().cpu().clone()
-            for name, value in env._backend.get_state_views().items()
-        }
-        with pytest.raises(ValueError), env._reset_state.scoped(ids):
-            env.scene["object"].write_root_link_pose_to_sim(
-                np.array([[0, 0, 3, 1, 0, 0, 0.0]]), env_ids=ids
-            )
-            env.scene["target"].write_root_link_pose_to_sim(np.zeros((1, 7)), env_ids=ids)
-        assert len(commits) == 1
-        after = env._backend.get_state_views()
-        for name, value in before.items():
-            torch.testing.assert_close(after[name].detach().cpu(), value)
-    finally:
-        env.close()
+def test_host_bridge_manager_entity_writes_fail_closed_before_runtime():
+    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
+        make_manager_based_rl_env(build_fixture_cfg(passive=False), 2, "mujoco")
 
 
-def test_different_entity_row_selections_fail_before_committing(monkeypatch):
-    env = make_manager_based_rl_env(build_fixture_cfg(passive=False), 2, "mujoco")
-    try:
-        commits = []
-        monkeypatch.setattr(env._backend, "reset_entities", lambda request: commits.append(request))
-        with pytest.raises(NotImplementedError, match="same selected env rows"):
-            with env._reset_state.scoped(torch.tensor([0, 1], dtype=torch.int64)):
-                env.scene["object"].write_root_link_pose_to_sim(
-                    np.array([[0, 0, 2, 1, 0, 0, 0.0]]),
-                    env_ids=torch.tensor([1], dtype=torch.int64),
-                )
-                env.scene["target"].write_root_link_pose_to_sim(
-                    np.array([[3, 2, 1, 1, 0, 0, 0.0]]),
-                    env_ids=torch.tensor([0], dtype=torch.int64),
-                )
-        assert commits == []
-    finally:
-        env.close()
+def test_host_bridge_manager_rejects_entity_row_runtime():
+    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
+        make_manager_based_rl_env(build_fixture_cfg(passive=False), 2, "mujoco")
 
 
 def test_per_environment_entity_defaults_are_not_broadcast_from_first_variant():
@@ -191,18 +142,5 @@ def test_per_environment_entity_defaults_are_not_broadcast_from_first_variant():
         )
         text = path.read_text().replace("</mujoco>", f"<keyframe>{key}</keyframe></mujoco>")
         path.write_text(text)
-    env = make_manager_based_rl_env(cfg, 2, "mujoco")
-    try:
-        env.init_state()
-        torch.testing.assert_close(
-            env.scene["object"].data.default_joint_pos_torch(torch.device("cpu"))[:, 0],
-            torch.tensor([0.1, 0.3]),
-        )
-        np.testing.assert_allclose(env.scene["object"].data._host_joint_pos[:, 0], [0.1, 0.3])
-        np.testing.assert_allclose(env._control[:, 0].cpu(), [0.37, 0.37])
-        env.step(torch.full((2, 1), 0.1, dtype=torch.float32, device=env.device))
-        env.reset(env_indices=torch.tensor([1], dtype=torch.int64, device=env.device))
-        np.testing.assert_allclose(env.scene["object"].data._host_joint_pos[1, 0], 0.3)
-        np.testing.assert_allclose(env._control[:, 0].cpu(), [0.1, 0.37])
-    finally:
-        env.close()
+    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
+        make_manager_based_rl_env(cfg, 2, "mujoco")

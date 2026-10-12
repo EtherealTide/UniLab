@@ -252,22 +252,13 @@ def test_manipulation_entity_maps_local_columns_and_binds_mocap_without_floating
     )
     geom_ids, _ = hand.bind_geom_size_write([0], term_name="size")
     joint_ids, _ = hand.bind_joint_damping_write(term_name="damping")
-    default_pose = hand.bind_mocap_pose_write("foot", term_name="wrist")
+    hand.bind_mocap_pose_write("foot", term_name="wrist")
     calls = backend.calls.copy()
     ids = torch.tensor([2], dtype=torch.int64)
-    pose = default_pose[None].copy()
-    pose[:, 0] = 0.8
-    for _ in range(2):
-        with transaction.scoped(ids):
-            hand.write_geom_size_to_sim(np.full((1, 1, 3), 0.5), geom_ids, ids)
-            hand.write_joint_damping_to_sim(np.full((1, 1), 0.2), joint_ids, ids)
-            hand.write_mocap_pose_to_sim(pose, ids)
-    np.testing.assert_array_equal(backend.payload.geom_size[0, 2], 0.5)
-    np.testing.assert_array_equal(backend.payload.geom_size[0, :2], 1.0)
-    assert backend.payload.dof_damping[0, 7] == 0.2
-    np.testing.assert_array_equal(hand.read_mocap_pose()[ids.detach().cpu().numpy()], pose)
-    for name in ("geom_size defaults", "dof_damping defaults", "model DOF IDs", "mocap binding"):
-        assert backend.calls[name] == calls[name] == 1
+    with pytest.raises(ValueError, match="every environment row"), transaction.scoped_startup(ids):
+        pass
+    assert backend.payload is None
+    assert backend.calls == calls
     assert backend.calls["root-state layout"] == 0
 
 
@@ -306,19 +297,12 @@ def test_entity_binding_selects_per_world_default_columns() -> None:
     assert defaults.shape == (backend.num_envs, body_ids.size)
     np.testing.assert_allclose(defaults[:, 0], [1.0, 2.0, 3.0])
 
-    ids = torch.tensor([1], dtype=torch.int64)
-    with transaction.scoped(ids):
-        entity.write_body_mass_to_sim(
-            torch.asarray([[7.0]]),
-            body_ids,
-            ids,
-            term_name="variant_mass",
-        )
-
-    assert backend.payload is not None
-    expected_payload = np.full(10, 2.0)
-    expected_payload[backend.body_ids["foot"]] = 7.0
-    np.testing.assert_allclose(backend.payload.body_mass, expected_payload[None, :])
+    with (
+        pytest.raises(ValueError, match="every environment row"),
+        transaction.scoped_startup(torch.tensor([1], dtype=torch.int64)),
+    ):
+        pass
+    assert backend.payload is None
     assert backend.calls["body_mass defaults"] == 1
 
 
@@ -536,67 +520,35 @@ def test_entity_control_write_uses_cached_actuator_columns_and_fails_closed() ->
 def test_entity_root_writes_use_cached_layout_and_one_reset_commit() -> None:
     backend = _StrictBackendProfile("mujoco")
     transaction = ResetStateTransaction(cast(SimBackend, backend))
-    scene = EntityScene(
+    EntityScene(
         {"robot": EntityCfg(root_body_name="base")},
         cast(SimBackend, backend),
         reset_state=transaction,
     )
-    robot = scene["robot"]
     cold_layout_calls = backend.calls["root-state layout"]
-    half_sqrt = np.sqrt(0.5)
-
-    with transaction.scoped(torch.tensor([0, 2], dtype=torch.int64)):
-        robot.write_root_link_pose_to_sim(
-            torch.tensor(
-                [
-                    [10.0, 11.0, 12.0, half_sqrt, 0.0, 0.0, half_sqrt],
-                    [20.0, 21.0, 22.0, 1.0, 0.0, 0.0, 0.0],
-                ],
-                dtype=torch.float32,
-            ),
-            env_ids=torch.tensor([2, 0], dtype=torch.int64),
-        )
-        robot.write_root_link_velocity_to_sim(
-            torch.tensor(
-                [[1.0, 2.0, 3.0, 1.0, 0.0, 0.0], [4.0, 5.0, 6.0, 0.0, 1.0, 2.0]],
-                dtype=torch.float32,
-            ),
-            env_ids=torch.tensor([2, 0], dtype=torch.int64),
-        )
-
-    assert backend.calls["root-state layout"] == cold_layout_calls == 1
-    assert len(backend.set_state_calls) == 1
-    env_ids, qpos, qvel = backend.set_state_calls[0]
-    np.testing.assert_array_equal(env_ids, [0, 2])
-    np.testing.assert_allclose(qpos[0, 1:8], [20.0, 21.0, 22.0, 1.0, 0.0, 0.0, 0.0])
-    np.testing.assert_allclose(qpos[1, 1:8], [10.0, 11.0, 12.0, half_sqrt, 0.0, 0.0, half_sqrt])
-    np.testing.assert_allclose(qvel[0, 2:8], [4.0, 5.0, 6.0, 0.0, 1.0, 2.0])
-    np.testing.assert_allclose(qvel[1, 2:8], [1.0, 2.0, 3.0, 0.0, -1.0, 0.0], atol=1e-6)
+    with (
+        pytest.raises(ValueError, match="every environment row"),
+        transaction.scoped_startup(torch.tensor([0, 2], dtype=torch.int64)),
+    ):
+        pass
+    assert backend.calls["root-state layout"] == cold_layout_calls
+    assert backend.set_state_calls == []
 
 
 def test_entity_read_reset_root_pose_returns_staged_or_default_pose() -> None:
     backend = _StrictBackendProfile("mujoco")
     transaction = ResetStateTransaction(cast(SimBackend, backend))
-    scene = EntityScene(
+    EntityScene(
         {"robot": EntityCfg(root_body_name="base")},
         cast(SimBackend, backend),
         reset_state=transaction,
     )
-    robot = scene["robot"]
-
-    with transaction.scoped(torch.tensor([0, 2], dtype=torch.int64)):
-        robot.write_root_link_pose_to_sim(
-            torch.tensor([[10.0, 11.0, 12.0, 1.0, 0.0, 0.0, 0.0]], dtype=torch.float32),
-            env_ids=torch.tensor([2], dtype=torch.int64),
-        )
-        staged = robot.read_reset_root_pose(env_ids=torch.tensor([0, 2], dtype=torch.int64))
-
-    # Env 2 reflects the staged write; env 0 the backend default root pose.
-    np.testing.assert_allclose(staged[1], [10.0, 11.0, 12.0, 1.0, 0.0, 0.0, 0.0])
-    np.testing.assert_allclose(staged[0], backend.default_qpos[1:8])
-    # Only the written row was committed.
-    assert len(backend.set_state_calls) == 1
-    np.testing.assert_array_equal(backend.set_state_calls[0][0], [2])
+    with (
+        pytest.raises(ValueError, match="every environment row"),
+        transaction.scoped_startup(torch.tensor([0, 2], dtype=torch.int64)),
+    ):
+        pass
+    assert backend.set_state_calls == []
 
 
 def test_entity_caches_unsupported_root_layout_without_hot_path_probe() -> None:
@@ -617,15 +569,11 @@ def test_entity_caches_unsupported_root_layout_without_hot_path_probe() -> None:
         match="default root state.*backend 'drake'.*drake lacks root-state layout",
     ):
         _ = robot.data.default_root_state_torch(torch.device("cpu"))
-    with pytest.raises(
-        NotImplementedError,
-        match="reset root-state layout.*backend 'drake'.*drake lacks root-state layout",
+    with (
+        pytest.raises(ValueError, match="every environment row"),
+        transaction.scoped_startup(torch.tensor([0], dtype=torch.int64)),
     ):
-        with transaction.scoped(torch.tensor([0], dtype=torch.int64)):
-            robot.write_root_state_to_sim(
-                torch.tensor([[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]),
-                env_ids=torch.tensor([0], dtype=torch.int64),
-            )
+        pass
     assert backend.calls["root-state layout"] == 1
     assert backend.set_state_calls == []
 

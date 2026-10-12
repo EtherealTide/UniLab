@@ -17,5 +17,5 @@ env:
       func: unilab.envs.mdp.reset_scene_to_default_tensor
     reset_root_state_uniform:
       func: unilab.envs.mdp.reset_root_state_uniform_tensor
-    # Motrix tensor selected reset does not support PD-gain randomization.
+    # Motrix tensor mask reset does not support PD-gain randomization.
     pd_gains: null

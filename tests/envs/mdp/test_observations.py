@@ -625,7 +625,7 @@ def test_imu_misalignment_is_constant_across_calls_and_episode_resets() -> None:
 
     first = manager.compute_group("policy")
     second = manager.compute_group("policy")
-    manager.reset(np.arange(env.num_envs))
+    manager.reset(torch.ones(env.num_envs, dtype=torch.bool, device=env.device))
     after_reset = manager.compute_group("policy")
 
     assert isinstance(first, torch.Tensor)

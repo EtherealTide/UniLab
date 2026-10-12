@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import json
 import subprocess
 import sys
 import textwrap
@@ -17,14 +16,7 @@ _MATERIALIZER_CONSUMERS = (
 
 def test_unisim_dependency_uses_an_approved_source() -> None:
     direct_url = distribution("unisim-core").read_text("direct_url.json")
-    if direct_url is None:
-        return
-
-    metadata = json.loads(direct_url)
-    local_unisim = (_REPO_ROOT / "third-party" / "unisim").resolve()
-    assert metadata.get("url") == local_unisim.as_uri()
-    dir_info = metadata.get("dir_info", {})
-    assert dir_info.get("editable") is True
+    assert direct_url is None, "UniSim must resolve from the published package registry"
 
 
 def test_materializer_consumers_use_unisim_owner_module() -> None:

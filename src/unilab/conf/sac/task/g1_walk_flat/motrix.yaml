@@ -1,8 +1,8 @@
 # @package _global_
 # SAC Motrix owner for the canonical G1 flat walk task. MotrixSim remains
-# CPU-authoritative; control, selected reset, full read, and selected reset
+# CPU-authoritative; control, mask reset, full read, and mask reset
 # publication each cross one public packed HOST_BRIDGE boundary. Keeps
-# DENYLIST parity with the MuJoCo SAC owner. Motrix tensor selected reset does
+# DENYLIST parity with the MuJoCo SAC owner. Motrix tensor mask reset does
 # not support randomization, so unsupported host reset terms are explicitly
 # disabled rather than falling back.
 defaults:
@@ -57,7 +57,7 @@ env:
       func: unilab.envs.mdp.reset_scene_to_default_tensor
     reset_root_state_uniform:
       func: unilab.envs.mdp.reset_root_state_uniform_tensor
-    # Motrix tensor selected reset does not support randomization.
+    # Motrix tensor mask reset does not support randomization.
     pd_gains: null
   terminations:
     tilt: null

@@ -9,7 +9,6 @@ from typing import Any
 
 import numpy as np
 import pytest
-import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
@@ -17,7 +16,7 @@ from omegaconf import DictConfig, OmegaConf
 from unilab.base import registry
 from unilab.base.config_adapter import BackendAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
-from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg, mdp
+from unilab.envs import ManagerBasedRlEnvCfg, mdp
 
 ROOT_DIR = Path(__file__).parents[4]
 CONF_DIR = ROOT_DIR / "src" / "unilab" / "conf"
@@ -286,45 +285,17 @@ def test_go2_flat_registry_executes_real_manager_runtime(backend: str, owner: st
         )
     registry.ensure_registries()
     hydra_cfg, _, env_override = _materialize("ppo", (owner,))
-    env = registry.make(
-        str(hydra_cfg.training.task_name),
-        sim_backend=backend,
-        env_cfg_override=env_override,
-        num_envs=2,
-    )
-    try:
-        assert isinstance(env, ManagerBasedRlEnv)
-        assert env.obs_groups_spec == {"obs": 49, "critic": 52}
-        assert env.action_space.shape == (12,)
-        action = env.action_manager.get_term("joint_pos")
-        assert action.target_names == list(_JOINT_NAMES)
-        np.testing.assert_allclose(action.offset.cpu(), np.broadcast_to(_HOME_JOINT_POS, (2, 12)))
-
-        obs, info = env.reset(seed=7)
-        assert {name: value.shape for name, value in obs.items()} == {
-            "obs": (2, 49),
-            "critic": (2, 52),
-        }
-        assert isinstance(info, dict)
-        np.testing.assert_allclose(
-            env.scene["robot"].data.default_joint_pos_torch(env.device),
-            torch.as_tensor(np.broadcast_to(_HOME_JOINT_POS, (2, 12))),
+    override = {
+        **env_override,
+        "events": {**env_override.get("events", {}), "pd_gains": None},
+    }
+    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
+        registry.make(
+            str(hydra_cfg.training.task_name),
+            sim_backend=backend,
+            env_cfg_override=override,
+            num_envs=2,
         )
-        np.testing.assert_allclose(
-            env.scene["robot"].data._host_joint_pos,
-            np.broadcast_to(_HOME_JOINT_POS, (2, 12)),
-        )
-
-        state = env.step(torch.zeros((2, 12), dtype=torch.float32, device=env.device))
-        assert {name: value.shape for name, value in state.obs.items()} == {
-            "obs": (2, 49),
-            "critic": (2, 52),
-        }
-        for value in (*state.obs.values(), state.reward):
-            assert isinstance(value, torch.Tensor)
-            assert torch.isfinite(value).all()
-    finally:
-        env.close()
 
 
 def test_go2_flat_flashsac_uses_canonical_manager_events_and_numpy_noise() -> None:

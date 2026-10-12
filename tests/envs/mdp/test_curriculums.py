@@ -84,14 +84,14 @@ def _termination_curriculum_manager(env: _FakeEnv, stages: list[dict]) -> Curric
 def test_reward_weight_unchanged_before_threshold(fake_env: _FakeEnv) -> None:
     manager = _reward_curriculum_manager(fake_env, [{"step": 100, "weight": -1.0}])
     fake_env.common_step_counter = 99
-    manager.compute()
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
     assert fake_env.reward_manager.get_term_cfg("pen").weight == pytest.approx(-0.1)
 
 
 def test_reward_weight_applied_at_threshold(fake_env: _FakeEnv) -> None:
     manager = _reward_curriculum_manager(fake_env, [{"step": 100, "weight": -1.0}])
     fake_env.common_step_counter = 100
-    manager.compute()
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
     assert fake_env.reward_manager.get_term_cfg("pen").weight == pytest.approx(-1.0)
 
 
@@ -105,7 +105,7 @@ def test_reward_weight_later_stage_wins(fake_env: _FakeEnv) -> None:
         ],
     )
     fake_env.common_step_counter = 500
-    manager.compute()
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
     assert fake_env.reward_manager.get_term_cfg("pen").weight == pytest.approx(-1.0)
 
 
@@ -118,13 +118,13 @@ def test_reward_weight_partial_application(fake_env: _FakeEnv) -> None:
         ],
     )
     fake_env.common_step_counter = 150
-    manager.compute()
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
     assert fake_env.reward_manager.get_term_cfg("pen").weight == pytest.approx(-0.4)
 
 
 def test_step_zero_applies_on_first_compute(fake_env: _FakeEnv) -> None:
     manager = _reward_curriculum_manager(fake_env, [{"step": 0, "weight": -0.9}])
-    manager.compute()
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
     assert fake_env.reward_manager.get_term_cfg("pen").weight == pytest.approx(-0.9)
 
 
@@ -133,8 +133,8 @@ def test_reapplication_is_idempotent(fake_env: _FakeEnv) -> None:
         fake_env, [{"step": 0, "weight": -0.2}, {"step": 100, "params": {"std": 0.2}}]
     )
     fake_env.common_step_counter = 150
-    manager.compute()
-    manager.compute()
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
     term_cfg = fake_env.reward_manager.get_term_cfg("pen")
     assert term_cfg.weight == pytest.approx(-0.2)
     assert term_cfg.params["std"] == pytest.approx(0.2)
@@ -143,7 +143,7 @@ def test_reapplication_is_idempotent(fake_env: _FakeEnv) -> None:
 def test_ramped_weight_changes_computed_reward(fake_env: _FakeEnv) -> None:
     manager = _reward_curriculum_manager(fake_env, [{"step": 0, "weight": -1.0}])
     before = fake_env.reward_manager.compute(dt=1.0).clone()
-    manager.compute()
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
     after = fake_env.reward_manager.compute(dt=1.0)
     np.testing.assert_allclose(after, before * 10.0)
 
@@ -154,13 +154,13 @@ def test_ramped_weight_changes_computed_reward(fake_env: _FakeEnv) -> None:
 def test_reward_params_updated_at_threshold(fake_env: _FakeEnv) -> None:
     manager = _reward_curriculum_manager(fake_env, [{"step": 100, "params": {"std": 0.2}}])
     fake_env.common_step_counter = 200
-    manager.compute()
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
     assert fake_env.reward_manager.get_term_cfg("pen").params["std"] == pytest.approx(0.2)
 
 
 def test_reward_params_unchanged_before_threshold(fake_env: _FakeEnv) -> None:
     manager = _reward_curriculum_manager(fake_env, [{"step": 100, "params": {"std": 0.2}}])
-    manager.compute()
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
     assert fake_env.reward_manager.get_term_cfg("pen").params["std"] == pytest.approx(0.5)
 
 
@@ -169,7 +169,7 @@ def test_reward_stage_combines_weight_and_params(fake_env: _FakeEnv) -> None:
         fake_env, [{"step": 100, "weight": -1.0, "params": {"std": 0.1, "scale": 2.0}}]
     )
     fake_env.common_step_counter = 100
-    manager.compute()
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
     term_cfg = fake_env.reward_manager.get_term_cfg("pen")
     assert term_cfg.weight == pytest.approx(-1.0)
     assert term_cfg.params["std"] == pytest.approx(0.1)
@@ -188,24 +188,24 @@ def test_termination_params_follow_stages(fake_env: _FakeEnv) -> None:
             {"step": 400, "params": {"threshold": 400.0}},
         ],
     )
-    manager.compute()
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
     assert fake_env.termination_manager.get_term_cfg("energy").params["threshold"] == 1000.0
     fake_env.common_step_counter = 200
-    manager.compute()
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
     assert fake_env.termination_manager.get_term_cfg("energy").params["threshold"] == 700.0
     fake_env.common_step_counter = 500
-    manager.compute()
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
     assert fake_env.termination_manager.get_term_cfg("energy").params["threshold"] == 400.0
 
 
 def test_termination_time_out_stage_reroutes_done(fake_env: _FakeEnv) -> None:
     manager = _termination_curriculum_manager(fake_env, [{"step": 10, "time_out": True}])
-    manager.compute()
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
     fake_env.termination_manager.compute()
     assert fake_env.termination_manager.terminated.all()
     assert not fake_env.termination_manager.time_outs.any()
     fake_env.common_step_counter = 10
-    manager.compute()
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
     fake_env.termination_manager.compute()
     assert fake_env.termination_manager.time_outs.all()
     assert not fake_env.termination_manager.terminated.any()
@@ -258,7 +258,7 @@ def test_duplicate_step_stages_apply_in_order(fake_env: _FakeEnv) -> None:
         ],
     )
     fake_env.common_step_counter = 200
-    manager.compute()
+    manager.compute(torch.ones(fake_env.num_envs, dtype=torch.bool))
     term_cfg = fake_env.reward_manager.get_term_cfg("pen")
     assert term_cfg.weight == pytest.approx(-0.4)
     assert term_cfg.params["std"] == pytest.approx(0.1)
@@ -267,26 +267,26 @@ def test_duplicate_step_stages_apply_in_order(fake_env: _FakeEnv) -> None:
 # Logging snapshot.
 
 
-def test_reset_extras_log_only_staged_scalar_keys(fake_env: _FakeEnv) -> None:
+def test_reset_extras_log_only_staged_scalar_keys(fake_env_full: _FakeEnv) -> None:
     manager = _reward_curriculum_manager(
-        fake_env, [{"step": 100, "weight": -1.0, "params": {"std": 0.2}}]
+        fake_env_full, [{"step": 100, "weight": -1.0, "params": {"std": 0.2}}]
     )
-    fake_env.common_step_counter = 200
+    fake_env_full.common_step_counter = 200
     manager.compute()
-    extras = manager.reset()
+    extras = manager.reset(torch.ones(fake_env_full.num_envs, dtype=torch.bool))
     assert extras["Curriculum/pen_ramp/weight"] == pytest.approx(-1.0)
     assert extras["Curriculum/pen_ramp/std"] == pytest.approx(0.2)
     # Not staged by any stage -> not logged.
     assert "Curriculum/pen_ramp/scale" not in extras
 
 
-def test_weight_not_logged_when_only_params_staged(fake_env: _FakeEnv) -> None:
+def test_weight_not_logged_when_only_params_staged(fake_env_full: _FakeEnv) -> None:
     manager = _termination_curriculum_manager(
-        fake_env, [{"step": 100, "params": {"threshold": 500.0}}]
+        fake_env_full, [{"step": 100, "params": {"threshold": 500.0}}]
     )
-    fake_env.common_step_counter = 200
+    fake_env_full.common_step_counter = 200
     manager.compute()
-    extras = manager.reset()
+    extras = manager.reset(torch.ones(fake_env_full.num_envs, dtype=torch.bool))
     assert extras["Curriculum/energy_ramp/threshold"] == pytest.approx(500.0)
     assert "Curriculum/energy_ramp/weight" not in extras
 
@@ -355,7 +355,7 @@ def _event_curriculum_manager(env: _FakeEnv, stages: list[dict]) -> CurriculumMa
 
 def test_command_curriculum_field_unchanged_before_threshold(fake_env_full: _FakeEnv) -> None:
     manager = _command_curriculum_manager(fake_env_full, [{"step": 100, "rel_standing_envs": 0.25}])
-    manager.compute()
+    manager.compute(torch.ones(fake_env_full.num_envs, dtype=torch.bool))
     assert fake_env_full.command_manager.get_term_cfg("twist").rel_standing_envs == pytest.approx(
         0.02
     )
@@ -370,7 +370,7 @@ def test_command_curriculum_field_applied_at_threshold(fake_env_full: _FakeEnv) 
         ],
     )
     fake_env_full.common_step_counter = 100
-    manager.compute()
+    manager.compute(torch.ones(fake_env_full.num_envs, dtype=torch.bool))
     assert fake_env_full.command_manager.get_term_cfg("twist").rel_standing_envs == pytest.approx(
         0.25
     )
@@ -382,7 +382,7 @@ def test_command_curriculum_ranges_field_staged(fake_env_full: _FakeEnv) -> None
         [{"step": 50, "ranges": [[-1.1, 1.1], [-1.4, 1.4]]}],
     )
     fake_env_full.common_step_counter = 60
-    manager.compute()
+    manager.compute(torch.ones(fake_env_full.num_envs, dtype=torch.bool))
     assert fake_env_full.command_manager.get_term_cfg("twist").ranges == [
         [-1.1, 1.1],
         [-1.4, 1.4],
@@ -398,8 +398,8 @@ def test_command_curriculum_logs_scalar_fields(fake_env_full: _FakeEnv) -> None:
         ],
     )
     fake_env_full.common_step_counter = 60
-    manager.compute()
-    extras = manager.reset()
+    manager.compute(torch.ones(fake_env_full.num_envs, dtype=torch.bool))
+    extras = manager.reset(torch.ones(fake_env_full.num_envs, dtype=torch.bool))
     assert extras["Curriculum/standing_ramp/rel_standing_envs"] == pytest.approx(0.05)
     # Non-scalar staged fields are applied but not logged.
     assert "Curriculum/standing_ramp/ranges" not in extras
@@ -431,13 +431,13 @@ def test_event_curriculum_params_follow_stages(fake_env_full: _FakeEnv) -> None:
             {"step": 100, "params": {"com_range": {"x": (-0.015, 0.015)}}},
         ],
     )
-    manager.compute()
+    manager.compute(torch.ones(fake_env_full.num_envs, dtype=torch.bool))
     assert fake_env_full.event_manager.get_term_cfg("base_com").params["com_range"]["x"] == (
         -0.005,
         0.005,
     )
     fake_env_full.common_step_counter = 200
-    manager.compute()
+    manager.compute(torch.ones(fake_env_full.num_envs, dtype=torch.bool))
     assert fake_env_full.event_manager.get_term_cfg("base_com").params["com_range"]["x"] == (
         -0.015,
         0.015,

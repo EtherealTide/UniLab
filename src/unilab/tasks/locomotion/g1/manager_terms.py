@@ -308,6 +308,22 @@ def _resample_gait(env: _G1Env, context: _G1GaitContext, env_ids: torch.Tensor) 
     context.phase.index_copy_(0, rows, samples.to(dtype=context.phase.dtype))
 
 
+def _resample_gait_mask(env: _G1Env, context: _G1GaitContext, reset_mask: torch.Tensor) -> None:
+    rng_owner = getattr(env, "torch_rng", None)
+    if not isinstance(rng_owner, TorchManagerRng):
+        raise RuntimeError("G1 gait phase reset requires the Manager-owned Torch generator")
+    count = context.phase.shape[0]
+    left = rng_owner.uniform(0.0, 2.0 * math.pi, (count,), dtype=torch.float32)
+    if context.init_mode == "independent":
+        right = rng_owner.uniform(0.0, 2.0 * math.pi, (count,), dtype=torch.float32)
+    else:
+        right = left + torch.pi
+    samples = torch.stack((left, right), dim=1)
+    context.phase.copy_(
+        torch.where(reset_mask[:, None], samples.to(dtype=context.phase.dtype), context.phase)
+    )
+
+
 class G1GaitPhase(ManagerTermBase):
     """Two-foot gait phase observation in radians, with per-reset phase sampling."""
 
@@ -331,14 +347,8 @@ class G1GaitPhase(ManagerTermBase):
             return phase
         return phase.copy()
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        if env_ids is None:
-            rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._env.device)
-        elif isinstance(env_ids, slice):
-            rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._env.device)[env_ids]
-        else:
-            rows = env_ids.to(dtype=torch.int64, device=self._env.device).reshape(-1)
-        _resample_gait(cast("_G1Env", self._env), self._context, rows)
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        _resample_gait_mask(cast("_G1Env", self._env), self._context, reset_mask)
 
 
 class _GaitRewardTerm(_SensorTerm):
@@ -528,8 +538,8 @@ class feet_air_time(_FootContactTerm):
             (env.num_envs, 2), dtype=torch.float32, device=torch.device(env.device)
         )
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        self._air_time[env_ids if env_ids is not None else slice(None)] = 0.0
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        self._air_time.masked_fill_(reset_mask.reshape(-1, 1), 0.0)
 
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
@@ -816,6 +826,9 @@ class weighted_pose(ManagerTermBase):
             )
         return (self._weights * (position - default).square()).sum(dim=1)
 
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        del reset_mask
+
 
 class upper_body_pose(weighted_pose):
     """Weighted L2 pose penalty with the twelve leg joints zeroed out."""
@@ -847,7 +860,6 @@ class G1VelocityCommandCfg(UniformVelocityCommandCfg):
 
 class G1VelocityCommand(UniformVelocityCommand):
     cfg: G1VelocityCommandCfg  # pyright: ignore[reportIncompatibleVariableOverride]
-    uses_tensor_reset_rows = True
 
     def __init__(self, cfg: G1VelocityCommandCfg, env: ManagerBasedRlEnv):
         self._planar_dead_zone = _real(
@@ -861,13 +873,19 @@ class G1VelocityCommand(UniformVelocityCommand):
             )
         super().__init__(cfg, env)
 
-    def _resample_command(self, env_ids: torch.Tensor) -> None:
-        super()._resample_command(env_ids)
+    def _resample_command(self, reset_mask: torch.Tensor) -> None:
+        super()._resample_command(reset_mask)
         tensor = self._tensor_command
         assert tensor is not None
-        planar = tensor[env_ids, :2]
+        planar = tensor[:, :2]
         moving = torch.linalg.vector_norm(planar, dim=1) > self._planar_dead_zone
-        tensor[env_ids, :2] = planar * moving[:, None]
+        tensor[:, :2] = torch.where(reset_mask[:, None], planar * moving[:, None], planar)
+
+    def _merge_samples_masked(self, samples: torch.Tensor, reset_mask: torch.Tensor) -> None:
+        moving = torch.linalg.vector_norm(samples[:, :2], dim=1) > self._planar_dead_zone
+        samples = samples.clone()
+        samples[:, :2] *= moving[:, None]
+        super()._merge_samples_masked(samples, reset_mask)
 
 
 # ---------------------------------------------------------------------------
@@ -992,6 +1010,46 @@ class G1PenaltyCurriculum(ManagerTermBase):
             "penalty_scale": self._current_scale,
         }
 
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        """Mask boundary for the global curriculum state."""
+        del reset_mask
+
+    def __call_reset__(
+        self,
+        env: _G1Env,
+        reset_mask: torch.Tensor,
+        **params: Any,
+    ) -> dict[str, float]:
+        """Fixed-shape curriculum update at reset."""
+        del params
+        reset_buf = env.reset_buf
+        if not isinstance(reset_buf, torch.Tensor):
+            raise TypeError(f"{self.name} requires reset_buf to be a Torch tensor")
+        done_mask = reset_buf & reset_mask
+        episode_lengths = env.episode_length_buf
+        if not isinstance(episode_lengths, torch.Tensor):
+            raise TypeError(f"{self.name} requires episode_length_buf to be a Torch tensor")
+        done_count = done_mask.sum()
+        self._tracker.update_mask(episode_lengths, done_mask)
+
+        average = self._tracker.average
+        average_value = float(average.item())
+        changed = False
+        if bool(done_count.item() > 0):
+            if average_value < self._level_down_threshold:
+                self._current_scale *= 1.0 - self._degree
+                changed = True
+            elif average_value > self._level_up_threshold:
+                self._current_scale *= 1.0 + self._degree
+                changed = True
+        if changed:
+            self._current_scale = min(max(self._current_scale, self._min_scale), self._max_scale)
+            self._apply_scale()
+        return {
+            "average_episode_length": average_value,
+            "penalty_scale": self._current_scale,
+        }
+
 
 # ---------------------------------------------------------------------------
 # G1 Manager-Based env: Registry-owned production runtime on the single
@@ -1030,33 +1088,21 @@ class G1WalkResetOwner(ResetOwner):
         if getattr(env, "torch_rng", None) is None:
             raise NotImplementedError("G1WalkResetOwner requires the Manager Torch RNG")
 
-    def _rows(self, env_ids: torch.Tensor | slice | None) -> torch.Tensor:
-        device = torch.device(getattr(self._env, "device", torch.device("cpu")))
-        if isinstance(env_ids, torch.Tensor):
-            return env_ids.to(dtype=torch.int64, device=device)
-        num_envs = int(getattr(self._env, "num_envs", 0))
-        return torch.arange(num_envs, dtype=torch.int64, device=device)
-
-    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+    def reset_transaction(self, reset_mask: torch.Tensor) -> dict[str, float]:
         env = cast("_G1Env", self._env)
-        rows = self._rows(env_ids)
-        extras, _commands = cast(
-            Any,
-            env.command_manager,
-        ).reset_command_state(
-            rows,
-            publish_metrics=False,
-            validate_commands=False,
-        )
-        return cast(dict[str, float], extras)
+        command = env.command_manager.get_term(self.cfg.command_name)
+        if not callable(getattr(command, "reset", None)):
+            raise NotImplementedError(
+                f"G1WalkResetOwner command '{self.cfg.command_name}' does not define "
+                "the mask-preserving reset boundary"
+            )
+        command.reset(reset_mask)
+        return {}
 
-    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+    def reset_committed(self, reset_mask: torch.Tensor) -> dict[str, float]:
         env = cast("_G1Env", self._env)
-        rows = self._rows(env_ids)
-        cast(Any, env.action_manager).clear_action_state(rows)
-        clear_metrics = getattr(env.metrics_manager, "clear_episode_state", None)
-        if callable(clear_metrics):
-            clear_metrics(rows)
+        env.action_manager.clear_action_state(reset_mask)
+        env.metrics_manager.clear_episode_state(reset_mask)
         return {}
 
 
@@ -1275,6 +1321,10 @@ class G1WalkTerminationPack(ManagerTermBase):
     @property
     def entity_name(self) -> str:
         return self.cfg.entity_name
+
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        """Mask boundary for the stateless termination pack."""
+        del reset_mask
 
     def __call__(self, env: _G1Env) -> torch.Tensor:
         read_plan = getattr(env.scene, "_tensor_read_plan", None)
