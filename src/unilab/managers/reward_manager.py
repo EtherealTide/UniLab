@@ -79,6 +79,7 @@ class RewardManager(ManagerBase):
         self._step_reward = torch.zeros(
             (self.num_envs, len(self._term_names)), dtype=torch.float32, device=self._device
         )
+        self._finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
 
     def __str__(self) -> str:
         msg = f"<RewardManager> contains {len(self._term_names)} active terms.\n"
@@ -100,6 +101,11 @@ class RewardManager(ManagerBase):
     @property
     def active_terms(self) -> list[str]:
         return self._term_names
+
+    @property
+    def finite_valid(self) -> torch.Tensor:
+        """Latest aggregate reward-finite verdict for interval publication."""
+        return self._finite_valid
 
     # Methods.
 
@@ -191,7 +197,9 @@ class RewardManager(ManagerBase):
                 self._step_reward[:, target_idx] = weighted / scale
             aggregation_ms += time.perf_counter() - aggregation_started
         finite_started = time.perf_counter()
-        finite = bool(torch.isfinite(self._reward_buf).all())
+        valid = torch.isfinite(self._reward_buf).all()
+        self._finite_valid.copy_(valid)
+        finite = bool(valid)
         finite_ms = time.perf_counter() - finite_started
         if not finite:
             finite = torch.isfinite(self._step_reward)

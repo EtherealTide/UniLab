@@ -141,6 +141,8 @@ class ResetStateTransaction:
         self._tensor_joint_columns: (
             tuple[tuple[int, ...], tuple[int, ...], torch.Tensor, torch.Tensor] | None
         ) = None
+        self._motion_payload_valid: torch.Tensor | None = None
+        self._tensor_root_payload_valid: torch.Tensor | None = None
 
     @property
     def active(self) -> bool:
@@ -148,9 +150,29 @@ class ResetStateTransaction:
         return self._active or self._tensor_active
 
     @property
+    def motion_payload_valid(self) -> torch.Tensor:
+        """Latest fused motion-reset payload verdict."""
+        return self._require_motion_payload_valid()
+
+    @property
+    def tensor_root_payload_valid(self) -> torch.Tensor:
+        """Latest fused tensor root-reset payload verdict."""
+        return self._require_tensor_root_payload_valid()
+
+    @property
     def tensor_active(self) -> bool:
         """Whether the active reset composes device tensor rows without host staging."""
         return self._tensor_active
+
+    def _require_motion_payload_valid(self) -> torch.Tensor:
+        if self._motion_payload_valid is None:
+            return torch.ones((), dtype=torch.bool)
+        return self._motion_payload_valid
+
+    def _require_tensor_root_payload_valid(self) -> torch.Tensor:
+        if self._tensor_root_payload_valid is None:
+            return torch.ones((), dtype=torch.bool)
+        return self._tensor_root_payload_valid
 
     @property
     def last_commit_had_writes(self) -> bool:
@@ -1267,8 +1289,12 @@ class ResetStateTransaction:
         # reduction. Compare against a device-resident true scalar so the
         # success path remains non-synchronizing; invalid diagnostics below are
         # still allowed to synchronize and identify the offending payload.
-        true_value = torch.ones_like(valid)
-        if torch.equal(valid, true_value):
+        if self._motion_payload_valid is None or (
+            self._motion_payload_valid.device != valid.device
+        ):
+            self._motion_payload_valid = torch.empty_like(valid)
+        self._motion_payload_valid.copy_(valid)
+        if torch.equal(valid, torch.ones_like(valid)):
             return
         payloads = (
             ("root state", root_state),
@@ -1806,6 +1832,11 @@ class ResetStateTransaction:
             atol=1e-6,
         )
         valid = torch.isfinite(root_state).all() & valid_quat.all()
+        if self._tensor_root_payload_valid is None or (
+            self._tensor_root_payload_valid.device != valid.device
+        ):
+            self._tensor_root_payload_valid = torch.empty_like(valid)
+        self._tensor_root_payload_valid.copy_(valid)
         if torch.equal(valid, torch.ones_like(valid)):
             return
         if not bool(torch.isfinite(root_state).all()):

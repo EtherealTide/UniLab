@@ -95,6 +95,10 @@ class TorchEnv(ABEnv):
         self._state: Optional[TorchEnvState] = None
         self._truncated_scratch = torch.zeros((num_envs,), dtype=torch.bool, device=self._device)
         self._final_observation_scratch: dict[str, torch.Tensor] | None = None
+        self._action_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
+        self._control_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
+        self._state_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
+        self._reset_obs_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
         self._tensor_runtime_bound = False
         self._last_initial_episode_steps: torch.Tensor | None = None
         self.step_counter = 0
@@ -293,7 +297,9 @@ class TorchEnv(ABEnv):
 
     def _validate_action(self, actions: torch.Tensor) -> None:
         self._validate_action_contract(actions)
-        if not bool(torch.isfinite(actions).all()):
+        valid = torch.isfinite(actions).all()
+        self._action_finite_valid.copy_(valid)
+        if not bool(valid):
             raise ValueError("TorchEnv action contains NaN or Inf")
 
     def _validate_action_contract(self, actions: torch.Tensor) -> None:
@@ -328,7 +334,9 @@ class TorchEnv(ABEnv):
             raise ValueError("TorchEnv control must be contiguous")
         if ctrl.device != self.device:
             raise ValueError(f"TorchEnv control device must be {self.device}, got {ctrl.device}")
-        if not bool(torch.isfinite(ctrl).all()):
+        valid = torch.isfinite(ctrl).all()
+        self._control_finite_valid.copy_(valid)
+        if not bool(valid):
             raise ValueError("TorchEnv control contains NaN or Inf")
 
     def _validate_state(self, state: TorchEnvState) -> None:
@@ -359,15 +367,15 @@ class TorchEnv(ABEnv):
         for value in state.obs.values():
             self._require_floating_float(value)
         self._require_floating_float(state.reward)
-        if not bool(
-            torch.isfinite(
-                torch.cat(
-                    tuple(value.reshape(value.shape[0], -1) for value in state.obs.values())
-                    + (state.reward.reshape(state.reward.shape[0], -1),),
-                    dim=1,
-                )
-            ).all()
-        ):
+        valid = torch.isfinite(
+            torch.cat(
+                tuple(value.reshape(value.shape[0], -1) for value in state.obs.values())
+                + (state.reward.reshape(state.reward.shape[0], -1),),
+                dim=1,
+            )
+        ).all()
+        self._state_finite_valid.copy_(valid)
+        if not bool(valid):
             for label, value in (
                 *((f"obs[{name!r}]", value) for name, value in state.obs.items()),
                 ("reward", state.reward),
@@ -380,6 +388,20 @@ class TorchEnv(ABEnv):
             raise TypeError(f"TorchEnvState {label} must be floating-point")
         if not bool(torch.isfinite(value).all()):
             raise ValueError(f"TorchEnvState {label} contains NaN or Inf")
+
+    def _validation_flags(self) -> dict[str, torch.Tensor]:
+        """Return persistent device-resident verdicts for interval publication.
+
+        These flags are diagnostic carriers, not authorization to skip the
+        fail-closed checks above. They retain the latest aggregate result for a
+        completion boundary without allocating a new scalar per validation.
+        """
+        return {
+            "action_finite": self._action_finite_valid,
+            "control_finite": self._control_finite_valid,
+            "state_finite": self._state_finite_valid,
+            "reset_obs_finite": self._reset_obs_finite_valid,
+        }
 
     def _require_floating_float(self, value: torch.Tensor) -> None:
         if not value.is_floating_point():
@@ -513,14 +535,14 @@ class TorchEnv(ABEnv):
             if value.device != self.device:
                 raise ValueError(f"TorchEnv mask reset obs[{name!r}] device must be {self.device}")
             self._require_floating_float(value)
-        if not bool(
-            torch.isfinite(
-                torch.cat(
-                    tuple(value.reshape(value.shape[0], -1) for value in obs.values()),
-                    dim=1,
-                )
-            ).all()
-        ):
+        valid = torch.isfinite(
+            torch.cat(
+                tuple(value.reshape(value.shape[0], -1) for value in obs.values()),
+                dim=1,
+            )
+        ).all()
+        self._reset_obs_finite_valid.copy_(valid)
+        if not bool(valid):
             for name, value in obs.items():
                 if not bool(torch.isfinite(value).all()):
                     raise ValueError(f"TorchEnv mask reset obs[{name!r}] contains NaN or Inf")
