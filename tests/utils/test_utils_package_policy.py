@@ -9,7 +9,6 @@ ALLOWED_UTILS_MODULES = {
     "device",
     "nan_viz",
     "reward",
-    "seed",
     "sim2sim",
 }
 

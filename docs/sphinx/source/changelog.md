@@ -13,6 +13,19 @@ UniLab 遵循[语义化版本](https://semver.org/)。本共享页面以中英�
 PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完整提交历史请参阅
 [UniLab 仓库](https://github.com/unilabsim/UniLab)。
 
+## Unreleased / 未发布
+
+### Breaking changes / 破坏性变更
+
+- Moved the training seed contract from the `unilab.utils.seed` transition
+  shim to its training owner at `unilab.training.seed`. The shim was removed
+  without a compatibility alias, while `unilab.training` continues to re-export
+  the seed helpers for owner-facing imports (#2283).
+  训练 seed 契约已从 `unilab.utils.seed` 过渡 shim 迁移到 training owner
+  `unilab.training.seed`。该 shim 已移除且不保留兼容 alias；
+  `unilab.training` 会继续 re-export seed helper 以保持 owner-facing import
+  清晰（#2283）。
+
 ## 1.3.4 (2026-10-10)
 
 ### Breaking changes / 破坏性变更

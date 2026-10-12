@@ -10,7 +10,7 @@ from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
 
-from unilab.utils.seed import (
+from unilab.training.seed import (
     apply_training_seed,
     resolve_training_seed,
 )
