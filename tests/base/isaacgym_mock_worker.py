@@ -213,6 +213,14 @@ class _MockSim:
             # without importing Kit. IsaacGym simply ignores the fields.
             "env_origins": [[float(i) * 2.0, 0.0, 0.0] for i in range(self.num_envs)],
             "collision_filtering_applied": True,
+            "configuration_report": {
+                "schema_version": 1,
+                "effective": {
+                    "dt": self.sim_dt,
+                    "gravity": [0.0, 0.0, _GRAVITY_Z],
+                    "solver": "mock",
+                },
+            },
         }
         if self.variant_assignment is not None:
             if self.variant_count is None:

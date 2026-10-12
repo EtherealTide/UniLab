@@ -18,6 +18,10 @@ from unisim.backend.base import (
     TensorProcessTopology,
 )
 from unisim.dr.types import (
+    INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
+    INTERVAL_TERM_BODY_FORCE,
+    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+    INTERVAL_TERM_BODY_TORQUE,
     RESET_TERM_BODY_INERTIA,
     RESET_TERM_BODY_IPOS,
     RESET_TERM_BODY_MASS,
@@ -40,6 +44,10 @@ from unilab.managers._types import ManagerBasedRlEnv
 from unilab.managers.torch_rng import TorchManagerRng
 
 requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+
+
+def _interval_op(plan: IntervalRandomizationPlan, term: str):
+    return next((op for op in plan.ops if op.term == term), None)
 
 
 class _CaptureEntity:
@@ -234,6 +242,8 @@ class _Backend:
         self.body_quat = np.zeros((self.num_envs, 1, 4))
         self.body_quat[:, :, 0] = 1.0
         self.body_velocity = np.zeros((self.num_envs, 1, 3))
+        self.dof_pos = np.zeros((self.num_envs, 3))
+        self.dof_vel = np.zeros((self.num_envs, 3))
         canonical_friction = np.array([[0.5, 0.01, 0.001], [0.7, 0.02, 0.002], [0.9, 0.03, 0.003]])
         canonical_armature = np.array([0.0] * 6 + [1.0, 2.0, 3.0])
         if per_world_defaults:
@@ -290,12 +300,6 @@ class _Backend:
     def get_init_qvel(self) -> np.ndarray:
         return self.init_qvel.copy()
 
-    def get_dof_pos(self) -> np.ndarray:
-        return np.zeros((self.num_envs, 3))
-
-    def get_dof_vel(self) -> np.ndarray:
-        return np.zeros((self.num_envs, 3))
-
     def get_default_dof_pos(self) -> np.ndarray:
         return np.zeros(3)
 
@@ -312,6 +316,30 @@ class _Backend:
 
     def get_joint_dof_vel_indices(self, names) -> np.ndarray:
         return self.get_joint_dof_pos_indices(names)
+
+    def get_joint_state_qpos_indices(self, names) -> np.ndarray:
+        return self.get_joint_dof_pos_indices(names)
+
+    def get_joint_state_qvel_indices(self, names) -> np.ndarray:
+        return self.get_joint_dof_pos_indices(names)
+
+    def get_state_views(self, fields, device=None) -> dict[str, torch.Tensor]:
+        target = torch.device(device) if device is not None else torch.device("cpu")
+        return {
+            field: torch.from_numpy(getattr(self, source).copy()).to(target)
+            for field, source in (("qpos", "dof_pos"), ("qvel", "dof_vel"))
+            if field in fields
+        }
+
+    def get_sensor_view(self, name, device=None) -> torch.Tensor:
+        sources = {
+            "track_pos_w_base": self.body_pos[:, 0],
+            "track_quat_w_base": self.body_quat[:, 0],
+            "track_linvel_w_base": self.body_velocity[:, 0],
+            "track_angvel_w_base": self.body_velocity[:, 0],
+        }
+        target = torch.device(device) if device is not None else torch.device("cpu")
+        return torch.from_numpy(np.array(sources[name], copy=True)).to(target)
 
     def get_geom_names(self) -> tuple[str, ...]:
         return ("floor", "foot", "base_geom")
@@ -337,12 +365,22 @@ class _Backend:
                     RESET_TERM_GRAVITY,
                 )
             )
+        interval_terms = {
+            term
+            for term, supported in (
+                (INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA, self.interval_velocity_supported),
+                (
+                    INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
+                    self.interval_angular_velocity_supported,
+                ),
+                (INTERVAL_TERM_BODY_FORCE, self.interval_force_supported),
+                (INTERVAL_TERM_BODY_TORQUE, self.interval_torque_supported),
+            )
+            if supported
+        }
         return DomainRandomizationCapabilities(
             supported_reset_terms=frozenset(terms),
-            supports_interval_body_velocity_delta=self.interval_velocity_supported,
-            supports_interval_body_angular_velocity_delta=self.interval_angular_velocity_supported,
-            supports_interval_body_force=self.interval_force_supported,
-            supports_interval_body_torque=self.interval_torque_supported,
+            supported_interval_terms=frozenset(interval_terms),
         )
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
@@ -369,32 +407,20 @@ class _Backend:
     def apply_interval_randomization(self, plan: IntervalRandomizationPlan) -> None:
         self.interval_plans.append(plan)
 
-    def get_body_pos_w(self, ids: np.ndarray) -> np.ndarray:
-        return self.body_pos[:, ids]
-
-    def get_body_quat_w(self, ids: np.ndarray) -> np.ndarray:
-        return self.body_quat[:, ids]
-
-    def get_body_lin_vel_w(self, ids: np.ndarray) -> np.ndarray:
-        return self.body_velocity[:, ids]
-
-    def get_body_ang_vel_w(self, ids: np.ndarray) -> np.ndarray:
-        return self.body_velocity[:, ids]
-
-    def get_body_lin_vel_b(self, ids: np.ndarray) -> np.ndarray:
-        return self.body_velocity[:, ids]
-
-    def get_body_ang_vel_b(self, ids: np.ndarray) -> np.ndarray:
-        return self.body_velocity[:, ids]
-
-    def set_state(
+    def set_state_tensor(
         self,
-        env_ids: np.ndarray,
-        qpos: np.ndarray,
-        qvel: np.ndarray,
+        env_indices: torch.Tensor,
+        qpos: torch.Tensor,
+        qvel: torch.Tensor,
         randomization=None,
     ) -> None:
-        self.set_state_calls.append((env_ids.copy(), qpos.copy(), qvel.copy()))
+        self.set_state_calls.append(
+            (
+                env_indices.detach().cpu().numpy().copy(),
+                qpos.detach().cpu().numpy().copy(),
+                qvel.detach().cpu().numpy().copy(),
+            )
+        )
         self.randomization_calls.append(randomization)
 
 
@@ -1095,22 +1121,27 @@ def test_apply_body_impulse_lifecycle_stages_sustains_and_expires() -> None:
     manager.apply(mode="step", dt=0.02)
     assert len(backend.interval_plans) == 1
     plan = backend.interval_plans[0]
-    np.testing.assert_array_equal(plan.body_ids, [0])
-    assert plan.body_force is not None
-    np.testing.assert_allclose(plan.body_force[:, 0], 5.0)
-    assert plan.body_torque is None
+    force_op = _interval_op(plan, INTERVAL_TERM_BODY_FORCE)
+    assert force_op is not None
+    np.testing.assert_array_equal(force_op.body_ids, [0])
+    np.testing.assert_allclose(force_op.payload[:, 0], 5.0)
+    assert _interval_op(plan, INTERVAL_TERM_BODY_TORQUE) is None
 
     manager.apply(mode="step", dt=0.02)
     manager.apply(mode="step", dt=0.02)
     assert len(backend.interval_plans) == 3
-    np.testing.assert_allclose(backend.interval_plans[1].body_force[:, 0], 5.0)
-    np.testing.assert_allclose(backend.interval_plans[2].body_force[:, 0], 5.0)
+    for plan in backend.interval_plans[1:3]:
+        force_op = _interval_op(plan, INTERVAL_TERM_BODY_FORCE)
+        assert force_op is not None
+        np.testing.assert_allclose(force_op.payload[:, 0], 5.0)
 
     # Expiry stages zeros once (persistent wrench channels clear), then the
     # term stays idle through the next cooldown instead of re-staging.
     manager.apply(mode="step", dt=0.02)
     assert len(backend.interval_plans) == 4
-    np.testing.assert_allclose(backend.interval_plans[3].body_force[:, 0], 0.0)
+    force_op = _interval_op(backend.interval_plans[3], INTERVAL_TERM_BODY_FORCE)
+    assert force_op is not None
+    np.testing.assert_allclose(force_op.payload[:, 0], 0.0)
     manager.apply(mode="step", dt=0.02)
     assert len(backend.interval_plans) == 4
 
@@ -1145,12 +1176,14 @@ def test_apply_body_impulse_offset_generates_cross_torque() -> None:
 
     assert len(backend.interval_plans) == 1
     plan = backend.interval_plans[0]
-    assert plan.body_force is not None and plan.body_torque is not None
-    np.testing.assert_allclose(plan.body_force[:, 0], 1.0)
+    force_op = _interval_op(plan, INTERVAL_TERM_BODY_FORCE)
+    torque_op = _interval_op(plan, INTERVAL_TERM_BODY_TORQUE)
+    assert force_op is not None and torque_op is not None
+    np.testing.assert_allclose(force_op.payload[:, 0], 1.0)
     # Identity link orientation: offset_w = (0, 0, 0.1), force = (1, 1, 1),
     # cross(offset_w, force) = (-0.1, 0.1, 0).
     np.testing.assert_allclose(
-        plan.body_torque[:, 0],
+        torque_op.payload[:, 0],
         [[-0.1, 0.1, 0.0]] * 3,
         atol=1e-12,
     )
@@ -1180,13 +1213,15 @@ def test_apply_body_impulse_reset_clears_active_wrench() -> None:
 
     manager.reset(torch.tensor([1], dtype=torch.int64))
     assert len(backend.interval_plans) == 2
-    np.testing.assert_allclose(backend.interval_plans[1].body_force[:, 0], 0.0)
+    force_op = _interval_op(backend.interval_plans[1], INTERVAL_TERM_BODY_FORCE)
+    assert force_op is not None
+    np.testing.assert_allclose(force_op.payload[:, 0], 0.0)
 
     manager.apply(mode="step", dt=0.02)
-    sustained = backend.interval_plans[-1].body_force
+    sustained = _interval_op(backend.interval_plans[-1], INTERVAL_TERM_BODY_FORCE)
     assert sustained is not None
-    np.testing.assert_allclose(sustained[1, 0], 0.0)
-    np.testing.assert_allclose(sustained[[0, 2], 0], 5.0)
+    np.testing.assert_allclose(sustained.payload[1, 0], 0.0)
+    np.testing.assert_allclose(sustained.payload[[0, 2], 0], 5.0)
 
 
 @pytest.mark.parametrize(
@@ -1292,10 +1327,11 @@ def test_velocity_push_uses_env_rng_and_interval_subset_plan() -> None:
 
     assert len(backend.interval_plans) == 1
     plan = backend.interval_plans[0]
-    np.testing.assert_array_equal(plan.body_ids, [0])
-    assert plan.body_linear_velocity_delta is not None
+    velocity_op = _interval_op(plan, INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA)
+    assert velocity_op is not None
+    np.testing.assert_array_equal(velocity_op.body_ids, [0])
     np.testing.assert_allclose(
-        plan.body_linear_velocity_delta[:, 0],
+        velocity_op.payload[:, 0],
         [[0.2, -0.3, 0.4], [0.0, 0.0, 0.0], [0.2, -0.3, 0.4]],
     )
 
@@ -1324,15 +1360,16 @@ def test_velocity_push_dispatches_angular_delta_when_supported() -> None:
 
     assert len(backend.interval_plans) == 1
     plan = backend.interval_plans[0]
-    np.testing.assert_array_equal(plan.body_ids, [0])
-    assert plan.body_linear_velocity_delta is not None
+    linear_op = _interval_op(plan, INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA)
+    angular_op = _interval_op(plan, INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA)
+    assert linear_op is not None and angular_op is not None
+    np.testing.assert_array_equal(linear_op.body_ids, [0])
     np.testing.assert_allclose(
-        plan.body_linear_velocity_delta[:, 0],
+        linear_op.payload[:, 0],
         [[0.2, 0.0, 0.0], [0.0, 0.0, 0.0], [0.2, 0.0, 0.0]],
     )
-    assert plan.body_angular_velocity_delta is not None
     np.testing.assert_allclose(
-        plan.body_angular_velocity_delta[:, 0],
+        angular_op.payload[:, 0],
         [[0.0, 0.0, -0.5], [0.0, 0.0, 0.0], [0.0, 0.0, -0.5]],
     )
 
@@ -1650,15 +1687,7 @@ class _InertiaBackend(_Backend):
             supported_reset_terms=frozenset(
                 set(capabilities.supported_reset_terms) | {RESET_TERM_BODY_INERTIA}
             ),
-            supports_interval_push=capabilities.supports_interval_push,
-            supports_interval_body_velocity_delta=(
-                capabilities.supports_interval_body_velocity_delta
-            ),
-            supports_interval_body_angular_velocity_delta=(
-                capabilities.supports_interval_body_angular_velocity_delta
-            ),
-            supports_interval_body_force=capabilities.supports_interval_body_force,
-            supports_interval_body_torque=capabilities.supports_interval_body_torque,
+            supported_interval_terms=capabilities.supported_interval_terms,
         )
 
     def get_reset_term_default(self, term: str) -> np.ndarray:

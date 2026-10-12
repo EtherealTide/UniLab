@@ -71,11 +71,28 @@ class _Backend:
         return self.body_ang_vel_b[:, ids]
 
     def get_sensor_view(self, name: str, device=None) -> torch.Tensor:
+        if name == "track_linvel_w_base" and self.unsupported == "body-frame linear velocity":
+            raise NotImplementedError("fake lacks body-frame linear velocity")
+        if name == "track_angvel_w_base":
+            values = self.body_ang_vel_b[:, 0]
+        elif name == "track_linvel_w_base":
+            values = self.body_lin_vel_b[:, 0]
+        elif name == "track_quat_w_base":
+            values = self.body_quat[:, 0]
+        else:
+            values = {
+                "pelvis_local_linvel": self.body_lin_vel_b[:, 0],
+                "torso_gyro": self.body_ang_vel_b[:, 0],
+            }[name]
         values = {
-            "pelvis_local_linvel": self.body_lin_vel_b[:, 0],
-            "torso_gyro": self.body_ang_vel_b[:, 0],
+            "track_pos_w_base": self.body_pos[:, 0],
+            "track_quat_w_base": self.body_quat[:, 0],
+            "track_linvel_w_base": values,
+            "track_angvel_w_base": values,
+            "pelvis_local_linvel": values,
+            "torso_gyro": values,
         }[name]
-        return torch.from_numpy(values).to(device=device)
+        return torch.from_numpy(np.array(values, copy=True)).to(device=device)
 
 
 def _env(seed: int = 7) -> tuple[ManagerBasedRlEnv, _Backend]:
@@ -303,19 +320,21 @@ def test_invalid_or_unsupported_config_fails_at_construction(
 
 def test_root_body_frame_capability_and_finite_values_fail_closed() -> None:
     unsupported = _Backend(unsupported="body-frame linear velocity")
+    unsupported_scene = EntityScene(
+        {"robot": EntityCfg(root_body_name="base")},
+        cast(SimBackend, unsupported),
+    )
     with pytest.raises(
         NotImplementedError,
-        match="body-frame linear velocity state.*backend 'fake'",
+        match="tracked body 'lin_vel_w'.*backend 'fake'",
     ):
-        EntityScene(
-            {"robot": EntityCfg(root_body_name="base")},
-            cast(SimBackend, unsupported),
-        )
+        _ = unsupported_scene["robot"].data._host_root_link_lin_vel_b
 
     non_finite = _Backend()
     non_finite.body_ang_vel_b[0, 0, 0] = np.nan
-    with pytest.raises(ValueError, match="body-frame angular velocity state.*NaN or Inf"):
-        EntityScene(
-            {"robot": EntityCfg(root_body_name="base")},
-            cast(SimBackend, non_finite),
-        )
+    non_finite_scene = EntityScene(
+        {"robot": EntityCfg(root_body_name="base")},
+        cast(SimBackend, non_finite),
+    )
+    with pytest.raises(ValueError, match="Entity 'robot'.*tracked body 'ang_vel_w'.*finite values"):
+        _ = non_finite_scene["robot"].data._host_root_link_ang_vel_b

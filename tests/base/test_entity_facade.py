@@ -9,7 +9,12 @@ from typing import Any, cast
 import numpy as np
 import pytest
 import torch
-from unisim.backend.base import BackendMocapPoseBinding, BackendRootStateLayout, SimBackend
+from unisim.backend.base import (
+    BackendMocapPoseBinding,
+    BackendRootStateLayout,
+    SimBackend,
+    TrackedBodyStateViews,
+)
 from unisim.dr.types import DomainRandomizationCapabilities
 
 import unilab.base.entity as entity_module
@@ -89,15 +94,39 @@ class _StrictBackendProfile:
         self._check("initial qvel")
         return self.init_qvel.copy()
 
-    def set_state(
-        self,
-        env_ids: np.ndarray,
-        qpos: np.ndarray,
-        qvel: np.ndarray,
-        randomization=None,
-    ) -> None:
-        assert randomization is None
-        self.set_state_calls.append((env_ids.copy(), qpos.copy(), qvel.copy()))
+    def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> None:
+        self.set_state_calls.append(
+            (
+                env_indices.detach().cpu().numpy().copy(),
+                qpos.detach().cpu().numpy().copy(),
+                qvel.detach().cpu().numpy().copy(),
+            )
+        )
+
+    def get_state_views(self, fields, device=None) -> dict[str, torch.Tensor]:
+        views = {}
+        if "qpos" in fields:
+            self._check("joint position state")
+            views["qpos"] = torch.from_numpy(self.dof_pos)
+        if "qvel" in fields:
+            self._check("joint velocity state")
+            views["qvel"] = torch.from_numpy(self.dof_vel)
+        return views
+
+    def get_sensor_view(self, name: str, device=None) -> torch.Tensor:
+        self._check("tracked body state")
+        prefix_by_field = {
+            "track_pos_w_": self.body_pos,
+            "track_quat_w_": self.body_quat,
+            "track_linvel_w_": self.body_lin_vel,
+            "track_angvel_w_": self.body_ang_vel,
+        }
+        for prefix, source in prefix_by_field.items():
+            if not name.startswith(prefix):
+                continue
+            body_name = name[len(prefix) :]
+            return torch.from_numpy(source[:, self.body_ids[body_name]])
+        raise KeyError(name)
 
     def get_joint_dof_pos_indices(self, names) -> np.ndarray:
         self._check("joint position names")
@@ -105,6 +134,14 @@ class _StrictBackendProfile:
 
     def get_joint_dof_vel_indices(self, names) -> np.ndarray:
         self._check("joint velocity names")
+        return np.asarray([self.joint_ids[name] for name in names], dtype=np.int32)
+
+    def get_joint_state_qpos_indices(self, names) -> np.ndarray:
+        self._check("joint qpos layout")
+        return np.asarray([self.joint_ids[name] for name in names], dtype=np.int32)
+
+    def get_joint_state_qvel_indices(self, names) -> np.ndarray:
+        self._check("joint qvel layout")
         return np.asarray([self.joint_ids[name] for name in names], dtype=np.int32)
 
     def get_site_ids(self, names) -> np.ndarray:
@@ -127,60 +164,31 @@ class _StrictBackendProfile:
         self.calls["actuator range"] += 1
         return np.arange(10, dtype=np.float32).reshape(5, 2)
 
-    def get_dof_pos(self) -> np.ndarray:
-        self._check("joint position state")
-        return self.dof_pos
-
     def get_default_dof_pos(self) -> np.ndarray:
         self._check("default joint position")
         return np.arange(5, dtype=np.float32) + 10.0
-
-    def get_dof_vel(self) -> np.ndarray:
-        self._check("joint velocity state")
-        return self.dof_vel
 
     def get_joint_range(self) -> np.ndarray:
         self._check("joint position limits")
         return self.joint_range
 
-    def get_body_pos_w(self, ids: np.ndarray) -> np.ndarray:
-        self._check("body position state")
-        return self.body_pos[:, ids]
-
-    def get_body_quat_w(self, ids: np.ndarray) -> np.ndarray:
-        self._check("body quaternion state")
-        return self.body_quat[:, ids]
-
-    def get_body_lin_vel_w(self, ids: np.ndarray) -> np.ndarray:
-        self._check("body linear velocity state")
-        return self.body_lin_vel[:, ids]
-
-    def get_body_ang_vel_w(self, ids: np.ndarray) -> np.ndarray:
-        self._check("body angular velocity state")
-        return self.body_ang_vel[:, ids]
-
-    def copy_body_state_w(
-        self,
-        ids: np.ndarray,
-        out_pos: np.ndarray,
-        out_quat: np.ndarray,
-        out_lin_vel: np.ndarray,
-        out_ang_vel: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        self._check("body state copy")
-        np.take(self.body_pos, ids, axis=1, out=out_pos)
-        np.take(self.body_quat, ids, axis=1, out=out_quat)
-        np.take(self.body_lin_vel, ids, axis=1, out=out_lin_vel)
-        np.take(self.body_ang_vel, ids, axis=1, out=out_ang_vel)
-        return out_pos, out_quat, out_lin_vel, out_ang_vel
-
-    def get_body_lin_vel_b(self, ids: np.ndarray) -> np.ndarray:
-        self._check("body-frame linear velocity state")
-        return self.body_lin_vel_b[:, ids]
-
-    def get_body_ang_vel_b(self, ids: np.ndarray) -> np.ndarray:
-        self._check("body-frame angular velocity state")
-        return self.body_ang_vel_b[:, ids]
+    def get_tracked_body_views(self, body_names, device=None) -> TrackedBodyStateViews:
+        capability = {
+            "pos_w": "body position state",
+            "quat_w": "body quaternion state",
+            "lin_vel_w": "body linear velocity state",
+            "ang_vel_w": "body angular velocity state",
+        }
+        self._check(capability["pos_w"])
+        names = tuple(body_names)
+        ids = np.asarray([self.body_ids[name] for name in names], dtype=np.int32)
+        return TrackedBodyStateViews(
+            body_names=names,
+            pos_w=torch.from_numpy(self.body_pos[:, ids]),
+            quat_w=torch.from_numpy(self.body_quat[:, ids]),
+            lin_vel_w=torch.from_numpy(self.body_lin_vel[:, ids]),
+            ang_vel_w=torch.from_numpy(self.body_ang_vel[:, ids]),
+        )
 
 
 def test_manipulation_entity_maps_local_columns_and_binds_mocap_without_floating_root():
@@ -225,9 +233,10 @@ def test_manipulation_entity_maps_local_columns_and_binds_mocap_without_floating
                 "mjwarp", name, self.num_envs, self.poses[0], lambda: self.poses, write
             )
 
-        def set_state(self, env_ids, qpos, qvel, randomization=None):
+        def set_state_tensor(self, env_indices, qpos, qvel, randomization=None):
+            super().set_state_tensor(env_indices, qpos, qvel, randomization=randomization)
             self.payload = randomization
-            self.poses[env_ids, 0] = 0.0
+            self.poses[env_indices.detach().cpu().numpy(), 0] = 0.0
 
     backend = Backend()
     transaction = ResetStateTransaction(cast(SimBackend, backend))
@@ -280,8 +289,8 @@ def test_entity_binding_selects_per_world_default_columns() -> None:
                 dtype=np.float64,
             )
 
-        def set_state(self, env_ids, qpos, qvel, randomization=None):
-            self.set_state_calls.append((env_ids, qpos, qvel))
+        def set_state_tensor(self, env_indices, qpos, qvel, randomization=None):
+            super().set_state_tensor(env_indices, qpos, qvel, randomization=randomization)
             self.payload = randomization
 
     backend = Backend()
@@ -347,12 +356,8 @@ def test_backend_profiles_materialize_identical_local_entity_contract(backend_ty
     np.testing.assert_array_equal(robot.data._host_gravity_vec_w, [[0.0, 0.0, -1.0]] * 3)
     np.testing.assert_array_equal(robot.data._host_body_link_pos_w, backend.body_pos[:, [7, 4]])
     np.testing.assert_array_equal(robot.data._host_root_link_pos_w, backend.body_pos[:, 4])
-    np.testing.assert_array_equal(
-        robot.data._host_root_link_lin_vel_b, backend.body_lin_vel_b[:, 4]
-    )
-    np.testing.assert_array_equal(
-        robot.data._host_root_link_ang_vel_b, backend.body_ang_vel_b[:, 4]
-    )
+    np.testing.assert_array_equal(robot.data._host_root_link_lin_vel_b, backend.body_lin_vel[:, 4])
+    np.testing.assert_array_equal(robot.data._host_root_link_ang_vel_b, backend.body_ang_vel[:, 4])
     np.testing.assert_array_equal(robot.data._host_root_link_quat_w[:, 0], 1.0)
     np.testing.assert_array_equal(
         robot.data.default_root_state_torch(torch.device("cpu")),
@@ -379,14 +384,15 @@ def test_body_state_copy_binding_freezes_local_to_backend_mapping() -> None:
     np.testing.assert_array_equal(out_quat, backend.body_quat[:, [4, 7]])
     np.testing.assert_array_equal(out_lin_vel, backend.body_lin_vel[:, [4, 7]])
     np.testing.assert_array_equal(out_ang_vel, backend.body_ang_vel[:, [4, 7]])
-    assert backend.calls["body state copy"] == before["body state copy"] + 1
+    assert backend.calls["body position state"] == before["body position state"] + 1
     for capability in (
         "body position state",
         "body quaternion state",
         "body linear velocity state",
         "body angular velocity state",
     ):
-        assert backend.calls[capability] == before[capability]
+        if capability != "body position state":
+            assert backend.calls[capability] == before[capability]
 
 
 @pytest.mark.parametrize(
@@ -426,9 +432,9 @@ def test_state_read_cache_is_scoped_shared_and_explicitly_invalidated() -> None:
 
         assert backend.calls["joint position state"] == before["joint position state"] + 1
         assert backend.calls["joint velocity state"] == before["joint velocity state"] + 1
-        assert backend.calls["body quaternion state"] == before["body quaternion state"] + 1
-        # Root and full-body selectors remain distinct cache entries.
-        assert backend.calls["body position state"] == before["body position state"] + 2
+        # Root and full-body selectors remain distinct cache entries.  Each
+        # named sensor view is one negotiated public backend boundary.
+        assert backend.calls["tracked body state"] == before["tracked body state"] + 4
 
         scene._invalidate_state_reads()
         _ = robot.data._host_joint_pos
@@ -781,15 +787,16 @@ def test_missing_entity_namespace_and_backend_capability_fail_closed() -> None:
     with pytest.raises(NotImplementedError, match="body.*not declared"):
         SceneEntityCfg("robot", body_names=".*").resolve(sparse)
 
-    state_missing = _StrictBackendProfile("mujoco", unsupported=frozenset({"body position state"}))
+    state_missing = _StrictBackendProfile("mujoco", unsupported=frozenset({"tracked body state"}))
+    state_scene = EntityScene(
+        {"robot": EntityCfg(root_body_name="base")},
+        cast(SimBackend, state_missing),
+    )
     with pytest.raises(
         NotImplementedError,
-        match="Entity 'robot'.*body position state.*backend 'mujoco'",
+        match="Entity 'robot'.*tracked body 'pos_w'.*backend 'mujoco'",
     ):
-        EntityScene(
-            {"robot": EntityCfg(root_body_name="base")},
-            cast(SimBackend, state_missing),
-        )
+        _ = state_scene["robot"].data._host_root_link_pos_w
 
 
 def test_entity_declaration_rejects_coercion_and_duplicate_names() -> None:

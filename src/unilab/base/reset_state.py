@@ -1,7 +1,7 @@
 """Base-owned reset-state transaction for Manager-Based event terms.
 
 The transaction composes NumPy state writes in memory and hands the finished
-batch to :meth:`SimBackend.set_state` exactly once.  It deliberately knows
+batch to :meth:`SimBackend.set_state_tensor` exactly once.  It deliberately knows
 nothing about task configuration, IPC, runners, or backend-private state.
 """
 
@@ -175,7 +175,7 @@ class ResetStateTransaction:
 
     @property
     def last_commit_had_writes(self) -> bool:
-        """Whether the most recent scoped commit submitted dirty rows to set_state."""
+        """Whether the most recent scoped commit submitted dirty reset rows."""
         return self._last_commit_had_writes
 
     @property
@@ -191,7 +191,7 @@ class ResetStateTransaction:
 
     @contextmanager
     def scoped(self, env_ids: torch.Tensor) -> Iterator[ResetStateTransaction]:
-        """Begin a reset transaction and commit it only after all terms succeed."""
+        """Begin a host-composed tensor reset and commit it after all terms succeed."""
         self.begin(env_ids)
         try:
             yield self
@@ -200,6 +200,18 @@ class ResetStateTransaction:
             raise
         else:
             self.commit()
+
+    @contextmanager
+    def scoped_entities(self, env_ids: torch.Tensor) -> Iterator[ResetStateTransaction]:
+        """Begin a mapped-entity reset transaction with an explicit host format."""
+        self.begin(env_ids)
+        try:
+            yield self
+        except BaseException:
+            self.abort()
+            raise
+        else:
+            self.commit_entities()
 
     @contextmanager
     def scoped_tensor(
@@ -353,10 +365,10 @@ class ResetStateTransaction:
     def can_commit_packed(self, *, term_name: str = "reset") -> bool:
         """Report whether staged widths can use the public packed reset API.
 
-        Packed reset requires the NumPy reset composer and backend public state
-        to describe the same canonical qpos/qvel columns. A backend that uses
-        different native and public layouts must keep the explicit public
-        ``set_state`` boundary until UniSim exposes that projection publicly.
+        Packed reset requires the NumPy reset composer and canonical tensor state
+        to describe the same qpos/qvel columns. If canonical widths or projections
+        do not match, mapped scenes must use ``reset_entities`` and other scenes
+        must fail closed rather than using an undeclared backend boundary.
         """
         if self.scene_layout is not None:
             return False
@@ -1698,7 +1710,7 @@ class ResetStateTransaction:
         self._requesting_terms.add(term_name)
 
     def commit(self) -> dict | None:
-        """Commit all staged rows through one public backend call."""
+        """Commit scalar rows through one public selected-reset boundary."""
         self._require_active()
         if self.scene_layout is not None:
             try:
@@ -1722,10 +1734,17 @@ class ResetStateTransaction:
             randomization = self._build_randomization_payload(dirty_ids)
             try:
                 set_state_t0 = time.perf_counter()
-                result = self._backend.set_state(
-                    dirty_ids,
-                    self._qpos[dirty_ids],
-                    self._qvel[dirty_ids],
+                rows = torch.from_numpy(dirty_ids.astype(np.int64, copy=True))
+                qpos = torch.from_numpy(
+                    np.ascontiguousarray(self._qpos[dirty_ids], dtype=np.float32)
+                )
+                qvel = torch.from_numpy(
+                    np.ascontiguousarray(self._qvel[dirty_ids], dtype=np.float32)
+                )
+                result = self._backend.set_state_tensor(
+                    rows,
+                    qpos,
+                    qvel,
                     randomization=randomization,
                 )
                 self._record_committed_payload(dirty_ids, randomization)
@@ -1745,9 +1764,20 @@ class ResetStateTransaction:
             except (AttributeError, NotImplementedError) as exc:
                 terms = ", ".join(sorted(self._requesting_terms))
                 raise NotImplementedError(
-                    "EventManager reset-state capability 'SimBackend.set_state' is unavailable "
+                    "EventManager reset-state capability 'SimBackend.set_state_tensor' is "
+                    "unavailable "
                     f"for term(s) [{terms}] on backend '{self._backend.backend_type}': {exc}"
                 ) from exc
+        finally:
+            self._finish()
+
+    def commit_entities(self) -> None:
+        """Commit staged mapped-entity patches through their public transaction."""
+        self._require_active()
+        try:
+            if self.scene_layout is None:
+                raise NotImplementedError("mapped-entity reset requires a compiled scene layout")
+            self._commit_entities()
         finally:
             self._finish()
 
@@ -1760,8 +1790,7 @@ class ResetStateTransaction:
         ``HostBridgeTransferPlan.apply_reset`` so the scene read plan can pair
         this commit with a selected-row H2D read. Mapped entity patches, DR
         model writes, and mocap writes remain explicit migration boundaries and
-        fail closed here rather than silently falling back to NumPy
-        ``set_state``.
+        fail closed here rather than restoring the removed 1.x NumPy lifecycle.
         """
         self._require_active()
         if self.scene_layout is not None:
@@ -2575,7 +2604,7 @@ class ResetStateTransaction:
 
         Terms gated by ``min_step_count_between_reset`` intentionally skip envs
         whose last randomized value must persist; the last committed payload
-        re-supplies those rows so one dense ``SimBackend.set_state`` call can
+        re-supplies those rows so one dense ``SimBackend.set_state_tensor`` call can
         represent them. Rows with no committed history still fail closed.
         """
         missing = dirty_ids[~mask[dirty_ids]]
@@ -2591,7 +2620,7 @@ class ResetStateTransaction:
             terms = ", ".join(sorted(self._requesting_terms))
             raise RuntimeError(
                 f"EventManager reset {field} payload cannot represent sparse rows in one "
-                f"SimBackend.set_state call for term(s) [{terms}] on backend "
+                f"SimBackend.set_state_tensor call for term(s) [{terms}] on backend "
                 f"'{self._backend.backend_type}'; missing env IDs {uncommitted.tolist()}"
             )
         assert cached is not None
@@ -2607,7 +2636,7 @@ class ResetStateTransaction:
             terms = ", ".join(sorted(self._requesting_terms))
             raise RuntimeError(
                 "EventManager reset actuator gains payload cannot represent sparse rows in "
-                f"one SimBackend.set_state call for term(s) [{terms}] on backend "
+                f"one SimBackend.set_state_tensor call for term(s) [{terms}] on backend "
                 f"'{self._backend.backend_type}'; missing env IDs {uncommitted.tolist()}"
             )
         assert self._kp is not None

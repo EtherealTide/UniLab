@@ -129,6 +129,7 @@ explicit = true
 torch = [
     { index = "r2-cu130", marker = "sys_platform=='linux' or sys_platform=='win32'" },
 ]
+unisim-core = { path = "third-party/unisim", editable = true }
 
 [tool.uv]
 exclude-dependencies = ["torchvision"]

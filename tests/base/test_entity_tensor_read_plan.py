@@ -83,7 +83,7 @@ class _SceneTensorBackend:
         )
 
     def get_state_views(self, names, device=None) -> dict[str, torch.Tensor]:
-        assert tuple(names) == ("qpos", "qvel")
+        assert set(names) <= {"qpos", "qvel"}
         target = torch.device(device) if device is not None else torch.device("cpu")
         return {
             "qpos": self.qpos.to(target),

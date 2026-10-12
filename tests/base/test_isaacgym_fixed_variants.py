@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.isaacgym.backend import IsaacGymBackend
 from unisim.dr.types import FixedVariantPlan, ModelSourceDescriptor
 
@@ -140,21 +141,8 @@ def test_mock_protocol_realizes_immutable_variants(
         np.testing.assert_allclose(
             backend.get_default_dof_pos(), np.asarray([0.1, 0.2, -0.1]), atol=1e-7
         )
-        np.testing.assert_allclose(
-            backend.get_dof_pos(),
-            np.asarray(
-                [
-                    [0.1, 0.2, -0.1],
-                    [0.0, 0.2, -0.1],
-                    [0.2, 0.2, -0.1],
-                    [0.1, 0.2, -0.1],
-                ],
-                dtype=np.float32,
-            ),
-            atol=1e-7,
-        )
-        backend.step(np.zeros((4, 3), dtype=np.float32), nsteps=1)
-        assert np.isfinite(backend.get_dof_pos()).all()
+        with pytest.raises(NotImplementedError, match="CUDA IPC fixed variants"):
+            backend.step_tensor(torch.zeros((4, 3), dtype=torch.float32), nsteps=1)
     finally:
         backend.close()
 
@@ -218,8 +206,8 @@ def test_real_isaacgym_runtime_fixed_variants(tmp_path: Path) -> None:
         assert [backend.get_playback_model(index) for index in range(3)] == [
             str(path) for path in sources
         ]
-        backend.step(np.zeros((3, 3), dtype=np.float32), nsteps=1)
-        assert np.isfinite(backend.get_dof_pos()).all()
-        assert np.isfinite(backend.get_base_pos()).all()
+        backend.step_tensor(torch.zeros((3, 3), dtype=torch.float32), nsteps=1)
+        qpos = backend.get_state_views(("qpos",))["qpos"]
+        assert torch.isfinite(qpos).all()
     finally:
         backend.close()

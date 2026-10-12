@@ -129,15 +129,19 @@ def test_two_manager_entity_writes_commit_once_and_late_failure_commits_nothing(
             )
         assert len(commits) == 1
         assert {patch.entity for patch in commits[0].patches} == {"object", "target"}
-        before = env._backend.get_state()
+        before = {
+            name: value.detach().cpu().clone()
+            for name, value in env._backend.get_state_views().items()
+        }
         with pytest.raises(ValueError), env._reset_state.scoped(ids):
             env.scene["object"].write_root_link_pose_to_sim(
                 np.array([[0, 0, 3, 1, 0, 0, 0.0]]), env_ids=ids
             )
             env.scene["target"].write_root_link_pose_to_sim(np.zeros((1, 7)), env_ids=ids)
         assert len(commits) == 1
-        for key, value in before.items():
-            np.testing.assert_array_equal(env._backend.get_state()[key], value)
+        after = env._backend.get_state_views()
+        for name, value in before.items():
+            torch.testing.assert_close(after[name].detach().cpu(), value)
     finally:
         env.close()
 

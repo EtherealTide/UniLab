@@ -364,7 +364,7 @@ def test_named_sensor_terms_bind_once_and_only_read_cached_views() -> None:
     manager = _sensor_manager(env)
 
     assert manager.group_obs_dim == {"policy": (6,)}
-    assert backend.sensor_calls == {"bind": 2, "single": 2, "batch": 2}
+    assert backend.sensor_calls == {"bind": 2, "batch": 4}
 
     first = manager.compute_group("policy")
     second = manager.compute_group("policy")
@@ -375,7 +375,7 @@ def test_named_sensor_terms_bind_once_and_only_read_cached_views() -> None:
     )
     np.testing.assert_array_equal(first, expected)
     np.testing.assert_array_equal(second, expected)
-    assert backend.sensor_calls == {"bind": 2, "single": 2, "batch": 2}
+    assert backend.sensor_calls == {"bind": 2, "batch": 4}
 
     gyro_term = manager.get_term_cfg("policy", "gyro").func
     gravity_term = manager.get_term_cfg("policy", "gravity").func

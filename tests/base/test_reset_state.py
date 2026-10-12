@@ -77,16 +77,22 @@ class _Backend:
             return np.array([-1.0, 0.0, 9.81])
         raise NotImplementedError(term)
 
-    def set_state(
+    def set_state_tensor(
         self,
-        env_ids: np.ndarray,
-        qpos: np.ndarray,
-        qvel: np.ndarray,
+        env_indices: torch.Tensor,
+        qpos: torch.Tensor,
+        qvel: torch.Tensor,
         randomization=None,
     ) -> dict:
         if self.fail_set_state:
             raise NotImplementedError("reset upload disabled")
-        self.set_state_calls.append((env_ids.copy(), qpos.copy(), qvel.copy()))
+        self.set_state_calls.append(
+            (
+                env_indices.detach().cpu().numpy().copy(),
+                qpos.detach().cpu().numpy().copy(),
+                qvel.detach().cpu().numpy().copy(),
+            )
+        )
         self.randomization_calls.append(randomization)
         return {"timing": {"set_state_ms": 1.0}}
 
@@ -228,10 +234,10 @@ class _ManipulationBackend(_Backend):
             raise NotImplementedError(term)
         return self._defaults(widths[term])
 
-    def set_state(self, env_ids, qpos, qvel, randomization=None):
+    def set_state_tensor(self, env_indices, qpos, qvel, randomization=None):
         self.events.append("state")
-        self.poses[env_ids, 0] = 0.0
-        return super().set_state(env_ids, qpos, qvel, randomization)
+        self.poses[env_indices.detach().cpu().numpy(), 0] = 0.0
+        return super().set_state_tensor(env_indices, qpos, qvel, randomization)
 
     def bind_mocap_pose(self, body_name):
         def write(ids, poses):
@@ -1433,7 +1439,7 @@ def test_tensor_reset_randomization_merges_column_disjoint_terms() -> None:
             term_name="pd_gains_upper",
         )
 
-    randomization = backend.tensor_reset_calls[0][3]
+    randomization = backend.tensor_reset_calls[-1][3]
     assert isinstance(randomization, TensorResetRandomizationPayload)
     # Untouched middle column keeps the backend default gain.
     torch.testing.assert_close(
@@ -1558,7 +1564,7 @@ def test_host_commit_promotes_public_packed_reset_baseline() -> None:
             term_name="later_reset_mass",
         )
 
-    randomization = backend.tensor_reset_calls[0][3]
+    randomization = backend.tensor_reset_calls[-1][3]
     assert isinstance(randomization, TensorResetRandomizationPayload)
     torch.testing.assert_close(
         randomization.body_mass[:, 0],

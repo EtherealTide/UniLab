@@ -29,6 +29,12 @@ from unisim.backend.base import (
     TensorProcessTopology,
     tensor_device_matches,
 )
+from unisim.dr.interval import (
+    INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
+    INTERVAL_TERM_BODY_FORCE,
+    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+    INTERVAL_TERM_BODY_TORQUE,
+)
 from unisim.dr.types import (
     RESET_TERM_BODY_IPOS,
     RESET_TERM_BODY_MASS,
@@ -36,9 +42,10 @@ from unisim.dr.types import (
     RESET_TERM_KD,
     RESET_TERM_KP,
     IntervalRandomizationPlan,
+    IntervalTermOp,
 )
 
-from unilab.base.rotation import np_quat_apply
+from unilab.base.rotation import np_quat_apply, np_quat_apply_inverse_batched
 
 if TYPE_CHECKING:
     from unilab.base.reset_state import ResetStateTransaction
@@ -115,6 +122,12 @@ def _as_column_index(ids: np.ndarray) -> slice | np.ndarray:
     return index
 
 
+def _host_array(value: Any) -> np.ndarray:
+    if isinstance(value, torch.Tensor):
+        return value.detach().contiguous().cpu().numpy()
+    return np.asarray(value)
+
+
 def _readonly_array(values: np.ndarray) -> np.ndarray:
     result = np.asarray(values)
     if result.flags.writeable:
@@ -166,7 +179,7 @@ def _resolve_matching_names(
     return [item[1] for item in matches], [item[2] for item in matches]
 
 
-_StateReadKey = tuple[str, tuple[int, ...] | None]
+_StateReadKey = tuple[str, tuple[int, ...] | tuple[str, ...] | None]
 
 
 @dataclass(frozen=True)
@@ -205,6 +218,7 @@ _TENSOR_BODY_SENSOR_FIELDS: tuple[tuple[str, str], ...] = (
     ("lin_vel_w", "track_linvel_w_"),
     ("ang_vel_w", "track_angvel_w_"),
 )
+_TRACKED_BODY_SENSOR_PREFIXES = {field: prefix for field, prefix in _TENSOR_BODY_SENSOR_FIELDS}
 _TENSOR_SENSOR_WIDTHS = {"pos_w": 3, "quat_w": 4, "lin_vel_w": 3, "ang_vel_w": 3}
 
 
@@ -404,7 +418,11 @@ class SceneTensorReadPlan:
         names = owner._joint_names
         assert names is not None
         try:
-            qpos_ids = self._scene._backend.get_joint_state_qpos_indices(names)
+            qpos_ids = (
+                owner._reset_joint_qpos_ids
+                if owner._reset_joint_qpos_ids is not None
+                else self._scene._backend.get_joint_state_qpos_indices(names)
+            )
             qvel_ids = self._scene._backend.get_joint_state_qvel_indices(names)
         except (AttributeError, NotImplementedError) as exc:
             raise owner._capability_error("scene joint tensor state layout", str(exc)) from exc
@@ -788,6 +806,7 @@ class EntityData:
         *,
         root_body_ids: np.ndarray | None,
         joint_pos_ids: np.ndarray | None,
+        joint_qpos_ids: np.ndarray | None,
         joint_vel_ids: np.ndarray | None,
         default_root_state: np.ndarray | None,
         default_root_state_error: str | None,
@@ -796,6 +815,8 @@ class EntityData:
         soft_joint_pos_limits: np.ndarray | None,
         gravity_vec_w: np.ndarray | None,
         body_ids: np.ndarray | None,
+        root_body_name: str | None,
+        body_names: tuple[str, ...] | None,
         actuator_ids: np.ndarray | None,
         actuator_ctrl_range: np.ndarray | None,
         control_buffer: np.ndarray | torch.Tensor | None,
@@ -809,6 +830,9 @@ class EntityData:
         self._root_body_ids = root_body_ids
         self._root_body_state_key = _state_selector_key(root_body_ids)
         self._joint_pos_index = None if joint_pos_ids is None else _as_column_index(joint_pos_ids)
+        self._joint_qpos_index = (
+            None if joint_qpos_ids is None else _as_column_index(joint_qpos_ids)
+        )
         self._joint_vel_index = None if joint_vel_ids is None else _as_column_index(joint_vel_ids)
         self._default_root_state = default_root_state
         self._default_root_state_error = default_root_state_error
@@ -828,6 +852,8 @@ class EntityData:
         )
         self._body_ids = body_ids
         self._body_state_key = _state_selector_key(body_ids)
+        self._root_body_name = root_body_name
+        self._body_names = body_names
         self._actuator_ids = actuator_ids
         self._actuator_ctrl_range = actuator_ctrl_range
         self._control_buffer = control_buffer
@@ -858,71 +884,95 @@ class EntityData:
             )
         return value
 
+    def _state_table(self, field: str) -> np.ndarray:
+        key = (f"state_view:{field}", None)
+        cached = self._state_read_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            views = self._backend.get_state_views((field,), device=None)
+            value = _host_array(views[field])
+        except (AttributeError, KeyError, TypeError, ValueError, NotImplementedError) as exc:
+            raise NotImplementedError(
+                f"Entity '{self._entity_name}' capability '{field}' tensor state view is "
+                f"unavailable on backend '{self._backend_type}': {exc}"
+            ) from exc
+        self._state_read_cache.put(key, value)
+        return value
+
+    def _tracked_table(self, field: str, names: tuple[str, ...]) -> np.ndarray:
+        key = (f"tracked_view:{field}", names)
+        cached = self._state_read_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            sensor_prefix = _TRACKED_BODY_SENSOR_PREFIXES[field]
+            values = [
+                _host_array(self._backend.get_sensor_view(sensor_prefix + name, device=None))
+                for name in names
+            ]
+            value = values[0] if len(values) == 1 else np.stack(values, axis=1)
+        except (AttributeError, KeyError, TypeError, ValueError, NotImplementedError) as exc:
+            raise NotImplementedError(
+                f"Entity '{self._entity_name}' tracked body '{field}' tensor view is "
+                f"unavailable on backend '{self._backend_type}': {exc}"
+            ) from exc
+        expected = (
+            (self._backend.num_envs, _TENSOR_SENSOR_WIDTHS[field])
+            if len(names) == 1
+            else (
+                self._backend.num_envs,
+                len(names),
+                _TENSOR_SENSOR_WIDTHS[field],
+            )
+        )
+        if value.shape != expected or not np.isfinite(value).all():
+            raise ValueError(
+                f"Entity '{self._entity_name}' tracked body '{field}' tensor view has "
+                f"shape {value.shape}; expected {expected} and finite values"
+            )
+        self._state_read_cache.put(key, value)
+        return value
+
     @property
     def _host_root_link_pos_w(self) -> np.ndarray:
         """Root world position host adapter (explicit backend/test-only path)."""
-        ids = self._require(self._root_body_ids, "root body state")
-        return self._cached_getter(
-            "body_pos_w",
-            self._backend.get_body_pos_w,
-            ids,
-            selector=self._root_body_state_key,
-        )[:, 0]
+        name = self._require(self._root_body_name, "root body state")
+        return self._tracked_table("pos_w", (name,))
 
     @property
     def _host_root_link_quat_w(self) -> np.ndarray:
         """Root world quaternion host adapter (explicit backend/test-only path)."""
-        ids = self._require(self._root_body_ids, "root body state")
-        return self._cached_getter(
-            "body_quat_w",
-            self._backend.get_body_quat_w,
-            ids,
-            selector=self._root_body_state_key,
-        )[:, 0]
+        name = self._require(self._root_body_name, "root body state")
+        return self._tracked_table("quat_w", (name,))
 
     @property
     def _host_root_link_lin_vel_w(self) -> np.ndarray:
         """Root world linear velocity host adapter (backend/test-only path)."""
-        ids = self._require(self._root_body_ids, "root body state")
-        return self._cached_getter(
-            "body_lin_vel_w",
-            self._backend.get_body_lin_vel_w,
-            ids,
-            selector=self._root_body_state_key,
-        )[:, 0]
+        name = self._require(self._root_body_name, "root body state")
+        return self._tracked_table("lin_vel_w", (name,))
 
     @property
     def _host_root_link_ang_vel_w(self) -> np.ndarray:
         """Root world angular velocity host adapter (backend/test-only path)."""
-        ids = self._require(self._root_body_ids, "root body state")
-        return self._cached_getter(
-            "body_ang_vel_w",
-            self._backend.get_body_ang_vel_w,
-            ids,
-            selector=self._root_body_state_key,
-        )[:, 0]
+        name = self._require(self._root_body_name, "root body state")
+        return self._tracked_table("ang_vel_w", (name,))
 
     @property
     def _host_root_link_lin_vel_b(self) -> np.ndarray:
         """Root body-frame linear velocity host adapter (backend/test-only)."""
-        ids = self._require(self._root_body_ids, "root body state")
-        return self._cached_getter(
-            "body_lin_vel_b",
-            self._backend.get_body_lin_vel_b,
-            ids,
-            selector=self._root_body_state_key,
-        )[:, 0]
+        name = self._require(self._root_body_name, "root body state")
+        quat = self._tracked_table("quat_w", (name,))
+        value = self._tracked_table("lin_vel_w", (name,))
+        return np_quat_apply_inverse_batched(quat, value)
 
     @property
     def _host_root_link_ang_vel_b(self) -> np.ndarray:
         """Root body-frame angular velocity host adapter (backend/test-only)."""
-        ids = self._require(self._root_body_ids, "root body state")
-        return self._cached_getter(
-            "body_ang_vel_b",
-            self._backend.get_body_ang_vel_b,
-            ids,
-            selector=self._root_body_state_key,
-        )[:, 0]
+        name = self._require(self._root_body_name, "root body state")
+        quat = self._tracked_table("quat_w", (name,))
+        value = self._tracked_table("ang_vel_w", (name,))
+        return np_quat_apply_inverse_batched(quat, value)
 
     @property
     def _host_gravity_vec_w(self) -> np.ndarray:
@@ -969,14 +1019,14 @@ class EntityData:
     @property
     def _host_joint_pos(self) -> np.ndarray:
         """Joint position host adapter (backend/test-only; packed views are public)."""
-        index = self._require(self._joint_pos_index, "joint position")
-        return self._cached_getter("dof_pos", self._backend.get_dof_pos)[:, index]
+        index = self._require(self._joint_qpos_index, "joint position")
+        return self._state_table("qpos")[:, index]
 
     @property
     def _host_joint_vel(self) -> np.ndarray:
         """Joint velocity host adapter (backend/test-only; packed views are public)."""
         index = self._require(self._joint_vel_index, "joint velocity")
-        return self._cached_getter("dof_vel", self._backend.get_dof_vel)[:, index]
+        return self._state_table("qvel")[:, index]
 
     def default_joint_pos_torch(self, device: str | torch.device) -> torch.Tensor:
         """Return the cold-path default joint positions as a cached Torch tensor."""
@@ -1106,46 +1156,26 @@ class EntityData:
     @property
     def _host_body_link_pos_w(self) -> np.ndarray:
         """Body world position host adapter (backend/test-only)."""
-        ids = self._require(self._body_ids, "body state")
-        return self._cached_getter(
-            "body_pos_w",
-            self._backend.get_body_pos_w,
-            ids,
-            selector=self._body_state_key,
-        )
+        names = self._require(self._body_names, "body state")
+        return self._tracked_table("pos_w", names)
 
     @property
     def _host_body_link_quat_w(self) -> np.ndarray:
         """Body world quaternion host adapter (backend/test-only)."""
-        ids = self._require(self._body_ids, "body state")
-        return self._cached_getter(
-            "body_quat_w",
-            self._backend.get_body_quat_w,
-            ids,
-            selector=self._body_state_key,
-        )
+        names = self._require(self._body_names, "body state")
+        return self._tracked_table("quat_w", names)
 
     @property
     def _host_body_link_lin_vel_w(self) -> np.ndarray:
         """Body world linear velocity host adapter (backend/test-only)."""
-        ids = self._require(self._body_ids, "body state")
-        return self._cached_getter(
-            "body_lin_vel_w",
-            self._backend.get_body_lin_vel_w,
-            ids,
-            selector=self._body_state_key,
-        )
+        names = self._require(self._body_names, "body state")
+        return self._tracked_table("lin_vel_w", names)
 
     @property
     def _host_body_link_ang_vel_w(self) -> np.ndarray:
         """Body world angular velocity host adapter (backend/test-only)."""
-        ids = self._require(self._body_ids, "body state")
-        return self._cached_getter(
-            "body_ang_vel_w",
-            self._backend.get_body_ang_vel_w,
-            ids,
-            selector=self._body_state_key,
-        )
+        names = self._require(self._body_names, "body state")
+        return self._tracked_table("ang_vel_w", names)
 
     def write_ctrl(
         self,
@@ -1480,6 +1510,12 @@ class Entity:
                 self._joint_names,
                 backend.get_joint_dof_vel_indices,
             )
+            state_qpos_ids = self._resolve_ids(
+                "joint position state layout",
+                self._joint_names,
+                backend.get_joint_state_qpos_indices,
+            )
+            self._reset_joint_qpos_ids = state_qpos_ids
         self._joint_dof_ids = (joint_pos_ids, joint_vel_ids)
 
         body_ids = None
@@ -1523,7 +1559,7 @@ class Entity:
             )
         else:
             self._validate_joint_state(backend, joint_pos_ids, joint_vel_ids)
-            self._validate_body_state(backend, root_body_ids, body_ids)
+            self._validate_body_state(backend, cfg.root_body_name, self._body_names)
         (
             self._reset_root_layout,
             default_root_state,
@@ -1538,7 +1574,7 @@ class Entity:
         default_joint_vel = self._materialize_default_joint_vel(backend, joint_vel_ids)
         soft_joint_pos_limits = self._materialize_soft_joint_pos_limits(backend, joint_pos_ids)
         gravity_vec_w = self._materialize_gravity_vector(
-            backend, root_body_ids, entity_defaults=self._entity_defaults
+            backend, cfg.root_body_name, entity_defaults=self._entity_defaults
         )
         actuator_ctrl_range = self._materialize_actuator_ctrl_range(backend, actuator_ids)
         (
@@ -1573,6 +1609,7 @@ class Entity:
             backend,
             root_body_ids=root_body_ids,
             joint_pos_ids=joint_pos_ids,
+            joint_qpos_ids=self._reset_joint_qpos_ids,
             joint_vel_ids=joint_vel_ids,
             default_root_state=default_root_state,
             default_root_state_error=self._reset_root_layout_error,
@@ -1581,6 +1618,8 @@ class Entity:
             soft_joint_pos_limits=soft_joint_pos_limits,
             gravity_vec_w=gravity_vec_w,
             body_ids=body_ids,
+            root_body_name=cfg.root_body_name,
+            body_names=self._body_names,
             actuator_ids=actuator_ids,
             actuator_ctrl_range=actuator_ctrl_range,
             control_buffer=control_buffer,
@@ -1997,19 +2036,32 @@ class Entity:
         except (AttributeError, NotImplementedError) as exc:
             raise self._capability_error(capability, str(exc)) from exc
 
+    def _read_state_view(self, backend: SimBackend, field: str, capability: str) -> np.ndarray:
+        try:
+            views = backend.get_state_views((field,), device=None)
+            return _host_array(views[field])
+        except (AttributeError, KeyError, TypeError, ValueError, NotImplementedError) as exc:
+            raise self._capability_error(capability, str(exc)) from exc
+
+    def _tracked_body_views(self, backend: SimBackend, names: tuple[str, ...], capability: str):
+        try:
+            return backend.get_tracked_body_views(names, device=None)
+        except (AttributeError, KeyError, TypeError, ValueError, NotImplementedError) as exc:
+            raise self._capability_error(capability, str(exc)) from exc
+
     def _validate_joint_state(
         self,
         backend: SimBackend,
         pos_ids: np.ndarray | None,
         vel_ids: np.ndarray | None,
     ) -> None:
-        for capability, getter, ids in (
-            ("joint position state", backend.get_dof_pos, pos_ids),
-            ("joint velocity state", backend.get_dof_vel, vel_ids),
+        for capability, field, ids in (
+            ("joint position state", "qpos", pos_ids),
+            ("joint velocity state", "qvel", vel_ids),
         ):
             if ids is None:
                 continue
-            value = self._read_state(capability, getter)
+            value = self._read_state_view(backend, field, capability)
             if value.ndim != 2 or value.shape[0] != backend.num_envs:
                 raise ValueError(
                     f"Entity '{self.name}' capability '{capability}' on backend "
@@ -2070,49 +2122,15 @@ class Entity:
     def _validate_body_state(
         self,
         backend: SimBackend,
-        root_body_ids: np.ndarray | None,
-        body_ids: np.ndarray | None,
+        root_body_name: str | None,
+        body_names: tuple[str, ...] | None,
     ) -> None:
-        arrays = [values for values in (root_body_ids, body_ids) if values is not None]
-        if not arrays:
+        """Validate that construction resolved every requested public body."""
+        declared_names = ((root_body_name,) if root_body_name is not None else ()) + (
+            body_names or ()
+        )
+        if not declared_names:
             return
-        validation_ids = np.unique(np.concatenate(arrays)).astype(np.int32, copy=False)
-        for capability, getter, width in (
-            ("body position state", backend.get_body_pos_w, 3),
-            ("body quaternion state", backend.get_body_quat_w, 4),
-            ("body linear velocity state", backend.get_body_lin_vel_w, 3),
-            ("body angular velocity state", backend.get_body_ang_vel_w, 3),
-        ):
-            value = self._read_state(capability, getter, validation_ids)
-            expected = (backend.num_envs, len(validation_ids), width)
-            if value.shape != expected:
-                raise ValueError(
-                    f"Entity '{self.name}' capability '{capability}' on backend "
-                    f"'{self._backend_type}' returned shape {value.shape}; expected {expected}"
-                )
-            if not np.isfinite(value).all():
-                raise ValueError(
-                    f"Entity '{self.name}' capability '{capability}' on backend "
-                    f"'{self._backend_type}' returned NaN or Inf"
-                )
-        if root_body_ids is None:
-            return
-        for capability, getter in (
-            ("body-frame linear velocity state", backend.get_body_lin_vel_b),
-            ("body-frame angular velocity state", backend.get_body_ang_vel_b),
-        ):
-            value = self._read_state(capability, getter, root_body_ids)
-            expected = (backend.num_envs, len(root_body_ids), 3)
-            if value.shape != expected:
-                raise ValueError(
-                    f"Entity '{self.name}' capability '{capability}' on backend "
-                    f"'{self._backend_type}' returned shape {value.shape}; expected {expected}"
-                )
-            if not np.isfinite(value).all():
-                raise ValueError(
-                    f"Entity '{self.name}' capability '{capability}' on backend "
-                    f"'{self._backend_type}' returned NaN or Inf"
-                )
 
     def _materialize_actuator_ctrl_range(
         self, backend: SimBackend, actuator_ids: np.ndarray | None
@@ -2140,28 +2158,28 @@ class Entity:
             return None
         if self._entity_defaults is not None:
             return self._selected_entity_default_joints("joint_positions")
-        current = self._read_state("joint position state", backend.get_dof_pos)
+        assert self._reset_joint_qpos_ids is not None
+        full_qpos = self._read_state_view(backend, "qpos", "joint position state")
+        current = full_qpos[:, _as_column_index(self._reset_joint_qpos_ids)]
         if default_qpos is None:
             defaults = self._read_state("default joint position", backend.get_default_dof_pos)
-            if defaults.shape != current.shape[1:]:
+            if defaults.ndim != 1:
                 raise ValueError(
                     f"Entity '{self.name}' capability 'default joint position' on backend "
                     f"'{self._backend_type}' returned shape {defaults.shape}; expected "
-                    f"{current.shape[1:]} to match get_dof_pos()"
+                    "a 1-D backend DoF layout"
+                )
+            if joint_pos_ids.size and int(np.max(joint_pos_ids)) >= defaults.size:
+                raise ValueError(
+                    f"Entity '{self.name}' default joint-position layout on backend "
+                    f"'{self._backend_type}' resolved index {int(np.max(joint_pos_ids))} "
+                    f"outside width {defaults.size}"
                 )
             selected = np.asarray(defaults[_as_column_index(joint_pos_ids)])
         else:
             assert self._joint_names is not None
             defaults = self._validate_root_default_vector(default_qpos, "selected default qpos")
-            try:
-                state_qpos_ids = backend.get_joint_state_qpos_indices(self._joint_names)
-            except (AttributeError, NotImplementedError) as exc:
-                raise self._capability_error("default joint-state layout", str(exc)) from exc
-            resolved_qpos_ids = _readonly_ids(
-                state_qpos_ids,
-                expected=len(self._joint_names),
-                label=f"Entity '{self.name}' default qpos",
-            )
+            resolved_qpos_ids = self._reset_joint_qpos_ids
             if resolved_qpos_ids.size and int(np.max(resolved_qpos_ids)) >= defaults.size:
                 raise ValueError(
                     f"Entity '{self.name}' default qpos layout exceeds backend "
@@ -2294,7 +2312,7 @@ class Entity:
             return None
         if self._entity_defaults is not None:
             return self._selected_entity_default_joints("joint_velocities")
-        current = self._read_state("joint velocity state", backend.get_dof_vel)
+        current = self._read_state_view(backend, "qvel", "joint velocity state")
         materialized = np.zeros(
             (backend.num_envs, len(joint_vel_ids)),
             dtype=current.dtype,
@@ -2315,19 +2333,13 @@ class Entity:
     def _materialize_gravity_vector(
         self,
         backend: SimBackend,
-        root_body_ids: np.ndarray | None,
+        root_body_name: str | None,
         *,
         entity_defaults: Mapping[str, np.ndarray] | None = None,
     ) -> np.ndarray | None:
-        if root_body_ids is None:
+        if root_body_name is None:
             return None
-        if entity_defaults is not None:
-            quat = np.asarray(entity_defaults["root_pose"][:, 3:7])
-        else:
-            quat = self._read_state(
-                "root body quaternion state", backend.get_body_quat_w, root_body_ids
-            )
-        gravity = np.zeros((backend.num_envs, 3), dtype=quat.dtype)
+        gravity = np.zeros((backend.num_envs, 3), dtype=np.float32)
         gravity[:, 2] = -1.0
         gravity.setflags(write=False)
         return gravity
@@ -2681,7 +2693,7 @@ class Entity:
         self,
         body_ids: np.ndarray | Sequence[int] | slice | None = None,
     ) -> BodyStateCopyFn:
-        """Bind entity-local body columns to the backend copy contract on the cold path."""
+        """Bind entity-local body columns to the public tracked-view contract."""
         if self._body_ids is None:
             raise self._capability_error(
                 "body-state copy",
@@ -2690,9 +2702,23 @@ class Entity:
         local_ids = self._normalize_local_body_ids(body_ids, capability="body-state copy")
         if local_ids.size == 0:
             raise ValueError(f"Entity '{self.name}' body-state copy selected no bodies")
-        backend_ids = np.array(self._body_ids[local_ids], copy=True, dtype=np.int32)
-        backend_ids.setflags(write=False)
-        return partial(self._backend.copy_body_state_w, backend_ids)
+        assert self._body_names is not None
+        selected_names = tuple(self._body_names[int(index)] for index in local_ids)
+
+        def copy_body_state(
+            out_pos: np.ndarray,
+            out_quat: np.ndarray,
+            out_lin_vel: np.ndarray,
+            out_ang_vel: np.ndarray,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+            views = self._backend.get_tracked_body_views(selected_names, device=None)
+            np.copyto(out_pos, _host_array(views.pos_w))
+            np.copyto(out_quat, _host_array(views.quat_w))
+            np.copyto(out_lin_vel, _host_array(views.lin_vel_w))
+            np.copyto(out_ang_vel, _host_array(views.ang_vel_w))
+            return out_pos, out_quat, out_lin_vel, out_ang_vel
+
+        return copy_body_state
 
     def write_root_state_to_sim(
         self,
@@ -3529,11 +3555,12 @@ class Entity:
             capabilities = self._backend.get_dr_capabilities()
         except (AttributeError, NotImplementedError) as exc:
             raise self._capability_error("interval root velocity delta", str(exc)) from exc
-        supported = (
-            capabilities.supports_interval_body_angular_velocity_delta
+        term = (
+            INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA
             if angular
-            else capabilities.supports_interval_body_velocity_delta
+            else INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA
         )
+        supported = capabilities.supports_interval_term(term)
         if not supported:
             raise self._capability_error(
                 "interval root velocity delta",
@@ -3582,14 +3609,25 @@ class Entity:
             ids,
             term_name=term_name,
         )
-        try:
-            self._backend.apply_interval_randomization(
-                IntervalRandomizationPlan(
+        ops = []
+        if linear_plan is not None:
+            ops.append(
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                    linear_plan,
                     body_ids=self._root_body_ids,
-                    body_linear_velocity_delta=linear_plan,
-                    body_angular_velocity_delta=angular_plan,
                 )
             )
+        if angular_plan is not None:
+            ops.append(
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
+                    angular_plan,
+                    body_ids=self._root_body_ids,
+                )
+            )
+        try:
+            self._backend.apply_interval_randomization(IntervalRandomizationPlan(ops=tuple(ops)))
         except NotImplementedError as exc:
             raise self._capability_error(
                 "interval root velocity delta",
@@ -3660,12 +3698,12 @@ class Entity:
             capabilities = self._backend.get_dr_capabilities()
         except (AttributeError, NotImplementedError) as exc:
             raise self._capability_error("interval body wrench", str(exc)) from exc
-        if not capabilities.supports_interval_body_force:
+        if not capabilities.supports_interval_term(INTERVAL_TERM_BODY_FORCE):
             raise self._capability_error(
                 "interval body wrench",
                 f"EventManager term '{term_name}' requested an unsupported backend capability",
             )
-        if torque and not capabilities.supports_interval_body_torque:
+        if torque and not capabilities.supports_interval_term(INTERVAL_TERM_BODY_TORQUE):
             raise self._capability_error(
                 "interval body wrench",
                 f"EventManager term '{term_name}' requested an unsupported backend "
@@ -3703,14 +3741,13 @@ class Entity:
             label="torque",
             term_name=term_name,
         )
+        ops = []
+        if force_values is not None:
+            ops.append(IntervalTermOp(INTERVAL_TERM_BODY_FORCE, force_values, body_ids=body_ids))
+        if torque_values is not None:
+            ops.append(IntervalTermOp(INTERVAL_TERM_BODY_TORQUE, torque_values, body_ids=body_ids))
         try:
-            self._backend.apply_interval_randomization(
-                IntervalRandomizationPlan(
-                    body_ids=body_ids,
-                    body_force=force_values,
-                    body_torque=torque_values,
-                )
-            )
+            self._backend.apply_interval_randomization(IntervalRandomizationPlan(ops=tuple(ops)))
         except NotImplementedError as exc:
             raise self._capability_error(
                 "interval body wrench",

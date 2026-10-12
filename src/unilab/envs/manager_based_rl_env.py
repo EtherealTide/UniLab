@@ -396,11 +396,16 @@ class ManagerBasedRlEnv(TorchEnv):
 
         self._materialize_backend()
         if "startup" in self.event_manager.available_modes:
-            # Startup model-field DR uses the same public set_state transaction
+            # Startup model-field DR uses the same public selected-reset transaction
             # as reset DR. Materialize the backend first: adapters may make the
             # selected-row reset boundary and model pools available only there.
             # This remains a cold-path commit before read-plan binding/reset.
-            with self._reset_state.scoped(self._all_env_rows):
+            startup_context = (
+                self._reset_state.scoped_entities(self._all_env_rows)
+                if self._reset_state.scene_layout is not None
+                else self._reset_state.scoped(self._all_env_rows)
+            )
+            with startup_context:
                 self.event_manager.apply(
                     mode="startup",
                     env_ids=self._all_env_rows if self.event_manager.uses_startup_rows else None,
@@ -1302,7 +1307,11 @@ class ManagerBasedRlEnv(TorchEnv):
                 step_read_plan.host_plan,
             )
         else:
-            step_reset_context = self._reset_state.scoped(self._all_env_rows)
+            step_reset_context = (
+                self._reset_state.scoped_entities(self._all_env_rows)
+                if self._reset_state.scene_layout is not None
+                else self._reset_state.scoped(self._all_env_rows)
+            )
         timing["update_state_command_preflight_ms"] = (
             time.perf_counter() - command_preflight_started
         ) * 1000.0
@@ -1483,7 +1492,11 @@ class ManagerBasedRlEnv(TorchEnv):
             else:
                 reset_context = self._reset_state.scoped_device_tensor(rows)
         else:
-            reset_context = self._reset_state.scoped(rows)
+            reset_context = (
+                self._reset_state.scoped_entities(rows)
+                if self._reset_state.scene_layout is not None
+                else self._reset_state.scoped(rows)
+            )
         command_event_started = time.perf_counter()
         event_term_count = len(self.event_manager.active_terms.get("reset", ()))
         command_term_count = len(self.command_manager.active_terms)
