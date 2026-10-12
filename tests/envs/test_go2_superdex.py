@@ -40,82 +40,30 @@ def test_go2_superdex_preserves_mujoco_policy_contract() -> None:
     assert target.env.ctrl_dt == source.env.ctrl_dt
 
 
-def test_go2_superdex_native_rollout_and_free_root_reset() -> None:
+def test_go2_superdex_native_backend_fails_closed_for_mask_reset() -> None:
     pytest.importorskip("superdex.physics")
     if not (ROOT / "src/unilab/assets/robots/go2/assets/base_0.obj").is_file():
         pytest.skip("native Go2 rollout requires the registered Go2 robot assets")
     _, override = _owner("superdex")
-    env = registry.make(
-        "Go2JoystickFlat", sim_backend="superdex", num_envs=2, env_cfg_override=override
-    )
-    try:
-        state = env.init_state()
-        assert env.action_space.shape == (12,)
-        assert env.obs_groups_spec == {"obs": 49, "critic": 52}
-        action = torch.zeros((2, 12), dtype=torch.float32, device=env.device)
-        for _ in range(32):
-            state = env.step(action)
-            assert torch.isfinite(state.reward).all()
-            assert all(torch.isfinite(value).all() for value in state.obs.values())
-        robot = env.scene["robot"]
-        before = robot.data._host_root_link_pos_w.copy()
-        obs, _ = env.reset(torch.tensor([0], dtype=torch.int64, device=env.device))
-        assert obs["obs"].shape == (1, 49)
-        np.testing.assert_array_equal(robot.data._host_root_link_pos_w[1], before[1])
-        root_quat = robot.data._host_root_link_quat_w
-        np.testing.assert_allclose(np.linalg.norm(root_quat, axis=-1), 1.0, atol=1e-5)
-    finally:
-        env.close()
-
-
-def test_go2_superdex_parallel_matches_serial_env_and_unsorted_reset() -> None:
-    pytest.importorskip("superdex.physics")
-    if not (ROOT / "src/unilab/assets/robots/go2/assets/base_0.obj").is_file():
-        pytest.skip("native Go2 rollout requires the registered Go2 robot assets")
-    _, override = _owner("superdex")
-    envs = []
-    try:
-        for workers in (1, 2):
-            envs.append(
-                registry.make(
-                    "Go2JoystickFlat",
-                    sim_backend="superdex",
-                    num_envs=4,
-                    env_cfg_override={**override, "seed": 7, "superdex_num_workers": workers},
-                )
-            )
-        serial, parallel = envs
-        for env in envs:
-            env.init_state()
-        rng = np.random.default_rng(11)
-        for _ in range(8):
-            action = torch.as_tensor(
-                rng.uniform(-0.1, 0.1, (4, 12)), dtype=torch.float32, device=env.device
-            )
-            reference, result = (env.step(action) for env in envs)
-            for key in reference.obs:
-                np.testing.assert_allclose(
-                    result.obs[key].cpu(),
-                    reference.obs[key].cpu(),
-                    atol=2e-5,
-                    rtol=2e-5,
-                )
-            np.testing.assert_allclose(
-                result.reward.cpu(), reference.reward.cpu(), atol=2e-5, rtol=2e-5
-            )
-        before = parallel.scene["robot"].data._host_root_link_pos_w.copy()
-        # Non-monotonic IDs span both shards and must retain caller row order.
-        selected = torch.tensor([3, 0], dtype=torch.int64, device=parallel.device)
-        ref_obs, _ = serial.reset(selected)
-        out_obs, _ = parallel.reset(selected)
-        for key in ref_obs:
-            np.testing.assert_allclose(out_obs[key].cpu(), ref_obs[key].cpu(), atol=2e-5, rtol=2e-5)
-        np.testing.assert_array_equal(
-            parallel.scene["robot"].data._host_root_link_pos_w[[1, 2]], before[[1, 2]]
+    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
+        registry.make(
+            "Go2JoystickFlat", sim_backend="superdex", num_envs=2, env_cfg_override=override
         )
-    finally:
-        for env in reversed(envs):
-            env.close()
+
+
+def test_go2_superdex_parallel_backend_fails_closed_for_mask_reset() -> None:
+    pytest.importorskip("superdex.physics")
+    if not (ROOT / "src/unilab/assets/robots/go2/assets/base_0.obj").is_file():
+        pytest.skip("native Go2 rollout requires the registered Go2 robot assets")
+    _, override = _owner("superdex")
+    for workers in (1, 2):
+        with pytest.raises(NotImplementedError, match="mask_selected_reset"):
+            registry.make(
+                "Go2JoystickFlat",
+                sim_backend="superdex",
+                num_envs=4,
+                env_cfg_override={**override, "seed": 7, "superdex_num_workers": workers},
+            )
 
 
 def test_go2_superdex_executes_mujoco_checkpoint(tmp_path: Path) -> None:
@@ -123,7 +71,6 @@ def test_go2_superdex_executes_mujoco_checkpoint(tmp_path: Path) -> None:
     if not checkpoint_value:
         pytest.skip("set UNILAB_SUPERDEX_GO2_CHECKPOINT to a MuJoCo Go2 PPO checkpoint")
     pytest.importorskip("superdex.physics")
-    import torch
 
     from unilab.training.run import algo_config_dict
     from unilab.visualization.interactive_playback import (

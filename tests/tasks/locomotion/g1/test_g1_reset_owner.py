@@ -1,4 +1,4 @@
-"""G1 walk fused selected-reset owner contract."""
+"""G1 walk fused mask-reset owner contract."""
 
 from __future__ import annotations
 
@@ -28,24 +28,51 @@ def _env() -> SimpleNamespace:
     return env
 
 
-def test_reset_transaction_skips_host_publication_and_validation() -> None:
+def test_reset_transaction_uses_owner_mask_boundary() -> None:
     env = _env()
     seen: dict[str, object] = {}
 
-    def reset_command_state(rows, *, publish_metrics, validate_commands):
-        seen["rows"] = rows
-        seen["publish_metrics"] = publish_metrics
-        seen["validate_commands"] = validate_commands
-        return {}, {}
+    def reset(reset_mask):
+        seen["mask"] = reset_mask
 
-    env.command_manager.reset_command_state = reset_command_state
+    command = env.command_manager.get_term("twist")
+    command.reset = reset
     owner = G1WalkResetOwner(G1WalkResetOwnerCfg(func=lambda **kwargs: None), env)
 
-    rows = torch.tensor([1, 3], dtype=torch.int64)
-    assert owner.reset_transaction(rows) == {}
-    torch.testing.assert_close(seen["rows"], rows)
-    assert seen["publish_metrics"] is False
-    assert seen["validate_commands"] is False
+    mask = torch.tensor([False, True, False, True])
+
+    assert owner.reset_transaction(mask) == {}
+    assert seen["mask"] is mask
+
+
+def test_reset_committed_mask_requires_action_manager_boundary() -> None:
+    env = _env()
+    owner = G1WalkResetOwner(G1WalkResetOwnerCfg(func=lambda **kwargs: None), env)
+    mask = torch.tensor([False, True, False, True])
+
+    with pytest.raises(AttributeError, match="clear_action_state"):
+        owner.reset_committed(mask)
+
+
+def test_reset_committed_mask_clears_action_and_metric_state() -> None:
+    env = _env()
+    mask = torch.tensor([False, True, False, True])
+    cleared_actions: list[torch.Tensor] = []
+    cleared_metrics: list[torch.Tensor] = []
+
+    def clear_action_state(reset_mask):
+        cleared_actions.append(reset_mask)
+
+    def clear_episode_state(reset_mask):
+        cleared_metrics.append(reset_mask)
+
+    env.action_manager.clear_action_state = clear_action_state
+    env.metrics_manager.clear_episode_state = clear_episode_state
+    owner = G1WalkResetOwner(G1WalkResetOwnerCfg(func=lambda **kwargs: None), env)
+
+    assert owner.reset_committed(mask) == {}
+    assert cleared_actions == [mask]
+    assert cleared_metrics == [mask]
 
 
 def test_owner_validates_command_and_rng_contract() -> None:

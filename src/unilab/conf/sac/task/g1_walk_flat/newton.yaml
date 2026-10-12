@@ -2,7 +2,7 @@
 # Newton SAC owner for the in-process MuJoCo-family CUDA backend (newton 1.5.1,
 # mujoco-warp 3.11, warp 1.16). Keeps DENYLIST parity with the MuJoCo SAC
 # owner. The owner declares explicit backend CUDA placement; multi-GPU training
-# overrides it from rank topology. The public Newton tensor selected reset does
+# overrides it from rank topology. The public Newton tensor mask reset does
 # not support randomization, so unsupported host reset terms are explicitly
 # disabled rather than falling back. Record selects the native Newton renderer
 # and falls back to the MuJoCo snapshot only for an incomplete installation.
@@ -66,7 +66,7 @@ env:
       func: unilab.envs.mdp.reset_scene_to_default_tensor
     reset_root_state_uniform:
       func: unilab.envs.mdp.reset_root_state_uniform_tensor
-    # Newton's public tensor selected reset does not support randomization.
+    # Newton's public tensor mask reset does not support randomization.
     pd_gains: null
   terminations:
     tilt: null

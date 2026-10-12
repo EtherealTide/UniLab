@@ -117,6 +117,10 @@ class SensorTermBase(ManagerTermBase):
                 f"materialized for {sensor_names}: {exc}"
             ) from exc
 
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        """Mask boundary for stateless sensor terms."""
+        del reset_mask
+
 
 class base_height_l2(ManagerTermBase):
     """Penalize world-frame root height error for the flat-ground pilot."""

@@ -131,11 +131,10 @@ class TensorObservationNoise:
 
 @dataclass
 class TensorResetPlan:
-    """Device-side done union and selected reset-row planner."""
+    """Device-side fixed-width done union."""
 
     terminated: torch.Tensor
     truncated: torch.Tensor
-    _rows: torch.Tensor | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.terminated.shape != self.truncated.shape or self.terminated.ndim != 1:
@@ -148,14 +147,6 @@ class TensorResetPlan:
     @property
     def done(self) -> torch.Tensor:
         return self.terminated | self.truncated
-
-    @property
-    def rows(self) -> torch.Tensor:
-        rows = self._rows
-        if rows is None:
-            rows = self.done.nonzero(as_tuple=False).flatten().to(torch.int64)
-            object.__setattr__(self, "_rows", rows)
-        return rows
 
 
 @dataclass
@@ -188,14 +179,24 @@ class TensorEpisodeMetrics:
         self.rewards += reward
         self.lengths += 1
 
-    def finished_values(self, rows: torch.Tensor) -> torch.Tensor:
+    def finished_values(self, done_mask: torch.Tensor) -> torch.Tensor:
+        if done_mask.shape != self.rewards.shape or done_mask.dtype != torch.bool:
+            raise ValueError("episode metric finished mask must be full-width bool")
         return torch.stack(
-            (self.rewards[rows].to(torch.float64), self.lengths[rows].to(torch.float64)), dim=1
+            (
+                torch.where(done_mask, self.rewards, torch.zeros_like(self.rewards)).to(
+                    torch.float64
+                ),
+                torch.where(done_mask, self.lengths, torch.zeros_like(self.lengths)).to(
+                    torch.float64
+                ),
+            ),
+            dim=1,
         )
 
-    def reset(self, rows: torch.Tensor) -> None:
-        self.rewards[rows] = 0.0
-        self.lengths[rows] = 0
+    def reset(self, done_mask: torch.Tensor) -> None:
+        self.rewards.masked_fill_(done_mask, 0.0)
+        self.lengths.masked_fill_(done_mask, 0)
 
     def snapshot(self) -> dict[str, torch.Tensor]:
         return {"reward": self.rewards, "length": self.lengths}

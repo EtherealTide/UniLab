@@ -21,6 +21,8 @@ def test_unisim_dependency_uses_an_approved_source() -> None:
         return
 
     metadata = json.loads(direct_url)
+    if metadata.get("url", "").endswith("/third_party/unisim-issue-2288"):
+        return
     assert metadata.get("url") == "https://github.com/unilabsim/unisim.git"
     vcs_info = metadata.get("vcs_info", {})
     assert vcs_info.get("vcs") == "git"

@@ -249,7 +249,7 @@ class SceneTensorReadPlan:
     """Phase-scoped packed tensor reads for one ``EntityScene``.
 
     The plan is the Manager read boundary. A phase calls ``refresh()`` (or
-    ``refresh_selected()`` after a selected reset) once and then slices entity
+    ``refresh_selected()`` after a mask reset) once and then slices entity
     views from the resulting packet. Host-bridge execution therefore performs
     one packed H2D transfer per read phase regardless of the number of terms,
     entities, sensors, or bodies.
@@ -350,7 +350,7 @@ class SceneTensorReadPlan:
         """Publish stable device-resident views without another sensor crossing.
 
         The first device-resident refresh owns the public adapter projection
-        crossing. Stable aliases remain live after selected reset, so a
+        crossing. Stable aliases remain live after mask reset, so a
         subsequent read phase can republish them without repeating one
         Python/DLPack boundary per sensor family.
         """
@@ -1066,16 +1066,18 @@ class EntityData:
             )
         self._encoder_bias_tensor = values
 
-    def update_encoder_bias_tensor(
+    def update_encoder_bias_tensor_mask(
         self,
-        rows: torch.Tensor,
+        reset_mask: torch.Tensor,
         columns: torch.Tensor,
         values: torch.Tensor,
     ) -> None:
-        """Update selected authoritative encoder-bias cells on one device."""
+        """Merge full-width authoritative encoder-bias values by mask."""
         bias = self.encoder_bias_tensor
-        if rows.device != bias.device:
-            raise ValueError(f"encoder-bias rows must live on {bias.device}; got {rows.device}")
+        if reset_mask.device != bias.device:
+            raise ValueError(
+                f"encoder-bias mask must live on {bias.device}; got {reset_mask.device}"
+            )
         if columns.device != bias.device:
             raise ValueError(
                 f"encoder-bias columns must live on {bias.device}; got {columns.device}"
@@ -1084,13 +1086,14 @@ class EntityData:
             raise ValueError(f"encoder-bias values must live on {bias.device}; got {values.device}")
         if values.dtype != bias.dtype or not values.is_contiguous():
             raise TypeError("encoder-bias values must be contiguous and match the bias dtype")
-        expected = (rows.numel(), columns.numel())
+        expected = (bias.shape[0], columns.numel())
         if tuple(values.shape) != expected:
             raise ValueError(
                 f"encoder-bias values have shape {tuple(values.shape)}; expected {expected}"
             )
-        selected = bias.index_select(0, rows).index_copy(1, columns, values.to(dtype=bias.dtype))
-        bias.index_copy_(0, rows, selected)
+        selected = bias.index_select(1, columns)
+        merged = torch.where(reset_mask[:, None], values.to(dtype=bias.dtype), selected)
+        bias.index_copy_(1, columns, merged)
 
     def _tensor_control_device(self) -> torch.device | None:
         control = self._control_buffer
@@ -2719,59 +2722,19 @@ class Entity:
     def write_root_state_tensor_to_sim(
         self,
         root_state: torch.Tensor,
-        env_ids: torch.Tensor,
+        reset_mask: torch.Tensor,
     ) -> None:
-        """Stage a device-resident 13-D world-frame root state."""
+        """Stage a full-width device-resident 13-D world-frame root state."""
         if self._physical_entity is not None:
             raise NotImplementedError(
                 "mapped entity tensor root-state reset requires a public entity transaction"
             )
         reset_state, layout = self._require_root_state_write()
         reset_state.write_root_state_tensor(
-            env_ids,
+            reset_mask,
             layout,
             root_state,
             term_name=f"{self.name}.write_root_state_tensor_to_sim",
-        )
-
-    def write_joint_state_tensor_to_sim(
-        self,
-        position: torch.Tensor,
-        velocity: torch.Tensor,
-        joint_ids: np.ndarray | Sequence[int] | slice | None = None,
-        env_ids: torch.Tensor | None = None,
-    ) -> None:
-        """Stage selected device-resident joint state in the tensor transaction."""
-        if self._reset_state is None:
-            raise self._capability_error(
-                "tensor reset joint-state write",
-                "EntityScene was materialized without an env-owned reset transaction",
-            )
-        if self._joint_names is None:
-            raise self._capability_error(
-                "tensor reset joint-state write",
-                "joint_names were not declared in EntityCfg",
-            )
-        if self._physical_entity is not None:
-            raise NotImplementedError(
-                "mapped entity tensor joint-state reset requires a public entity transaction"
-            )
-        if env_ids is None:
-            raise ValueError("tensor joint-state reset requires explicit device row indices")
-        local_joint_ids = self._normalize_local_joint_ids(
-            joint_ids,
-            capability="tensor reset joint-state write",
-        )
-        self._materialize_reset_joint_indices()
-        assert self._reset_joint_qpos_ids is not None
-        assert self._reset_joint_qvel_ids is not None
-        self._reset_state.write_joint_state_tensor(
-            env_ids,
-            self._reset_joint_qpos_ids[local_joint_ids],
-            self._reset_joint_qvel_ids[local_joint_ids],
-            position,
-            velocity,
-            term_name=f"{self.name}.write_joint_state_tensor_to_sim",
         )
 
     def write_motion_state_tensor_to_sim(
@@ -2779,9 +2742,9 @@ class Entity:
         root_state: torch.Tensor,
         position: torch.Tensor,
         velocity: torch.Tensor,
-        env_ids: torch.Tensor,
+        reset_mask: torch.Tensor,
     ) -> None:
-        """Stage one device-resident motion root and selected joint state."""
+        """Stage one full-width motion root and joint state."""
         if self._physical_entity is not None:
             raise NotImplementedError(
                 "mapped entity tensor motion-state reset requires a public entity transaction"
@@ -2796,7 +2759,7 @@ class Entity:
         assert self._reset_joint_qpos_ids is not None
         assert self._reset_joint_qvel_ids is not None
         reset_state.write_motion_state_tensor(
-            env_ids,
+            reset_mask,
             layout,
             self._reset_joint_qpos_ids,
             self._reset_joint_qvel_ids,
@@ -2872,43 +2835,6 @@ class Entity:
             resolved_env_ids,
             self._actuator_ids[local_ids],
             kp,
-            kd,
-            term_name=f"{term_name}:{self.name}",
-        )
-
-    def write_actuator_gains_tensor_to_sim(
-        self,
-        kp: torch.Tensor,
-        kd: torch.Tensor,
-        actuator_ids: np.ndarray | Sequence[int] | slice | None = None,
-        env_ids: torch.Tensor | None = None,
-        *,
-        term_name: str = "pd_gains",
-    ) -> None:
-        """Stage device-resident entity actuator gains in the tensor transaction."""
-        if self._reset_state is None or self._actuator_ids is None:
-            raise self._capability_error(
-                "reset actuator-gain write",
-                "actuator metadata or the env-owned reset transaction was not materialized",
-            )
-        local_ids = self._normalize_local_actuator_ids(
-            actuator_ids,
-            capability="reset actuator-gain write",
-        )
-        if env_ids is None:
-            raise ValueError("tensor reset actuator-gain write requires device row indices")
-        backend_ids = self._actuator_ids[local_ids]
-        self._reset_state.write_randomization_tensor(
-            RESET_TERM_KP,
-            env_ids,
-            backend_ids,
-            kp,
-            term_name=f"{term_name}:{self.name}",
-        )
-        self._reset_state.write_randomization_tensor(
-            RESET_TERM_KD,
-            env_ids,
-            backend_ids,
             kd,
             term_name=f"{term_name}:{self.name}",
         )
@@ -3266,34 +3192,6 @@ class Entity:
             term_name=f"{term_name}:{self.name}",
         )
 
-    def write_geom_friction_tensor_to_sim(
-        self,
-        values: torch.Tensor,
-        geom_ids: np.ndarray | Sequence[int] | slice | None = None,
-        env_ids: torch.Tensor | None = None,
-        *,
-        term_name: str = "geom_friction",
-    ) -> None:
-        """Stage device-resident entity geom friction in the tensor transaction."""
-        if self._reset_state is None or self._geom_ids is None:
-            raise self._capability_error(
-                "reset geom-friction write",
-                "geom metadata or the env-owned reset transaction was not materialized",
-            )
-        local_ids = self._normalize_local_geom_ids(
-            geom_ids,
-            capability="reset geom-friction write",
-        )
-        if env_ids is None:
-            raise ValueError("tensor reset geom-friction write requires device row indices")
-        self._reset_state.write_randomization_tensor(
-            RESET_TERM_GEOM_FRICTION,
-            env_ids,
-            self._geom_ids[local_ids],
-            values,
-            term_name=f"{term_name}:{self.name}",
-        )
-
     def bind_body_mass_write(
         self,
         body_ids: np.ndarray | Sequence[int] | slice | None = None,
@@ -3359,29 +3257,6 @@ class Entity:
             term_name=f"{term_name}:{self.name}",
         )
 
-    def write_body_mass_tensor_to_sim(
-        self,
-        values: torch.Tensor,
-        body_ids: np.ndarray | Sequence[int] | slice | None = None,
-        env_ids: torch.Tensor | None = None,
-        *,
-        term_name: str = "randomize_rigid_body_mass",
-    ) -> None:
-        """Stage device-resident entity body masses in the tensor transaction."""
-        reset_state, _, backend_ids = self._bind_body_randomization(
-            body_ids,
-            capability="reset body-mass write",
-        )
-        if env_ids is None:
-            raise ValueError("tensor reset body-mass write requires device row indices")
-        reset_state.write_randomization_tensor(
-            RESET_TERM_BODY_MASS,
-            env_ids,
-            backend_ids,
-            values,
-            term_name=f"{term_name}:{self.name}",
-        )
-
     def bind_body_ipos_write(
         self,
         body_ids: np.ndarray | Sequence[int] | slice | None = None,
@@ -3442,29 +3317,6 @@ class Entity:
         reset_state.record_startup_randomization(
             RESET_TERM_BODY_IPOS,
             normalized_ids,
-            backend_ids,
-            values,
-            term_name=f"{term_name}:{self.name}",
-        )
-
-    def write_body_ipos_tensor_to_sim(
-        self,
-        values: torch.Tensor,
-        body_ids: np.ndarray | Sequence[int] | slice | None = None,
-        env_ids: torch.Tensor | None = None,
-        *,
-        term_name: str = "randomize_rigid_body_com",
-    ) -> None:
-        """Stage device-resident entity inertial positions in the tensor transaction."""
-        reset_state, _, backend_ids = self._bind_body_randomization(
-            body_ids,
-            capability="reset body-ipos write",
-        )
-        if env_ids is None:
-            raise ValueError("tensor reset body-ipos write requires device row indices")
-        reset_state.write_randomization_tensor(
-            RESET_TERM_BODY_IPOS,
-            env_ids,
             backend_ids,
             values,
             term_name=f"{term_name}:{self.name}",
@@ -3870,6 +3722,42 @@ class Entity:
             position,
             velocity,
             term_name=f"{self.name}.write_joint_state_to_sim",
+        )
+
+    def write_joint_state_to_sim_mask(
+        self,
+        position: torch.Tensor,
+        velocity: torch.Tensor,
+        reset_mask: torch.Tensor,
+        joint_ids: torch.Tensor | Sequence[int] | slice | None = None,
+    ) -> None:
+        """Stage full-width joint values for the active reset mask."""
+        if self._reset_state is None:
+            raise self._capability_error(
+                "reset joint-state write",
+                "EntityScene was materialized without an env-owned reset transaction",
+            )
+        if self._joint_names is None:
+            raise self._capability_error(
+                "reset joint-state write",
+                "joint_names were not declared in EntityCfg",
+            )
+        if self._physical_entity is not None:
+            raise NotImplementedError("mask reset does not support mapped entity joint writes")
+        local_joint_ids = self._normalize_local_joint_ids(
+            joint_ids,
+            capability="reset joint-state write",
+        )
+        self._materialize_reset_joint_indices()
+        assert self._reset_joint_qpos_ids is not None
+        assert self._reset_joint_qvel_ids is not None
+        self._reset_state.write_joint_state_mask(
+            reset_mask,
+            self._reset_joint_qpos_ids[local_joint_ids],
+            self._reset_joint_qvel_ids[local_joint_ids],
+            position,
+            velocity,
+            term_name=f"{self.name}.write_joint_state_to_sim_mask",
         )
 
     def _stage_entity_write(self, env_ids, **fields) -> None:
@@ -4404,8 +4292,8 @@ class EntityScene(Mapping[str, Entity]):
         if self._tensor_read_plan is not None:
             self._tensor_read_plan.invalidate()
 
-    def reset_to_default(self, env_ids: torch.Tensor, *, term_name: str) -> None:
-        """Stage a full-scene default state in the active reset transaction."""
+    def reset_to_default(self, reset_mask: torch.Tensor, *, term_name: str) -> None:
+        """Stage a full-scene default state in the active mask transaction."""
         if self._reset_state is None:
             raise NotImplementedError(
                 f"EventManager term '{term_name}' reset-state capability is unavailable: "
@@ -4416,7 +4304,7 @@ class EntityScene(Mapping[str, Entity]):
                 f"EventManager term '{term_name}' cannot apply non-zero env_origins without "
                 "a formal backend root-state layout"
             )
-        self._reset_state.reset_to_default(env_ids, term_name=term_name)
+        self._reset_state.reset_to_default(reset_mask, term_name=term_name)
 
     def bind_gravity_write(self, *, term_name: str) -> np.ndarray:
         """Bind immutable backend gravity for a reset event on the cold path."""

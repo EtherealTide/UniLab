@@ -232,14 +232,19 @@ class _StrictTensorPlaybackEnv:
             high=torch.full((4,), 2.0),
         )
         self.state = SimpleNamespace(info={"timing": {}})
-        self.reset_indices: list[torch.Tensor] = []
+        self.reset_masks: list[torch.Tensor] = []
         self.actions: list[torch.Tensor] = []
 
     def init_state(self):
         self.state = SimpleNamespace(info={"timing": {}})
 
-    def reset(self, env_indices):
-        self.reset_indices.append(env_indices)
+    def reset(self, reset_mask: torch.Tensor | None = None):
+        mask = (
+            torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+            if reset_mask is None
+            else reset_mask
+        )
+        self.reset_masks.append(mask)
         return {
             "obs": torch.arange(6, dtype=torch.float32).reshape(2, 3),
             "critic": torch.zeros((2, 5), dtype=torch.float32),
@@ -466,8 +471,8 @@ def test_offpolicy_playback_keeps_policy_io_on_env_device() -> None:
 
     assert torch.equal(obs, torch.arange(6, dtype=torch.float32).reshape(2, 3))
     assert obs.device == env.device
-    assert len(env.reset_indices) == 1
-    assert torch.equal(env.reset_indices[0], torch.arange(2, dtype=torch.int64, device=env.device))
+    assert len(env.reset_masks) == 1
+    assert torch.equal(env.reset_masks[0], torch.ones(2, dtype=torch.bool, device=env.device))
 
     next_obs = session.step_once()
 

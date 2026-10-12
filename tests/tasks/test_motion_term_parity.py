@@ -600,16 +600,15 @@ def test_tensor_command_publishes_sampler_advance_exactly_once() -> None:
     command._clip_offsets_torch = torch.tensor([0], dtype=torch.int64)
     command._clip_end_frames_torch = torch.tensor([100], dtype=torch.int64)
     command._tensor_all_rows = torch.arange(3, dtype=torch.int64)
+    command._tensor_all_reset_mask = torch.ones(3, dtype=torch.bool)
     command.cfg = SimpleNamespace(params=SimpleNamespace(truncate_on_clip_end=True))
-    command._tensor_post_compute_env_ids = None
-    command._tensor_resample_ingested = None
     command._env = SimpleNamespace(
         termination_manager=SimpleNamespace(terminated=torch.tensor([False, False, False])),
         reset_buf=torch.tensor([False, False, False]),
     )
 
-    command._refresh_motion_torch = lambda *args, **kwargs: None
-    command._update_command(None)
+    command._refresh_motion_torch = lambda: None
+    command._update_command()
 
     torch.testing.assert_close(command.time_steps, torch.tensor([5, 1, 10], dtype=torch.int32))
 
@@ -640,9 +639,8 @@ def test_tensor_command_full_refresh_gathers_advanced_frames() -> None:
     command._clip_offsets_torch = torch.tensor([0], dtype=torch.int64)
     command._clip_end_frames_torch = torch.tensor([100], dtype=torch.int64)
     command._tensor_all_rows = torch.arange(3, dtype=torch.int64)
+    command._tensor_all_reset_mask = torch.ones(3, dtype=torch.bool)
     command.cfg = SimpleNamespace(params=SimpleNamespace(truncate_on_clip_end=True))
-    command._tensor_post_compute_env_ids = None
-    command._tensor_resample_ingested = None
     command._env = SimpleNamespace(
         termination_manager=SimpleNamespace(terminated=torch.tensor([False, False, False])),
         reset_buf=torch.tensor([False, False, False]),
@@ -650,24 +648,23 @@ def test_tensor_command_full_refresh_gathers_advanced_frames() -> None:
     captured: dict[str, Any] = {}
     command._motion_packet = lambda frames: frames
 
-    def _capture_ingest(rows: torch.Tensor, packet: torch.Tensor) -> None:
-        captured["rows"] = rows
+    def _capture_ingest(reset_mask: torch.Tensor, packet: torch.Tensor) -> None:
+        captured["mask"] = reset_mask
         captured["frames"] = packet
 
-    command._ingest_motion_packet = _capture_ingest
-    command._update_command(None)
+    command._ingest_motion_packet_mask = _capture_ingest
+    command._update_command()
 
-    torch.testing.assert_close(captured["rows"], torch.arange(3, dtype=torch.int64))
+    torch.testing.assert_close(captured["mask"], torch.ones(3, dtype=torch.bool))
     torch.testing.assert_close(
         captured["frames"].to(torch.int64), torch.tensor([5, 1, 10], dtype=torch.int64)
     )
 
 
-def test_tensor_command_syncs_sampler_mirrors_on_selected_rows_only() -> None:
+def test_tensor_command_syncs_sampler_mirrors_at_full_width() -> None:
     command = mt.MotionCommand.__new__(mt.MotionCommand)
     command._device = torch.device("cpu")
     command._tensor_all_rows = torch.arange(3, dtype=torch.int64)
-    command._tensor_post_compute_env_ids = torch.tensor([0, 2], dtype=torch.int64)
     command.time_steps = torch.tensor([4, 20, 9], dtype=torch.int32)
     command.current_clip_end_frames = torch.tensor([90, 90, 90], dtype=torch.int32)
     command.tensor_sampler = mt.TensorMotionSampler(
@@ -687,11 +684,11 @@ def test_tensor_command_syncs_sampler_mirrors_on_selected_rows_only() -> None:
         device=torch.device("cpu"),
     )
 
-    command._sync_tensor_sampler_state(torch.tensor([0, 2], dtype=torch.int64))
+    command._sync_tensor_sampler_state()
 
-    torch.testing.assert_close(command.time_steps, torch.tensor([7, 20, 8], dtype=torch.int32))
+    torch.testing.assert_close(command.time_steps, torch.tensor([7, 0, 8], dtype=torch.int32))
     torch.testing.assert_close(
-        command.current_clip_end_frames, torch.tensor([100, 90, 100], dtype=torch.int32)
+        command.current_clip_end_frames, torch.tensor([100, 100, 100], dtype=torch.int32)
     )
 
 
@@ -722,8 +719,6 @@ def test_tensor_clip_wrap_fails_closed_before_resampling_without_owner_transacti
     command._clip_end_frames_torch = torch.tensor([10], dtype=torch.int64)
     command._tensor_all_rows = torch.arange(3, dtype=torch.int64)
     command.cfg = SimpleNamespace(params=SimpleNamespace(truncate_on_clip_end=False))
-    command._tensor_post_compute_env_ids = None
-    command._tensor_resample_ingested = None
     command.robot = SimpleNamespace(reset_state_tensor_active=False)
     command._env = SimpleNamespace(
         termination_manager=SimpleNamespace(terminated=torch.tensor([False, False, False])),
@@ -731,11 +726,11 @@ def test_tensor_clip_wrap_fails_closed_before_resampling_without_owner_transacti
     )
 
     resampled: list[torch.Tensor] = []
-    command._resample_command = lambda rows: resampled.append(rows)
+    command._resample_command = lambda reset_mask: resampled.append(reset_mask)
     command._refresh_motion_torch = lambda *args, **kwargs: None
 
     with pytest.raises(RuntimeError, match="requires an active tensor reset transaction"):
-        command._update_command(None)
+        command._update_command()
 
     # Configuration is rejected before the sampler can advance the public frame
     # carrier or consume reset RNG/publish a replacement packet.

@@ -46,17 +46,19 @@ class joint_acc_l2(ManagerTermBase):
     def tensor_state_entity(self) -> str:
         return self._entity_name
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        rows = (
-            torch.arange(self.num_envs, dtype=torch.int64, device=self._device)
-            if env_ids is None
-            else torch.arange(self.num_envs, dtype=torch.int64, device=self._device)[env_ids]
-            if isinstance(env_ids, slice)
-            else env_ids.detach().to(dtype=torch.int64, device=self._device).reshape(-1)
-        )
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        if (
+            reset_mask.shape != (self.num_envs,)
+            or reset_mask.dtype != torch.bool
+            or reset_mask.device != self._device
+        ):
+            raise ValueError(
+                f"{self.name} reset mask must have shape {(self.num_envs,)}, "
+                f"bool dtype, and device {self._device}"
+            )
         joint_view = self._joint_view()
-        selected = joint_view.joint_vel.index_select(1, self._joint_index).index_select(0, rows)
-        self._previous.index_copy_(0, rows, selected)
+        velocity = joint_view.joint_vel.index_select(1, self._joint_index)
+        self._previous.copy_(torch.where(reset_mask[:, None], velocity, self._previous))
 
     def __call__(
         self,

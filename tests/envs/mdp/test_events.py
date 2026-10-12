@@ -11,6 +11,8 @@ import pytest
 import torch
 from unisim.backend.base import (
     BackendRootStateLayout,
+    PublicStateWidths,
+    SelectedResetPublication,
     SimBackend,
     TensorDataPlane,
     TensorExecution,
@@ -29,7 +31,6 @@ from unisim.dr.types import (
     DomainRandomizationCapabilities,
     IntervalRandomizationPlan,
     ResetRandomizationPayload,
-    TensorResetRandomizationPayload,
 )
 
 from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadSpec
@@ -46,7 +47,7 @@ class _CaptureEntity:
     def __init__(self, default_root_state: np.ndarray) -> None:
         self.default_root_state = default_root_state
         self._default_root_state_tensor: torch.Tensor | None = None
-        self.writes: list[tuple[np.ndarray, np.ndarray]] = []
+        self.writes: list[tuple[torch.Tensor, torch.Tensor]] = []
 
     @property
     def data(self) -> SimpleNamespace:
@@ -65,14 +66,13 @@ class _CaptureEntity:
             ).to(device=device)
         return self._default_root_state_tensor
 
-    def write_root_state_to_sim(
+    def write_root_state_tensor_to_sim(
         self,
         root_state: torch.Tensor,
-        env_ids: np.ndarray | None = None,
+        reset_mask: torch.Tensor,
     ) -> None:
-        assert env_ids is not None
         root = root_state.clone()
-        self.writes.append((root, env_ids.clone()))
+        self.writes.append((root, reset_mask.clone()))
 
 
 class _CaptureScene:
@@ -124,11 +124,11 @@ def test_uniform_root_state_applies_pinned_pose_velocity_and_origin_semantics() 
         dtype=np.float32,
     )
     env, entity = _capture_env(default_root_state=defaults, env_origins=origins)
-    ids = torch.tensor([2, 0], dtype=torch.int64)
+    reset_mask = torch.tensor([False, True, True])
 
     mdp.reset_root_state_uniform(
         env,
-        ids,
+        reset_mask,
         pose_range={
             "x": (1.0, 1.0),
             "y": (-2.0, -2.0),
@@ -146,20 +146,20 @@ def test_uniform_root_state_applies_pinned_pose_velocity_and_origin_semantics() 
     )
 
     assert len(entity.writes) == 1
-    root_state, written_ids = entity.writes[0]
-    np.testing.assert_array_equal(written_ids, ids)
+    root_state, written_mask = entity.writes[0]
+    torch.testing.assert_close(written_mask, reset_mask)
     np.testing.assert_allclose(
-        root_state[:, :3],
-        defaults[ids, :3] + [1.0, -2.0, 0.5] + origins[ids],
+        root_state[[0, 2], :3],
+        defaults[[0, 2], :3] + [1.0, -2.0, 0.5] + origins[[0, 2]],
     )
     np.testing.assert_allclose(
-        root_state[:, 3:7],
+        root_state[[0, 2], 3:7],
         [[0.5, 0.5, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5]],
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        root_state[:, 7:13],
-        defaults[ids, 7:13] + [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+        root_state[[0, 2], 7:13],
+        defaults[[0, 2], 7:13] + [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
     )
     np.testing.assert_array_equal(defaults[:, :3], [[1, 2, 3], [4, 5, 6], [7, 8, 9]])
 
@@ -167,10 +167,10 @@ def test_uniform_root_state_applies_pinned_pose_velocity_and_origin_semantics() 
 def test_generic_event_randomization_fails_closed_without_torch_rng() -> None:
     env, _entity = _capture_env()
     env.torch_rng = None
-    ids = torch.tensor([0, 1], dtype=torch.int64)
+    reset_mask = torch.tensor([True, True, False])
 
     with pytest.raises(RuntimeError, match="Manager-owned Torch generator"):
-        mdp.reset_root_state_uniform(env, ids, {"x": (0.1, 0.2)})
+        mdp.reset_root_state_uniform(env, reset_mask, {"x": (0.1, 0.2)})
 
 
 def test_uniform_root_state_uses_env_rng_and_preserves_single_env_shape() -> None:
@@ -178,26 +178,27 @@ def test_uniform_root_state_uses_env_rng_and_preserves_single_env_shape() -> Non
     velocity_range = {"x": (-2.0, 2.0), "roll": (-0.25, 0.25)}
     left, left_entity = _capture_env(seed=9)
     right, right_entity = _capture_env(seed=9)
-    ids = torch.tensor([1], dtype=torch.int64)
+    reset_mask = torch.tensor([False, True, False])
 
-    mdp.reset_root_state_uniform(left, ids, pose_range, velocity_range)
-    mdp.reset_root_state_uniform(right, ids, pose_range, velocity_range)
+    mdp.reset_root_state_uniform(left, reset_mask, pose_range, velocity_range)
+    mdp.reset_root_state_uniform(right, reset_mask, pose_range, velocity_range)
 
-    left_state, left_ids = left_entity.writes[0]
-    right_state, right_ids = right_entity.writes[0]
-    assert left_state.shape == (1, 13)
-    np.testing.assert_array_equal(left_ids, ids)
-    np.testing.assert_array_equal(right_ids, ids)
+    left_state, left_mask = left_entity.writes[0]
+    right_state, right_mask = right_entity.writes[0]
+    assert left_state.shape == (3, 13)
+    torch.testing.assert_close(left_mask, reset_mask)
+    torch.testing.assert_close(right_mask, reset_mask)
     np.testing.assert_array_equal(left_state, right_state)
 
 
 def test_uniform_root_state_none_ids_targets_all_environments() -> None:
     env, entity = _capture_env()
 
-    mdp.reset_root_state_uniform(env, None, pose_range={})
+    reset_mask = torch.ones(3, dtype=torch.bool)
+    mdp.reset_root_state_uniform(env, reset_mask, pose_range={})
 
-    root_state, ids = entity.writes[0]
-    np.testing.assert_array_equal(ids, np.arange(3, dtype=np.int32))
+    root_state, written_mask = entity.writes[0]
+    torch.testing.assert_close(written_mask, reset_mask)
     assert root_state.shape == (3, 13)
 
 
@@ -290,6 +291,9 @@ class _Backend:
     def get_init_qvel(self) -> np.ndarray:
         return self.init_qvel.copy()
 
+    def get_public_state_widths(self) -> PublicStateWidths:
+        return PublicStateWidths(len(self.default_qpos), len(self.init_qvel))
+
     def get_dof_pos(self) -> np.ndarray:
         return np.zeros((self.num_envs, 3))
 
@@ -346,8 +350,23 @@ class _Backend:
         )
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
-        # Host-only fake: no tensor lifecycle, no device reset randomization.
-        return TensorLifecycleCapabilities(execution=TensorExecution.UNSUPPORTED)
+        return TensorLifecycleCapabilities(
+            execution=TensorExecution.DEVICE_RESIDENT,
+            state_views=True,
+            state_fields=frozenset({"qpos", "qvel"}),
+            sensor_views=False,
+            stepping=True,
+            selected_reset=True,
+            mask_selected_reset=True,
+            mask_selected_reset_full_refresh=True,
+            reset_randomization=True,
+            process_topology=TensorProcessTopology.IN_PROCESS,
+            data_plane=TensorDataPlane.DIRECT,
+            stream_event_ownership="fake synchronous stream",
+            torch_devices=("cpu",),
+            device_reset_randomization=True,
+            selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
+        )
 
     def get_reset_term_default(self, term: str) -> np.ndarray:
         if not self.get_dr_capabilities().supports_reset_term(term):
@@ -396,6 +415,11 @@ class _Backend:
     ) -> None:
         self.set_state_calls.append((env_ids.copy(), qpos.copy(), qvel.copy()))
         self.randomization_calls.append(randomization)
+
+    def set_state_tensor_mask(self, reset_mask, qpos, qvel, randomization=None, **kwargs) -> None:
+        assert randomization is None
+        self.set_state_calls.append((reset_mask.clone(), qpos.clone(), qvel.clone()))
+        self.randomization_calls.append(None)
 
 
 def _transaction_env(
@@ -453,121 +477,107 @@ def _transaction_env(
 
 def test_uniform_root_state_composes_in_one_reset_transaction_commit() -> None:
     env, backend, transaction = _transaction_env()
-    active_ids = torch.tensor([0, 2], dtype=torch.int64)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    reset_mask = torch.tensor([True, False, True])
 
-    with transaction.scoped(active_ids):
-        mdp.reset_scene_to_default(env, active_ids)
+    with transaction.scoped_device_event_tensor(reset_mask):
+        mdp.reset_scene_to_default(env, reset_mask)
         mdp.reset_root_state_uniform(
             env,
-            np.asarray([2], dtype=np.int32),
+            reset_mask,
             pose_range={"x": (1.0, 1.0)},
             velocity_range={"x": (0.5, 0.5)},
         )
         assert backend.set_state_calls == []
 
     assert len(backend.set_state_calls) == 1
-    ids, qpos, qvel = backend.set_state_calls[0]
-    np.testing.assert_array_equal(ids, active_ids)
-    np.testing.assert_array_equal(qpos[0], backend.default_qpos)
-    np.testing.assert_allclose(qpos[1], backend.default_qpos + [1.0, 0, 0, 0, 0, 0, 0])
-    np.testing.assert_array_equal(qvel[0], backend.init_qvel)
-    np.testing.assert_allclose(qvel[1], backend.init_qvel + [0.5, 0, 0, 0, 0, 0])
+    committed_mask, qpos, qvel = backend.set_state_calls[0]
+    torch.testing.assert_close(committed_mask, reset_mask)
+    np.testing.assert_array_equal(qpos[0], backend.default_qpos + [1.0, 0, 0, 0, 0, 0, 0])
+    np.testing.assert_array_equal(qpos[2], backend.default_qpos + [1.0, 0, 0, 0, 0, 0, 0])
+    np.testing.assert_array_equal(qvel[0], backend.init_qvel + [0.5, 0, 0, 0, 0, 0])
+    np.testing.assert_array_equal(qvel[2], backend.init_qvel + [0.5, 0, 0, 0, 0, 0])
 
 
-def test_pd_gains_event_uses_selector_scale_and_exactly_once_reset_payload() -> None:
-    env, backend, transaction = _transaction_env(rng_seed=11)
-    manager = EventManager(
-        {
-            "randomize_pd": EventTermCfg(
-                func=mdp.pd_gains,
-                mode="reset",
-                params={
-                    "kp_range": (2.0, 2.0),
-                    "kd_range": (3.0, 3.0),
-                    "asset_cfg": SceneEntityCfg(
-                        "robot",
-                        actuator_names=["a2", "a0"],
-                        preserve_order=True,
-                    ),
-                },
-            )
-        },
-        env,
-    )
-    ids = torch.tensor([0, 2], dtype=torch.int64)
+def test_pd_gains_reset_randomization_fails_at_construction() -> None:
+    env, backend, _ = _transaction_env(rng_seed=11)
 
-    with transaction.scoped(ids):
-        manager.apply(mode="reset", env_ids=ids, global_env_step_count=0)
-        assert backend.set_state_calls == []
-
-    assert len(backend.set_state_calls) == 1
-    payload = backend.randomization_calls[0]
-    assert payload is not None
-    np.testing.assert_array_equal(payload.kp, [[20.0, 20.0, 60.0]] * 2)
-    np.testing.assert_array_equal(payload.kd, [[3.0, 2.0, 9.0]] * 2)
+    with pytest.raises(
+        NotImplementedError,
+        match="reset term 'randomize_pd'.*no fixed-width mask commit boundary",
+    ):
+        EventManager(
+            {
+                "randomize_pd": EventTermCfg(
+                    func=mdp.pd_gains,
+                    mode="reset",
+                    params={"kp_range": (2.0, 2.0), "kd_range": (3.0, 3.0)},
+                )
+            },
+            env,
+        )
+    assert backend.set_state_calls == []
 
 
-def test_pd_gains_event_supports_log_uniform_absolute_sampling() -> None:
-    env, backend, transaction = _transaction_env(rng_seed=11)
-    manager = EventManager(
-        {
-            "gain": EventTermCfg(
-                func=mdp.pd_gains,
-                mode="reset",
-                params={
-                    "kp_range": (0.25, 4.0),
-                    "kd_range": (0.5, 2.0),
-                    "distribution": "log_uniform",
-                    "operation": "abs",
-                },
-            )
-        },
-        env,
-    )
-    ids = torch.arange(3, dtype=torch.int64)
+@pytest.mark.parametrize(
+    ("func", "params"),
+    [
+        (
+            mdp.randomize_rigid_body_mass,
+            {
+                "asset_cfg": SceneEntityCfg("robot", body_names=("base",)),
+                "mass_distribution_params": (1.5, 1.5),
+                "operation": "scale",
+                "recompute_inertia": False,
+            },
+        ),
+        (
+            mdp.randomize_rigid_body_com,
+            {
+                "asset_cfg": SceneEntityCfg("robot", body_names=("base",)),
+                "com_range": {"x": (0.1, 0.1)},
+            },
+        ),
+        (
+            mdp.randomize_physics_scene_gravity,
+            {
+                "gravity_distribution_params": (
+                    [0.0, 0.0, -10.0],
+                    [0.0, 0.0, -10.0],
+                ),
+                "operation": "abs",
+            },
+        ),
+        (
+            mdp.joint_armature,
+            {"ranges": (2.0, 2.0), "operation": "scale"},
+        ),
+        (
+            mdp.geom_friction,
+            {"ranges": (2.0, 2.0), "operation": "scale"},
+        ),
+    ],
+)
+def test_reset_dr_terms_fail_at_construction(func, params: dict[str, Any]) -> None:
+    env, backend, _ = _transaction_env()
 
-    with transaction.scoped(ids):
-        manager.apply(mode="reset", env_ids=ids, global_env_step_count=0)
-
-    payload = backend.randomization_calls[0]
-    assert payload is not None and payload.kp is not None and payload.kd is not None
-    assert np.all((payload.kp >= 0.25) & (payload.kp <= 4.0))
-    assert np.all((payload.kd >= 0.5) & (payload.kd <= 2.0))
-    assert np.unique(payload.kp[0]).size > 1
+    with pytest.raises(
+        NotImplementedError,
+        match="uses reset randomization.*no fixed-width mask commit boundary",
+    ):
+        EventManager({"field": EventTermCfg(func=func, mode="reset", params=params)}, env)
+    assert backend.set_state_calls == []
 
 
-def test_pd_gains_event_uses_selected_per_world_default_rows() -> None:
-    env, backend, transaction = _transaction_env(
-        per_world_defaults=True,
-        rng_seed=11,
-    )
-    manager = EventManager(
-        {
-            "randomize_pd": EventTermCfg(
-                func=mdp.pd_gains,
-                mode="reset",
-                params={
-                    "kp_range": (2.0, 2.0),
-                    "kd_range": (3.0, 3.0),
-                    "asset_cfg": SceneEntityCfg(
-                        "robot",
-                        actuator_names=["a2", "a0"],
-                        preserve_order=True,
-                    ),
-                },
-            )
-        },
-        env,
-    )
-    ids = torch.tensor([0, 2], dtype=torch.int64)
+def test_randomize_body_mass_inertia_reset_fails_at_construction() -> None:
+    env, backend, _ = _mass_inertia_env()
 
-    with transaction.scoped(ids):
-        manager.apply(mode="reset", env_ids=ids, global_env_step_count=0)
-
-    payload = backend.randomization_calls[-1]
-    assert payload is not None
-    np.testing.assert_allclose(payload.kp, [[20.0, 20.0, 60.0], [24.0, 24.0, 72.0]])
-    np.testing.assert_allclose(payload.kd, [[3.0, 2.0, 9.0], [3.6, 2.4, 10.8]])
+    with pytest.raises(
+        NotImplementedError,
+        match="reset term 'mass_inertia'.*no fixed-width mask commit boundary",
+    ):
+        _mass_inertia_manager(env)
+    assert backend.set_state_calls == []
 
 
 @pytest.mark.parametrize(
@@ -609,162 +619,6 @@ def test_pd_gains_missing_backend_capability_fails_during_manager_construction()
     assert backend.set_state_calls == []
 
 
-def test_reset_randomization_terms_compose_with_state_and_gains_exactly_once() -> None:
-    env, backend, transaction = _transaction_env(rng_seed=13)
-    asset_cfg = SceneEntityCfg("robot", body_names=("base",))
-    manager = EventManager(
-        {
-            "mass": EventTermCfg(
-                func=mdp.randomize_rigid_body_mass,
-                mode="reset",
-                params={
-                    "asset_cfg": asset_cfg,
-                    "mass_distribution_params": (1.5, 1.5),
-                    "operation": "scale",
-                    "recompute_inertia": False,
-                },
-            ),
-            "com": EventTermCfg(
-                func=mdp.randomize_rigid_body_com,
-                mode="reset",
-                params={
-                    "asset_cfg": asset_cfg,
-                    "com_range": {"x": (0.1, 0.1), "z": (-0.2, -0.2)},
-                },
-            ),
-            "gravity": EventTermCfg(
-                func=mdp.randomize_physics_scene_gravity,
-                mode="reset",
-                params={
-                    "gravity_distribution_params": (
-                        [0.0, 0.0, -10.0],
-                        [0.0, 0.0, -10.0],
-                    ),
-                    "operation": "abs",
-                },
-            ),
-            "gains": EventTermCfg(
-                func=mdp.pd_gains,
-                mode="reset",
-                params={"kp_range": (2.0, 2.0), "kd_range": (3.0, 3.0)},
-            ),
-        },
-        env,
-    )
-    ids = torch.tensor([0, 2], dtype=torch.int64)
-
-    with transaction.scoped(ids):
-        mdp.reset_scene_to_default(env, ids)
-        manager.apply(mode="reset", env_ids=ids, global_env_step_count=0)
-        assert backend.set_state_calls == []
-
-    assert len(backend.set_state_calls) == 1
-    payload = backend.randomization_calls[0]
-    assert payload is not None
-    assert payload.body_mass is not None
-    assert payload.body_ipos is not None
-    assert payload.gravity is not None
-    assert payload.kp is not None
-    assert payload.kd is not None
-    np.testing.assert_allclose(payload.body_mass, [[15.0], [15.0]])
-    np.testing.assert_allclose(payload.body_ipos, [[[0.1, 0.0, -0.2]]] * 2)
-    np.testing.assert_allclose(payload.gravity, [[0.0, 0.0, -10.0]] * 2)
-    np.testing.assert_allclose(payload.kp, [[20.0, 40.0, 60.0]] * 2)
-    np.testing.assert_allclose(payload.kd, [[3.0, 6.0, 9.0]] * 2)
-
-
-def test_model_field_terms_use_cached_selectors_and_one_dense_reset_payload() -> None:
-    env, backend, transaction = _transaction_env(rng_seed=23)
-    manager = EventManager(
-        {
-            "armature": EventTermCfg(
-                func=mdp.joint_armature,
-                mode="reset",
-                params={
-                    "asset_cfg": SceneEntityCfg(
-                        "robot",
-                        joint_names=("j2", "j0"),
-                        preserve_order=True,
-                    ),
-                    "ranges": (2.0, 2.0),
-                    "operation": "scale",
-                },
-            ),
-            "friction": EventTermCfg(
-                func=mdp.geom_friction,
-                mode="reset",
-                params={
-                    "asset_cfg": SceneEntityCfg("robot", geom_names=".*"),
-                    "ranges": {"floor": (2.0, 2.0), "base_.*": (3.0, 3.0)},
-                    "operation": "scale",
-                    "shared_random": True,
-                },
-            ),
-        },
-        env,
-    )
-    ids = torch.tensor([0, 2], dtype=torch.int64)
-
-    with transaction.scoped(ids):
-        mdp.reset_scene_to_default(env, ids)
-        manager.apply(mode="reset", env_ids=ids, global_env_step_count=0)
-        assert backend.set_state_calls == []
-
-    assert len(backend.set_state_calls) == 1
-    payload = backend.randomization_calls[0]
-    assert payload is not None
-    assert payload.dof_armature is not None
-    assert payload.geom_friction is not None
-    np.testing.assert_allclose(
-        payload.dof_armature,
-        [[0.0] * 6 + [2.0, 2.0, 6.0]] * 2,
-    )
-    expected_friction = backend.geom_friction.copy()
-    expected_friction[0, 0] *= 2.0
-    expected_friction[2, 0] *= 3.0
-    np.testing.assert_allclose(payload.geom_friction, [expected_friction] * 2)
-
-
-def test_model_field_term_uses_selected_per_world_default_rows() -> None:
-    env, backend, transaction = _transaction_env(
-        per_world_defaults=True,
-        rng_seed=23,
-    )
-    manager = EventManager(
-        {
-            "armature": EventTermCfg(
-                func=mdp.joint_armature,
-                mode="reset",
-                params={
-                    "asset_cfg": SceneEntityCfg(
-                        "robot",
-                        joint_names=("j2", "j0"),
-                        preserve_order=True,
-                    ),
-                    "ranges": (2.0, 2.0),
-                    "operation": "scale",
-                },
-            )
-        },
-        env,
-    )
-    ids = torch.tensor([0, 2], dtype=torch.int64)
-
-    with transaction.scoped(ids):
-        mdp.reset_scene_to_default(env, ids)
-        manager.apply(mode="reset", env_ids=ids, global_env_step_count=0)
-
-    payload = backend.randomization_calls[-1]
-    assert payload is not None and payload.dof_armature is not None
-    np.testing.assert_allclose(
-        payload.dof_armature,
-        [
-            [0.0] * 6 + [2.0, 2.0, 6.0],
-            [0.0] * 6 + [2.4, 2.4, 7.2],
-        ],
-    )
-
-
 def test_model_field_aliases_are_identical_and_capability_gaps_fail_cold() -> None:
     assert mdp.dof_armature is mdp.joint_armature
     env, backend, _ = _transaction_env(randomization_supported=False)
@@ -794,20 +648,13 @@ def test_model_field_aliases_are_identical_and_capability_gaps_fail_cold() -> No
     ],
 )
 def test_model_field_invalid_requests_fail_explicitly(func, params, match: str) -> None:
-    env, backend, transaction = _transaction_env()
+    env, backend, _ = _transaction_env()
     if func is mdp.geom_friction:
         with pytest.raises(ValueError, match=match):
             EventManager({"field": EventTermCfg(func=func, mode="reset", params=params)}, env)
     else:
-        manager = EventManager(
-            {"field": EventTermCfg(func=func, mode="reset", params=params)},
-            env,
-        )
-        ids = torch.tensor([0, 1], dtype=torch.int64)
-        with pytest.raises(ValueError, match=match):
-            with transaction.scoped(ids):
-                mdp.reset_scene_to_default(env, ids)
-                manager.apply(mode="reset", env_ids=ids, global_env_step_count=0)
+        with pytest.raises(NotImplementedError, match="uses reset randomization"):
+            EventManager({"field": EventTermCfg(func=func, mode="reset", params=params)}, env)
     assert backend.set_state_calls == []
 
 
@@ -847,90 +694,6 @@ def test_mass_randomization_capability_gaps_fail_during_construction(
     assert backend.set_state_calls == []
 
 
-def test_reset_randomization_sparse_rows_abort_without_backend_mutation() -> None:
-    env, backend, transaction = _transaction_env()
-    manager = EventManager(
-        {
-            "gravity": EventTermCfg(
-                func=mdp.randomize_physics_scene_gravity,
-                mode="reset",
-                params={
-                    "gravity_distribution_params": ([0.0, 0.0, -10.0],) * 2,
-                    "operation": "abs",
-                },
-            )
-        },
-        env,
-    )
-    cfg = manager.get_term_cfg("gravity")
-    ids = torch.tensor([0, 1], dtype=torch.int64)
-
-    with pytest.raises(RuntimeError, match=r"gravity payload.*sparse rows.*missing env IDs \[1\]"):
-        with transaction.scoped(ids):
-            mdp.reset_scene_to_default(env, ids)
-            cfg.func(env, np.array([0], dtype=np.int32), **cfg.params)
-    assert backend.set_state_calls == []
-
-
-def test_min_step_count_gating_reuses_committed_field_values() -> None:
-    env, backend, transaction = _transaction_env(rng_seed=29)
-    manager = EventManager(
-        {
-            "mass": EventTermCfg(
-                func=mdp.randomize_rigid_body_mass,
-                mode="reset",
-                min_step_count_between_reset=100,
-                params={
-                    "asset_cfg": SceneEntityCfg("robot", body_names=("base",)),
-                    "mass_distribution_params": (0.9, 1.1),
-                    "operation": "scale",
-                    "recompute_inertia": False,
-                },
-            )
-        },
-        env,
-    )
-    first_rows = torch.tensor([0, 1], dtype=torch.int64)
-    with transaction.scoped(first_rows):
-        mdp.reset_scene_to_default(env, first_rows)
-        manager.apply(mode="reset", env_ids=first_rows, global_env_step_count=0)
-    first = backend.randomization_calls[-1]
-    assert first is not None and first.body_mass is not None
-
-    # Env 2 has never triggered, so the first-trigger override fires it while
-    # envs 0 and 1 stay gated; their payload rows reuse committed values.
-    rows = torch.tensor([0, 1, 2], dtype=torch.int64)
-    with transaction.scoped(rows):
-        mdp.reset_scene_to_default(env, rows)
-        manager.apply(mode="reset", env_ids=rows, global_env_step_count=50)
-    second = backend.randomization_calls[-1]
-    assert second is not None and second.body_mass is not None
-    np.testing.assert_allclose(second.body_mass[:2], first.body_mass)
-    torch.testing.assert_close(
-        manager._reset_term_last_triggered_step_id[0], torch.tensor([0, 0, 50], dtype=torch.int64)
-    )
-
-    # Fully gated resets skip the field entirely; the backend keeps the
-    # previously applied per-env values, so no dense payload is needed.
-    with transaction.scoped(first_rows):
-        mdp.reset_scene_to_default(env, first_rows)
-        manager.apply(mode="reset", env_ids=first_rows, global_env_step_count=60)
-    third = backend.randomization_calls[-1]
-    assert third is None or third.body_mass is None
-
-    # Once enough steps elapsed the gate reopens and the term resamples.
-    with transaction.scoped(first_rows):
-        mdp.reset_scene_to_default(env, first_rows)
-        manager.apply(mode="reset", env_ids=first_rows, global_env_step_count=200)
-    fourth = backend.randomization_calls[-1]
-    assert fourth is not None and fourth.body_mass is not None
-    torch.testing.assert_close(
-        manager._reset_term_last_triggered_step_id[0],
-        torch.tensor([200, 200, 50], dtype=torch.int64),
-    )
-    assert not np.allclose(fourth.body_mass, second.body_mass[:2])
-
-
 def test_startup_mass_and_com_sample_once_and_persist_across_resets() -> None:
     env, backend, transaction = _transaction_env(rng_seed=61)
     uniform_calls = 0
@@ -968,7 +731,7 @@ def test_startup_mass_and_com_sample_once_and_persist_across_resets() -> None:
     )
     all_rows = torch.arange(backend.num_envs, dtype=torch.int64)
 
-    with transaction.scoped(all_rows):
+    with transaction.scoped_startup(all_rows):
         manager.apply(mode="startup", env_ids=all_rows)
         assert backend.set_state_calls == []
 
@@ -981,11 +744,12 @@ def test_startup_mass_and_com_sample_once_and_persist_across_resets() -> None:
     np.testing.assert_allclose(startup.body_ipos, [[[0.1, 0.0, -0.2]]] * backend.num_envs)
     assert uniform_calls == 2, "mass and COM must each sample exactly once"
 
-    selected = torch.tensor([1, 2], dtype=torch.int64)
-    with transaction.scoped(selected):
-        # Startup terms are not reset terms. An ordinary selected-row reset must
-        # not resample or recommit their model fields.
-        mdp.reset_scene_to_default(env, selected)
+    selected_mask = torch.tensor([False, True, True])
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    with transaction.scoped_device_event_tensor(selected_mask):
+        # Startup terms are not reset terms. A masked state reset must not
+        # resample or recommit their model fields.
+        mdp.reset_scene_to_default(env, selected_mask)
     assert len(backend.set_state_calls) == 2
     replay = backend.randomization_calls[-1]
     assert replay is None or replay.body_mass is None
@@ -1034,38 +798,6 @@ def test_startup_capable_model_field_terms_reject_other_modes(mode: str) -> None
             env,
         )
     assert backend.set_state_calls == []
-
-
-def test_min_step_count_gating_applies_to_pd_gains_payload_rows() -> None:
-    env, backend, transaction = _transaction_env(rng_seed=41)
-    manager = EventManager(
-        {
-            "gains": EventTermCfg(
-                func=mdp.pd_gains,
-                mode="reset",
-                min_step_count_between_reset=50,
-                params={"kp_range": (1.5, 1.5), "kd_range": (2.5, 2.5)},
-            )
-        },
-        env,
-    )
-    first_rows = torch.tensor([0, 1], dtype=torch.int64)
-    with transaction.scoped(first_rows):
-        manager.apply(mode="reset", env_ids=first_rows, global_env_step_count=0)
-    first = backend.randomization_calls[-1]
-    assert first is not None and first.kp is not None and first.kd is not None
-
-    rows = torch.tensor([0, 1, 2], dtype=torch.int64)
-    with transaction.scoped(rows):
-        mdp.reset_scene_to_default(env, rows)
-        manager.apply(mode="reset", env_ids=rows, global_env_step_count=10)
-    second = backend.randomization_calls[-1]
-    assert second is not None and second.kp is not None and second.kd is not None
-    np.testing.assert_allclose(second.kp[:2], first.kp)
-    np.testing.assert_allclose(second.kd[:2], first.kd)
-    torch.testing.assert_close(
-        manager._reset_term_last_triggered_step_id[0], torch.tensor([0, 0, 10], dtype=torch.int64)
-    )
 
 
 def test_apply_body_impulse_lifecycle_stages_sustains_and_expires() -> None:
@@ -1178,9 +910,9 @@ def test_apply_body_impulse_reset_clears_active_wrench() -> None:
     manager.apply(mode="step", dt=0.02)
     assert len(backend.interval_plans) == 1
 
-    manager.reset(torch.tensor([1], dtype=torch.int64))
+    manager.reset(torch.tensor([False, True, False]))
     assert len(backend.interval_plans) == 2
-    np.testing.assert_allclose(backend.interval_plans[1].body_force[:, 0], 0.0)
+    np.testing.assert_allclose(backend.interval_plans[1].body_force[[1], 0], 0.0)
 
     manager.apply(mode="step", dt=0.02)
     sustained = backend.interval_plans[-1].body_force
@@ -1381,8 +1113,7 @@ def test_uniform_root_state_fixed_or_mocap_capability_fails_closed() -> None:
         NotImplementedError,
         match="reset_root_state_uniform.*entity 'robot'.*fixed-base/mocap.*backend 'fake'",
     ):
-        with transaction.scoped(torch.tensor([1], dtype=torch.int64)):
-            mdp.reset_root_state_uniform(env, np.asarray([1], dtype=np.int32), pose_range={})
+        mdp.reset_root_state_uniform(env, torch.tensor([False, True, False]), pose_range={})
 
     assert backend.set_state_calls == []
 
@@ -1401,7 +1132,7 @@ def test_uniform_root_state_invalid_ranges_fail_before_write(
     env, entity = _capture_env()
 
     with pytest.raises(ValueError, match=message):
-        mdp.reset_root_state_uniform(env, np.asarray([0], dtype=np.int32), pose_range)
+        mdp.reset_root_state_uniform(env, torch.tensor([True, False, False]), pose_range)
 
     assert entity.writes == []
 
@@ -1417,8 +1148,9 @@ class _BiasEntity:
         )
         self.data = self
 
-    def update_encoder_bias_tensor(self, rows, columns, values) -> None:
-        self._bias_tensor[rows[:, None], columns[None, :]] = values
+    def update_encoder_bias_tensor_mask(self, reset_mask, columns, values) -> None:
+        current = self._bias_tensor[:, columns]
+        self._bias_tensor[:, columns] = torch.where(reset_mask[:, None], values, current)
 
     @property
     def encoder_bias(self) -> np.ndarray:
@@ -1472,11 +1204,7 @@ def test_randomize_encoder_bias_samples_selected_joints_within_range() -> None:
         env,
     )
 
-    manager.apply(
-        mode="reset",
-        env_ids=torch.tensor([0, 2], dtype=torch.int64),
-        global_env_step_count=0,
-    )
+    manager.apply_reset(torch.tensor([True, False, True]), global_env_step_count=0)
 
     bias = env.scene["robot"].data.encoder_bias
     assert bias.shape == (3, 4)
@@ -1503,11 +1231,7 @@ def test_randomize_encoder_bias_fails_closed_without_torch_control_plane() -> No
     )
 
     with pytest.raises(NotImplementedError, match="Torch control plane"):
-        manager.apply(
-            mode="reset",
-            env_ids=torch.tensor([0, 2], dtype=torch.int64),
-            global_env_step_count=0,
-        )
+        manager.apply_reset(torch.tensor([True, False, True]), global_env_step_count=0)
 
 
 def test_randomize_encoder_bias_rejects_invalid_cfg_at_construction() -> None:
@@ -1556,38 +1280,6 @@ def test_randomize_encoder_bias_rejects_invalid_cfg_at_construction() -> None:
             },
             env,
         )
-
-
-def test_rigid_body_com_event_consumes_live_params_between_applies() -> None:
-    """Staged CoM-range curricula update the live term params; the next reset
-    application must sample from the widened range without rebuilding the term."""
-    env, backend, transaction = _transaction_env(rng_seed=17)
-    asset_cfg = SceneEntityCfg("robot", body_names=("base",))
-    manager = EventManager(
-        {
-            "com": EventTermCfg(
-                func=mdp.randomize_rigid_body_com,
-                mode="reset",
-                params={"asset_cfg": asset_cfg, "com_range": {"x": (0.1, 0.1)}},
-            )
-        },
-        env,
-    )
-    ids = torch.tensor([0, 1], dtype=torch.int64)
-
-    with transaction.scoped(ids):
-        manager.apply(mode="reset", env_ids=ids, global_env_step_count=0)
-    first = backend.randomization_calls[-1].body_ipos
-    assert first is not None
-    np.testing.assert_allclose(first, [[[0.1, 0.0, 0.0]]] * 2)
-
-    # A curriculum stage widens the live term params.
-    manager.get_term_cfg("com").params["com_range"] = {"x": (0.5, 0.5), "z": (-0.2, -0.2)}
-    with transaction.scoped(ids):
-        manager.apply(mode="reset", env_ids=ids, global_env_step_count=1)
-    second = backend.randomization_calls[-1].body_ipos
-    assert second is not None
-    np.testing.assert_allclose(second, [[[0.5, 0.0, -0.2]]] * 2)
 
 
 def test_manager_model_field_terms_do_not_import_engine_packages() -> None:
@@ -1720,89 +1412,11 @@ def _mass_inertia_manager(env: ManagerBasedRlEnv) -> EventManager:
     )
 
 
-def test_randomize_body_mass_inertia_scales_once_and_replays_cached_factor() -> None:
-    env, backend, transaction = _mass_inertia_env(rng_seed=11)
-    manager = _mass_inertia_manager(env)
-    ids = torch.tensor([0, 2], dtype=torch.int64)
-
-    with transaction.scoped(ids):
-        mdp.reset_scene_to_default(env, ids)
-        manager.apply(mode="reset", env_ids=ids, global_env_step_count=0)
-        assert backend.set_state_calls == []
-
-    assert len(backend.set_state_calls) == 1
-    payload = backend.randomization_calls[0]
-    assert payload is not None
-    assert payload.body_mass is not None
-    assert payload.body_inertia is not None
-    # World-body rows pass through untouched; the selected body is scaled by one
-    # shared log-uniform factor per env.
-    scales = payload.body_mass[:, 1] / 10.0
-    assert np.all(scales >= 0.95)
-    assert np.all(scales <= 1.05)
-    np.testing.assert_allclose(payload.body_mass[:, 0], 0.0)
-    np.testing.assert_allclose(payload.body_inertia[:, 0, :], 0.0)
-    np.testing.assert_allclose(
-        payload.body_inertia[:, 1, :],
-        scales[:, None] * np.array([0.1, 0.2, 0.3]),
-        rtol=1e-12,
-    )
-
-    # The factor is sampled once (startup semantics): a later reset replays the
-    # cached per-env values instead of resampling.
-    second_ids = torch.tensor([2], dtype=torch.int64)
-    with transaction.scoped(second_ids):
-        mdp.reset_scene_to_default(env, second_ids)
-        manager.apply(mode="reset", env_ids=second_ids, global_env_step_count=1)
-    replay = backend.randomization_calls[1]
-    assert replay is not None
-    assert replay.body_mass is not None
-    np.testing.assert_allclose(replay.body_mass[0, 1], payload.body_mass[1, 1])
-    np.testing.assert_allclose(replay.body_inertia[0, 1], payload.body_inertia[1, 1])
-
-
 def test_randomize_body_mass_inertia_capability_gap_fails_during_construction() -> None:
     env, backend, _ = _mass_inertia_env(inertia_supported=False)
     with pytest.raises(NotImplementedError, match="body_inertia randomization.*unsupported"):
         _mass_inertia_manager(env)
     assert backend.set_state_calls == []
-
-
-def test_randomize_body_mass_inertia_uses_selected_per_world_baselines() -> None:
-    env, backend, transaction = _mass_inertia_env(
-        per_world_defaults=True,
-        rng_seed=11,
-    )
-    manager = EventManager(
-        {
-            "mass_inertia": EventTermCfg(
-                func=mdp.randomize_body_mass_inertia,
-                mode="reset",
-                params={
-                    "asset_cfg": SceneEntityCfg("robot", body_names=("base",)),
-                    "scale_range": (2.0, 2.0),
-                },
-            )
-        },
-        env,
-    )
-    ids = torch.tensor([0, 2], dtype=torch.int64)
-
-    with transaction.scoped(ids):
-        mdp.reset_scene_to_default(env, ids)
-        manager.apply(mode="reset", env_ids=ids, global_env_step_count=0)
-
-    payload = backend.randomization_calls[-1]
-    assert payload is not None
-    assert payload.body_mass is not None
-    assert payload.body_inertia is not None
-    np.testing.assert_allclose(payload.body_mass[:, 1], [20.0, 22.0])
-    np.testing.assert_allclose(payload.body_mass[:, 0], 0.0)
-    np.testing.assert_allclose(
-        payload.body_inertia[:, 1, :],
-        [[0.2, 0.4, 0.6], [0.24, 0.44, 0.64]],
-    )
-    np.testing.assert_allclose(payload.body_inertia[:, 0, :], 0.0)
 
 
 @pytest.mark.parametrize(
@@ -1973,86 +1587,3 @@ def _dr_event_cfg() -> dict[str, EventTermCfg]:
             },
         ),
     }
-
-
-@pytest.mark.parametrize("device_capable", [False, True])
-def test_tensor_reset_terms_fall_back_to_host_payload_without_cuda_rows(
-    device_capable: bool,
-) -> None:
-    # CPU rows (or a missing capability flag) keep the NumPy staging path even
-    # inside a device tensor reset: the commit carries a host payload.
-    env, backend, transaction = _tensor_dr_env(
-        device_reset_randomization=device_capable,
-        device=torch.device("cpu"),
-    )
-    manager = EventManager(_dr_event_cfg(), env)
-    rows = torch.tensor([0, 2], dtype=torch.int64)
-
-    with transaction.scoped_device_event_tensor(rows):
-        manager.apply(mode="reset", env_ids=rows, global_env_step_count=0)
-
-    assert len(backend.tensor_reset_calls) == 1
-    randomization = backend.tensor_reset_calls[0][3]
-    assert isinstance(randomization, ResetRandomizationPayload)
-    assert not isinstance(randomization, TensorResetRandomizationPayload)
-    assert randomization.body_mass is not None
-    assert randomization.body_ipos is not None
-    assert randomization.geom_friction is not None
-    assert randomization.kp is not None and randomization.kd is not None
-    assert np.all((randomization.body_mass[:, 0] >= 8.0) & (randomization.body_mass[:, 0] <= 12.0))
-    np.testing.assert_allclose(randomization.kp[:, 0], 20.0)
-    np.testing.assert_allclose(randomization.kd[:, 0], 2.0)
-
-
-@requires_cuda
-def test_tensor_reset_terms_stage_device_randomization_payload() -> None:
-    device = torch.device("cuda")
-    env, backend, transaction = _tensor_dr_env(
-        device_reset_randomization=True,
-        device=device,
-    )
-    manager = EventManager(_dr_event_cfg(), env)
-    rows = torch.tensor([0, 2], dtype=torch.int64, device=device)
-
-    with transaction.scoped_device_event_tensor(rows):
-        manager.apply(mode="reset", env_ids=rows, global_env_step_count=0)
-
-    assert len(backend.tensor_reset_calls) == 1
-    committed_rows, _qpos, _qvel, randomization = backend.tensor_reset_calls[0]
-    torch.testing.assert_close(committed_rows, rows)
-    assert isinstance(randomization, TensorResetRandomizationPayload)
-
-    body_mass = randomization.body_mass
-    assert isinstance(body_mass, torch.Tensor) and body_mass.is_cuda
-    assert body_mass.shape == (2, 1)
-    assert bool(((body_mass >= 8.0) & (body_mass <= 12.0)).all())
-
-    body_ipos = randomization.body_ipos
-    assert isinstance(body_ipos, torch.Tensor) and body_ipos.is_cuda
-    assert body_ipos.shape == (2, 1, 3)
-    assert bool(((body_ipos[..., 0] >= -0.05) & (body_ipos[..., 0] <= 0.05)).all())
-    torch.testing.assert_close(body_ipos[..., 1:], torch.zeros_like(body_ipos[..., 1:]))
-
-    geom_friction = randomization.geom_friction
-    assert isinstance(geom_friction, torch.Tensor) and geom_friction.is_cuda
-    assert geom_friction.shape == (2, 3, 3)
-    tangent = geom_friction[..., 0]
-    assert bool(((tangent >= 0.3) & (tangent <= 1.2)).all())
-    # shared_random: one grouped sample per row across all selected geoms.
-    torch.testing.assert_close(tangent, tangent[:, :1].expand_as(tangent))
-    # Untouched axes keep the backend defaults.
-    default_rest = torch.tensor([[0.01, 0.001], [0.02, 0.002], [0.03, 0.003]], device=device)
-    torch.testing.assert_close(geom_friction[..., 1:], default_rest.expand(2, 3, 2))
-
-    kp = randomization.kp
-    kd = randomization.kd
-    assert isinstance(kp, torch.Tensor) and isinstance(kd, torch.Tensor)
-    assert kp.is_cuda and kd.is_cuda
-    assert kp.shape == (2, 3) and kd.shape == (2, 3)
-    # Disjoint actuator columns from two terms merge in one dense commit.
-    torch.testing.assert_close(kp[:, 0], torch.full((2,), 20.0, device=device))
-    torch.testing.assert_close(kd[:, 0], torch.full((2,), 2.0, device=device))
-    assert bool(((kp[:, 1] >= 10.0) & (kp[:, 1] <= 30.0)).all())
-    assert bool(((kp[:, 2] >= 15.0) & (kp[:, 2] <= 45.0)).all())
-    assert bool(((kd[:, 1] >= 1.0) & (kd[:, 1] <= 3.0)).all())
-    assert bool(((kd[:, 2] >= 1.5) & (kd[:, 2] <= 4.5)).all())

@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import abc
-import inspect
 import math
 import time
 from dataclasses import dataclass
@@ -68,7 +67,6 @@ class CommandTerm(ManagerTermBase):
                 f"{cfg.resampling_time_range}."
             )
         self._resampling_time_range = (lower, upper)
-        self._check_update_command_signature()
         self._device = torch.device(getattr(self._env, "device", torch.device("cpu")))
         self._torch_rng = self._require_torch_rng()
         self.metrics: dict[str, torch.Tensor] = {}
@@ -84,11 +82,20 @@ class CommandTerm(ManagerTermBase):
 
     def reset(
         self,
-        env_ids: torch.Tensor | slice | None,
+        reset_mask: torch.Tensor,
         *,
         publish_metrics: bool = True,
     ) -> dict[str, float]:
-        assert isinstance(env_ids, torch.Tensor)
+        if (
+            not isinstance(reset_mask, torch.Tensor)
+            or reset_mask.shape != (self.num_envs,)
+            or reset_mask.dtype != torch.bool
+            or reset_mask.device != self._device
+        ):
+            raise ValueError(
+                f"CommandTerm '{self.name}' reset mask must have shape "
+                f"{(self.num_envs,)}, bool dtype, and device {self._device}"
+            )
         extras: dict[str, float] = {}
         metrics_started = time.perf_counter()
         metric_values = list(self.metrics.items())
@@ -105,12 +112,15 @@ class CommandTerm(ManagerTermBase):
                 )
             if metric_values:
                 # Publish reset means and the finite diagnostic through one
-                # device boundary instead of synchronizing twice per metric.
-                selected = torch.stack([value[env_ids] for _, value in metric_values], dim=0)
+                # fixed-width device boundary instead of materializing rows.
+                values = torch.stack([value for _, value in metric_values], dim=0)
+                selected_values = values * reset_mask[None, :]
                 reduced = torch.stack(
                     (
-                        selected.mean(dim=1),
-                        torch.isfinite(selected).all(dim=1).to(torch.float32),
+                        selected_values.sum(dim=1) / reset_mask.sum().clamp_min(1),
+                        (torch.isfinite(values) | ~reset_mask[None, :])
+                        .all(dim=1)
+                        .to(torch.float32),
                     ),
                     dim=0,
                 ).detach()
@@ -118,38 +128,36 @@ class CommandTerm(ManagerTermBase):
                 means = host_reduced[0].tolist()
                 finite = bool(host_reduced[1].min().item() == 1.0)
                 if not finite:
-                    for metric_name, metric_slice in zip(
-                        (name for name, _ in metric_values), selected, strict=True
-                    ):
-                        if not _finite(metric_slice):
+                    for metric_name, metric_value in metric_values:
+                        if not bool((torch.isfinite(metric_value) | ~reset_mask).all()):
                             raise ValueError(
                                 f"CommandTerm '{self.name}' metric '{metric_name}' contains "
                                 "NaN or Inf."
                             )
                 for (metric_name, metric_value), mean in zip(metric_values, means, strict=True):
                     extras[metric_name] = float(mean)
-                    metric_value[env_ids] = 0.0
+                    metric_value.masked_fill_(reset_mask, 0.0)
         else:
-            self.clear_episode_metrics(env_ids)
+            self.clear_episode_metrics(reset_mask)
         metrics_ms = (time.perf_counter() - metrics_started) * 1000.0
-        self.command_counter[env_ids] = 0
+        self.command_counter.masked_fill_(reset_mask, 0)
         self.last_reset_timing_ms.clear()
         resample_started = time.perf_counter()
-        self._resample(env_ids)
+        self._resample(reset_mask)
         self.last_reset_timing_ms["reset_done_command_metrics_ms"] = metrics_ms
         self.last_reset_timing_ms["reset_done_command_resample_ms"] = (
             time.perf_counter() - resample_started
         ) * 1000.0
         return extras
 
-    def clear_episode_metrics(self, env_ids: torch.Tensor) -> None:
-        """Clear selected command metrics without a host metric reduction."""
+    def clear_episode_metrics(self, reset_mask: torch.Tensor) -> None:
+        """Clear command metrics without a host metric reduction."""
         for metric_value in self.metrics.values():
             if not isinstance(metric_value, torch.Tensor):
                 raise TypeError("CommandTerm metrics must be torch.Tensor carriers")
-            metric_value[env_ids] = 0.0
+            metric_value.masked_fill_(reset_mask, 0.0)
 
-    def compute(self, dt: float | torch.Tensor, env_ids: torch.Tensor | None = None) -> None:
+    def compute(self, dt: float | torch.Tensor) -> None:
         """Advance the command state by dt.
 
         With env_ids=None (the per-step path) all envs are updated; with env_ids
@@ -184,8 +192,6 @@ class CommandTerm(ManagerTermBase):
         else:
             dt_tensor = cast(torch.Tensor, dt)
         if dt_tensor is not None:
-            if env_ids is not None:
-                raise ValueError("Per-environment command dt requires env_ids=None.")
             if dt_tensor.shape != (self.num_envs,):
                 raise ValueError(
                     f"CommandTerm '{self.name}' expected dt shape ({self.num_envs},), "
@@ -203,29 +209,20 @@ class CommandTerm(ManagerTermBase):
             time.perf_counter() - dt_started
         ) * 1000.0
         metrics_started = time.perf_counter()
-        self._update_metrics(env_ids)
+        self._update_metrics()
         timing["update_state_command_metrics_update_ms"] = (
             time.perf_counter() - metrics_started
         ) * 1000.0
         timer_started = time.perf_counter()
-        resample_env_ids: torch.Tensor
-        if env_ids is None:
-            if dt_tensor is not None:
-                self.time_left -= dt_tensor
-            else:
-                assert dt_scalar is not None
-                self.time_left -= dt_scalar
-            resample_env_ids = torch.nonzero(self.time_left <= 0.0, as_tuple=False).flatten()
+        if dt_tensor is not None:
+            self.time_left -= dt_tensor
         else:
-            assert not tensor_dt
             assert dt_scalar is not None
-            self.time_left[env_ids] -= dt_scalar
-            resample_env_ids = env_ids[self.time_left[env_ids] <= 0.0]
-        if resample_env_ids.numel() > 0:
-            self._resample(resample_env_ids)
+            self.time_left -= dt_scalar
+        self._resample(self.time_left <= 0.0)
         timing["update_state_command_timer_ms"] = (time.perf_counter() - timer_started) * 1000.0
         update_started = time.perf_counter()
-        self._update_command(env_ids)
+        self._update_command()
         # The owner records detailed update-command phases in the same dict;
         # total update time is kept only when this base method created it.
         if "update_state_motion_failure_stats_ms" not in timing:
@@ -261,27 +258,12 @@ class CommandTerm(ManagerTermBase):
                     f"CommandTerm '{self.name}' metric '{metric_name}' contains NaN or Inf."
                 )
 
-    def _check_update_command_signature(self) -> None:
-        """Fail fast with a migration hint for terms with the old signature."""
-        try:
-            sig = inspect.signature(self._update_command)
-        except (TypeError, ValueError):
-            return
-        if len(sig.parameters) == 0:
-            raise TypeError(
-                f"{type(self).__name__}._update_command must accept env_ids: "
-                "_update_command(self, env_ids: torch.Tensor | None). It receives "
-                "None on the per-step update and the reset env ids on reset(); "
-                "scope per-step state advances to env_ids."
-            )
-
-    def _resample(self, env_ids: torch.Tensor) -> None:
-        if env_ids.numel() != 0:
-            lower, upper = self._resampling_time_range
-            sampled = self._torch_rng.uniform(lower, upper, (env_ids.numel(),), dtype=torch.float32)
-            self.time_left[env_ids] = sampled
-            self._resample_command(env_ids)
-            self.command_counter[env_ids] += 1
+    def _resample(self, reset_mask: torch.Tensor) -> None:
+        lower, upper = self._resampling_time_range
+        sampled = self._torch_rng.uniform(lower, upper, (self.num_envs,), dtype=torch.float32)
+        self.time_left.copy_(torch.where(reset_mask, sampled, self.time_left))
+        self._resample_command(reset_mask)
+        self.command_counter += reset_mask.to(torch.int64)
 
     def _require_torch_rng(self) -> TorchManagerRng:
         rng = self._env.torch_rng
@@ -290,27 +272,21 @@ class CommandTerm(ManagerTermBase):
         return rng
 
     @abc.abstractmethod
-    def _update_metrics(self, env_ids: torch.Tensor | None = None) -> None:
-        """Update the metrics based on the current state.
-
-        env_ids is None on the per-step update (all envs) and the reset env ids on
-        the reset path. Terms may scope per-row metric work to env_ids; rows outside
-        env_ids are unchanged since the last per-step update and stay valid.
-        """
+    def _update_metrics(self) -> None:
+        """Update full-width metrics based on the current state."""
         raise NotImplementedError
 
     @abc.abstractmethod
-    def _resample_command(self, env_ids: torch.Tensor) -> None:
-        """Resample the command for the specified environments."""
+    def _resample_command(self, reset_mask: torch.Tensor) -> None:
+        """Resample the command while preserving rows outside the mask."""
         raise NotImplementedError
 
     @abc.abstractmethod
-    def _update_command(self, env_ids: torch.Tensor | None) -> None:
+    def _update_command(self) -> None:
         """Update the command based on the current state.
 
-        env_ids is None on the per-step update (all envs) and the reset env ids on reset().
-        Scope per-step state advances (e.g. a motion frame index) to env_ids; pure
-        functions of the current state may ignore it.
+        Advance per-step state with a fixed-shape carrier; the reset lifecycle
+        uses the explicit mask boundary.
         """
         raise NotImplementedError
 
@@ -375,65 +351,42 @@ class CommandManager(ManagerBase):
             terms.append((name, command[env_idx].detach().cpu().tolist()))
         return terms
 
-    def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
-        extras, _commands = self.reset_command_state(env_ids, publish_metrics=True)
-        return extras
+    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        """Full-width command reset.
 
-    def reset_command_state(
-        self,
-        env_ids: torch.Tensor | slice | None,
-        *,
-        publish_metrics: bool = True,
-        validate_commands: bool = True,
-    ) -> tuple[dict[str, float], dict[str, torch.Tensor]]:
-        """Reset command state once and return its public command carrier.
-
-        Reset owners consume this explicit boundary when they own the command
-        reset pass. Generic ``reset`` delegates the same term lifecycle and
-        validation to it, avoiding a private owner copy of timer, metric, or
-        finite-validation behavior.
-
-        Device-resident owners may set ``validate_commands=False`` only after
-        validating their fused carrier once at reset/commit boundaries; this
-        removes redundant full-command finite synchronization without weakening
-        the generic API default.
+        Every term must provide a mask-preserving owner implementation; a row
+        fallback would invalidate the fixed-shape contract.
         """
-        if env_ids is None:
-            env_ids = torch.arange(self.num_envs, device=self._device)
-        elif isinstance(env_ids, slice):
-            env_ids = torch.arange(self.num_envs, device=self._device)[env_ids]
+        self._validate_reset_mask(reset_mask)
         extras: dict[str, float] = {}
-        reset_commands: list[tuple[str, torch.Tensor]] = []
-        self._last_term_reset_timing_ms.clear()
         for name, term in self._terms.items():
-            metrics = term.reset(env_ids=env_ids, publish_metrics=publish_metrics)
-            reset_commands.append((name, term.command))
-            self._last_term_reset_timing_ms.update(term.last_reset_timing_ms)
+            if not callable(getattr(term, "reset", None)):
+                raise NotImplementedError(
+                    f"CommandManager term '{name}' does not define the "
+                    "mask-preserving reset boundary"
+                )
+            metrics = term.reset(reset_mask)
             for metric_name, metric_value in metrics.items():
                 extras[f"Metrics/{name}/{metric_name}"] = metric_value
-        if not validate_commands:
-            return extras, dict(reset_commands)
-        validation_started = time.perf_counter()
-        commands: list[torch.Tensor] = []
-        labels: list[str] = []
-        for name, command in reset_commands:
-            self._validate_command_contract(name, command)
-            commands.append(command)
-            labels.append(name)
-        if commands and not bool(
-            torch.isfinite(
-                torch.cat(tuple(value.reshape(value.shape[0], -1) for value in commands), dim=1)
-            ).all()
-        ):
-            for name, command in zip(labels, commands, strict=True):
-                if not bool(torch.isfinite(command).all()):
-                    raise ValueError(f"CommandManager term '{name}' returned NaN or Inf.")
-        self._last_term_reset_timing_ms["reset_done_reset_validation_ms"] = (
-            time.perf_counter() - validation_started
-        ) * 1000.0
-        return extras, {name: command for name, command in zip(labels, commands, strict=True)}
+        self._last_term_reset_timing_ms.clear()
+        for name, term in self._terms.items():
+            self._last_term_reset_timing_ms.update(term.last_reset_timing_ms)
+        return extras
 
-    def compute(self, dt: float | torch.Tensor, env_ids: torch.Tensor | None = None) -> None:
+    def _validate_reset_mask(self, reset_mask: torch.Tensor) -> None:
+        if (
+            not isinstance(reset_mask, torch.Tensor)
+            or reset_mask.ndim != 1
+            or reset_mask.shape[0] != self.num_envs
+            or reset_mask.dtype != torch.bool
+            or reset_mask.device != self._device
+        ):
+            raise ValueError(
+                f"CommandManager reset mask must have shape {(self.num_envs,)}, "
+                f"bool dtype, and device {self._device}"
+            )
+
+    def compute(self, dt: float | torch.Tensor) -> None:
         step_timing: dict[str, float] = {}
         dispatch_ms = 0.0
         validation_ms = 0.0
@@ -442,15 +395,35 @@ class CommandManager(ManagerBase):
             if term_timing is not None:
                 term_timing.clear()
             dispatch_started = time.perf_counter()
-            term.compute(dt, env_ids)
+            term.compute(dt)
             dispatch_ms += time.perf_counter() - dispatch_started
             step_timing.update(getattr(term, "last_step_timing_ms", {}))
-            if env_ids is None:
-                validation_started = time.perf_counter()
-                self._validate_command(name, term.command)
-                validation_ms += time.perf_counter() - validation_started
+            validation_started = time.perf_counter()
+            self._validate_command(name, term.command)
+            validation_ms += time.perf_counter() - validation_started
         step_timing["update_state_command_term_dispatch_ms"] = dispatch_ms * 1000.0
         step_timing["update_state_command_validation_ms"] = validation_ms * 1000.0
+        self.last_step_timing_ms = step_timing
+
+    def compute_reset(self, dt: float | torch.Tensor, reset_mask: torch.Tensor) -> None:
+        """Fixed-shape command refresh after reset."""
+        step_timing: dict[str, float] = {}
+        for name, term in self._terms.items():
+            callable_mask = getattr(term, "_update_command_reset", None)
+            if not callable(callable_mask):
+                raise NotImplementedError(
+                    f"CommandManager term '{name}' does not define the "
+                    "mask-preserving compute boundary"
+                )
+            term_timing = getattr(term, "last_step_timing_ms", None)
+            if term_timing is not None:
+                term_timing.clear()
+            started = time.perf_counter()
+            callable_mask(reset_mask)
+            step_timing.update(getattr(term, "last_step_timing_ms", {}))
+            step_timing["update_state_command_term_dispatch_ms"] = (
+                time.perf_counter() - started
+            ) * 1000.0
         self.last_step_timing_ms = step_timing
 
     def post_compute(self) -> None:
@@ -461,15 +434,24 @@ class CommandManager(ManagerBase):
                 getattr(term, "last_post_compute_timing_ms", {})
             )
 
+    def post_compute_reset(self) -> None:
+        """Fixed-shape command post-compute after reset."""
+        self.last_post_compute_timing_ms.clear()
+        for name, term in self._terms.items():
+            callable_mask = getattr(term, "post_compute_reset", None)
+            if not callable(callable_mask):
+                raise NotImplementedError(
+                    f"CommandManager term '{name}' does not define the "
+                    "mask-preserving post-compute boundary"
+                )
+            callable_mask()
+            self.last_post_compute_timing_ms.update(
+                getattr(term, "last_post_compute_timing_ms", {})
+            )
+
     def bind_read_phase(self) -> None:
         for term in self._terms.values():
             term.bind_read_phase()
-
-    def uses_tensor_reset_rows(self) -> bool:
-        """Whether every command can consume a device row selector on reset."""
-        return bool(self._terms) and all(
-            bool(getattr(term, "uses_tensor_reset_rows", False)) for term in self._terms.values()
-        )
 
     def reset_diagnostics(self) -> dict[str, float]:
         """Collect optional term-owned reset call-graph diagnostics."""
@@ -545,23 +527,27 @@ class NullCommandManager:
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:
         return []
 
-    def reset(self, env_ids: torch.Tensor | None = None) -> dict[str, float]:
+    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        del reset_mask
         return {}
 
     def reset_diagnostics(self) -> dict[str, float]:
         return {}
 
-    def compute(self, dt: float | torch.Tensor, env_ids: torch.Tensor | None = None) -> None:
+    def compute(self, dt: float | torch.Tensor) -> None:
         pass
+
+    def compute_reset(self, dt: float | torch.Tensor, reset_mask: torch.Tensor) -> None:
+        del dt, reset_mask
 
     def post_compute(self) -> None:
         pass
 
-    def bind_read_phase(self) -> None:
+    def post_compute_reset(self) -> None:
         pass
 
-    def uses_tensor_reset_rows(self) -> bool:
-        return False
+    def bind_read_phase(self) -> None:
+        pass
 
     def get_command(self, name: str) -> None:
         return None

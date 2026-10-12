@@ -44,7 +44,6 @@ class BackendAdapter:
 
         env_cfg_override = extract_reward_config(self.cfg, target_field=reward_target)
         env_cfg_override.update(env_overrides)
-
         return env_cfg_override
 
     def build_play_env_cfg_override(self) -> dict[str, Any]:

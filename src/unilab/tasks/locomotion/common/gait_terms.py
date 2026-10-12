@@ -37,17 +37,6 @@ if TYPE_CHECKING:
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
 
-def _reset_rows(value: torch.Tensor | slice | None, device: torch.device) -> torch.Tensor | slice:
-    """Return the Torch-only Manager reset selector without implicit host I/O."""
-    if value is None or isinstance(value, slice):
-        return value if value is not None else slice(None)
-    if not isinstance(value, torch.Tensor):
-        raise TypeError("gait term reset rows must be a Torch tensor, slice, or None")
-    if value.device != device:
-        raise TypeError(f"gait term reset rows must be on {device}; got {value.device}")
-    return value
-
-
 def _torch_state(value: torch.Tensor, *, dtype: torch.dtype = torch.float32) -> torch.Tensor:
     return value.to(dtype=dtype)
 
@@ -253,9 +242,8 @@ class feet_air_time(_FootContactTerm):
             (env.num_envs, self.num_feet), dtype=torch.float32, device=env.device
         )
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        rows = _reset_rows(env_ids, self._air_time.device)
-        self._air_time[rows] = 0.0
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        self._air_time.masked_fill_(reset_mask.reshape(-1, 1), 0.0)
 
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
@@ -326,10 +314,10 @@ class feet_swing_height(_FootContactTerm):
             (env.num_envs, self.num_feet), dtype=torch.bool, device=env.device
         )
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        rows = _reset_rows(env_ids, self._peak_heights.device)
-        self._peak_heights[rows] = 0.0
-        self._was_in_air[rows] = False
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        expanded = reset_mask.reshape(-1, 1)
+        self._peak_heights.masked_fill_(expanded, 0.0)
+        self._was_in_air.masked_fill_(expanded, False)
 
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
@@ -578,9 +566,8 @@ class foot_air_time(_FootContactTerm):
             (env.num_envs, self.num_feet), dtype=torch.float32, device=env.device
         )
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        rows = _reset_rows(env_ids, self._air_time.device)
-        self._air_time[rows] = 0.0
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        self._air_time.masked_fill_(reset_mask.reshape(-1, 1), 0.0)
 
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params

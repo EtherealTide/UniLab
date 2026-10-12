@@ -31,7 +31,7 @@ def test_uniform_pose_command_samples_configured_width_and_zero_bucket() -> None
     term = cfg.build(env)
     assert isinstance(term, UniformPoseCommand)
 
-    term.reset(torch.tensor([0, 1], dtype=torch.int64))
+    term.reset(torch.ones(2, dtype=torch.bool))
     assert term.command.shape == (2, 2)
     np.testing.assert_array_equal(term.command, 0.0)
 
@@ -43,15 +43,15 @@ def test_uniform_pose_command_reads_curriculum_updates_without_changing_width() 
         ranges=[[0.0, 0.0], [1.0, 1.0]],
     )
     term = cfg.build(env)
-    ids = torch.tensor([0, 1], dtype=torch.int64)
+    reset_mask = torch.ones(2, dtype=torch.bool)
 
     cfg.ranges[0] = [2.0, 2.0]
-    term.reset(ids)
+    term.reset(reset_mask)
     np.testing.assert_array_equal(term.command, [[2.0, 1.0], [2.0, 1.0]])
 
     cfg.ranges.append([3.0, 3.0])
     with pytest.raises(ValueError, match="ranges width changed"):
-        term.reset(ids)
+        term.reset(reset_mask)
 
 
 def test_uniform_pose_command_fails_closed_without_torch_rng() -> None:
