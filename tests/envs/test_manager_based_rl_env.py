@@ -1262,6 +1262,22 @@ def test_step_publishes_fixed_width_reward_components_for_tensor_collectors() ->
     env.close()
 
 
+def test_no_done_step_still_invokes_fixed_width_pre_reset_recorder() -> None:
+    cfg = _make_cfg(auto_reset=True)
+    cfg.max_episode_seconds = 10.0
+    cfg.terminations["time_out"] = None
+    cfg.recorders = {"trace": RecorderTermCfg(func=_Recorder)}
+    env, _backend = _make_env(cfg)
+    env.init_state()
+    env._has_transition = True
+    obs, _info = env.reset(torch.zeros(2, dtype=torch.bool))
+
+    assert obs["obs"].shape == (2, 2)
+    assert env.reset_buf.tolist() == [False, False]
+    assert ("pre_reset", [False, False]) in env.trace
+    env.close()
+
+
 def test_manager_public_inputs_and_episode_counters_are_tensor_first() -> None:
     env, _ = _make_env()
     env.reset()

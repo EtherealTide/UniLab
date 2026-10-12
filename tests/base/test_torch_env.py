@@ -220,6 +220,18 @@ def test_step_without_done_does_not_create_final_observation() -> None:
     assert state.info["timing"]["reset_done_count"] == 0.0
 
 
+def test_reset_done_count_remains_device_resident_before_timing_publication() -> None:
+    env = _StubTorchEnv(terminate=False)
+    env.init_state()
+
+    env.step(_actions(env))
+
+    assert isinstance(env._reset_done_count, torch.Tensor)
+    assert env._reset_done_count.dtype is torch.int64
+    assert env._reset_done_count.device == env.device
+    torch.testing.assert_close(env._reset_done_count, torch.zeros((), dtype=torch.int64))
+
+
 def test_partial_autoreset_preserves_non_done_rows() -> None:
     class _PartialEnv(_StubTorchEnv):
         def update_state(self, state: TorchEnvState) -> TorchEnvState:

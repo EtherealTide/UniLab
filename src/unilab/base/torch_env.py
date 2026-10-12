@@ -99,6 +99,7 @@ class TorchEnv(ABEnv):
         self._control_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
         self._state_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
         self._reset_obs_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
+        self._reset_done_count = torch.zeros((), dtype=torch.int64, device=self._device)
         self._tensor_runtime_bound = False
         self._last_initial_episode_steps: torch.Tensor | None = None
         self.step_counter = 0
@@ -263,7 +264,7 @@ class TorchEnv(ABEnv):
 
         phase = time.perf_counter()
         phase_cpu = _cpu_time()
-        did_reset = self._autoreset and bool((self._state.terminated | self._state.truncated).any())
+        did_reset = self._autoreset
         if did_reset:
             self._reset_done_envs()
         reset_done_ms = (time.perf_counter() - phase) * 1000.0
@@ -454,19 +455,20 @@ class TorchEnv(ABEnv):
     def _reset_done_envs(self) -> None:
         """Run the fixed-shape mask-driven autoreset lifecycle.
 
-        The remaining scalar ``any()`` gate is a correctness/telemetry boundary,
-        not reset-row discovery; no reset env-id row carrier is materialized.
+        The empty-mask path is fixed-width. Backends and managers own the mask
+        semantics; no reset env-id row carrier is materialized.
         """
         assert self._state is not None
         reset_total_started = time.perf_counter()
         detail_timing = {key: 0.0 for key in RESET_DONE_DETAIL_TIMING_KEYS}
         done = self._state.terminated | self._state.truncated
-        if not bool(done.any()):
+        self._reset_done_count.copy_(done.sum())
+        if self._reset_done_count == 0:
             self._clear_reset_done_detail_timing(self._state.info.setdefault("timing", {}))
             return
 
         terminal_started = time.perf_counter()
-        detail_timing["reset_done_count"] = float(done.sum().item())
+        detail_timing["reset_done_count"] = float(self._reset_done_count)
         self._state.info["steps"].masked_fill_(done, 0)
         final_observation = self._ensure_final_observation_scratch()
         for name, values in self._state.obs.items():

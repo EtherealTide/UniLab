@@ -1454,7 +1454,7 @@ class ManagerBasedRlEnv(TorchEnv):
             raise RuntimeError("ManagerBasedRlEnv requires init_state before mask reset")
         reset_timing: dict[str, float] = {}
         read_plan = self.scene._tensor_read_plan
-        if self._has_transition and bool(reset_mask.any()):
+        if self._has_transition:
             self.recorder_manager.record_pre_reset(reset_mask)
         # Match the selected-row lifecycle: curriculum consumes the terminal
         # episode state before reset clears the public counters.
