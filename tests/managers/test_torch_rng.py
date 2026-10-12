@@ -88,6 +88,21 @@ def test_torch_rng_restores_generator_state_in_place() -> None:
     torch.testing.assert_close(second, rng.random((3,)))
 
 
+def test_torch_rng_state_version_tracks_seed_and_restore_only() -> None:
+    rng = TorchManagerRng.seeded(7)
+    state = rng.get_state()
+    initial_version = rng.state_version
+
+    rng.random(4)
+    assert rng.state_version == initial_version
+
+    rng.manual_seed(9)
+    assert rng.state_version == initial_version + 1
+
+    rng.set_state(state)
+    assert rng.state_version == initial_version + 2
+
+
 def test_numpy_manager_stream_stays_independent() -> None:
     # Contract guard: adding the Torch adapter must not alter generic Manager RNG.
     TorchManagerRng.seeded(11).random((2,))

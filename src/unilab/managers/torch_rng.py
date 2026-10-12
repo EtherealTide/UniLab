@@ -91,6 +91,7 @@ class TorchManagerRng:
             )
         self.generator = generator
         self.device = resolved
+        self._state_version = 0
 
     @classmethod
     def seeded(cls, seed: int, *, device: str | torch.device = "cpu") -> TorchManagerRng:
@@ -100,6 +101,7 @@ class TorchManagerRng:
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
             raise ValueError(f"TorchManagerRng seed must be a non-negative integer, got {seed!r}")
         self.generator.manual_seed(int(seed))
+        self._state_version += 1
         return self
 
     def random(
@@ -206,6 +208,12 @@ class TorchManagerRng:
         if state.device.type != "cpu":
             raise ValueError("TorchManagerRng state must be a CPU Torch state tensor")
         self.generator.set_state(state)
+        self._state_version += 1
+
+    @property
+    def state_version(self) -> int:
+        """Monotonic count of successful state installations and reseeds."""
+        return self._state_version
 
 
 __all__ = ["TorchManagerRng"]

@@ -1430,6 +1430,15 @@ class ManagerBasedRlEnv(TorchEnv):
         """Expose cold-path reward component metadata to algorithm owners."""
         return SimpleNamespace(reward_component_names=self.reward_manager.step_reward_names)
 
+    @property
+    def graph_rng_state(self) -> dict[str, Any]:
+        """Return the versioned graph-candidate RNG state snapshot."""
+        return {
+            "device": str(self.torch_rng.device),
+            "state_version": self.torch_rng.state_version,
+            "state": self.torch_rng.get_state(),
+        }
+
     def preflight_graph_candidate(self, requested: bool = True) -> dict[str, Any]:
         """Run the public backend preflight without mutating graph state."""
         request = (
