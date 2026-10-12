@@ -3483,6 +3483,30 @@ def test_manager_publication_rejects_numpy_results() -> None:
     assert published.data_ptr() != values.data_ptr()
 
 
+def test_step_uses_persistent_all_reset_mask_without_aliasing_reset_flags() -> None:
+    env = object.__new__(ManagerBasedRlEnv)
+    object.__setattr__(env, "_device", torch.device("cpu"))
+    env._all_env_reset_mask = torch.ones(3, dtype=torch.bool)
+    env.reset_terminated = torch.tensor((True, False, True))
+    env.reset_time_outs = torch.tensor((False, True, False))
+    env._public_terminated = torch.zeros_like(env.reset_terminated)
+    env._public_truncated = torch.zeros_like(env.reset_time_outs)
+
+    terminated = env._manager_tensor(env.reset_terminated, dtype=torch.bool)
+    truncated = env._manager_tensor(env.reset_time_outs, dtype=torch.bool)
+    if terminated is env.reset_terminated:
+        terminated = env._public_terminated
+        terminated.copy_(env.reset_terminated)
+    if truncated is env.reset_time_outs:
+        truncated = env._public_truncated
+        truncated.copy_(env.reset_time_outs)
+
+    assert terminated.data_ptr() != env.reset_terminated.data_ptr()
+    assert truncated.data_ptr() != env.reset_time_outs.data_ptr()
+    torch.testing.assert_close(terminated, env.reset_terminated)
+    torch.testing.assert_close(truncated, env.reset_time_outs)
+
+
 class _RecordingResetOwner(ResetOwner):
     def __init__(self, cfg: ResetOwnerCfg, env) -> None:
         super().__init__(cfg, env)

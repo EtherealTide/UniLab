@@ -378,6 +378,8 @@ class ManagerBasedRlEnv(TorchEnv):
         self.reset_buf = torch.zeros(num_envs, dtype=torch.bool, device=self.device)
         self.reset_terminated = torch.zeros_like(self.reset_buf)
         self.reset_time_outs = torch.zeros_like(self.reset_buf)
+        self._public_terminated = torch.zeros_like(self.reset_buf)
+        self._public_truncated = torch.zeros_like(self.reset_buf)
         self.reward_buf = torch.zeros(num_envs, dtype=self._dtype, device=self.device)
         self.obs_buf: dict[str, torch.Tensor] = {}
         self.extras: dict[str, Any] = {"log": {}}
@@ -386,6 +388,7 @@ class ManagerBasedRlEnv(TorchEnv):
         )
         self._manual_reset_pending = torch.zeros_like(self.reset_buf)
         self._all_env_rows = torch.arange(num_envs, dtype=torch.int64, device=self.device)
+        self._all_env_reset_mask = torch.ones_like(self.reset_buf)
         self._has_transition = False
 
         self._load_managers()
@@ -1303,9 +1306,7 @@ class ManagerBasedRlEnv(TorchEnv):
         step_read_plan = self.scene._tensor_read_plan
         del step_read_plan
         self._reset_state.declare_packed_reset_device(self.device)
-        step_reset_context = self._reset_state.scoped_device_owner_tensor(
-            torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
-        )
+        step_reset_context = self._reset_state.scoped_device_owner_tensor(self._all_env_reset_mask)
         timing["update_state_command_preflight_ms"] = (
             time.perf_counter() - command_preflight_started
         ) * 1000.0
@@ -1351,8 +1352,14 @@ class ManagerBasedRlEnv(TorchEnv):
             for name, values in mapped_obs.items()
         }
         public_reward = self._manager_tensor(self.reward_buf, dtype=self._dtype)
-        public_terminated = self._manager_tensor(self.reset_terminated, dtype=torch.bool).clone()
-        public_truncated = self._manager_tensor(self.reset_time_outs, dtype=torch.bool).clone()
+        public_terminated = self._manager_tensor(self.reset_terminated, dtype=torch.bool)
+        public_truncated = self._manager_tensor(self.reset_time_outs, dtype=torch.bool)
+        if public_terminated is self.reset_terminated:
+            public_terminated = self._public_terminated
+            public_terminated.copy_(self.reset_terminated)
+        if public_truncated is self.reset_time_outs:
+            public_truncated = self._public_truncated
+            public_truncated.copy_(self.reset_time_outs)
         timing["update_state_publication_ms"] = (time.perf_counter() - publish_started) * 1000.0
 
         replace_started = time.perf_counter()
@@ -1420,11 +1427,7 @@ class ManagerBasedRlEnv(TorchEnv):
             state = self.init_state()
             return state.obs, {"log": state.info.get("log", {})}
         if reset_mask is None:
-            reset_mask = torch.ones(
-                self.num_envs,
-                dtype=torch.bool,
-                device=self.device,
-            )
+            reset_mask = self._all_env_reset_mask
         if seed is not None:
             self.seed(seed)
         if (

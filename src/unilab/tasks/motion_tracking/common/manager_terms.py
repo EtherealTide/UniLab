@@ -617,6 +617,9 @@ class MotionCommand(CommandTerm):
         self._reset_root_state = torch.empty(
             (self.num_envs, 13), dtype=torch.float32, device=self._device
         )
+        self._reset_packet_velocity = torch.empty_like(self._reset_joint_values)
+        self._reset_joint_values_scratch = torch.empty_like(self._reset_joint_values)
+        self._reset_root_state_scratch = torch.empty_like(self._reset_root_state)
         self._bind_read_phase = False
         self._tensor_all_rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._device)
         self._tensor_all_reset_mask = torch.ones(
@@ -983,11 +986,12 @@ class MotionCommand(CommandTerm):
         )
         joint_start, joint_end = offsets["joint_pos"]
         vel_start, vel_end = offsets["joint_vel"]
-        joint_pos = self._reset_joint_values.clone()
-        root_state = self._reset_root_state.clone()
+        self._reset_packet_velocity.copy_(packet[:, vel_start:vel_end])
+        joint_pos = self._reset_joint_values_scratch
+        root_state = self._reset_root_state_scratch
         _bind_compiled_motion_reset_values()(
             packet[:, joint_start:joint_end],
-            packet[:, vel_start:vel_end].contiguous(),
+            self._reset_packet_velocity,
             packet[:, offsets["body_pos_w"][0] : offsets["body_pos_w"][1]].view(
                 self.num_envs, *tails["body_pos_w"]
             ),
@@ -1011,7 +1015,7 @@ class MotionCommand(CommandTerm):
         self.robot.write_motion_state_tensor_to_sim(
             root_state=root_state,
             position=joint_pos,
-            velocity=packet[:, vel_start:vel_end].contiguous(),
+            velocity=self._reset_packet_velocity,
             reset_mask=reset_mask,
         )
         self._ingest_motion_packet_mask(reset_mask, packet)

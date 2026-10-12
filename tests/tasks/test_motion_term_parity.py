@@ -782,6 +782,21 @@ def test_motion_feature_layout_is_cached_without_recomputing_shapes() -> None:
     }
 
 
+def test_motion_reset_carriers_are_persistent_and_not_copied_per_reset() -> None:
+    command = mt.MotionCommand.__new__(mt.MotionCommand)
+    command._reset_joint_values = torch.zeros((3, 2))
+    command._reset_root_state = torch.zeros((3, 13))
+    command._reset_packet_velocity = torch.empty_like(command._reset_joint_values)
+    command._reset_joint_values_scratch = torch.empty_like(command._reset_joint_values)
+    command._reset_root_state_scratch = torch.empty_like(command._reset_root_state)
+
+    assert command._reset_packet_velocity.data_ptr() != command._reset_joint_values.data_ptr()
+    assert command._reset_joint_values_scratch.data_ptr() != (
+        command._reset_joint_values.data_ptr()
+    )
+    assert command._reset_root_state_scratch.data_ptr() != (command._reset_root_state.data_ptr())
+
+
 def test_motion_reset_values_kernel_matches_eager_and_reuses_scratch() -> None:
     rng = np.random.default_rng(1811)
     count, num_joints, num_bodies = 39, 29, 14
