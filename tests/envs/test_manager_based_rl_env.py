@@ -1337,6 +1337,7 @@ def test_deferred_validation_boundaries_fail_closed_without_backend_capability()
 def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
     env, _backend = _make_env()
 
+    object.__setattr__(env, "_device", torch.device("cuda")) if torch.cuda.is_available() else None
     supported = env.preflight_graph_candidate(requested=True)
     unrequested = env.preflight_graph_candidate(requested=False)
 
@@ -1345,11 +1346,32 @@ def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
         "supported": True,
         "disable_reason": None,
         "backend_stream_contract": "test",
+        "carrier_layout": {
+            "num_envs": 2,
+            "device": str(env.device),
+            "action_dim": 1,
+            "observation_groups": {"obs": 2, "critic": 1},
+            "reward_components": 1,
+        },
     }
     assert unrequested == {
         "requested": False,
         "supported": False,
         "disable_reason": "graph candidate was not requested",
+        "backend_stream_contract": "test",
+    }
+    env.close()
+
+
+def test_env_graph_candidate_preflight_rejects_cpu_carrier() -> None:
+    env, _backend = _make_env()
+
+    result = env.preflight_graph_candidate(requested=True)
+
+    assert result == {
+        "requested": True,
+        "supported": False,
+        "disable_reason": "environment output carrier is not CUDA-resident",
         "backend_stream_contract": "test",
     }
     env.close()

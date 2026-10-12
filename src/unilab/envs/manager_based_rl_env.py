@@ -1438,11 +1438,37 @@ class ManagerBasedRlEnv(TorchEnv):
                 "disable_reason": verdict.disable_reason,
                 "backend_stream_contract": verdict.backend_stream_contract,
             }
+        action_shape = self.action_space.shape
+        owner_failures: list[str] = []
+        if action_shape is None:
+            owner_failures.append("action dimension is not fixed")
+        if self.device.type != "cuda":
+            owner_failures.append("environment output carrier is not CUDA-resident")
+        if self._reset_state.scene_layout is not None:
+            owner_failures.append("mapped entity reset layout has no K=1 graph carrier")
+        if not self.reward_manager.step_reward_names:
+            owner_failures.append("reward component layout is empty")
+        if owner_failures:
+            return {
+                "requested": True,
+                "supported": False,
+                "disable_reason": "; ".join(owner_failures),
+                "backend_stream_contract": verdict.backend_stream_contract,
+            }
         return {
             "requested": True,
             "supported": True,
             "disable_reason": None,
             "backend_stream_contract": verdict.backend_stream_contract,
+            "carrier_layout": {
+                "num_envs": self.num_envs,
+                "device": str(self.device),
+                "action_dim": int(action_shape[0]) if action_shape is not None else None,
+                "observation_groups": {
+                    name: int(dim) for name, dim in self.obs_groups_spec.items()
+                },
+                "reward_components": len(self.reward_manager.step_reward_names),
+            },
         }
 
     def set_deferred_validation_boundaries(self, enabled: bool) -> None:
