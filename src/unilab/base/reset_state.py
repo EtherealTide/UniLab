@@ -118,6 +118,7 @@ class ResetStateTransaction:
         self._tensor_has_writes = False
         self._tensor_owner_subset = False
         self._mask_count = torch.zeros((), dtype=torch.int64)
+        self._mask_outside_rows = torch.zeros((), dtype=torch.bool)
         self._begin_rows: torch.Tensor | None = None
         self._begin_ids: np.ndarray | None = None
         self._host_has_writes = False
@@ -145,6 +146,7 @@ class ResetStateTransaction:
         self._motion_payload_valid: torch.Tensor | None = None
         self._tensor_root_payload_valid: torch.Tensor | None = None
         self._deferred_payload_validation = False
+        self._deferred_mask_validation = False
 
     @property
     def active(self) -> bool:
@@ -171,6 +173,29 @@ class ResetStateTransaction:
         if not isinstance(enabled, bool):
             raise TypeError(f"deferred payload validation must be bool, got {type(enabled)}")
         self._deferred_payload_validation = enabled
+
+    @property
+    def deferred_mask_validation(self) -> bool:
+        """Whether reset mask scope/row-count verdicts may defer publication."""
+        return self._deferred_mask_validation
+
+    def set_deferred_mask_validation(self, enabled: bool) -> None:
+        """Opt in to completion-boundary reset mask verdict publication."""
+        if not isinstance(enabled, bool):
+            raise TypeError(f"deferred mask validation must be bool, got {type(enabled)}")
+        if self.active:
+            raise RuntimeError("deferred mask validation cannot change during an active reset")
+        self._deferred_mask_validation = enabled
+
+    def publish_mask_validation_verdicts(self) -> None:
+        """Fail closed on deferred reset-scope and row-count verdicts."""
+        if not self._deferred_mask_validation:
+            return
+        if bool(self._mask_outside_rows):
+            raise ValueError("tensor reset mask attempted a write outside the active mask")
+        if bool(self._mask_count.item()):
+            return
+        raise ValueError("fixed-width tensor reset commit has no selected rows")
 
     @property
     def tensor_active(self) -> bool:
@@ -1403,12 +1428,19 @@ class ResetStateTransaction:
             return reset_mask & active_mask
         return reset_mask
 
-    @staticmethod
-    def _tensor_mask_has_outside_rows(reset_mask: torch.Tensor, active_mask: torch.Tensor) -> bool:
-        return bool((reset_mask & ~active_mask).any())
+    def _tensor_mask_has_outside_rows(
+        self, reset_mask: torch.Tensor, active_mask: torch.Tensor
+    ) -> bool:
+        outside = (reset_mask & ~active_mask).any()
+        self._mask_outside_rows.copy_(outside)
+        if self._deferred_mask_validation:
+            return False
+        return bool(outside)
 
     def _mask_is_empty(self, reset_mask: torch.Tensor) -> bool:
         self._mask_count.copy_(reset_mask.sum())
+        if self._deferred_mask_validation:
+            return False
         return bool(self._mask_count.item() == 0)
 
     def _commit_has_rows(self, commit_mask: torch.Tensor) -> bool:
@@ -2462,6 +2494,7 @@ class ResetStateTransaction:
         self._tensor_active = False
         self._tensor_active_mask = None
         self._mask_count.zero_()
+        self._mask_outside_rows.zero_()
         self._tensor_has_writes = False
         self._tensor_owner_subset = False
         self._tensor_write_mask = None
