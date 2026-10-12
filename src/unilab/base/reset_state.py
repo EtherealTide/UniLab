@@ -144,6 +144,7 @@ class ResetStateTransaction:
         ) = None
         self._motion_payload_valid: torch.Tensor | None = None
         self._tensor_root_payload_valid: torch.Tensor | None = None
+        self._deferred_payload_validation = False
 
     @property
     def active(self) -> bool:
@@ -161,6 +162,17 @@ class ResetStateTransaction:
         return self._require_tensor_root_payload_valid()
 
     @property
+    def deferred_payload_validation(self) -> bool:
+        """Whether fused reset payload verdicts may defer publication."""
+        return self._deferred_payload_validation
+
+    def set_deferred_payload_validation(self, enabled: bool) -> None:
+        """Opt in to completion-boundary fused reset payload publication."""
+        if not isinstance(enabled, bool):
+            raise TypeError(f"deferred payload validation must be bool, got {type(enabled)}")
+        self._deferred_payload_validation = enabled
+
+    @property
     def tensor_active(self) -> bool:
         """Whether the active reset composes device tensor rows without host staging."""
         return self._tensor_active
@@ -174,6 +186,17 @@ class ResetStateTransaction:
         if self._tensor_root_payload_valid is None:
             return torch.ones((), dtype=torch.bool)
         return self._tensor_root_payload_valid
+
+    def publish_payload_validation_verdicts(self, *, term_name: str) -> None:
+        """Fail closed on fused reset payload verdicts at a completion boundary."""
+        if not self._deferred_payload_validation:
+            return
+        if bool(self.tensor_root_payload_valid) and bool(self.motion_payload_valid):
+            return
+        raise ValueError(
+            f"EventManager term '{term_name}' tensor reset payload contains NaN/Inf "
+            "or a non-unit quaternion"
+        )
 
     @property
     def last_commit_had_writes(self) -> bool:
@@ -1295,6 +1318,8 @@ class ResetStateTransaction:
         ):
             self._motion_payload_valid = torch.empty_like(valid)
         self._motion_payload_valid.copy_(valid)
+        if self._deferred_payload_validation:
+            return
         if torch.equal(valid, torch.ones_like(valid)):
             return
         payloads = (
@@ -1849,6 +1874,8 @@ class ResetStateTransaction:
         ):
             self._tensor_root_payload_valid = torch.empty_like(valid)
         self._tensor_root_payload_valid.copy_(valid)
+        if self._deferred_payload_validation:
+            return
         if torch.equal(valid, torch.ones_like(valid)):
             return
         if not bool(torch.isfinite(root_state).all()):

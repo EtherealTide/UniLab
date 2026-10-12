@@ -778,6 +778,26 @@ def test_packed_root_state_rejects_invalid_payloads(root_state, error, match: st
     assert backend.tensor_reset_calls == []
 
 
+def test_deferred_reset_payload_validation_fails_closed_at_boundary() -> None:
+    backend = _RecordingPackedTensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    transaction.set_deferred_payload_validation(True)
+    assert transaction.deferred_payload_validation is True
+    reset_mask = torch.tensor([False, True, False, True])
+    layout = BackendRootStateLayout(tuple(range(7)), tuple(range(6)))
+    root_state = torch.zeros((4, 13), dtype=torch.float32)
+    root_state[:, 3] = 0.5
+
+    with transaction.scoped_device_event_tensor(reset_mask):
+        transaction.write_root_state_tensor(
+            reset_mask, layout, root_state, term_name="deferred_invalid_root"
+        )
+        assert transaction.tensor_root_payload_valid.item() is False
+        with pytest.raises(ValueError, match="non-unit quaternion"):
+            transaction.publish_payload_validation_verdicts(term_name="deferred_invalid_root")
+
+
 def test_packed_reset_rejects_invalid_mask_layout() -> None:
     backend = _RecordingPackedTensorResetBackend()
     transaction = _transaction(backend)
