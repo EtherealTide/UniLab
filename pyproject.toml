@@ -125,6 +125,11 @@ url = "https://download-r2.pytorch.org/whl/cu130"
 explicit = true
 
 [tool.uv.sources]
+# Roadmap #2307 develops against checked-out sibling repositories.  Keep these
+# path sources on the integration branch; do not publish or consume a PyPI
+# build for roadmap validation.
+unisim-core = { path = "../unisim", editable = true }
+unilab-rl = { path = "../unilab_rl", editable = true }
 # cu130 carries torch>=2.12 CUDA wheels for linux/win; macOS resolves from PyPI.
 torch = [
     { index = "r2-cu130", marker = "sys_platform=='linux' or sys_platform=='win32'" },
