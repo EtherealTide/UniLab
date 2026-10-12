@@ -1247,6 +1247,21 @@ def test_training_progress_restore_survives_next_step_and_rejects_invalid_state(
     env.close()
 
 
+def test_step_publishes_fixed_width_reward_components_for_tensor_collectors() -> None:
+    env, _backend = _make_env()
+    env.reset()
+    state = env.step(torch.tensor([[0.25], [0.75]], dtype=torch.float32))
+
+    assert env.algo_capabilities.reward_component_names == ("track",)
+    assert "reward_components" in state.info
+    assert "reward/track" not in state.info["log"]
+    torch.testing.assert_close(
+        state.info["reward_components"],
+        torch.tensor([[0.25], [0.75]], dtype=torch.float32),
+    )
+    env.close()
+
+
 def test_manager_public_inputs_and_episode_counters_are_tensor_first() -> None:
     env, _ = _make_env()
     env.reset()

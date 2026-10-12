@@ -257,6 +257,22 @@ def test_reward_step_extras_report_per_term_weighted_rates(fake_env: FakeEnv) ->
     assert extras["reward/zero"] == 0.0
 
 
+def test_reward_step_rewards_preserve_full_width_weighted_rates(fake_env: FakeEnv) -> None:
+    values = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32)
+
+    def value(env: FakeEnv) -> torch.Tensor:
+        return values
+
+    manager = RewardManager(
+        {"value": RewardTermCfg(func=value, weight=2.0)},
+        fake_env,
+        scale_by_dt=False,
+    )
+    manager.compute(dt=1.0)
+
+    torch.testing.assert_close(manager.step_rewards, (values * 2.0).reshape(4, 1))
+
+
 def test_reward_pack_supplies_outputs_without_duplicate_execution(fake_env: FakeEnv) -> None:
     calls: list[str] = []
 
