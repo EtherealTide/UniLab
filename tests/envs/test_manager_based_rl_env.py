@@ -3560,3 +3560,19 @@ def test_reset_owner_replaces_command_and_post_commit_state_passes() -> None:
     assert timing["reset_done_command_term_count"] == 1.0
     assert timing["reset_done_manager_reset_count"] == 5.0
     env.close()
+
+
+def test_mask_reset_publishes_cleared_action_observation() -> None:
+    """Post-reset observations must not expose a terminated episode's action."""
+    env, _backend = _make_env(_make_cfg(auto_reset=False))
+    try:
+        env.reset()
+        env.step(torch.tensor([[0.25], [0.75]], dtype=torch.float32))
+        reset_mask = torch.tensor([False, True], dtype=torch.bool)
+
+        reset_obs, _info = env.reset(reset_mask=reset_mask)
+
+        torch.testing.assert_close(reset_obs["obs"][0, 1], torch.tensor(0.25))
+        torch.testing.assert_close(reset_obs["obs"][1, 1], torch.tensor(0.0))
+    finally:
+        env.close()
