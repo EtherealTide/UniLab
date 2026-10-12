@@ -22,6 +22,7 @@ import torch
 import unisim.backend.genesis.dependencies as genesis_dependencies
 import unisim.backend.genesis.materialization as genesis_materialization
 from unisim.backend.base import RenderClosedError
+from unisim.backend.genesis.backend import GenesisBackend
 from unisim.backend.genesis.dependencies import (
     GenesisDependencies,
     GenesisDependencyError,
@@ -111,6 +112,46 @@ def tiny_model_file(tmp_path: Path) -> str:
 
 @pytest.fixture
 def fake_genesis(monkeypatch: pytest.MonkeyPatch):
+    if not torch.cuda.is_available():
+        factories = {
+            name: getattr(torch, name)
+            for name in ("arange", "empty", "full", "ones", "tensor", "zeros")
+        }
+
+        def cuda_free_factory(original):
+            def factory(*args, **kwargs):
+                device = kwargs.get("device")
+                if device is not None and torch.device(device).type == "cuda":
+                    kwargs["device"] = "cpu"
+                return original(*args, **kwargs)
+
+            return factory
+
+        for name, original in factories.items():
+            monkeypatch.setattr(torch, name, cuda_free_factory(original))
+        monkeypatch.setattr(
+            torch.cuda,
+            "current_stream",
+            lambda *_args, **_kwargs: SimpleNamespace(synchronize=lambda: None),
+        )
+        monkeypatch.setattr(torch.Tensor, "cuda", lambda self, *_args, **_kwargs: self)
+        monkeypatch.setattr(
+            GenesisBackend,
+            "_tensor_lifecycle_supported",
+            lambda self: (
+                not self._portable_mode
+                and self._genesis_backend_is_exact_cuda()
+                and bool(getattr(self._gs, "use_zerocopy", False))
+            ),
+        )
+
+        def tensor_device(self, requested=None):
+            target = self._device if requested is None else torch.device(requested)
+            if target.type != "cpu":
+                raise ValueError(f"fake Genesis tensor operands use CPU, requested {target}")
+            return target
+
+        monkeypatch.setattr(GenesisBackend, "_tensor_device", tensor_device)
     fake = make_fake_genesis()
     fake.backend = fake.gpu
     fake.cuda = fake.gpu
