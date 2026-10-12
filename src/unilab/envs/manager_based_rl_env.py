@@ -1482,18 +1482,15 @@ class ManagerBasedRlEnv(TorchEnv):
         self._manual_reset_pending.masked_fill_(reset_mask, False)
         self._state.info["steps"].masked_fill_(reset_mask, 0)
 
-        with self.scene._scoped_state_reads():
-            read_plan = self.scene._tensor_read_plan
-            if read_plan is not None:
-                read_plan.refresh()
-            self.command_manager.compute_reset(dt=0.0, reset_mask=reset_mask)
-            self.command_manager.post_compute_reset()
-            reset_timing.update(getattr(self.command_manager, "last_post_compute_timing_ms", {}))
-            if reset_owner is None or not reset_owner.cfg.owns_observation_reset:
-                self.observation_manager.reset(reset_mask)
-            manager_obs = self.observation_manager.compute(update_history=True)
-
+        # Post-reset observations must see cleared Manager-owned state. In
+        # particular, ``last_action`` and stateful observation terms must not
+        # publish the terminated episode's action or phase at the new boundary.
         reset_managers: tuple[Any, ...] = (
+            *(
+                ()
+                if reset_owner is not None and reset_owner.cfg.owns_observation_reset
+                else (self.observation_manager,)
+            ),
             *(
                 ()
                 if reset_owner is not None and reset_owner.cfg.owns_action_reset
@@ -1522,14 +1519,7 @@ class ManagerBasedRlEnv(TorchEnv):
                     len(self.event_manager.active_terms.get("reset", ()))
                 ),
                 "reset_done_command_term_count": float(len(self.command_manager.active_terms)),
-                "reset_done_manager_reset_count": float(
-                    len(reset_managers)
-                    + (
-                        0
-                        if reset_owner is not None and reset_owner.cfg.owns_observation_reset
-                        else 1
-                    )
-                ),
+                "reset_done_manager_reset_count": float(len(reset_managers)),
                 "reset_done_observation_term_count": float(
                     sum(len(terms) for terms in self.observation_manager.active_terms.values())
                 ),
@@ -1537,6 +1527,15 @@ class ManagerBasedRlEnv(TorchEnv):
         )
         if reset_owner is not None:
             log.update(reset_owner.reset_committed(reset_mask))
+
+        with self.scene._scoped_state_reads():
+            read_plan = self.scene._tensor_read_plan
+            if read_plan is not None:
+                read_plan.refresh()
+            self.command_manager.compute_reset(dt=0.0, reset_mask=reset_mask)
+            self.command_manager.post_compute_reset()
+            reset_timing.update(getattr(self.command_manager, "last_post_compute_timing_ms", {}))
+            manager_obs = self.observation_manager.compute(update_history=True)
 
         mapped_obs = self._map_observations(manager_obs)
         reset_obs = {

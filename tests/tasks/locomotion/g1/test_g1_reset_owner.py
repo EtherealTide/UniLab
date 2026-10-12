@@ -28,6 +28,13 @@ def _env() -> SimpleNamespace:
     return env
 
 
+def test_owner_cfg_defaults_delegate_observation_reset() -> None:
+    cfg = G1WalkResetOwnerCfg(func=lambda **kwargs: None)
+
+    assert cfg.command_name == "twist"
+    assert cfg.owns_observation_reset is False
+
+
 def test_reset_transaction_uses_owner_mask_boundary() -> None:
     env = _env()
     seen: dict[str, object] = {}

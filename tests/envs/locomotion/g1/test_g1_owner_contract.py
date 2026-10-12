@@ -642,6 +642,63 @@ def test_g1_walk_newton_mask_reset_preserves_rows_and_rng() -> None:
         env._backend.close()
 
 
+def test_g1_walk_mask_reset_preserves_phase_and_action_observation() -> None:
+    """The walk owner delegates phase reset and publishes cleared actions."""
+    registry.ensure_registries()
+    _, _, env_override = _materialize("sac", ("task=g1_walk_flat/mujoco",), "G1WalkFlat")
+    env_override["observations"]["policy"]["enable_corruption"] = False
+    try:
+        env = registry.make(
+            "G1WalkFlat",
+            sim_backend="mujoco",
+            env_cfg_override=env_override,
+            num_envs=4,
+        )
+    except ImportError as exc:
+        pytest.skip(f"mujoco runtime unavailable: {exc}")
+
+    try:
+        owner = env.reset_owner_manager.owner
+        assert isinstance(owner.cfg, g1_terms.G1WalkResetOwnerCfg)
+        assert owner.cfg.owns_observation_reset is False
+
+        initial_obs, _info = env.reset(seed=2303)
+        phase = initial_obs["obs"][:, 96:98]
+        torch.testing.assert_close(
+            torch.remainder(phase[:, 1] - phase[:, 0], 2.0 * torch.pi),
+            torch.full((4,), torch.pi, dtype=phase.dtype, device=phase.device),
+            rtol=1.0e-6,
+            atol=1.0e-6,
+        )
+        assert phase[:, 0].unique().numel() > 1
+
+        stepped = env.step(torch.full((4, 29), 0.25, dtype=torch.float32, device=env.device))
+        action_before = stepped.obs["obs"][:, 64:93].clone()
+        phase_before = stepped.obs["obs"][:, 96:98].clone()
+        torch.testing.assert_close(action_before, torch.full_like(action_before, 0.25))
+
+        reset_mask = torch.tensor([False, True, False, True], dtype=torch.bool, device=env.device)
+        reset_obs, _reset_info = env.reset(reset_mask=reset_mask)
+        reset_action = reset_obs["obs"][:, 64:93]
+        reset_phase = reset_obs["obs"][:, 96:98]
+        keep = ~reset_mask
+
+        torch.testing.assert_close(reset_action[keep], action_before[keep])
+        torch.testing.assert_close(
+            reset_action[reset_mask], torch.zeros_like(reset_action[reset_mask])
+        )
+        torch.testing.assert_close(reset_phase[keep], phase_before[keep])
+        torch.testing.assert_close(
+            torch.remainder(reset_phase[:, 1] - reset_phase[:, 0], 2.0 * torch.pi),
+            torch.full((4,), torch.pi, dtype=reset_phase.dtype, device=reset_phase.device),
+            rtol=1.0e-6,
+            atol=1.0e-6,
+        )
+        assert not torch.equal(reset_phase[reset_mask], phase_before[reset_mask])
+    finally:
+        env.close()
+
+
 def test_g1_walk_profile_runtime_obs_scaling_matches_legacy_layout() -> None:
     """Walk-profile owners scale gyro x0.25, dof_vel x0.05, critic linvel x2.0."""
     registry.ensure_registries()

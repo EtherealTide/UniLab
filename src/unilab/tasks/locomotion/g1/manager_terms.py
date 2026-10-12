@@ -1057,10 +1057,12 @@ class G1PenaltyCurriculum(ManagerTermBase):
 # ---------------------------------------------------------------------------
 
 
+@dataclass(kw_only=True)
 class G1WalkResetOwnerCfg(ResetOwnerCfg):
     """Fuse the selected-reset lifecycle for the canonical G1 walk command."""
 
     command_name: str = "twist"
+    owns_observation_reset: bool = False
 
 
 class G1WalkResetOwner(ResetOwner):
