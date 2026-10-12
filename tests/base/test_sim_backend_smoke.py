@@ -12,7 +12,16 @@ import numpy as np
 import pytest
 import torch
 from unisim.backend.mujoco.xml import get_named_body_ids
-from unisim.dr.types import IntervalRandomizationPlan, ResetRandomizationPayload
+from unisim.dr.types import (
+    INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
+    INTERVAL_TERM_BODY_FORCE,
+    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+    INTERVAL_TERM_BODY_TORQUE,
+    INTERVAL_TERM_PUSH,
+    IntervalRandomizationPlan,
+    IntervalTermOp,
+    ResetRandomizationPayload,
+)
 
 from unilab.assets import ASSETS_ROOT_PATH
 from unilab.base.scene import SceneCfg
@@ -134,11 +143,11 @@ def test_mujoco_backend_smoke_contract(robot):
         "kp",
         "kd",
     }.issubset(caps.supported_reset_terms)
-    assert caps.supports_interval_push
-    assert caps.supports_interval_body_velocity_delta
-    assert caps.supports_interval_body_angular_velocity_delta
-    assert caps.supports_interval_body_force
-    assert caps.supports_interval_body_torque
+    assert caps.supports_interval_term(INTERVAL_TERM_PUSH)
+    assert caps.supports_interval_term(INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA)
+    assert caps.supports_interval_term(INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA)
+    assert caps.supports_interval_term(INTERVAL_TERM_BODY_FORCE)
+    assert caps.supports_interval_term(INTERVAL_TERM_BODY_TORQUE)
 
 
 def test_mujoco_interval_root_velocity_kick_is_row_selective_and_refreshes_sensors():
@@ -172,8 +181,9 @@ def test_mujoco_interval_root_velocity_kick_is_row_selective_and_refreshes_senso
 
     bkd.apply_interval_randomization(
         IntervalRandomizationPlan(
-            body_ids=body_ids,
-            body_linear_velocity_delta=delta,
+            ops=(
+                IntervalTermOp(INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA, delta, body_ids=body_ids),
+            )
         )
     )
 
@@ -218,8 +228,11 @@ def test_mujoco_interval_root_velocity_kick_rejects_invalid_contracts():
     with pytest.raises(RuntimeError, match="requires a materialized backend"):
         bkd.apply_interval_randomization(
             IntervalRandomizationPlan(
-                body_ids=body_ids,
-                body_linear_velocity_delta=delta,
+                ops=(
+                    IntervalTermOp(
+                        INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA, delta, body_ids=body_ids
+                    ),
+                )
             )
         )
 
@@ -227,29 +240,49 @@ def test_mujoco_interval_root_velocity_kick_rejects_invalid_contracts():
     with pytest.raises(TypeError, match="body_ids must be a 1-D integer array"):
         bkd.apply_interval_randomization(
             IntervalRandomizationPlan(
-                body_ids=body_ids.astype(np.float64),
-                body_linear_velocity_delta=delta,
+                ops=(
+                    IntervalTermOp(
+                        INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                        delta,
+                        body_ids=body_ids.astype(np.float64),
+                    ),
+                )
             )
         )
     with pytest.raises(NotImplementedError, match="only supports the configured free root"):
         bkd.apply_interval_randomization(
             IntervalRandomizationPlan(
-                body_ids=np.asarray([body_ids[0] + 1], dtype=np.int32),
-                body_linear_velocity_delta=delta,
+                ops=(
+                    IntervalTermOp(
+                        INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                        delta,
+                        body_ids=np.asarray([body_ids[0] + 1], dtype=np.int32),
+                    ),
+                )
             )
         )
     with pytest.raises(ValueError, match=r"shape .* expected \(2, 1, 3\)"):
         bkd.apply_interval_randomization(
             IntervalRandomizationPlan(
-                body_ids=body_ids,
-                body_linear_velocity_delta=np.zeros((NUM_ENVS + 1, 1, 3), dtype=np.float64),
+                ops=(
+                    IntervalTermOp(
+                        INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                        np.zeros((NUM_ENVS + 1, 1, 3), dtype=np.float64),
+                        body_ids=body_ids,
+                    ),
+                )
             )
         )
     with pytest.raises(ValueError, match="payload must have ndim 3"):
         bkd.apply_interval_randomization(
             IntervalRandomizationPlan(
-                body_ids=body_ids,
-                body_linear_velocity_delta=np.zeros((NUM_ENVS, 3), dtype=np.float64),
+                ops=(
+                    IntervalTermOp(
+                        INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                        np.zeros((NUM_ENVS, 3), dtype=np.float64),
+                        body_ids=body_ids,
+                    ),
+                )
             )
         )
     invalid = delta.copy()
@@ -257,8 +290,13 @@ def test_mujoco_interval_root_velocity_kick_rejects_invalid_contracts():
     with pytest.raises(ValueError, match="contains NaN or Inf"):
         bkd.apply_interval_randomization(
             IntervalRandomizationPlan(
-                body_ids=body_ids,
-                body_linear_velocity_delta=invalid,
+                ops=(
+                    IntervalTermOp(
+                        INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                        invalid,
+                        body_ids=body_ids,
+                    ),
+                )
             )
         )
 
@@ -289,8 +327,9 @@ def test_mujoco_interval_root_angular_velocity_kick_converts_to_body_frame():
 
     bkd.apply_interval_randomization(
         IntervalRandomizationPlan(
-            body_ids=body_ids,
-            body_angular_velocity_delta=delta,
+            ops=(
+                IntervalTermOp(INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA, delta, body_ids=body_ids),
+            )
         )
     )
 
@@ -343,8 +382,8 @@ def test_mujoco_interval_body_force_and_torque_have_observable_effect(tmp_path):
     bkd = MuJoCoBackend(SceneCfg(model_file=str(model_file)), NUM_ENVS, SIM_DT, base_name="ball")
     bkd.materialize()
     caps = bkd.get_dr_capabilities()
-    assert caps.supports_interval_body_force
-    assert caps.supports_interval_body_torque
+    assert caps.supports_interval_term(INTERVAL_TERM_BODY_FORCE)
+    assert caps.supports_interval_term(INTERVAL_TERM_BODY_TORQUE)
 
     body_ids = bkd.get_body_ids(("ball",))
     qpos = np.broadcast_to(bkd.get_default_qpos(), (NUM_ENVS, bkd.model.nq)).copy()
@@ -365,9 +404,10 @@ def test_mujoco_interval_body_force_and_torque_have_observable_effect(tmp_path):
     _set_state(bkd, ids, qpos, qvel0)
     bkd.apply_interval_randomization(
         IntervalRandomizationPlan(
-            body_ids=body_ids,
-            body_force=force,
-            body_torque=torque,
+            ops=(
+                IntervalTermOp(INTERVAL_TERM_BODY_FORCE, force, body_ids=body_ids),
+                IntervalTermOp(INTERVAL_TERM_BODY_TORQUE, torque, body_ids=body_ids),
+            )
         )
     )
     _step(bkd, ctrl, nsteps=1)
@@ -416,7 +456,7 @@ def test_motrix_backend_smoke_contract(robot):
     assert {"base_mass_delta", "base_com_offset", "gravity", "kp", "kd"}.issubset(
         caps.supported_reset_terms
     )
-    assert caps.supports_interval_push
+    assert caps.supports_interval_term(INTERVAL_TERM_PUSH)
     play_caps = bkd.get_play_capabilities()
     assert play_caps.supports_native_interactive_renderer
     assert play_caps.supports_native_video_capture

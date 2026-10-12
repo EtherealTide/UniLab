@@ -21,6 +21,9 @@ import pytest
 from unisim.backend.mjwarp.dependencies import load_mjwarp_dependencies
 from unisim.backend.mjwarp.randomization import EXPANDED_MODEL_FIELDS
 from unisim.dr.types import (
+    INTERVAL_TERM_BODY_FORCE,
+    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+    INTERVAL_TERM_PUSH,
     RESET_TERM_BASE_COM,
     RESET_TERM_BASE_MASS,
     RESET_TERM_BODY_INERTIA,
@@ -38,6 +41,7 @@ from unisim.dr.types import (
     RESET_TERM_KD,
     RESET_TERM_KP,
     IntervalRandomizationPlan,
+    IntervalTermOp,
     ResetRandomizationPayload,
 )
 
@@ -119,9 +123,9 @@ def test_dr_capabilities_advertise_supported_terms(backend: Any) -> None:
             RESET_TERM_KD,
         }
     )
-    assert capabilities.supports_interval_push
-    assert capabilities.supports_interval_body_velocity_delta
-    assert capabilities.supports_interval_body_force
+    assert capabilities.supports_interval_term(INTERVAL_TERM_PUSH)
+    assert capabilities.supports_interval_term(INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA)
+    assert capabilities.supports_interval_term(INTERVAL_TERM_BODY_FORCE)
 
 
 def test_declared_model_fields_are_expanded_per_world(backend: Any) -> None:
@@ -308,7 +312,15 @@ def test_heavier_world_accelerates_less_under_identical_body_force(backend: Any)
     force = np.zeros((backend.num_envs, 1, 3), dtype=np.float32)
     force[:, 0, 0] = 300.0
     backend.apply_interval_randomization(
-        IntervalRandomizationPlan(body_ids=np.asarray([backend._base_body_id]), body_force=force)
+        IntervalRandomizationPlan(
+            ops=(
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_FORCE,
+                    force,
+                    body_ids=np.asarray([backend._base_body_id]),
+                ),
+            )
+        )
     )
     backend.step(_stand_ctrl(backend), nsteps=3)
 
@@ -328,7 +340,9 @@ def test_heavier_world_accelerates_less_under_identical_body_force(backend: Any)
 def test_push_robots_stages_one_step_force(backend: Any) -> None:
     _reset_all(backend)
     backend.apply_interval_randomization(
-        IntervalRandomizationPlan(push_perturbation_limit=np.asarray([80.0, 0.0, 0.0]))
+        IntervalRandomizationPlan(
+            ops=(IntervalTermOp(INTERVAL_TERM_PUSH, np.asarray([80.0, 0.0, 0.0])),)
+        )
     )
     assert backend._xfrc_pending
     before = backend.get_base_lin_vel().copy()
@@ -346,8 +360,13 @@ def test_interval_velocity_delta_kicks_selected_rows(backend: Any) -> None:
     delta[[0, 3], 0, :] = np.asarray([[0.4, -0.2, 0.0], [-0.3, 0.1, 0.0]], dtype=np.float32)
     backend.apply_interval_randomization(
         IntervalRandomizationPlan(
-            body_ids=np.asarray([backend._base_body_id], dtype=np.int32),
-            body_linear_velocity_delta=delta,
+            ops=(
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                    delta,
+                    body_ids=np.asarray([backend._base_body_id], dtype=np.int32),
+                ),
+            )
         )
     )
     after = backend.get_base_lin_vel()
@@ -397,8 +416,13 @@ def test_low_friction_world_changes_kick_response(backend: Any) -> None:
     delta[:, 0, 0] = 1.5
     backend.apply_interval_randomization(
         IntervalRandomizationPlan(
-            body_ids=np.asarray([backend._base_body_id], dtype=np.int32),
-            body_linear_velocity_delta=delta,
+            ops=(
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                    delta,
+                    body_ids=np.asarray([backend._base_body_id], dtype=np.int32),
+                ),
+            )
         )
     )
     for _ in range(6):

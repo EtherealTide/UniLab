@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 import pytest
 from unisim.dr.types import (
+    INTERVAL_TERM_BODY_FORCE,
     RESET_TERM_BODY_IPOS,
     RESET_TERM_BODY_MASS,
     RESET_TERM_GEOM_FRICTION,
@@ -13,6 +14,7 @@ from unisim.dr.types import (
     RESET_TERM_KD,
     RESET_TERM_KP,
     IntervalRandomizationPlan,
+    IntervalTermOp,
     ResetRandomizationPayload,
 )
 
@@ -294,7 +296,7 @@ def test_motrix_backend_dr_capabilities_include_pd_gains_when_overrides_availabl
     assert RESET_TERM_BODY_IPOS in caps.supported_reset_terms
     assert RESET_TERM_GEOM_FRICTION in caps.supported_reset_terms
     assert RESET_TERM_GRAVITY in caps.supported_reset_terms
-    assert caps.supports_interval_body_force
+    assert caps.supports_interval_term(INTERVAL_TERM_BODY_FORCE)
 
 
 def test_motrix_body_sensor_views_use_canonical_world_state() -> None:
@@ -307,7 +309,7 @@ def test_motrix_body_sensor_views_use_canonical_world_state() -> None:
     backend._num_envs = 2
     backend._np_dtype = np.float32
     backend._model = SimpleNamespace(get_link_index=lambda name: 0 if name == "base" else None)
-    backend._legacy_get_body_state_w = lambda _body_ids: (
+    backend._host_get_body_state_w = lambda _body_ids: (
         np.asarray([[[1.0, 2.0, 3.0]], [[4.0, 5.0, 6.0]]], dtype=np.float32),
         np.asarray([[[1.0, 0.0, 0.0, 0.0]], [[0.0, 1.0, 0.0, 0.0]]], dtype=np.float32),
         np.asarray([[[7.0, 8.0, 9.0]], [[10.0, 11.0, 12.0]]], dtype=np.float32),
@@ -513,8 +515,13 @@ def test_motrix_backend_interval_body_force_uses_link_external_force_delta() -> 
 
     backend.apply_interval_randomization(
         IntervalRandomizationPlan(
-            body_ids=np.asarray([0], dtype=np.int32),
-            body_force=np.asarray([[[1.0, 2.0, 3.0]], [[4.0, 5.0, 6.0]]], dtype=np.float64),
+            ops=(
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_FORCE,
+                    np.asarray([[[1.0, 2.0, 3.0]], [[4.0, 5.0, 6.0]]], dtype=np.float64),
+                    body_ids=np.asarray([0], dtype=np.int32),
+                ),
+            )
         )
     )
     backend.apply_body_force(

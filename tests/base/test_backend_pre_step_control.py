@@ -532,7 +532,7 @@ def test_motrix_native_video_capture_tracks_primary_env_base(monkeypatch) -> Non
     backend._render_app = None
     backend._render_headless = None
     backend._render_capture_enabled = False
-    backend._legacy_get_base_pos = lambda: base_positions
+    backend._host_get_base_pos = lambda: base_positions
 
     backend.init_renderer(
         spacing=1.5,

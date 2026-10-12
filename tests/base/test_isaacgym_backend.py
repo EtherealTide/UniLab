@@ -17,7 +17,6 @@ from typing import Any
 import numpy as np
 import pytest
 import torch
-from unisim.backend.isaacgym import protocol
 from unisim.backend.isaacgym.backend import IsaacGymBackend, IsaacGymWorkerError
 from unisim.backend.isaacgym.dependencies import (
     ENV_HOME,
@@ -27,7 +26,8 @@ from unisim.backend.isaacgym.dependencies import (
     resolve_isaacgym_runtime,
 )
 from unisim.backend.isaacgym.sensors import scan_scene_metadata
-from unisim.dr.types import IntervalTermOp
+from unisim.backend.subprocess_ipc import protocol
+from unisim.dr.types import INTERVAL_TERM_BODY_FORCE, INTERVAL_TERM_PUSH, IntervalTermOp
 
 import unilab.base.backend_factory as backend_factory
 from unilab.base.backend_factory import create_backend
@@ -189,14 +189,6 @@ def test_protocol_slot_layout() -> None:
         protocol.slot_dtype("nope")
     with pytest.raises(ValueError, match="num_envs>0"):
         protocol.slot_shapes(0, 3, 2)
-
-
-def test_legacy_protocol_module_reexports_canonical_public_surface() -> None:
-    from unisim.backend.subprocess_ipc import protocol as shared_protocol
-
-    assert protocol.__all__ == shared_protocol.__all__
-    for name in shared_protocol.__all__:
-        assert getattr(protocol, name) is getattr(shared_protocol, name)
 
 
 def test_protocol_error_payload() -> None:
@@ -562,8 +554,8 @@ def test_tracked_body_views_fail_closed(backend: IsaacGymBackend) -> None:
 def test_dr_and_pre_step_control_fail_closed(backend: IsaacGymBackend) -> None:
     capabilities = backend.get_dr_capabilities()
     assert not capabilities.supported_reset_terms
-    assert not capabilities.supports_interval_push
-    assert not capabilities.supports_interval_body_force
+    assert not capabilities.supports_interval_term(INTERVAL_TERM_PUSH)
+    assert not capabilities.supports_interval_term(INTERVAL_TERM_BODY_FORCE)
 
     class _Plan:
         def is_empty(self) -> bool:

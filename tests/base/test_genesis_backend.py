@@ -30,7 +30,11 @@ from unisim.backend.genesis.dependencies import (
 )
 from unisim.backend.genesis.materialization import preserve_torch_globals
 from unisim.dr.types import (
+    INTERVAL_TERM_BODY_FORCE,
+    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+    INTERVAL_TERM_PUSH,
     IntervalRandomizationPlan,
+    IntervalTermOp,
     ResetRandomizationPayload,
 )
 
@@ -483,9 +487,9 @@ def test_dr_capabilities_and_tensor_reset_randomization_boundary(
     backend = _backend(tiny_model_file)
     caps = backend.get_dr_capabilities()
     assert caps.supported_reset_terms == {"body_mass", "base_mass_delta", "kp", "kd"}
-    assert caps.supports_interval_body_force is True
-    assert caps.supports_interval_push is False
-    assert caps.supports_interval_body_velocity_delta is False
+    assert caps.supports_interval_term(INTERVAL_TERM_BODY_FORCE) is True
+    assert caps.supports_interval_term(INTERVAL_TERM_PUSH) is False
+    assert caps.supports_interval_term(INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA) is False
 
     rows = torch.tensor([1, 3], dtype=torch.int64, device="cuda")
     qpos, qvel = _stand_state(backend, 2)
@@ -506,7 +510,13 @@ def test_interval_randomization_and_body_force(fake_genesis, tiny_model_file: st
     solver = backend._scene.sim.rigid_solver
     force = np.ones((4, 2, 3), dtype=np.float32)
     backend.apply_interval_randomization(
-        IntervalRandomizationPlan(body_ids=np.array([1, 3], dtype=np.int32), body_force=force)
+        IntervalRandomizationPlan(
+            ops=(
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_FORCE, force, body_ids=np.array([1, 3], dtype=np.int32)
+                ),
+            )
+        )
     )
     assert len(solver.external_forces) == 2
     np.testing.assert_allclose(solver.external_forces[0][0], np.ones((4, 3)))
@@ -515,20 +525,29 @@ def test_interval_randomization_and_body_force(fake_genesis, tiny_model_file: st
 
     with pytest.raises(NotImplementedError, match="does not support interval term 'push'"):
         backend.apply_interval_randomization(
-            IntervalRandomizationPlan(push_perturbation_limit=np.ones(3))
+            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, np.ones(3)),))
         )
     with pytest.raises(
         NotImplementedError, match="does not support interval term 'body_linear_velocity_delta'"
     ):
         backend.apply_interval_randomization(
             IntervalRandomizationPlan(
-                body_ids=np.array([1], dtype=np.int32),
-                body_linear_velocity_delta=np.zeros((4, 1, 3), dtype=np.float32),
+                ops=(
+                    IntervalTermOp(
+                        INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                        np.zeros((4, 1, 3), dtype=np.float32),
+                        body_ids=np.array([1], dtype=np.int32),
+                    ),
+                )
             )
         )
     with pytest.raises(ValueError, match="requires body_ids"):
         backend.apply_interval_randomization(
-            IntervalRandomizationPlan(body_force=np.zeros((4, 1, 3), dtype=np.float32))
+            IntervalRandomizationPlan(
+                ops=(
+                    IntervalTermOp(INTERVAL_TERM_BODY_FORCE, np.zeros((4, 1, 3), dtype=np.float32)),
+                )
+            )
         )
 
 
