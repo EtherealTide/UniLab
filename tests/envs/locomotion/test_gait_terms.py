@@ -179,7 +179,7 @@ def test_feet_air_time_command_gate_and_reset() -> None:
         np.testing.assert_allclose(term(env), [0.0, 0.0])  # Standing: gated off.
 
     moving_env = _env(scene)
-    term.reset()  # Episode reset clears accumulated air time.
+    term.reset(torch.ones(env.num_envs, dtype=torch.bool))  # Episode reset clears air time.
     np.testing.assert_allclose(term(moving_env), [0.0, 0.0])  # 0.02 <= threshold_min.
     for _ in range(2):
         term(moving_env)
@@ -258,7 +258,7 @@ def test_feet_swing_height_charges_peak_error_at_landing() -> None:
     # After landing the peaks reset; continued contact charges nothing.
     np.testing.assert_allclose(term(env), [0.0, 0.0])
 
-    term.reset()
+    term.reset(torch.ones(env.num_envs, dtype=torch.bool))
     standing = _env(scene, command=torch.zeros((2, 3), dtype=torch.float32))
     scene.set_foot_contact(0, False)
     scene.set_foot_contact(1, False)
@@ -444,7 +444,7 @@ def test_foot_air_time_reset_clears_only_targeted_rows() -> None:
     scene.set_foot_contact(0, False)
     scene.set_foot_contact(1, False)
     term(env)  # Both feet at 0.02 s air time in both envs.
-    term.reset(torch.tensor([1], dtype=torch.int64))
+    term.reset(torch.tensor([False, True], dtype=torch.bool))
     np.testing.assert_allclose(term(env), [[0.04, 0.04], [0.02, 0.02]])
 
 
@@ -458,19 +458,19 @@ def test_air_time_reset_accepts_torch_row_selector_without_host_conversion() -> 
     term(env)
     window(env)
 
-    term.reset(torch.tensor([0], dtype=torch.int64))
-    window.reset(torch.tensor([0], dtype=torch.int64))
+    term.reset(torch.tensor([True, False], dtype=torch.bool))
+    window.reset(torch.tensor([True, False], dtype=torch.bool))
 
     np.testing.assert_allclose(term(env), [0.0, 0.0])
     np.testing.assert_allclose(window(env), [[0.02, 0.02], [0.04, 0.04]])
 
 
-def test_gait_reset_row_selector_fails_closed_for_numpy() -> None:
+def test_gait_reset_rejects_numpy_carriers() -> None:
     scene = _Scene()
     env = _env(scene)
     term = _term(gait_terms.feet_air_time, env, sensor_groups=GROUPS)
 
-    with pytest.raises(TypeError, match="Torch tensor, slice, or None"):
+    with pytest.raises(TypeError, match="masked_fill_"):
         term.reset(np.array([1]))
 
 

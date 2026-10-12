@@ -152,55 +152,10 @@ class TensorMotionSampler:
     def bin_failed_count(self) -> torch.Tensor:
         return self._bin_failed
 
-    def sample_frames(self, rows: torch.Tensor, torch_rng: torch.Generator | None) -> torch.Tensor:
-        dispatch_started = time.perf_counter()
-        if rows.ndim != 1 or rows.dtype != torch.int64 or rows.device != self.device:
-            raise ValueError("TensorMotionSampler rows must be one-dimensional int64 device rows")
-        if torch_rng is None:
-            raise NotImplementedError("TensorMotionSampler requires the Manager Torch generator")
-        self.diagnostics.record_reset_dispatch()
-        count = rows.numel()
-        frames: torch.Tensor
-        probabilities: torch.Tensor | None = None
-        if self.mode == "adaptive":
-            probabilities = self._adaptive_probabilities()
-            bins = torch.multinomial(probabilities, count, replacement=True, generator=torch_rng)
-            offsets = torch.rand(count, device=self.device, generator=torch_rng)
-            frames = (
-                (bins.to(dtype=torch.float32) + offsets) / self.bin_count * (self.num_frames - 1)
-            ).to(dtype=torch.int32)
-        else:
-            use_start = (
-                torch.rand(count, device=self.device, generator=torch_rng) < self.start_ratio
-            )
-            uniform_frames = torch.randint(
-                0,
-                self.num_frames,
-                (count,),
-                device=self.device,
-                generator=torch_rng,
-                dtype=torch.int32,
-            )
-            frames = torch.where(use_start, torch.zeros_like(uniform_frames), uniform_frames)
-
-        _sampling_dispatch_kernel(
-            rows,
-            frames,
-            self._frame_clip_ends,
-            self.current_frames,
-            self.current_clip_end_frames,
-        )
-        if probabilities is not None:
-            self._publish_sampling_metrics(probabilities)
-        elif self.mode == "mixed":
-            self._publish_mixed_metrics()
-        self.last_reset_dispatch_ms = (time.perf_counter() - dispatch_started) * 1000.0
-        return frames
-
-    def sample_frames_mask(
+    def sample_frames(
         self, reset_mask: torch.Tensor, torch_rng: torch.Generator | None
     ) -> torch.Tensor:
-        """Issue #2285 research-only full-width frame sampling."""
+        """Sample full-width frames and publish only selected rows."""
         started = time.perf_counter()
         if (
             reset_mask.ndim != 1
@@ -271,7 +226,11 @@ class TensorMotionSampler:
 
     def step_full(self, active: torch.Tensor, time_steps: torch.Tensor) -> torch.Tensor:
         """Advance and publish full-width frame mirrors without row gathers."""
-        if active.shape != (self.num_envs,) or active.device != self.device:
+        if (
+            active.shape != (self.num_envs,)
+            or active.dtype != torch.bool
+            or active.device != self.device
+        ):
             raise ValueError("TensorMotionSampler active mask shape/device mismatch")
         if (
             time_steps.shape != (self.num_envs,)
@@ -279,32 +238,19 @@ class TensorMotionSampler:
             or time_steps.device != self.device
         ):
             raise ValueError("TensorMotionSampler time_steps must be int32 device frames")
-        increment = active.to(dtype=torch.int32)
-        self.current_frames.add_(increment)
-        time_steps.copy_(self.current_frames)
-        frames = self.current_frames
-        clip_ends = self._frame_clip_ends.index_select(0, frames.clamp(max=self.num_frames - 1))
-        self.current_clip_end_frames.copy_(clip_ends)
-        frames = frames.to(dtype=torch.int64)
+        next_frames = self.current_frames + active.to(dtype=torch.int32)
+        frames = next_frames.to(dtype=torch.int64)
+        clip_ends = self._frame_clip_ends.index_select(
+            0, next_frames.clamp(max=self.num_frames - 1).to(dtype=torch.int64)
+        )
         done = frames > clip_ends
         done.logical_and_(active)
-        return done.nonzero(as_tuple=False).flatten()
-
-    def step(self, active: torch.Tensor, *, rows: torch.Tensor | None = None) -> torch.Tensor:
-        if active.shape != (self.num_envs,) or active.device != self.device:
-            raise ValueError("TensorMotionSampler active mask shape/device mismatch")
-        selector = torch.arange(self.num_envs, device=self.device) if rows is None else rows
-        if selector.ndim != 1 or selector.dtype != torch.int64 or selector.device != self.device:
-            raise ValueError("TensorMotionSampler selected rows must be int64 device rows")
-        selected_active = active.index_select(0, selector)
-        self.current_frames.index_add_(0, selector, selected_active.to(dtype=torch.int32))
-        frames = self.current_frames.to(dtype=torch.int64)
-        selected_frames = frames.index_select(0, selector)
-        clip_ends = self._frame_clip_ends.index_select(0, selected_frames)
-        self.current_clip_end_frames.index_copy_(0, selector, clip_ends)
-        done = selected_frames > clip_ends
-        done.logical_and_(selected_active)
-        return done.nonzero(as_tuple=False).flatten()
+        self.current_frames.copy_(next_frames)
+        self.current_clip_end_frames.copy_(
+            torch.where(active, clip_ends, self.current_clip_end_frames)
+        )
+        time_steps.copy_(self.current_frames)
+        return done
 
     def _adaptive_probabilities(self) -> torch.Tensor:
         probabilities = self._bin_failed + self.adaptive_uniform_ratio / self.bin_count

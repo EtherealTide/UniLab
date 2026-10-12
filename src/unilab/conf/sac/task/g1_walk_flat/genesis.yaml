@@ -76,7 +76,7 @@ env:
       func: unilab.envs.mdp.reset_scene_to_default_tensor
     reset_root_state_uniform:
       func: unilab.envs.mdp.reset_root_state_uniform_tensor
-    # Genesis' public tensor selected reset does not support randomization.
+    # Genesis' public tensor mask reset does not support randomization.
     pd_gains: null
   terminations:
     tilt: null

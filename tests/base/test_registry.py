@@ -91,11 +91,16 @@ class _TestEnvA(TorchEnv):
     def update_state(self, state):
         return state
 
-    def reset(self, env_indices=None):
-        rows = self._normalize_reset_indices(env_indices)
+    def reset(self, reset_mask=None):
+        if reset_mask is not None and (
+            reset_mask.shape != (self.num_envs,)
+            or reset_mask.dtype != torch.bool
+            or reset_mask.device != self.device
+        ):
+            raise ValueError("registry test reset requires a full-width bool mask")
         return (
             {
-                name: torch.zeros((rows.numel(), dim), device=self.device)
+                name: torch.zeros((self.num_envs, dim), device=self.device)
                 for name, dim in self.obs_groups_spec.items()
             },
             {},

@@ -12,7 +12,7 @@ import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import gymnasium as gym
 import torch
@@ -111,10 +111,6 @@ class ManagerBasedRlEnvCfg(EnvCfg):
     # learner. This selects public-manager carrier placement only; it is neither a
     # physics-device claim nor a tensor/NumPy runtime compatibility switch.
     manager_torch_device: str | None = None
-    # Issue #2285 temporary research carrier. ``dynamic_rows`` preserves the
-    # production selected-row lifecycle; the other values are benchmark-only
-    # fixed-shape modes and must not be exposed in a production owner default.
-    reset_row_flow: Literal["dynamic_rows", "mask_only", "mask_full_refresh"] = "dynamic_rows"
     seed: int | None = None
     is_finite_horizon: bool = False
     auto_reset: bool = True
@@ -185,11 +181,6 @@ class ManagerBasedRlEnvCfg(EnvCfg):
         for name in ("is_finite_horizon", "auto_reset", "scale_rewards_by_dt"):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"ManagerBasedRlEnvCfg {name} must be bool")
-        if self.reset_row_flow not in ("dynamic_rows", "mask_only", "mask_full_refresh"):
-            raise ValueError(
-                "ManagerBasedRlEnvCfg reset_row_flow must be 'dynamic_rows', "
-                "'mask_only', or 'mask_full_refresh'"
-            )
         if not isinstance(self.policy_observation_group, str) or not self.policy_observation_group:
             raise ValueError("policy_observation_group must be a non-empty string")
         if self.critic_observation_group is not None:
@@ -402,15 +393,20 @@ class ManagerBasedRlEnv(TorchEnv):
         self._validate_substep_capabilities()
         self._configure_action_control()
         self.set_autoreset(cfg.auto_reset)
-        self.set_research_mask_reset(cfg.reset_row_flow != "dynamic_rows")
 
         self._materialize_backend()
+        materialized_capabilities = self._backend.get_tensor_capabilities()
+        if not materialized_capabilities.mask_selected_reset:
+            raise NotImplementedError(
+                "backend does not declare the mask_selected_reset capability required "
+                "by the fixed-width reset contract"
+            )
         if "startup" in self.event_manager.available_modes:
             # Startup model-field DR uses the same public set_state transaction
             # as reset DR. Materialize the backend first: adapters may make the
-            # selected-row reset boundary and model pools available only there.
+            # mask reset boundary and model pools available only there.
             # This remains a cold-path commit before read-plan binding/reset.
-            with self._reset_state.scoped(self._all_env_rows):
+            with self._reset_state.scoped_startup(self._all_env_rows):
                 self.event_manager.apply(
                     mode="startup",
                     env_ids=self._all_env_rows if self.event_manager.uses_startup_rows else None,
@@ -921,7 +917,14 @@ class ManagerBasedRlEnv(TorchEnv):
         """
 
         if capabilities.execution is TensorExecution.DEVICE_RESIDENT:
-            return torch.device("cuda", index=torch.cuda.current_device())
+            cuda_devices = [name for name in capabilities.torch_devices if name.startswith("cuda")]
+            requested_name = (
+                cuda_devices[0] if cuda_devices else next(iter(capabilities.torch_devices), "cpu")
+            )
+            requested_device = torch.device(str(requested_name))
+            if requested_device == torch.device("cuda"):
+                return torch.device("cuda", index=torch.cuda.current_device())
+            return requested_device
         if capabilities.execution is not TensorExecution.HOST_BRIDGE:
             raise ValueError(
                 "TorchEnv got a non-tensor backend capability "
@@ -1294,25 +1297,11 @@ class ManagerBasedRlEnv(TorchEnv):
         self._command_dt.fill_(self.step_dt)
         self._command_dt.masked_fill_(self.reset_buf, 0.0)
         step_read_plan = self.scene._tensor_read_plan
-        step_reset_capabilities = self._backend.get_tensor_capabilities()
-        if self._uses_device_resident_reset(step_read_plan, step_reset_capabilities):
-            assert step_read_plan is not None
-            self._reset_state.declare_packed_reset_device(step_read_plan.device)
-            step_reset_context = self._reset_state.scoped_device_owner_tensor(self._all_env_rows)
-        elif (
-            step_read_plan is not None
-            and step_read_plan.host_plan is not None
-            and self._reset_state.can_commit_packed(term_name="command_owner")
-        ):
-            assert step_read_plan is not None
-            assert step_read_plan.host_plan is not None
-            self._reset_state.declare_packed_reset_device(step_read_plan.device)
-            step_reset_context = self._reset_state.scoped_device_owner_tensor_with_host_commit(
-                self._all_env_rows,
-                step_read_plan.host_plan,
-            )
-        else:
-            step_reset_context = self._reset_state.scoped(self._all_env_rows)
+        del step_read_plan
+        self._reset_state.declare_packed_reset_device(self.device)
+        step_reset_context = self._reset_state.scoped_device_owner_tensor(
+            torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+        )
         timing["update_state_command_preflight_ms"] = (
             time.perf_counter() - command_preflight_started
         ) * 1000.0
@@ -1358,8 +1347,8 @@ class ManagerBasedRlEnv(TorchEnv):
             for name, values in mapped_obs.items()
         }
         public_reward = self._manager_tensor(self.reward_buf, dtype=self._dtype)
-        public_terminated = self._manager_tensor(self.reset_terminated, dtype=torch.bool)
-        public_truncated = self._manager_tensor(self.reset_time_outs, dtype=torch.bool)
+        public_terminated = self._manager_tensor(self.reset_terminated, dtype=torch.bool).clone()
+        public_truncated = self._manager_tensor(self.reset_time_outs, dtype=torch.bool).clone()
         timing["update_state_publication_ms"] = (time.perf_counter() - publish_started) * 1000.0
 
         replace_started = time.perf_counter()
@@ -1411,32 +1400,27 @@ class ManagerBasedRlEnv(TorchEnv):
         if read_plan is not None:
             read_plan.refresh()
 
-    def _reset_manager_state(self, rows: torch.Tensor) -> None:
-        """Re-run row-scoped manager reset after initial state allocation."""
-        for manager in (
-            self.observation_manager,
-            self.action_manager,
-            self.reward_manager,
-            self.metrics_manager,
-            self.curriculum_manager,
-            self.event_manager,
-            self.termination_manager,
-        ):
-            manager.reset(rows)
-
     def _compute_truncated(self, state: TorchEnvState) -> torch.Tensor:
-        del state
-        return torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+        return state.truncated
 
-    def reset_mask(
+    def reset(
         self,
-        reset_mask: torch.Tensor,
+        reset_mask: torch.Tensor | None = None,
         *,
         seed: int | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
-        """Execute issue #2285's research fixed-shape reset lifecycle."""
+        """Execute the fixed-shape mask-driven Manager reset lifecycle."""
         del options
+        if self._state is None:
+            state = self.init_state()
+            return state.obs, {"log": state.info.get("log", {})}
+        if reset_mask is None:
+            reset_mask = torch.ones(
+                self.num_envs,
+                dtype=torch.bool,
+                device=self.device,
+            )
         if seed is not None:
             self.seed(seed)
         if (
@@ -1445,55 +1429,37 @@ class ManagerBasedRlEnv(TorchEnv):
             or reset_mask.device != self.device
         ):
             raise ValueError(
-                f"ManagerBasedRlEnv research reset mask must have shape "
+                f"ManagerBasedRlEnv reset mask must have shape "
                 f"{(self.num_envs,)}, bool dtype, and device {self.device}"
             )
         if self._state is None:
             raise RuntimeError("ManagerBasedRlEnv requires init_state before mask reset")
-        if self.recorder_manager.active_terms:
-            raise NotImplementedError(
-                "the issue #2285 mask reset does not support active recorders"
-            )
         reset_timing: dict[str, float] = {}
         read_plan = self.scene._tensor_read_plan
-        capabilities = self._backend.get_tensor_capabilities()
-        assert read_plan is not None
-        if not self._uses_device_resident_reset(read_plan, capabilities):
-            raise NotImplementedError(
-                "issue #2285 mask reset requires DEVICE_RESIDENT/DIRECT tensor reset"
-            )
-        if not getattr(capabilities, "mask_selected_reset", False):
-            raise NotImplementedError(
-                "backend does not declare the temporary mask_selected_reset capability"
-            )
-        full_refresh = self._cfg.reset_row_flow == "mask_full_refresh"
-        if full_refresh and not getattr(capabilities, "mask_selected_reset_full_refresh", False):
-            raise NotImplementedError(
-                "mask_full_refresh requires the backend's declared "
-                "'mask_selected_reset_full_refresh' capability"
-            )
+        if self._has_transition and bool(reset_mask.any()):
+            self.recorder_manager.record_pre_reset(reset_mask)
         # Match the selected-row lifecycle: curriculum consumes the terminal
         # episode state before reset clears the public counters.
-        self.curriculum_manager.compute_mask(reset_mask)
-        self._reset_state.declare_packed_reset_device(read_plan.device)
-        reset_context = self._reset_state.scoped_device_event_tensor_mask(
-            reset_mask, full_refresh=full_refresh
+        self.curriculum_manager.compute(reset_mask)
+        self._reset_state.declare_packed_reset_device(
+            read_plan.device if read_plan is not None else self.device
+        )
+        reset_context = self._reset_state.scoped_device_event_tensor(
+            reset_mask,
         )
         log: dict[str, Any] = {}
         with reset_context:
             if "reset" in self.event_manager.available_modes:
-                self.event_manager.apply_reset_mask(
-                    reset_mask, global_env_step_count=self.step_counter
-                )
+                self.event_manager.apply_reset(reset_mask, global_env_step_count=self.step_counter)
             reset_owner = self.reset_owner_manager.owner
             owns_command_reset = bool(
                 reset_owner is not None and reset_owner.cfg.owns_command_reset
             )
             if owns_command_reset:
                 assert reset_owner is not None
-                log.update(reset_owner.reset_transaction_mask(reset_mask))
+                log.update(reset_owner.reset_transaction(reset_mask))
             else:
-                log.update(self.command_manager.reset_mask(reset_mask))
+                log.update(self.command_manager.reset(reset_mask))
             reset_timing.update(getattr(self.command_manager, "last_reset_timing_ms", {}))
             reset_timing.update(self.command_manager.reset_diagnostics())
 
@@ -1516,176 +1482,14 @@ class ManagerBasedRlEnv(TorchEnv):
             read_plan = self.scene._tensor_read_plan
             if read_plan is not None:
                 read_plan.refresh()
-            self.command_manager.compute_mask(dt=0.0, reset_mask=reset_mask)
-            self.command_manager.post_compute_mask()
+            self.command_manager.compute_reset(dt=0.0, reset_mask=reset_mask)
+            self.command_manager.post_compute_reset()
             reset_timing.update(getattr(self.command_manager, "last_post_compute_timing_ms", {}))
             if reset_owner is None or not reset_owner.cfg.owns_observation_reset:
-                self.observation_manager.reset_mask(reset_mask)
+                self.observation_manager.reset(reset_mask)
             manager_obs = self.observation_manager.compute(update_history=True)
 
         reset_managers: tuple[Any, ...] = (
-            *(() if reset_owner is not None and reset_owner.cfg.owns_action_reset else ()),
-            self.reward_manager,
-            *(() if reset_owner is not None and reset_owner.cfg.owns_metric_reset else ()),
-            self.curriculum_manager,
-            self.event_manager,
-            self.termination_manager,
-        )
-        for manager in reset_managers:
-            reset_mask_impl = getattr(manager, "reset_mask", None)
-            if not callable(reset_mask_impl):
-                raise NotImplementedError(
-                    f"{type(manager).__name__} does not define the issue #2285 "
-                    "mask-preserving reset boundary"
-                )
-            log.update(reset_mask_impl(reset_mask))
-        if reset_owner is not None:
-            log.update(reset_owner.reset_committed_mask(reset_mask))
-
-        mapped_obs = self._map_observations(manager_obs)
-        reset_obs = {
-            name: self._manager_tensor(values, dtype=self._dtype)
-            for name, values in mapped_obs.items()
-        }
-        self._last_reset_manager_timing_ms = reset_timing
-        for name in mapped_obs:
-            self._state.obs[name].copy_(
-                torch.where(reset_mask[:, None], reset_obs[name], self._state.obs[name])
-            )
-        self._autoreset_scattered_reset_obs = True
-        step_log = self._state.info.get("log")
-        if step_log:
-            log = {**step_log, **log}
-        self._state.info["log"] = log
-        self._state.terminated.logical_and_(~reset_mask)
-        self._state.truncated.logical_and_(~reset_mask)
-        self.reset_buf.masked_fill_(reset_mask, False)
-        self.reset_terminated.masked_fill_(reset_mask, False)
-        self.reset_time_outs.masked_fill_(reset_mask, False)
-        for name, values in mapped_obs.items():
-            if set(self.obs_buf) != set(mapped_obs):
-                self.obs_buf = mapped_obs
-            else:
-                self.obs_buf[name].copy_(
-                    torch.where(reset_mask[:, None], values, self.obs_buf[name])
-                )
-        self.extras = self._state.info
-        return self._state.obs, {"log": log}
-
-    def reset(
-        self,
-        env_indices: torch.Tensor | None = None,
-        *,
-        seed: int | None = None,
-        options: dict[str, Any] | None = None,
-    ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
-        if self._research_mask_reset:
-            reset_mask = torch.ones(
-                self.num_envs,
-                dtype=torch.bool,
-                device=self.device,
-            )
-            if env_indices is not None:
-                reset_mask.fill_(False)
-                reset_mask[self._normalize_reset_indices(env_indices)] = True
-            return self.reset_mask(
-                reset_mask,
-                seed=seed,
-                options=options,
-            )
-        del options
-        reset_timing: dict[str, float] = {}
-        rows = self._normalize_reset_indices(env_indices)
-        if seed is not None:
-            self.seed(seed)
-        if self._state is None:
-            all_rows = torch.arange(self.num_envs, dtype=torch.int64, device=self.device)
-            if not torch.equal(rows, all_rows):
-                raise RuntimeError(
-                    "ManagerBasedRlEnv requires a full reset before the first partial reset"
-                )
-            state = self.init_state()
-            self._reset_manager_state(rows)
-            return state.obs, {"log": state.info.get("log", {})}
-
-        done_rows = rows[self.reset_buf[rows]]
-        if self._has_transition and done_rows.numel() > 0:
-            self.recorder_manager.record_pre_reset(done_rows)
-
-        log: dict[str, Any] = {}
-        self.curriculum_manager.compute(env_ids=rows)
-        read_plan = self.scene._tensor_read_plan
-        reset_capabilities = self._backend.get_tensor_capabilities()
-        device_resident_reset = self._uses_device_resident_reset(read_plan, reset_capabilities)
-        tensor_reset_events = False
-        use_packed_reset = (
-            read_plan is not None
-            and read_plan.host_plan is not None
-            # Force eager default materialization: a backend with different
-            # native and public layouts must fall back before terms run.
-            and self._reset_state.can_commit_packed(term_name="reset")
-        )
-        if use_packed_reset:
-            assert read_plan is not None
-            assert read_plan.host_plan is not None
-            self._reset_state.declare_packed_reset_device(read_plan.device)
-            tensor_reset_events = (
-                self.event_manager.uses_tensor_reset_rows
-                or self.command_manager.uses_tensor_reset_rows()
-            )
-            if tensor_reset_events:
-                reset_context = self._reset_state.scoped_device_event_tensor_with_host_commit(
-                    rows, read_plan.host_plan
-                )
-            else:
-                reset_context = self._reset_state.scoped_tensor(rows, read_plan.host_plan)
-        elif device_resident_reset:
-            assert read_plan is not None
-            self._reset_state.declare_packed_reset_device(read_plan.device)
-            tensor_reset_events = self.event_manager.uses_tensor_reset_rows
-            tensor_reset_events = tensor_reset_events or (
-                self.command_manager.uses_tensor_reset_rows()
-            )
-            if tensor_reset_events:
-                reset_context = self._reset_state.scoped_device_event_tensor(rows)
-            else:
-                reset_context = self._reset_state.scoped_device_tensor(rows)
-        else:
-            reset_context = self._reset_state.scoped(rows)
-        command_event_started = time.perf_counter()
-        event_term_count = len(self.event_manager.active_terms.get("reset", ()))
-        command_term_count = len(self.command_manager.active_terms)
-        reset_owner = self.reset_owner_manager.owner
-        owns_command_reset = bool(reset_owner is not None and reset_owner.cfg.owns_command_reset)
-        with reset_context:
-            if "reset" in self.event_manager.available_modes:
-                self.event_manager.apply(
-                    mode="reset",
-                    env_ids=rows,
-                    global_env_step_count=self.step_counter,
-                )
-            if owns_command_reset:
-                assert reset_owner is not None
-                log.update(reset_owner.reset_transaction(rows))
-            else:
-                log.update(self.command_manager.reset(rows))
-            reset_timing.update(getattr(self.command_manager, "last_reset_timing_ms", {}))
-            reset_timing.update(self.command_manager.reset_diagnostics())
-            reset_commit_started = time.perf_counter()
-        reset_timing["reset_done_reset_commit_ms"] = (
-            time.perf_counter() - reset_commit_started
-        ) * 1000.0
-        reset_timing["reset_done_command_event_ms"] = (
-            time.perf_counter() - command_event_started
-        ) * 1000.0
-
-        manager_state_started = time.perf_counter()
-        reset_managers: tuple[Any, ...] = (
-            *(
-                ()
-                if reset_owner is not None and reset_owner.cfg.owns_observation_reset
-                else (self.observation_manager,)
-            ),
             *(
                 ()
                 if reset_owner is not None and reset_owner.cfg.owns_action_reset
@@ -1702,124 +1506,65 @@ class ManagerBasedRlEnv(TorchEnv):
             self.termination_manager,
         )
         for manager in reset_managers:
-            log.update(manager.reset(rows))
-        if reset_owner is not None:
-            log.update(reset_owner.reset_committed(rows))
-        observation_term_count = sum(
-            len(terms) for terms in self.observation_manager.active_terms.values()
-        )
+            reset_impl = getattr(manager, "reset", None)
+            if not callable(reset_impl):
+                raise NotImplementedError(
+                    f"{type(manager).__name__} does not define the mask-preserving reset boundary"
+                )
+            log.update(reset_impl(reset_mask))
         reset_timing.update(
             {
-                "reset_done_event_term_count": float(event_term_count),
-                "reset_done_command_term_count": float(command_term_count),
-                "reset_done_manager_reset_count": float(len(reset_managers)),
-                "reset_done_observation_term_count": float(observation_term_count),
+                "reset_done_event_term_count": float(
+                    len(self.event_manager.active_terms.get("reset", ()))
+                ),
+                "reset_done_command_term_count": float(len(self.command_manager.active_terms)),
+                "reset_done_manager_reset_count": float(
+                    len(reset_managers)
+                    + (
+                        0
+                        if reset_owner is not None and reset_owner.cfg.owns_observation_reset
+                        else 1
+                    )
+                ),
+                "reset_done_observation_term_count": float(
+                    sum(len(terms) for terms in self.observation_manager.active_terms.values())
+                ),
             }
         )
-        reset_timing["reset_done_manager_state_ms"] = (
-            time.perf_counter() - manager_state_started
-        ) * 1000.0
+        if reset_owner is not None:
+            log.update(reset_owner.reset_committed(reset_mask))
 
-        self.episode_length_buf[rows] = 0
-        if self._reset_state.scene_layout is not None:
-            self._control[rows] = self._initial_backend_control()[rows]
-        else:
-            self._control[rows] = 0.0
-        self._manual_reset_pending[rows] = False
-        if self._state is not None:
-            self._state.info["steps"][rows] = 0
-
-        # The read phase starts only after the reset-state transaction above
-        # committed, so cached getter values are post-set_state reads shared
-        # across terms (issue #1295).
-        state_publish_started = time.perf_counter()
-        with self.scene._scoped_state_reads():
-            read_plan = self.scene._tensor_read_plan
-            if read_plan is not None:
-                # A host-bridge plan owns the paired selected-row boundary from
-                # ``apply_reset``. IsaacGym's external CUDA IPC worker marks
-                # body/sensor views stale after a selected reset, so one public
-                # zero-control tensor step materializes the post-reset packet
-                # before Manager terms read those stable views.
-                if use_packed_reset:
-                    selected_read_started = time.perf_counter()
-                    read_plan.refresh_selected()
-                    reset_timing["reset_done_selected_read_ms"] = (
-                        time.perf_counter() - selected_read_started
-                    ) * 1000.0
-                else:
-                    read_drain_started = time.perf_counter()
-                    self._warm_external_cuda_ipc_views()
-                    reset_timing["reset_done_read_drain_ms"] = (
-                        time.perf_counter() - read_drain_started
-                    ) * 1000.0
-                    selected_read_started = time.perf_counter()
-                    read_plan.refresh()
-                    reset_timing["reset_done_selected_read_ms"] = (
-                        time.perf_counter() - selected_read_started
-                    ) * 1000.0
-            command_refresh_started = time.perf_counter()
-            self.command_manager.compute(dt=0.0, env_ids=rows)
-            reset_timing["reset_done_command_refresh_ms"] = (
-                time.perf_counter() - command_refresh_started
-            ) * 1000.0
-            command_post_compute_started = time.perf_counter()
-            self.command_manager.post_compute()
-            reset_timing["reset_done_command_post_compute_ms"] = (
-                time.perf_counter() - command_post_compute_started
-            ) * 1000.0
-            reset_timing.update(getattr(self.command_manager, "last_post_compute_timing_ms", {}))
-            observation_started = time.perf_counter()
-            # Row-scoped reset rebuild (issue #1259 R2): the observation manager
-            # returns only the reset rows, so no full-batch slice is needed here.
-            manager_obs = self.observation_manager.compute(update_history=True, env_ids=rows)
-            reset_timing["reset_done_observation_ms"] = (
-                time.perf_counter() - observation_started
-            ) * 1000.0
-        reset_timing["reset_done_state_publish_ms"] = (
-            time.perf_counter() - state_publish_started
-        ) * 1000.0
-        mapped_obs = self._map_observations(manager_obs, num_rows=rows.numel())
-        observation_scatter_started = time.perf_counter()
+        mapped_obs = self._map_observations(manager_obs)
         reset_obs = {
             name: self._manager_tensor(values, dtype=self._dtype)
             for name, values in mapped_obs.items()
         }
-        reset_timing["reset_done_observation_scatter_ms"] = (
-            time.perf_counter() - observation_scatter_started
-        ) * 1000.0
         self._last_reset_manager_timing_ms = reset_timing
-
-        if self._state is not None:
-            for name in mapped_obs:
-                self._state.obs[name].index_copy_(0, rows, reset_obs[name])
-            if self._autoreset_reset_active:
-                # The Manager already published into the full public state.
-                # ``TorchEnv._reset_done_envs`` must not validate and scatter
-                # the selected rows a second time.
-                self._autoreset_scattered_reset_obs = True
-                # Autoreset runs at the tail of step(): keep this step's
-                # per-step log entries (reward/* etc., computed pre-reset) and
-                # layer manager reset extras on top, so consumers still see the
-                # transition's metrics.
-                step_log = self._state.info.get("log")
-                if step_log:
-                    log = {**step_log, **log}
-            self._state.info["log"] = log
-            if not self._autoreset_reset_active:
-                self._state.terminated[rows] = False
-                self._state.truncated[rows] = False
-                self.reset_buf[rows] = False
-                self.reset_terminated[rows] = False
-                self.reset_time_outs[rows] = False
-        if not self.obs_buf or set(self.obs_buf) != set(mapped_obs):
-            self.obs_buf = mapped_obs
-        else:
-            for name, values in mapped_obs.items():
-                self.obs_buf[name][rows] = values
-        self.extras = self._state.info if self._state is not None else {"log": log}
-        self.recorder_manager.record_post_reset(rows)
-        return reset_obs, {"log": log}
+        for name in mapped_obs:
+            self._state.obs[name].copy_(
+                torch.where(reset_mask[:, None], reset_obs[name], self._state.obs[name])
+            )
+        self._autoreset_scattered_reset_obs = True
+        step_log = self._state.info.get("log")
+        if step_log:
+            log = {**step_log, **log}
+        self._state.info["log"] = log
+        if not self._autoreset_reset_active:
+            self._state.terminated.logical_and_(~reset_mask)
+            self._state.truncated.logical_and_(~reset_mask)
+        self.reset_buf.masked_fill_(reset_mask, False)
+        self.reset_terminated.masked_fill_(reset_mask, False)
+        self.reset_time_outs.masked_fill_(reset_mask, False)
+        for name, values in mapped_obs.items():
+            if set(self.obs_buf) != set(mapped_obs):
+                self.obs_buf = mapped_obs
+            else:
+                self.obs_buf[name].copy_(
+                    torch.where(reset_mask[:, None], values, self.obs_buf[name])
+                )
+        self.extras = self._state.info
+        self.recorder_manager.record_post_reset(reset_mask)
+        return self._state.obs, {"log": log}
 
     def _collect_reset_backend_timing_ms(self) -> dict[str, float]:
         timing = dict(super()._collect_reset_backend_timing_ms())

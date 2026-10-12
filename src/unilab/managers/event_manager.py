@@ -132,14 +132,6 @@ class EventManager(ManagerBase):
         return list(self._mode_term_names.keys())
 
     @property
-    def uses_tensor_reset_rows(self) -> bool:
-        """Whether every reset term can consume a device row selector."""
-        return bool(self._mode_term_cfgs.get("reset")) and all(
-            bool(getattr(term_cfg.func, "uses_tensor_rows", False))
-            for term_cfg in self._mode_term_cfgs["reset"]
-        )
-
-    @property
     def uses_startup_rows(self) -> bool:
         """Whether any startup term requires concrete full-width row indices."""
         return any(
@@ -157,43 +149,23 @@ class EventManager(ManagerBase):
                 return self._mode_term_cfgs[mode][index]
         raise ValueError(f"Event term '{term_name}' not found in active terms.")
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None):
-        if env_ids is None:
-            env_ids = torch.arange(self.num_envs, device=self._device)
-        for mode_cfg in self._mode_class_term_cfgs.values():
+    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        """Clear stateful event terms through the fixed-width mask."""
+        self._validate_reset_mask(reset_mask)
+        for mode, mode_cfg in self._mode_class_term_cfgs.items():
+            if mode == "reset":
+                continue
             for term_cfg in mode_cfg:
-                term_cfg.func.reset(env_ids=env_ids)
-        ids: torch.Tensor | slice = (
-            env_ids
-            if isinstance(env_ids, torch.Tensor)
-            else torch.arange(self.num_envs, device=self._device)[
-                env_ids if env_ids is not None else slice(None)
-            ]
-        )
-        num_envs = ids.numel() if isinstance(ids, torch.Tensor) else self.num_envs
+                term_cfg.func.reset(reset_mask)
         # Iterate the full interval term list: _interval_term_time_left is parallel
         # to _mode_term_cfgs["interval"], not the class-only subset.
-        if "interval" in self._mode_term_cfgs:
-            for index, term_cfg in enumerate(self._mode_term_cfgs["interval"]):
-                if not term_cfg.is_global_time:
-                    assert term_cfg.interval_range_s is not None
-                    lower, upper = term_cfg.interval_range_s
-                    self._interval_term_time_left[index][ids] = self._sample_interval(
-                        lower, upper, num_envs
-                    )
-        return {}
-
-    def reset_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        """Clear class-term state through the issue #2285 fixed-width mask."""
-        for mode_cfg in self._mode_class_term_cfgs.values():
-            for term_cfg in mode_cfg:
-                reset_mask_impl = getattr(term_cfg.func, "reset_mask", None)
-                if not callable(reset_mask_impl):
-                    raise NotImplementedError(
-                        f"EventManager stateful term '{type(term_cfg.func).__name__}' "
-                        "does not define the issue #2285 mask-preserving reset boundary"
-                    )
-                reset_mask_impl(reset_mask)
+        for index, term_cfg in enumerate(self._mode_term_cfgs.get("interval", ())):
+            if not term_cfg.is_global_time:
+                assert term_cfg.interval_range_s is not None
+                lower, upper = term_cfg.interval_range_s
+                sampled = self._sample_interval(lower, upper, self.num_envs)
+                timer = self._interval_term_time_left[index]
+                timer.copy_(torch.where(reset_mask, sampled, timer))
         return {}
 
     def apply(
@@ -201,7 +173,6 @@ class EventManager(ManagerBase):
         mode: EventMode,
         env_ids: torch.Tensor | slice | None = None,
         dt: float | None = None,
-        global_env_step_count: int | None = None,
     ):
         if mode not in ("startup", "reset", "interval", "step"):
             raise ValueError(f"Unsupported event mode '{mode}'.")
@@ -214,35 +185,10 @@ class EventManager(ManagerBase):
                 f"Event mode '{mode}' does not require environment indices. This is an undefined behavior"
                 " as the environment indices are computed based on the time left for each environment."
             )
-        if mode == "reset" and global_env_step_count is None:
-            raise ValueError(
-                f"Event mode '{mode}' requires the total number of environment steps to be provided."
-            )
+        if mode == "reset":
+            raise ValueError("Event reset terms are dispatched through apply_reset(mask).")
         if mode == "step" and dt is None:
             raise ValueError(f"Event mode '{mode}' requires the time-step of the environment.")
-
-        if mode == "reset" and self.uses_tensor_reset_rows:
-            for index, term_cfg in enumerate(self._mode_term_cfgs["reset"]):
-                if term_cfg.min_step_count_between_reset:
-                    assert global_env_step_count is not None
-                    assert env_ids is not None
-                    assert isinstance(env_ids, torch.Tensor)
-                    last_triggered_step = self._reset_term_last_triggered_step_id[index][env_ids]
-                    triggered_at_least_once = self._reset_term_last_triggered_once[index][env_ids]
-                    steps_since_triggered = global_env_step_count - last_triggered_step
-                    valid_trigger = steps_since_triggered >= term_cfg.min_step_count_between_reset
-                    valid_trigger |= (last_triggered_step == 0) & ~triggered_at_least_once
-                    valid_env_ids = env_ids[valid_trigger]
-                    if valid_env_ids.numel() == 0:
-                        continue
-                    self._reset_term_last_triggered_once[index][valid_env_ids] = True
-                    self._reset_term_last_triggered_step_id[index][valid_env_ids] = (
-                        global_env_step_count
-                    )
-                    term_cfg.func(self._env, valid_env_ids, **term_cfg.params)
-                    continue
-                term_cfg.func(self._env, env_ids, **term_cfg.params)
-            return
 
         for index, term_cfg in enumerate(self._mode_term_cfgs[mode]):
             if mode == "interval":
@@ -268,71 +214,37 @@ class EventManager(ManagerBase):
                         term_cfg.func(self._env, valid_env_ids, **term_cfg.params)
             elif mode == "step":
                 term_cfg.func(self._env, None, **term_cfg.params)
-            elif mode == "reset":
-                assert global_env_step_count is not None
-                # Reset events require concrete indices: callers (e.g. ManagerBasedRlEnv)
-                # resolve None to all environments upstream. Enforce that here so a future
-                # caller passing None fails loudly instead of leaking a slice into event
-                # functions, which only understand None or a tensor.
-                if env_ids is None:
-                    raise ValueError("Event mode 'reset' requires concrete environment indices.")
-                min_step_count = term_cfg.min_step_count_between_reset
-                if min_step_count == 0:
-                    self._reset_term_last_triggered_step_id[index][env_ids] = global_env_step_count
-                    self._reset_term_last_triggered_once[index][env_ids] = True
-                    term_cfg.func(self._env, env_ids, **term_cfg.params)
-                else:
-                    last_triggered_step = self._reset_term_last_triggered_step_id[index][env_ids]
-                    triggered_at_least_once = self._reset_term_last_triggered_once[index][env_ids]
-                    steps_since_triggered = global_env_step_count - last_triggered_step
-                    valid_trigger = steps_since_triggered >= min_step_count
-                    valid_trigger |= (last_triggered_step == 0) & ~triggered_at_least_once
-                    assert isinstance(env_ids, torch.Tensor)
-                    valid_env_ids = env_ids[valid_trigger]
-                    if valid_env_ids.numel() > 0:
-                        self._reset_term_last_triggered_once[index][valid_env_ids] = True
-                        self._reset_term_last_triggered_step_id[index][valid_env_ids] = (
-                            global_env_step_count
-                        )
-                        term_cfg.func(self._env, valid_env_ids, **term_cfg.params)
             else:
                 term_cfg.func(self._env, env_ids, **term_cfg.params)
 
-    def apply_reset_mask(
+    def apply_reset(
         self,
         reset_mask: torch.Tensor,
         *,
         global_env_step_count: int,
     ) -> None:
-        """Dispatch issue #2285's research-only fixed-shape reset events."""
-        if reset_mask.ndim != 1 or reset_mask.shape[0] != self.num_envs:
-            raise ValueError(f"EventManager research reset mask must have shape {(self.num_envs,)}")
-        if reset_mask.dtype != torch.bool or reset_mask.device != self._device:
-            raise ValueError(f"EventManager research reset mask must be bool on {self._device}")
+        """Dispatch fixed-shape reset events."""
+        self._validate_reset_mask(reset_mask)
         for index, term_cfg in enumerate(self._mode_term_cfgs["reset"]):
             term_func = getattr(term_cfg, "func", None)
-            term_mask_impl = getattr(term_func, "reset_mask", None)
-            if term_mask_impl is None:
-                term_mask_impl = getattr(term_func, "__call_mask__", None)
-            if not callable(term_mask_impl):
+            if not callable(getattr(term_func, "reset", None)):
                 raise NotImplementedError(
                     f"EventManager term '{self._mode_term_names['reset'][index]}' does not "
-                    "define the issue #2285 mask-preserving reset boundary; func="
+                    "define the mask-preserving reset boundary; func="
                     f"{getattr(term_func, '__name__', type(term_func).__name__)}"
                 )
-            min_step_count = term_cfg.min_step_count_between_reset
-            term_mask = reset_mask
-            if min_step_count:
-                raise NotImplementedError(
-                    f"EventManager reset term '{self._mode_term_names['reset'][index]}' "
-                    "uses min_step_count_between_reset, which is not supported by the "
-                    "issue #2285 mask transaction"
-                )
             self._reset_term_last_triggered_step_id[index].masked_fill_(
-                term_mask, global_env_step_count
+                reset_mask, global_env_step_count
             )
-            self._reset_term_last_triggered_once[index].masked_fill_(term_mask, True)
-            term_mask_impl(self._env, term_mask, **term_cfg.params)
+            self._reset_term_last_triggered_once[index].masked_fill_(reset_mask, True)
+            assert term_func is not None
+            term_func.reset(self._env, reset_mask, **term_cfg.params)
+
+    def _validate_reset_mask(self, reset_mask: torch.Tensor) -> None:
+        if reset_mask.ndim != 1 or reset_mask.shape[0] != self.num_envs:
+            raise ValueError(f"EventManager reset mask must have shape {(self.num_envs,)}")
+        if reset_mask.dtype != torch.bool or reset_mask.device != self._device:
+            raise ValueError(f"EventManager reset mask must be bool on {self._device}")
 
     def _prepare_terms(self) -> None:
         self._interval_term_time_left: list[torch.Tensor] = list()
@@ -354,8 +266,29 @@ class EventManager(ManagerBase):
                 self._mode_class_term_cfgs[term_cfg.mode] = list()
             self._mode_term_names[term_cfg.mode].append(term_name)
             self._mode_term_cfgs[term_cfg.mode].append(term_cfg)
-            if hasattr(term_cfg.func, "reset") and callable(term_cfg.func.reset):
+            if (
+                term_cfg.mode in ("step", "interval")
+                and hasattr(term_cfg.func, "reset")
+                and callable(term_cfg.func.reset)
+            ):
                 self._mode_class_term_cfgs[term_cfg.mode].append(term_cfg)
+            if term_cfg.mode == "reset":
+                if getattr(term_cfg.func, "mask_reset_supported", True) is False:
+                    raise NotImplementedError(
+                        f"EventManager reset term '{term_name}' uses reset randomization, "
+                        "which has no fixed-width mask commit boundary"
+                    )
+                if term_cfg.min_step_count_between_reset:
+                    raise NotImplementedError(
+                        f"EventManager reset term '{term_name}' uses "
+                        "min_step_count_between_reset, which is incompatible with the "
+                        "fixed-width mask reset contract"
+                    )
+                if not callable(getattr(term_cfg.func, "reset", None)):
+                    raise NotImplementedError(
+                        f"EventManager reset term '{term_name}' does not define the "
+                        "mask-preserving reset boundary"
+                    )
             if term_cfg.mode == "interval":
                 if term_cfg.interval_range_s is None:
                     raise ValueError(

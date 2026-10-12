@@ -120,32 +120,36 @@ class JointEffortAction(ActionTerm):
             actuator_ids=self._actuator_ids,
         )
 
-    def reset(self, env_ids: np.ndarray | torch.Tensor | slice | None = None) -> None:
-        ids = slice(None) if env_ids is None else env_ids
-        self._raw_actions[ids] = 0.0
-        self._processed_actions[ids] = 0.0
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        expanded = reset_mask[:, None]
+        self._raw_actions.copy_(
+            torch.where(expanded, torch.zeros_like(self._raw_actions), self._raw_actions)
+        )
+        self._processed_actions.copy_(
+            torch.where(
+                expanded,
+                torch.zeros_like(self._processed_actions),
+                self._processed_actions,
+            )
+        )
 
 
 def reset_joints_by_offset(
     env: ManagerBasedRlEnv,
-    env_ids: torch.Tensor | None,
+    reset_mask: torch.Tensor,
     position_range: tuple[float, float] | list[float],
     velocity_range: tuple[float, float] | list[float],
     asset_cfg: SceneEntityCfg,
 ) -> None:
     """Write uniformly offset joint defaults through the reset transaction."""
-    if env_ids is None:
-        raise ValueError("reset_joints_by_offset requires concrete environment IDs")
+    if reset_mask.shape != (env.num_envs,) or reset_mask.dtype != torch.bool:
+        raise ValueError("reset_joints_by_offset requires a full-width bool reset mask")
     position_lower, position_upper = numeric_range(position_range, label="position_range")
     velocity_lower, velocity_upper = numeric_range(velocity_range, label="velocity_range")
     asset = cast("Entity", env.scene[asset_cfg.name])
     joint_ids = asset_cfg.joint_ids
-    default_position = asset.data.default_joint_pos_torch(env.device).index_select(0, env_ids)[
-        :, joint_ids
-    ]
-    default_velocity = asset.data.default_joint_vel_torch(env.device).index_select(0, env_ids)[
-        :, joint_ids
-    ]
+    default_position = asset.data.default_joint_pos_torch(env.device)[:, joint_ids]
+    default_velocity = asset.data.default_joint_vel_torch(env.device)[:, joint_ids]
     position = default_position + env.torch_rng.uniform(
         position_lower,
         position_upper,
@@ -158,12 +162,15 @@ def reset_joints_by_offset(
         tuple(default_velocity.shape),
         dtype=default_velocity.dtype,
     )
-    asset.write_joint_state_to_sim(
+    asset.write_joint_state_to_sim_mask(
         position,
         velocity,
+        reset_mask,
         joint_ids=joint_ids,
-        env_ids=env_ids,
     )
+
+
+setattr(reset_joints_by_offset, "reset", reset_joints_by_offset)
 
 
 __all__ = [

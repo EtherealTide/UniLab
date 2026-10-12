@@ -88,23 +88,7 @@ class TerminationManager(ManagerBase):
 
     # Methods.
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, int]:
-        if env_ids is None:
-            env_ids = slice(None)
-        extras = {}
-        mask = self._reset_mask(env_ids)
-        keys = list(self._term_dones)
-        counts = [self._term_dones[key][mask].sum() for key in keys]
-        # Publish every episodic count through one device boundary instead of
-        # synchronizing once per termination term.
-        host_counts = torch.stack(counts).detach().cpu().tolist() if counts else []
-        for key, count in zip(keys, host_counts, strict=True):
-            extras["Episode_Termination/" + key] = int(count)
-        for term_cfg in self._class_term_cfgs:
-            term_cfg.func.reset(env_ids=env_ids)
-        return extras
-
-    def reset_mask(self, reset_mask: torch.Tensor) -> dict[str, int]:
+    def reset(self, reset_mask: torch.Tensor) -> dict[str, int]:
         """Publish episodic counts and clear terms through a fixed-width mask."""
         if (
             reset_mask.ndim != 1
@@ -113,7 +97,7 @@ class TerminationManager(ManagerBase):
             or reset_mask.device != self._device
         ):
             raise ValueError(
-                f"TerminationManager research reset mask must have shape "
+                f"TerminationManager reset mask must have shape "
                 f"{(self.num_envs,)}, bool dtype, and device {self._device}"
             )
         extras: dict[str, int] = {}
@@ -123,13 +107,12 @@ class TerminationManager(ManagerBase):
         for key, count in zip(keys, host_counts, strict=True):
             extras["Episode_Termination/" + key] = int(count)
         for term_cfg in self._class_term_cfgs:
-            reset_mask_impl = getattr(term_cfg.func, "reset_mask", None)
-            if not callable(reset_mask_impl):
+            if not callable(getattr(term_cfg.func, "reset", None)):
                 raise NotImplementedError(
-                    "TerminationManager stateful term does not define the issue #2285 "
+                    "TerminationManager stateful term does not define the "
                     "mask-preserving reset boundary"
                 )
-            reset_mask_impl(reset_mask)
+            term_cfg.func.reset(reset_mask)
         return extras
 
     def compute(self) -> torch.Tensor:
@@ -208,28 +191,3 @@ class TerminationManager(ManagerBase):
                 f"expected ({self.num_envs},)."
             )
         return result
-
-    def _reset_mask(self, env_ids: torch.Tensor | slice) -> torch.Tensor:
-        if env_ids is None:
-            return torch.ones(self.num_envs, dtype=torch.bool, device=self._device)
-        if isinstance(env_ids, slice):
-            indices = torch.arange(self.num_envs, dtype=torch.int64, device=self._device)[env_ids]
-            return torch.zeros(self.num_envs, dtype=torch.bool, device=self._device).index_fill(
-                0, indices, True
-            )
-        if (
-            not isinstance(env_ids, torch.Tensor)
-            or env_ids.ndim != 1
-            or env_ids.dtype
-            not in {
-                torch.int32,
-                torch.int64,
-            }
-        ):
-            raise TypeError("TerminationManager reset rows must be one-dimensional integers")
-        rows = env_ids.to(self._device)
-        if rows.numel() and (rows.min() < 0 or rows.max() >= self.num_envs):
-            raise IndexError(f"TerminationManager reset rows out of range: {rows.tolist()}")
-        return torch.zeros(self.num_envs, dtype=torch.bool, device=self._device).index_fill(
-            0, rows.to(torch.int64), True
-        )

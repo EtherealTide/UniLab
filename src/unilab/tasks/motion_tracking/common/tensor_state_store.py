@@ -110,7 +110,6 @@ class TensorDeviceStateStore:
         self._device_sensor_views: dict[str, object] | None = None
         self._device_linvel_view: torch.Tensor | None = None
         self._device_gyro_view: torch.Tensor | None = None
-        self._views_require_readiness_barrier = False
 
     def _require_qviews(self) -> tuple[torch.Tensor, torch.Tensor]:
         if self.qpos is None or self.qvel is None:
@@ -285,56 +284,31 @@ class TensorDeviceStateStore:
         self.backend.get_sensor_view(f"track_pos_w_{self.body_names[0]}", device=self.device)
 
     def apply_reset(
-        self, rows: torch.Tensor, qpos: torch.Tensor, qvel: torch.Tensor
+        self, reset_mask: torch.Tensor, qpos: torch.Tensor, qvel: torch.Tensor
     ) -> dict | None:
-        """Apply selected reset through the negotiated packed plan."""
-        if self._host_bridge_plan is not None:
-            return cast(dict | None, self._host_bridge_plan.apply_reset(rows, qpos, qvel))
-        result = cast(dict | None, self.backend.set_state_tensor(rows, qpos, qvel))
-        self._views_require_readiness_barrier = True
-        self.last_backend_result = result
-        return result
-
-    def refresh_after_selected_reset(self, ctrl: torch.Tensor, nsteps: int) -> dict | None:
-        """Cross the backend's public selected-reset readiness boundary.
-
-        A backend may invalidate derived sensor/body views after
-        ``set_state_tensor`` even though qpos/qvel views are already
-        authoritative. This method performs that backend-owned readiness
-        boundary explicitly through the same public tensor step API used by the
-        normal control path. It is a lifecycle barrier, not a hidden data copy:
-        control is published through the negotiated tensor plane, and the task
-        performs no host/device fallback.
-        """
-        if self._host_bridge_plan is not None:
-            # HOST_BRIDGE owns a paired selected-row reset/read boundary. Its
-            # packet publication is authoritative immediately after
-            # ``apply_reset`` and must not be advanced by another physics step.
+        """Apply a fixed-width reset through the public mask boundary."""
+        if (
+            reset_mask.shape != (self.num_envs,)
+            or reset_mask.dtype != torch.bool
+            or reset_mask.device != self.device
+        ):
+            raise ValueError("tensor state reset mask must be full-width bool on the store device")
+        if not bool(reset_mask.any()):
             return None
         if self._execution is not TensorExecution.DEVICE_RESIDENT:
-            raise RuntimeError(
-                "selected-reset readiness requires DEVICE_RESIDENT tensor execution; "
+            raise NotImplementedError(
+                "tensor state reset requires DEVICE_RESIDENT tensor execution; "
                 f"received {self._execution}"
             )
-        if not self._views_require_readiness_barrier:
-            return None
-        if self._uses_named_sensor_reset_refresh():
-            self.refresh_named_sensors()
-            self._views_require_readiness_barrier = False
-            return None
-        result = self.step_tensor(ctrl, nsteps=nsteps)
-        self._views_require_readiness_barrier = False
+        capabilities = self.backend.get_tensor_capabilities()
+        if not capabilities.selected_reset or not capabilities.mask_selected_reset:
+            raise NotImplementedError(
+                "tensor state reset requires declared selected_reset and "
+                "mask_selected_reset capabilities"
+            )
+        result = cast(dict | None, self.backend.set_state_tensor_mask(reset_mask, qpos, qvel))
         self.last_backend_result = result
         return result
-
-    def _uses_named_sensor_reset_refresh(self) -> bool:
-        """Read the public optional optimization declaration, if present."""
-        try:
-            diagnostics = self.backend.get_tensor_runtime_diagnostics()
-        except (AttributeError, KeyError, TypeError, ValueError):
-            return False
-        diagnostic = diagnostics.get("selected_reset_sensor_refresh")
-        return bool(getattr(diagnostic, "enabled", False))
 
     def validate_finite(self) -> None:
         qpos, qvel = self._require_qviews()

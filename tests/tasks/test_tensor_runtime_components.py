@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
-import numpy as np
 import pytest
 import torch
 from unisim.backend.base import (
     HostBridgeTransferPlan,
+    SelectedResetPublication,
     TensorDataPlane,
     TensorExecution,
     TensorLifecycleCapabilities,
@@ -14,7 +12,6 @@ from unisim.backend.base import (
 )
 
 from unilab.managers._noise.noise_cfg import UniformNoiseCfg
-from unilab.tasks.motion_tracking.common import tensor_state_store as tensor_state_store_module
 from unilab.tasks.motion_tracking.common.tensor_runtime import (
     TensorEpisodeMetrics,
     TensorObservationNoise,
@@ -22,29 +19,6 @@ from unilab.tasks.motion_tracking.common.tensor_runtime import (
     semantic_fingerprint,
 )
 from unilab.tasks.motion_tracking.common.tensor_state_store import TensorDeviceStateStore
-
-
-class _SyncCountingTensor(torch.Tensor):
-    synchronization_count = 0
-
-    def tolist(self):
-        type(self).synchronization_count += 1
-        return super().tolist()
-
-    def item(self):
-        type(self).synchronization_count += 1
-        return super().item()
-
-
-class _FakeTorch:
-    int64 = torch.int64
-
-    @staticmethod
-    def stack(tensors, *, out=None):
-        result = torch.stack(tensors, out=out)
-        if out is None:
-            result = result.as_subclass(_SyncCountingTensor)
-        return result
 
 
 def test_semantic_fingerprint_rejects_semantic_mutation() -> None:
@@ -85,30 +59,44 @@ def test_tensor_observation_noise_uses_declared_uniform_bounds() -> None:
     torch.testing.assert_close(corrupted[:, 0], torch.zeros(4))
 
 
-def test_tensor_reset_plan_caches_selected_rows() -> None:
+def test_tensor_reset_plan_publishes_full_width_done_union() -> None:
     plan = TensorResetPlan(
         terminated=torch.tensor([False, True, False, True]),
         truncated=torch.tensor([True, False, False, False]),
     )
 
-    rows = plan.rows
+    assert torch.equal(plan.done, torch.tensor([True, True, False, True]))
 
-    torch.testing.assert_close(rows, torch.tensor([0, 1, 3]))
-    assert plan.rows is rows
+
+def test_tensor_reset_plan_fails_closed_on_mismatched_masks() -> None:
+    with pytest.raises(ValueError, match="matching one-dimensional"):
+        TensorResetPlan(
+            terminated=torch.tensor([False, True]),
+            truncated=torch.tensor([True, False, False]),
+        )
+    with pytest.raises(TypeError, match="boolean"):
+        TensorResetPlan(
+            terminated=torch.tensor([0, 1]),
+            truncated=torch.tensor([1, 0]),
+        )
 
 
 def test_tensor_episode_metrics_include_terminal_then_reset() -> None:
     metrics = TensorEpisodeMetrics.create(3, torch.device("cpu"))
 
     metrics.update(torch.tensor([1.0, 2.0, 3.0]), torch.tensor([False, True, False]))
-    finished = metrics.finished_values(torch.tensor([1]))
-    metrics.reset(torch.tensor([1]))
+    done_mask = torch.tensor([False, True, False])
+    finished = metrics.finished_values(done_mask)
+    metrics.reset(done_mask)
     metrics.update(torch.tensor([4.0, 5.0, 6.0]), torch.tensor([False, False, True]))
 
-    torch.testing.assert_close(finished, torch.tensor([[2.0, 1.0]], dtype=torch.float64))
+    torch.testing.assert_close(
+        finished,
+        torch.tensor([[0.0, 0.0], [2.0, 1.0], [0.0, 0.0]], dtype=torch.float64),
+    )
     torch.testing.assert_close(metrics.rewards, torch.tensor([5.0, 5.0, 9.0]))
     torch.testing.assert_close(metrics.lengths, torch.tensor([2, 1, 2]))
-    metrics.reset(torch.tensor([1, 2]))
+    metrics.reset(torch.tensor([False, True, True]))
     torch.testing.assert_close(metrics.rewards, torch.tensor([5.0, 0.0, 0.0]))
     torch.testing.assert_close(metrics.lengths, torch.tensor([2, 0, 0]))
 
@@ -117,7 +105,6 @@ class _HostBridgeBackend:
     backend_type = "fake-host"
 
     def __init__(self):
-        self.selected_read_calls = 0
         self.steps = 0
 
     def get_tensor_capabilities(self):
@@ -137,7 +124,6 @@ class _HostBridgeBackend:
             def __init__(self, plan_spec):
                 self._spec = plan_spec
                 self.last_timing = {}
-                self._reset: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None
 
             @property
             def spec(self):
@@ -158,17 +144,10 @@ class _HostBridgeBackend:
                 return None
 
             def apply_reset(self, env_indices, qpos, qvel, randomization=None):
-                self._reset = (env_indices, qpos.clone(), qvel.clone())
-                return None
+                raise NotImplementedError("host-bridge reset is not mask-capable")
 
             def read_selected_state_sensors(self):
-                backend.selected_read_calls += 1
-                views = self._views()
-                if self._reset is not None:
-                    rows, qpos, qvel = self._reset
-                    views["qpos"] = views["qpos"].index_copy(0, rows, qpos)
-                    views["qvel"] = views["qvel"].index_copy(0, rows, qvel)
-                return views
+                raise NotImplementedError("host-bridge selected reads are unsupported")
 
             def close(self):
                 return None
@@ -216,12 +195,14 @@ class _HostBridgeBackend:
         return torch.tensor(values[name], device=device).unsqueeze(0)
 
 
-class _SelectedResetReadinessBackend:
+class _DeviceMaskResetBackend:
     backend_type = "fake-device-reset"
 
     def __init__(self):
-        self.stale = False
+        self.reset_calls = 0
         self.step_calls: list[tuple[torch.Tensor, int]] = []
+        self.qpos = torch.tensor([[0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.25]])
+        self.qvel = torch.zeros((1, 7))
 
     def get_tensor_capabilities(self):
         return TensorLifecycleCapabilities(
@@ -231,49 +212,47 @@ class _SelectedResetReadinessBackend:
             sensor_views=True,
             stepping=True,
             selected_reset=True,
-            process_topology=TensorProcessTopology.EXTERNAL_WORKER,
-            data_plane=TensorDataPlane.CUDA_IPC,
+            selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
+            mask_selected_reset=True,
+            process_topology=TensorProcessTopology.IN_PROCESS,
+            data_plane=TensorDataPlane.DIRECT,
             stream_event_ownership="backend invalidates derived views until readiness step",
             torch_devices=("cpu",),
         )
 
-    def set_state_tensor(self, env_indices, qpos, qvel, randomization=None):
+    def set_state_tensor_mask(self, reset_mask, qpos, qvel, randomization=None):
         assert randomization is None
-        self.stale = True
-        return {"timing": {"selected_reset_ms": 1.0}}
+        assert reset_mask.shape == (self.qpos.shape[0],)
+        assert reset_mask.dtype is torch.bool
+        self.reset_calls += 1
+        self.qpos[reset_mask] = qpos[reset_mask]
+        self.qvel[reset_mask] = qvel[reset_mask]
+        return {"timing": {"mask_reset_ms": 1.0}}
 
     def step_tensor(self, ctrl, nsteps=1):
-        # The readiness call is the only public way to clear this fake's stale
-        # derived-view lifecycle, matching the IsaacGym CUDA IPC contract.
-        self.stale = False
         self.step_calls.append((ctrl.detach().clone(), int(nsteps)))
         return {"timing": {"readiness_ms": 2.0}}
 
     def get_state_views(self, names, device=None):
         assert names == ("qpos", "qvel")
-        return {
-            "qpos": torch.tensor([[0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.25]], device=device),
-            "qvel": torch.zeros((1, 7), device=device),
-        }
+        return {"qpos": self.qpos, "qvel": self.qvel}
 
     def get_sensor_view(self, name, device=None):
-        if self.stale:
-            raise RuntimeError("derived sensor views are stale until the readiness step")
+        num_envs = self.qpos.shape[0]
         if name == "pelvis_local_linvel":
-            return torch.tensor([[1.0, 2.0, 3.0]], device=device)
+            return torch.tensor([[1.0, 2.0, 3.0]], device=device).repeat(num_envs, 1)
         if name == "torso_gyro":
-            return torch.tensor([[-1.0, -2.0, -3.0]], device=device)
+            return torch.tensor([[-1.0, -2.0, -3.0]], device=device).repeat(num_envs, 1)
         if name == "track_pos_w_pelvis":
-            return torch.tensor([[0.1, 0.2, 0.3]], device=device)
+            return torch.tensor([[0.1, 0.2, 0.3]], device=device).repeat(num_envs, 1)
         if name == "track_quat_w_pelvis":
-            return torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=device)
-        return torch.zeros((1, 3), device=device)
+            return torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=device).repeat(num_envs, 1)
+        if name in {"track_linvel_w_pelvis", "track_angvel_w_pelvis"}:
+            return torch.zeros((num_envs, 3), device=device)
+        return torch.tensor([1.0, 2.0, 3.0], device=device).repeat(num_envs, 1)
 
-    def get_body_ang_vel_w(self, body_ids):
-        return np.zeros((1, 1, 3), dtype=np.float64)
 
-
-class _AdvancingNamedSensorBackend(_SelectedResetReadinessBackend):
+class _AdvancingNamedSensorBackend(_DeviceMaskResetBackend):
     """A DEVICE_RESIDENT adapter that recomputes named sensors on each read."""
 
     backend_type = "fake-device-advancing-sensors"
@@ -288,25 +267,6 @@ class _AdvancingNamedSensorBackend(_SelectedResetReadinessBackend):
         self.named_read_count += 1
         value = float(self.named_read_count)
         return torch.full((1, 3), value, device=device)
-
-
-class _NamedSensorResetRefreshBackend(_SelectedResetReadinessBackend):
-    """A DEVICE_RESIDENT adapter whose named views publish lazy reset state."""
-
-    backend_type = "fake-device-named-sensor-reset"
-
-    def get_tensor_runtime_diagnostics(self):
-        return {
-            "selected_reset_sensor_refresh": SimpleNamespace(
-                requested=True,
-                enabled=True,
-                disable_reason=None,
-            )
-        }
-
-    def set_state_tensor(self, env_indices, qpos, qvel, randomization=None):
-        self.stale = False
-        return {"timing": {"selected_reset_ms": 1.0}}
 
 
 def test_tensor_state_store_full_read_validates_layout_and_finite_state() -> None:
@@ -328,9 +288,9 @@ def test_tensor_state_store_full_read_validates_layout_and_finite_state() -> Non
     torch.testing.assert_close(store.robot_body_pos, torch.tensor([[[0.1, 0.2, 0.3]]]))
 
 
-def test_tensor_state_store_runs_backend_readiness_after_selected_reset() -> None:
-    backend = _SelectedResetReadinessBackend()
-    store = TensorDeviceStateStore(
+def _device_store(backend: _DeviceMaskResetBackend | None = None):
+    backend = backend or _DeviceMaskResetBackend()
+    return backend, TensorDeviceStateStore(
         backend=backend,  # pyright: ignore[reportArgumentType]
         device=torch.device("cpu"),
         num_envs=1,
@@ -339,26 +299,51 @@ def test_tensor_state_store_runs_backend_readiness_after_selected_reset() -> Non
         body_names=("pelvis",),
         body_ids=torch.tensor([0], dtype=torch.int64),
     )
-    ctrl = torch.tensor([[0.25]], dtype=torch.float32)
 
-    reset_result = store.apply_reset(
-        torch.tensor([0], dtype=torch.int64),
-        torch.tensor([[0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.25]], dtype=torch.float32),
-        torch.zeros((1, 7), dtype=torch.float32),
+
+def test_tensor_state_store_mask_reset_updates_true_rows_only() -> None:
+    backend = _DeviceMaskResetBackend()
+    backend.qpos = backend.qpos.repeat(2, 1)
+    backend.qvel = backend.qvel.repeat(2, 1)
+    store = TensorDeviceStateStore(
+        backend=backend,  # pyright: ignore[reportArgumentType]
+        device=torch.device("cpu"),
+        num_envs=2,
+        joint_qpos_ids=torch.tensor([7], dtype=torch.int64),
+        joint_qvel_ids=torch.tensor([6], dtype=torch.int64),
+        body_names=("pelvis",),
+        body_ids=torch.tensor([0], dtype=torch.int64),
     )
-    readiness_result = store.refresh_after_selected_reset(ctrl, nsteps=3)
-
     store.read()
+    qpos_before, qvel_before = store.qviews()
+    reset_qpos = torch.full_like(qpos_before, -2.0)
+    reset_qvel = torch.full_like(qvel_before, -3.0)
+    all_false = torch.zeros(2, dtype=torch.bool)
 
-    assert reset_result == {"timing": {"selected_reset_ms": 1.0}}
-    assert readiness_result == {"timing": {"readiness_ms": 2.0}}
-    assert backend.step_calls == [(ctrl, 3)]
-    assert backend.stale is False
-    torch.testing.assert_close(store.robot_body_pos, torch.tensor([[[0.1, 0.2, 0.3]]]))
+    assert store.apply_reset(all_false, reset_qpos, reset_qvel) is None
+    assert backend.reset_calls == 0
+    torch.testing.assert_close(store.qpos, qpos_before)
+    torch.testing.assert_close(store.qvel, qvel_before)
 
-    # The barrier is idempotent after the backend has published fresh views.
-    assert store.refresh_after_selected_reset(ctrl, nsteps=3) is None
-    assert len(backend.step_calls) == 1
+    reset_mask = torch.tensor([False, True])
+    reset_result = store.apply_reset(reset_mask, reset_qpos, reset_qvel)
+
+    assert reset_result == {"timing": {"mask_reset_ms": 1.0}}
+    assert backend.reset_calls == 1
+    torch.testing.assert_close(store.qpos[0], qpos_before[0])
+    torch.testing.assert_close(store.qvel[0], qvel_before[0])
+    torch.testing.assert_close(store.qpos[1], reset_qpos[1])
+    torch.testing.assert_close(store.qvel[1], reset_qvel[1])
+
+
+def test_tensor_state_store_reset_rejects_non_full_width_non_bool_masks() -> None:
+    _, store = _device_store()
+    qpos = torch.zeros((1, 8))
+    qvel = torch.zeros((1, 7))
+    with pytest.raises(ValueError, match="full-width bool"):
+        store.apply_reset(torch.zeros(1, dtype=torch.int64), qpos, qvel)
+    with pytest.raises(ValueError, match="full-width bool"):
+        store.apply_reset(torch.zeros(2, dtype=torch.bool), qpos, qvel)
 
 
 def test_tensor_state_store_crosses_named_sensor_read_boundary_each_read() -> None:
@@ -383,7 +368,7 @@ def test_tensor_state_store_crosses_named_sensor_read_boundary_each_read() -> No
     torch.testing.assert_close(store.gyro, torch.full((1, 3), 6.0))
 
 
-def test_tensor_state_store_selected_reset_reads_authoritative_selected_rows() -> None:
+def test_tensor_state_store_reset_fails_closed_for_host_bridge_execution() -> None:
     store = TensorDeviceStateStore(
         backend=_HostBridgeBackend(),  # pyright: ignore[reportArgumentType]
         device=torch.device("cpu"),
@@ -394,18 +379,22 @@ def test_tensor_state_store_selected_reset_reads_authoritative_selected_rows() -
         body_ids=torch.tensor([0], dtype=torch.int64),
     )
     store.read()
-    qpos_before, qvel_before = store.qviews()
-    rows = torch.tensor([0], dtype=torch.int64)
-    qpos = torch.full_like(qpos_before, -2.0)
-    qvel = torch.full_like(qvel_before, -3.0)
 
-    store.apply_reset(rows, qpos, qvel)
-    store.read(rows)
+    with pytest.raises(NotImplementedError, match="DEVICE_RESIDENT"):
+        store.apply_reset(torch.ones(1, dtype=torch.bool), torch.zeros((1, 8)), torch.zeros((1, 7)))
 
-    torch.testing.assert_close(store.qpos, qpos)
-    torch.testing.assert_close(store.qvel, qvel)
-    torch.testing.assert_close(store.joint_pos, qpos[:, 7:])
-    torch.testing.assert_close(store.joint_vel, qvel[:, 6:])
+
+def test_tensor_state_store_reset_fails_closed_without_mask_capability() -> None:
+    class NoMaskBackend(_DeviceMaskResetBackend):
+        def get_tensor_capabilities(self):
+            capabilities = super().get_tensor_capabilities()
+            return TensorLifecycleCapabilities(
+                **{**vars(capabilities), "mask_selected_reset": False}
+            )
+
+    _, store = _device_store(NoMaskBackend())
+    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
+        store.apply_reset(torch.ones(1, dtype=torch.bool), torch.zeros((1, 8)), torch.zeros((1, 7)))
 
 
 def test_tensor_state_store_has_no_legacy_host_state_fallback() -> None:
@@ -424,135 +413,12 @@ def test_tensor_state_store_has_no_legacy_host_state_fallback() -> None:
         "get_body_quat_w",
         "get_body_lin_vel_w",
         "get_body_ang_vel_w",
-        "get_body_pose_w_rows",
-        "get_body_lin_vel_w_rows",
-        "get_body_ang_vel_w_rows",
-        "get_sensor_data_rows",
     )
 
     for method in legacy_methods:
         assert not hasattr(backend, method)
 
     store.read()
-    store.read(torch.tensor([0], dtype=torch.int64))
-
-
-def test_tensor_state_store_row_validation_uses_one_bounded_sync(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    store = TensorDeviceStateStore(
-        backend=_HostBridgeBackend(),  # pyright: ignore[reportArgumentType]
-        device=torch.device("cpu"),
-        num_envs=3,
-        joint_qpos_ids=torch.tensor([7], dtype=torch.int64),
-        joint_qvel_ids=torch.tensor([6], dtype=torch.int64),
-        body_names=("pelvis",),
-        body_ids=torch.tensor([0], dtype=torch.int64),
-    )
-    rows = torch.tensor([0, 2], dtype=torch.int64)
-    monkeypatch.setattr(tensor_state_store_module, "torch", _FakeTorch)
-    _SyncCountingTensor.synchronization_count = 0
-
-    assert store._validate_rows(rows) is rows
-    assert _SyncCountingTensor.synchronization_count == 1
-
-
-def test_host_bridge_selected_reset_has_no_device_resident_readiness_step() -> None:
-    backend = _HostBridgeBackend()
-    store = TensorDeviceStateStore(
-        backend=backend,  # pyright: ignore[reportArgumentType]
-        device=torch.device("cpu"),
-        num_envs=1,
-        joint_qpos_ids=torch.tensor([7], dtype=torch.int64),
-        joint_qvel_ids=torch.tensor([6], dtype=torch.int64),
-        body_names=("pelvis",),
-        body_ids=torch.tensor([0], dtype=torch.int64),
-    )
-    ctrl = torch.zeros((1, 1), dtype=torch.float32)
-    qpos = torch.tensor([[0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.25]])
-    qvel = torch.zeros((1, 7), dtype=torch.float32)
-
-    store.apply_reset(torch.tensor([0], dtype=torch.int64), qpos, qvel)
-    result = store.refresh_after_selected_reset(ctrl, nsteps=3)
-    store.read(torch.tensor([0], dtype=torch.int64))
-
-    assert result is None
-    assert backend.steps == 0
-    assert backend.selected_read_calls == 1
-
-
-def test_tensor_state_store_uses_declared_named_sensor_reset_refresh() -> None:
-    backend = _NamedSensorResetRefreshBackend()
-    store = TensorDeviceStateStore(
-        backend=backend,  # pyright: ignore[reportArgumentType]
-        device=torch.device("cpu"),
-        num_envs=1,
-        joint_qpos_ids=torch.tensor([7], dtype=torch.int64),
-        joint_qvel_ids=torch.tensor([6], dtype=torch.int64),
-        body_names=("pelvis",),
-        body_ids=torch.tensor([0], dtype=torch.int64),
-    )
-    ctrl = torch.tensor([[0.25]], dtype=torch.float32)
-    qpos = torch.tensor([[0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.25]])
-    qvel = torch.zeros((1, 7))
-
-    store.apply_reset(torch.tensor([0], dtype=torch.int64), qpos, qvel)
-    result = store.refresh_after_selected_reset(ctrl, nsteps=3)
-    store.read()
-
-    assert result is None
-    assert backend.stale is False
-    assert backend.step_calls == []
-
-
-def test_tensor_state_store_empty_rows_validate_and_read_without_sync_or_backend_read(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = _HostBridgeBackend()
-    store = TensorDeviceStateStore(
-        backend=backend,  # pyright: ignore[reportArgumentType]
-        device=torch.device("cpu"),
-        num_envs=1,
-        joint_qpos_ids=torch.tensor([7], dtype=torch.int64),
-        joint_qvel_ids=torch.tensor([6], dtype=torch.int64),
-        body_names=("pelvis",),
-        body_ids=torch.tensor([0], dtype=torch.int64),
-    )
-    store.read()
-    qpos = store.qpos
-    rows = torch.empty((0,), dtype=torch.int64)
-    monkeypatch.setattr(tensor_state_store_module, "torch", _FakeTorch)
-    _SyncCountingTensor.synchronization_count = 0
-
-    store.read(rows)
-    assert store._validate_rows(rows) is rows
-
-    assert store.qpos is qpos
-    assert _SyncCountingTensor.synchronization_count == 0
-    assert backend.selected_read_calls == 0
-
-
-@pytest.mark.parametrize("rows", [(-1,), (3,), (-1, 3)])
-def test_tensor_state_store_rejects_row_range_with_one_sync(
-    monkeypatch: pytest.MonkeyPatch,
-    rows: tuple[int, ...],
-) -> None:
-    store = TensorDeviceStateStore(
-        backend=_HostBridgeBackend(),  # pyright: ignore[reportArgumentType]
-        device=torch.device("cpu"),
-        num_envs=3,
-        joint_qpos_ids=torch.tensor([7], dtype=torch.int64),
-        joint_qvel_ids=torch.tensor([6], dtype=torch.int64),
-        body_names=("pelvis",),
-        body_ids=torch.tensor([0], dtype=torch.int64),
-    )
-    monkeypatch.setattr(tensor_state_store_module, "torch", _FakeTorch)
-    _SyncCountingTensor.synchronization_count = 0
-
-    with pytest.raises(IndexError, match=r"outside the environment range \[0, 3\)"):
-        store._validate_rows(torch.tensor(rows, dtype=torch.int64))
-
-    assert _SyncCountingTensor.synchronization_count == 1
 
 
 def test_tensor_state_store_rejects_unsupported_backend_before_read() -> None:

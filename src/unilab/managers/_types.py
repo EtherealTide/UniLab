@@ -143,7 +143,7 @@ class ManagerEntity(Protocol):
     def write_root_state_tensor_to_sim(
         self,
         root_state: torch.Tensor,
-        env_ids: torch.Tensor,
+        reset_mask: torch.Tensor,
     ) -> None: ...
 
     def write_motion_state_tensor_to_sim(
@@ -151,7 +151,7 @@ class ManagerEntity(Protocol):
         root_state: torch.Tensor,
         position: torch.Tensor,
         velocity: torch.Tensor,
-        env_ids: torch.Tensor,
+        reset_mask: torch.Tensor,
     ) -> None: ...
 
 
@@ -216,6 +216,8 @@ class ManagerActionManager(Protocol):
     def prev_prev_action(self) -> torch.Tensor: ...
 
     def get_term(self, name: str) -> ManagerActionTerm: ...
+
+    def clear_action_state(self, reset_mask: torch.Tensor) -> None: ...
 
 
 class ManagerCommandManager(Protocol):

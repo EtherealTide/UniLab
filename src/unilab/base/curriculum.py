@@ -31,7 +31,7 @@ class EpisodeLengthTracker:
     def update_mask(self, episode_lengths: torch.Tensor, mask: torch.Tensor) -> None:
         """Update from a fixed-width episode-length carrier and bool mask.
 
-        Issue #2285 uses this research boundary to avoid materializing reset
+        This boundary avoids materializing reset
         rows; false values are excluded with fixed-shape ``where`` operations.
         """
         if mask.shape != episode_lengths.shape:

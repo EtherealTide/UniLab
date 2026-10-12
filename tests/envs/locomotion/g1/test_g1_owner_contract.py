@@ -540,12 +540,6 @@ def test_g1_registry_executes_real_manager_runtime(
 
     try:
         assert isinstance(env, ManagerBasedRlEnv)
-        if (
-            backend in _TENSOR_RESET_EVENT_BACKENDS
-            or backend in _MOTRIX_PACKED_HOST_BRIDGE_BACKENDS
-        ):
-            assert env.event_manager.uses_tensor_reset_rows
-            assert env.command_manager.uses_tensor_reset_rows()
         assert env.obs_groups_spec == {"obs": obs_dim, "critic": critic_dim}
         assert env.action_space.shape == (num_dof,)
         action = env.action_manager.get_term("joint_pos")
@@ -577,8 +571,8 @@ def test_g1_registry_executes_real_manager_runtime(
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
-def test_g1_walk_newton_selected_reset_preserves_rows_and_rng() -> None:
-    """The canonical Newton walk owner keeps selected reset row-scoped."""
+def test_g1_walk_newton_mask_reset_preserves_rows_and_rng() -> None:
+    """The canonical Newton walk owner keeps reset fixed-width and masked."""
     registry.ensure_registries()
     _, _, env_override = _materialize("sac", ("task=g1_walk_flat/newton",), "G1WalkFlat")
     try:
@@ -604,7 +598,8 @@ def test_g1_walk_newton_selected_reset_preserves_rows_and_rng() -> None:
 
         rows = torch.tensor([1, 3], dtype=torch.int64, device=device)
         keep = torch.tensor([0, 2], dtype=torch.int64, device=device)
-        reset_obs, _ = env.reset(env_indices=rows)
+        reset_mask = torch.tensor([False, True, False, True], dtype=torch.bool, device=device)
+        reset_obs, _ = env.reset(reset_mask=reset_mask)
 
         refreshed = env.backend.get_state_views(("qpos", "qvel"), device=device)
         # The public reset event publishes default-derived rows; it is not a
@@ -615,7 +610,7 @@ def test_g1_walk_newton_selected_reset_preserves_rows_and_rng() -> None:
         torch.testing.assert_close(refreshed["qpos"][keep], qpos_before[keep])
         torch.testing.assert_close(refreshed["qvel"][keep], qvel_before[keep])
         for group, values in reset_obs.items():
-            assert values.shape[0] == rows.numel()
+            assert values.shape == env.state.obs[group].shape
             assert torch.isfinite(values).all()
             torch.testing.assert_close(env.state.obs[group][rows], values)
             torch.testing.assert_close(
@@ -629,15 +624,15 @@ def test_g1_walk_newton_selected_reset_preserves_rows_and_rng() -> None:
         )
 
         env.torch_rng.set_state(rng_state)
-        reference_obs, _ = env.reset(env_indices=rows)
+        reference_obs, _ = env.reset(reset_mask=reset_mask)
         reference_command = env.command_manager.get_command("twist")
         torch.testing.assert_close(
             reference_command[rows],
             new_command[rows],
-            msg="selected-row Torch RNG replay is not deterministic",
+            msg="mask Torch RNG replay is not deterministic",
         )
         # The first replay starts from a different post-reset physical state;
-        # row-shaped rebuild identity, not equality of every state column, is
+        # full-width shape identity, not equality of every state column, is
         # the reset-observation contract.
         for group, values in reference_obs.items():
             assert values.shape == reset_obs[group].shape

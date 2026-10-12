@@ -309,8 +309,7 @@ class OffPolicyPlaybackSession:
     def reset(self) -> torch.Tensor:
         if self.env.state is None:
             self.env.init_state()
-        env_indices = torch.arange(self.num_envs, dtype=torch.int64, device=self.env.device)
-        reset_result = self.env.reset(env_indices)
+        reset_result = self.env.reset()
         if not isinstance(reset_result, tuple) or len(reset_result) != 2:
             raise ValueError(f"Unexpected env.reset return format: {type(reset_result)!r}")
         obs_out, _ = reset_result

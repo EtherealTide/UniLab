@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 import torch
 from unisim.backend.base import (
+    SelectedResetPublication,
     TensorDataPlane,
     TensorExecution,
     TensorLifecycleCapabilities,
@@ -19,34 +20,6 @@ from unilab.tasks.locomotion.go2.tensor_parity import (
     Go2TensorParityConfig,
     Go2TensorParityRuntime,
 )
-
-
-class _SyncCountingTensor(torch.Tensor):
-    synchronization_count = 0
-
-    def tolist(self):
-        type(self).synchronization_count += 1
-        return super().tolist()
-
-    def item(self):
-        type(self).synchronization_count += 1
-        return super().item()
-
-
-class _FakeTorch:
-    int64 = torch.int64
-
-    @staticmethod
-    def unique(input, **kwargs):
-        return torch.unique(input, **kwargs)
-
-    @staticmethod
-    def stack(tensors, *, out=None):
-        result = torch.stack(tensors, out=out)
-        if out is None:
-            result = result.as_subclass(_SyncCountingTensor)
-        return result
-
 
 _HOME = np.array(
     [0.0, 0.8, -1.5, 0.0, 0.8, -1.5, 0.0, 1.0, -1.5, 0.0, 1.0, -1.5],
@@ -90,6 +63,8 @@ class FakeGo2DeviceBackend:
             sensor_views=True,
             stepping=True,
             selected_reset=True,
+            selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
+            mask_selected_reset=True,
             process_topology=TensorProcessTopology.IN_PROCESS,
             data_plane=TensorDataPlane.DIRECT,
             stream_event_ownership="backend-owned synchronous current stream",
@@ -137,22 +112,23 @@ class FakeGo2DeviceBackend:
         self.step_calls += 1
         return {"ok": True}
 
-    def set_state_tensor(self, env_indices, qpos, qvel, randomization=None):
+    def set_state_tensor_mask(self, reset_mask, qpos, qvel, randomization=None):
         assert randomization is None
-        rows = torch.as_tensor(env_indices)
-        assert rows.dtype is torch.int64
-        assert rows.ndim == 1
+        assert reset_mask.dtype is torch.bool
+        assert reset_mask.shape == (self.num_envs,)
         assert bool(torch.isfinite(qpos).all())
         assert bool(torch.isfinite(qvel).all())
-        self.qpos[rows] = qpos.clone()
-        self.qvel[rows] = qvel.clone()
-        self._refresh_sensors(rows)
+        if not bool(reset_mask.any()):
+            return None
+        self.qpos[reset_mask] = qpos[reset_mask]
+        self.qvel[reset_mask] = qvel[reset_mask]
+        self._refresh_sensors(reset_mask)
         self.reset_calls += 1
         return {"ok": True}
 
-    def _refresh_sensors(self, rows: torch.Tensor | None = None) -> None:
-        selected = torch.arange(self.num_envs) if rows is None else rows
-        if selected.numel() == 0:
+    def _refresh_sensors(self, reset_mask: torch.Tensor | None = None) -> None:
+        selected = torch.ones(self.num_envs, dtype=torch.bool) if reset_mask is None else reset_mask
+        if not bool(selected.any()):
             return
         w, x, y, z = self.qpos[selected, 3:7].unbind(dim=1)
         self.sensors[selected, 0:3] = self.qvel[selected, 3:6]
@@ -294,28 +270,29 @@ def test_go2_full_tensor_lifecycle_matches_owner_formula_parity() -> None:
     assert not torch.any(state.truncated)
 
 
-def test_go2_selected_reset_updates_done_rows_and_preserves_other_rows() -> None:
+def test_go2_mask_reset_updates_true_rows_and_preserves_false_rows() -> None:
     backend, runtime = _make_runtime()
     tilt = 1.2
     tilted_qpos = backend.qpos.clone()
     tilted_qpos[0, 3:7] = torch.tensor(
         [math.cos(tilt / 2), math.sin(tilt / 2), 0.0, 0.0], dtype=torch.float32
     )
-    backend.set_state_tensor(torch.tensor([0]), tilted_qpos[:1], backend.qvel[:1])
+    backend.qpos.copy_(tilted_qpos)
+    backend._refresh_sensors(torch.tensor([True, False, False]))  # noqa: SLF001
     actions = (torch.arange(3, dtype=torch.float32).repeat(12, 1).t() * 0.1).contiguous()
     state = runtime.step(actions)
     assert state.terminated.tolist() == [True, False, False]
 
-    done_rows = (state.terminated | state.truncated).nonzero(as_tuple=True)[0]
+    reset_mask = state.terminated | state.truncated
     qpos_before = backend.qpos.clone()
     qvel_before = backend.qvel.clone()
     sensors_before = backend.sensors.clone()
     negotiated_sensors = backend.sensor_negotiations
 
-    reset_obs = runtime.reset(done_rows)
+    reset_obs = runtime.reset(reset_mask)
 
-    assert done_rows.tolist() == [0]
-    assert backend.reset_calls == 3
+    assert reset_mask.tolist() == [True, False, False]
+    assert backend.reset_calls == 2
     assert backend.sensor_negotiations == negotiated_sensors
     torch.testing.assert_close(backend.qpos[0], runtime.reset_qpos[0])
     torch.testing.assert_close(backend.qvel[0], runtime.reset_qvel[0])
@@ -327,17 +304,35 @@ def test_go2_selected_reset_updates_done_rows_and_preserves_other_rows() -> None
     assert runtime._steps.tolist() == [0, 1, 1]  # noqa: SLF001
 
 
+def test_go2_all_false_reset_is_noop_and_preserves_every_row() -> None:
+    backend, runtime = _make_runtime()
+    actions = torch.full((3, 12), 0.2, dtype=torch.float32)
+    runtime.step(actions)
+    qpos_before = backend.qpos.clone()
+    qvel_before = backend.qvel.clone()
+    sensors_before = backend.sensors.clone()
+    steps_before = runtime._steps.clone()  # noqa: SLF001
+    reset_calls = backend.reset_calls
+
+    obs = runtime.reset(torch.zeros(3, dtype=torch.bool))
+
+    assert backend.reset_calls == reset_calls
+    torch.testing.assert_close(backend.qpos, qpos_before)
+    torch.testing.assert_close(backend.qvel, qvel_before)
+    torch.testing.assert_close(backend.sensors, sensors_before)
+    torch.testing.assert_close(runtime._steps, steps_before)  # noqa: SLF001
+    assert obs["policy"].shape == (3, 49)
+    assert obs["critic"].shape == (3, 52)
+
+
 def test_go2_done_formula_parity_covers_bad_orientation_and_timeout() -> None:
     backend, runtime = _make_runtime(Go2TensorParityConfig(max_episode_steps=1))
     tilt = 1.2
     for row in (0, 2):
-        qpos = backend.qpos.clone()
-        qpos[row, 3:7] = torch.tensor(
+        backend.qpos[row, 3:7] = torch.tensor(
             [math.cos(tilt / 2), math.sin(tilt / 2), 0.0, 0.0], dtype=torch.float32
         )
-        backend.set_state_tensor(
-            torch.tensor([row]), qpos[row : row + 1], backend.qvel[row : row + 1]
-        )
+    backend._refresh_sensors(torch.tensor([True, False, True]))  # noqa: SLF001
     state = runtime.step(torch.zeros((3, 12), dtype=torch.float32))
     assert state.terminated.tolist() == [True, False, True]
     assert state.truncated.tolist() == [True, True, True]
@@ -358,67 +353,35 @@ def test_go2_runtime_does_not_add_backend_registrations() -> None:
     ]
 
 
-def test_go2_tensor_runtime_rejects_invalid_reset_rows() -> None:
+def test_go2_tensor_runtime_rejects_non_bool_reset_input() -> None:
     _, runtime = _make_runtime()
-    with pytest.raises(ValueError, match="unique"):
+    with pytest.raises(TypeError, match="one-dimensional bool"):
         runtime.reset(torch.tensor([0, 0]))
 
 
-def test_go2_row_validation_uses_one_bounded_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_go2_tensor_runtime_rejects_wrong_reset_width() -> None:
     _, runtime = _make_runtime()
-    rows = torch.tensor([0, 2], dtype=torch.int64)
-    monkeypatch.setattr(tensor_parity_module, "torch", _FakeTorch)
-    _SyncCountingTensor.synchronization_count = 0
-
-    assert runtime._validate_rows(rows) is rows
-    assert _SyncCountingTensor.synchronization_count == 1
+    with pytest.raises(ValueError, match="reset mask shape"):
+        runtime.reset(torch.ones(2, dtype=torch.bool))
 
 
-def test_go2_empty_rows_validate_and_reset_without_sync_or_backend_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend, runtime = _make_runtime()
-    rows = torch.empty((0,), dtype=torch.int64)
-    monkeypatch.setattr(tensor_parity_module, "torch", _FakeTorch)
-    _SyncCountingTensor.synchronization_count = 0
-    assert runtime._validate_rows(rows) is rows
-    assert _SyncCountingTensor.synchronization_count == 0
-    monkeypatch.undo()
+def test_go2_tensor_runtime_fails_closed_without_mask_capability() -> None:
+    class NoMaskBackend(FakeGo2DeviceBackend):
+        def get_tensor_capabilities(self):
+            capabilities = super().get_tensor_capabilities()
+            return TensorLifecycleCapabilities(
+                **{**vars(capabilities), "mask_selected_reset": False}
+            )
 
-    reset_calls = backend.reset_calls
-    obs = runtime.reset(rows)
-
-    assert backend.reset_calls == reset_calls
-    assert obs["policy"].shape == (backend.num_envs, 49)
-    assert obs["critic"].shape == (backend.num_envs, 52)
-
-
-@pytest.mark.parametrize("rows", [(-1,), (3,), (-1, 3)])
-def test_go2_row_validation_rejects_range_with_one_sync(
-    monkeypatch: pytest.MonkeyPatch,
-    rows: tuple[int, ...],
-) -> None:
-    _, runtime = _make_runtime()
-    monkeypatch.setattr(tensor_parity_module, "torch", _FakeTorch)
-    _SyncCountingTensor.synchronization_count = 0
-
-    with pytest.raises(ValueError, match=r"outside the environment range \[0, 3\)"):
-        runtime._validate_rows(torch.tensor(rows, dtype=torch.int64))
-
-    assert _SyncCountingTensor.synchronization_count == 1
-
-
-def test_go2_row_validation_rejects_duplicates_with_one_sync(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _, runtime = _make_runtime()
-    monkeypatch.setattr(tensor_parity_module, "torch", _FakeTorch)
-    _SyncCountingTensor.synchronization_count = 0
-
-    with pytest.raises(ValueError, match="reset rows must be unique; got 1 duplicate"):
-        runtime._validate_rows(torch.tensor([0, 0], dtype=torch.int64))
-
-    assert _SyncCountingTensor.synchronization_count == 1
+    backend = NoMaskBackend(num_envs=1)
+    qpos, qvel = _reset_state(1)
+    with pytest.raises(RuntimeError, match="mask tensor reset"):
+        Go2TensorParityRuntime(
+            backend,  # pyright: ignore[reportArgumentType]
+            command=torch.zeros((1, 3)),
+            reset_qpos=qpos,
+            reset_qvel=qvel,
+        )
 
 
 def test_go2_tensor_runtime_rejects_wrong_action_shape() -> None:

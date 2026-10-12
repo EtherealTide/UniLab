@@ -172,7 +172,7 @@ def run_motrix_play_loop(
         env.run_playback(
             num_steps=num_steps,
             initialize=lambda: _motrix_playback_obs(
-                env.reset(torch.arange(play_env_num, dtype=torch.int64, device=env.device))
+                env.reset(torch.ones(play_env_num, dtype=torch.bool, device=env.device))
             ),
             step=lambda obs: _motrix_playback_step(
                 env=env,

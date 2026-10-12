@@ -103,23 +103,14 @@ class RewardManager(ManagerBase):
 
     # Methods.
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
-        if env_ids is None:
-            env_ids = slice(None)
-        for term_cfg in self._class_term_cfgs:
-            term_cfg.func.reset(env_ids=env_ids)
-        return {}
-
-    def reset_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
         """Clear stateful reward terms through a fixed-width bool mask."""
         for term_cfg in self._class_term_cfgs:
-            reset_mask_impl = getattr(term_cfg.func, "reset_mask", None)
-            if not callable(reset_mask_impl):
+            if not callable(getattr(term_cfg.func, "reset", None)):
                 raise NotImplementedError(
-                    "RewardManager stateful term does not define the issue #2285 "
-                    "mask-preserving reset boundary"
+                    "RewardManager stateful term does not define the mask-preserving reset boundary"
                 )
-            reset_mask_impl(reset_mask)
+            term_cfg.func.reset(reset_mask)
         return {}
 
     def compute(self, dt: float) -> torch.Tensor:
