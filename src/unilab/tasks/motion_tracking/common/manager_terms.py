@@ -958,10 +958,6 @@ class MotionCommand(CommandTerm):
 
     def _resample_command(self, reset_mask: torch.Tensor) -> None:
         """Full-width motion sampling and masked state publication."""
-        if not bool(reset_mask.any()):
-            # No selected rows: skip sampling entirely so reset diagnostics only
-            # count real sampler dispatches (issue #2285 lifecycle contract).
-            return
         sampler_started = time.perf_counter()
         frames = self.tensor_sampler.sample_frames(reset_mask, self._env.torch_rng.generator)
         packet = self._motion_packet(frames)
