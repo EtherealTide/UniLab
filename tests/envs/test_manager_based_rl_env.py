@@ -193,6 +193,7 @@ class _FakeBackend:
             data_plane=(
                 TensorDataPlane.DIRECT if self.packed_reset else TensorDataPlane.HOST_BRIDGE
             ),
+            deferred_fused_validation=self.packed_reset,
             stream_event_ownership="test",
             torch_devices=("cpu",),
             reset_randomization=True,
@@ -1307,9 +1308,10 @@ def test_deferred_validation_boundaries_propagate_to_owner_verdicts() -> None:
 
 def test_deferred_validation_boundaries_fail_closed_without_backend_capability() -> None:
     env, _backend = _make_env()
+    env._backend.packed_reset = False
     env._backend.get_tensor_runtime_diagnostics = lambda: {}
 
-    with pytest.raises(NotImplementedError, match="deferred_fused_validation"):
+    with pytest.raises(NotImplementedError, match="deferred_fused_validation tensor capability"):
         env.set_deferred_validation_boundaries(True)
     assert env.deferred_validation_boundaries is True
     env.close()

@@ -1418,6 +1418,12 @@ class ManagerBasedRlEnv(TorchEnv):
         super().set_deferred_validation_boundaries(enabled)
         self.reward_manager.set_deferred_validation_boundaries(enabled)
         self._reset_state.set_deferred_payload_validation(enabled)
+        capabilities = self._backend.get_tensor_capabilities()
+        if not capabilities.deferred_fused_validation:
+            raise NotImplementedError(
+                "deferred validation boundaries require the backend "
+                "deferred_fused_validation tensor capability"
+            )
         diagnostics = self._backend.get_tensor_runtime_diagnostics()
         diagnostic = diagnostics.get("deferred_fused_validation")
         if diagnostic is None or not diagnostic.enabled:
