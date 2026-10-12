@@ -216,6 +216,23 @@ class _FakeBackend:
     def publish_torch_fused_validation(self) -> None:
         return None
 
+    def preflight_graph_candidate(self, request):
+        from dataclasses import replace
+
+        if request.requested:
+            return replace(
+                request,
+                backend_stream_contract="test",
+                supported=True,
+                disable_reason=None,
+            )
+        return replace(
+            request,
+            backend_stream_contract="test",
+            supported=False,
+            disable_reason="graph candidate was not requested",
+        )
+
     def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> None:
         self.set_state_calls.append(
             (
@@ -1314,6 +1331,27 @@ def test_deferred_validation_boundaries_fail_closed_without_backend_capability()
     with pytest.raises(NotImplementedError, match="deferred_fused_validation tensor capability"):
         env.set_deferred_validation_boundaries(True)
     assert env.deferred_validation_boundaries is True
+    env.close()
+
+
+def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
+    env, _backend = _make_env()
+
+    supported = env.preflight_graph_candidate(requested=True)
+    unrequested = env.preflight_graph_candidate(requested=False)
+
+    assert supported == {
+        "requested": True,
+        "supported": True,
+        "disable_reason": None,
+        "backend_stream_contract": "test",
+    }
+    assert unrequested == {
+        "requested": False,
+        "supported": False,
+        "disable_reason": "graph candidate was not requested",
+        "backend_stream_contract": "test",
+    }
     env.close()
 
 

@@ -20,6 +20,7 @@ import torch
 from unisim.backend.base import (
     DebugOverlayGetter,
     DebugPrimitive,
+    GraphCandidatePreflight,
     SimBackend,
     TensorDataPlane,
     TensorExecution,
@@ -1410,6 +1411,39 @@ class ManagerBasedRlEnv(TorchEnv):
     def algo_capabilities(self) -> Any:
         """Expose cold-path reward component metadata to algorithm owners."""
         return SimpleNamespace(reward_component_names=self.reward_manager.step_reward_names)
+
+    def preflight_graph_candidate(self, requested: bool = True) -> dict[str, Any]:
+        """Run the public backend preflight without mutating graph state."""
+        request = (
+            GraphCandidatePreflight(requested=True)
+            if requested
+            else GraphCandidatePreflight(
+                requested=False,
+                supported=False,
+                disable_reason="graph candidate was not requested",
+            )
+        )
+        verdict = self._backend.preflight_graph_candidate(request)
+        if not requested:
+            return {
+                "requested": False,
+                "supported": False,
+                "disable_reason": verdict.disable_reason,
+                "backend_stream_contract": verdict.backend_stream_contract,
+            }
+        if verdict.supported is not True:
+            return {
+                "requested": True,
+                "supported": False,
+                "disable_reason": verdict.disable_reason,
+                "backend_stream_contract": verdict.backend_stream_contract,
+            }
+        return {
+            "requested": True,
+            "supported": True,
+            "disable_reason": None,
+            "backend_stream_contract": verdict.backend_stream_contract,
+        }
 
     def set_deferred_validation_boundaries(self, enabled: bool) -> None:
         """Propagate graph-candidate deferred validation to all owners."""
