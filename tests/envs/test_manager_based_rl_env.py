@@ -216,6 +216,22 @@ class _FakeBackend:
         self.set_state_tensor(
             rows, qpos.index_select(0, rows), qvel.index_select(0, rows), randomization
         )
+        if randomization is not None:
+            full_width = {
+                name: value for name, value in vars(randomization).items() if value is not None
+            }
+            self.randomization_calls[-1] = type(randomization)(
+                **{
+                    name: (
+                        torch.where(
+                            reset_mask.reshape((-1,) + (1,) * (value.ndim - 1)),
+                            value,
+                            value,
+                        ).index_select(0, rows)
+                    )
+                    for name, value in full_width.items()
+                }
+            )
 
     def get_public_state_widths(self):
         from unisim.backend.base import PublicStateWidths

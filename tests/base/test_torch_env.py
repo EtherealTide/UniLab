@@ -336,6 +336,18 @@ def test_nonfinite_reward_fails_closed_without_sanitization() -> None:
         env.step(_actions(env))
 
 
+def test_deferred_validation_flags_fail_closed_at_completion() -> None:
+    env = _StubTorchEnv()
+    env.init_state()
+    env.set_deferred_validation_boundaries(True)
+    assert env.deferred_validation_boundaries is True
+
+    with pytest.raises(ValueError, match="action contains NaN or Inf"):
+        env.step(torch.full((env.num_envs, 4), torch.nan))
+
+    assert env._validation_flags()["action_finite"].item() is False
+
+
 def test_invalid_backend_control_fails_closed() -> None:
     class _BadControlEnv(_StubTorchEnv):
         def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:

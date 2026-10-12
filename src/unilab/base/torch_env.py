@@ -108,6 +108,7 @@ class TorchEnv(ABEnv):
         self._autoreset_scattered_reset_obs = False
         self._rgb_array_renderer_ready = False
         self._nan_guard: "TensorNanGuard | None" = None
+        self._defer_validation_at_boundaries = False
 
     @property
     def device(self) -> torch.device:
@@ -213,6 +214,8 @@ class TorchEnv(ABEnv):
         cpu_started = _cpu_time()
         phase = time.perf_counter()
         self._validate_action_contract(actions)
+        action_valid = torch.isfinite(actions).all()
+        self._action_finite_valid.copy_(action_valid)
         action_validate_ms = (time.perf_counter() - phase) * 1000.0
         self._bind_tensor_runtime()
         if self._state is None:
@@ -254,6 +257,8 @@ class TorchEnv(ABEnv):
                     nan_ids, self._resolve_nan_guard_model_file(), self.step_counter
                 )
         self._validate_state(self._state)
+        if self._defer_validation_at_boundaries:
+            self.publish_validation_verdicts()
         update_state_ms = (time.perf_counter() - phase) * 1000.0
         update_state_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
 
@@ -300,6 +305,8 @@ class TorchEnv(ABEnv):
         self._validate_action_contract(actions)
         valid = torch.isfinite(actions).all()
         self._action_finite_valid.copy_(valid)
+        if self._defer_validation_at_boundaries:
+            return
         if not bool(valid):
             raise ValueError("TorchEnv action contains NaN or Inf")
 
@@ -337,6 +344,8 @@ class TorchEnv(ABEnv):
             raise ValueError(f"TorchEnv control device must be {self.device}, got {ctrl.device}")
         valid = torch.isfinite(ctrl).all()
         self._control_finite_valid.copy_(valid)
+        if self._defer_validation_at_boundaries:
+            return
         if not bool(valid):
             raise ValueError("TorchEnv control contains NaN or Inf")
 
@@ -376,6 +385,8 @@ class TorchEnv(ABEnv):
             )
         ).all()
         self._state_finite_valid.copy_(valid)
+        if self._defer_validation_at_boundaries:
+            return
         if not bool(valid):
             for label, value in (
                 *((f"obs[{name!r}]", value) for name, value in state.obs.items()),
@@ -403,6 +414,37 @@ class TorchEnv(ABEnv):
             "state_finite": self._state_finite_valid,
             "reset_obs_finite": self._reset_obs_finite_valid,
         }
+
+    def publish_validation_verdicts(self) -> None:
+        """Fail closed on persistent finite verdicts at a completion boundary."""
+        flags = self._validation_flags()
+        failed = [name for name, verdict in flags.items() if not bool(verdict)]
+        if failed:
+            labels = {
+                "action_finite": "TorchEnv action contains NaN or Inf",
+                "control_finite": "TorchEnv control contains NaN or Inf",
+                "state_finite": "TorchEnvState contains NaN or Inf",
+                "reset_obs_finite": "TorchEnv mask reset obs contains NaN or Inf",
+            }
+            messages = [labels[name] for name in failed if name in labels]
+            raise ValueError("; ".join(messages))
+
+    @property
+    def deferred_validation_boundaries(self) -> bool:
+        """Whether eager finite verdicts may defer to step/reset completion."""
+        return self._defer_validation_at_boundaries
+
+    def set_deferred_validation_boundaries(self, enabled: bool) -> None:
+        """Select completion-boundary publication for graph-candidate runs.
+
+        When enabled, eager structural checks remain synchronous, while finite
+        verdicts stay on their persistent device carriers until an explicit
+        completion boundary publishes them. This is an opt-in integration-only
+        contract and does not sanitize invalid values.
+        """
+        if not isinstance(enabled, bool):
+            raise TypeError(f"deferred validation boundaries must be bool, got {type(enabled)}")
+        self._defer_validation_at_boundaries = enabled
 
     def _require_floating_float(self, value: torch.Tensor) -> None:
         if not value.is_floating_point():
@@ -544,6 +586,8 @@ class TorchEnv(ABEnv):
             )
         ).all()
         self._reset_obs_finite_valid.copy_(valid)
+        if self._defer_validation_at_boundaries:
+            return
         if not bool(valid):
             for name, value in obs.items():
                 if not bool(torch.isfinite(value).all()):

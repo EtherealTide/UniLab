@@ -160,8 +160,20 @@ class _TensorResetBackend(_Backend):
 
     def set_state_tensor_mask(self, reset_mask, qpos, qvel, randomization=None, **_kwargs):
         rows = torch.nonzero(reset_mask, as_tuple=False).flatten()
+        selected_randomization = randomization
+        if randomization is not None and any(
+            value is not None and value.shape[:1] == reset_mask.shape
+            for value in vars(randomization).values()
+        ):
+            selected_randomization = type(randomization)(
+                **{
+                    name: value.index_select(0, rows)
+                    for name, value in vars(randomization).items()
+                    if value is not None and value.shape[:1] == reset_mask.shape
+                }
+            )
         return self.set_state_tensor(
-            rows, qpos.index_select(0, rows), qvel.index_select(0, rows), randomization
+            rows, qpos.index_select(0, rows), qvel.index_select(0, rows), selected_randomization
         )
 
     def get_public_state_widths(self):
