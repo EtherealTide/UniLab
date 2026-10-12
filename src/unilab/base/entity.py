@@ -29,6 +29,12 @@ from unisim.backend.base import (
     TensorProcessTopology,
     tensor_device_matches,
 )
+from unisim.dr.interval import (
+    INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
+    INTERVAL_TERM_BODY_FORCE,
+    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+    INTERVAL_TERM_BODY_TORQUE,
+)
 from unisim.dr.types import (
     RESET_TERM_BODY_IPOS,
     RESET_TERM_BODY_MASS,
@@ -36,6 +42,7 @@ from unisim.dr.types import (
     RESET_TERM_KD,
     RESET_TERM_KP,
     IntervalRandomizationPlan,
+    IntervalTermOp,
 )
 
 from unilab.base.rotation import np_quat_apply, np_quat_apply_inverse_batched
@@ -3548,11 +3555,12 @@ class Entity:
             capabilities = self._backend.get_dr_capabilities()
         except (AttributeError, NotImplementedError) as exc:
             raise self._capability_error("interval root velocity delta", str(exc)) from exc
-        supported = (
-            capabilities.supports_interval_body_angular_velocity_delta
+        term = (
+            INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA
             if angular
-            else capabilities.supports_interval_body_velocity_delta
+            else INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA
         )
+        supported = capabilities.supports_interval_term(term)
         if not supported:
             raise self._capability_error(
                 "interval root velocity delta",
@@ -3601,14 +3609,25 @@ class Entity:
             ids,
             term_name=term_name,
         )
-        try:
-            self._backend.apply_interval_randomization(
-                IntervalRandomizationPlan(
+        ops = []
+        if linear_plan is not None:
+            ops.append(
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                    linear_plan,
                     body_ids=self._root_body_ids,
-                    body_linear_velocity_delta=linear_plan,
-                    body_angular_velocity_delta=angular_plan,
                 )
             )
+        if angular_plan is not None:
+            ops.append(
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
+                    angular_plan,
+                    body_ids=self._root_body_ids,
+                )
+            )
+        try:
+            self._backend.apply_interval_randomization(IntervalRandomizationPlan(ops=tuple(ops)))
         except NotImplementedError as exc:
             raise self._capability_error(
                 "interval root velocity delta",
@@ -3679,12 +3698,12 @@ class Entity:
             capabilities = self._backend.get_dr_capabilities()
         except (AttributeError, NotImplementedError) as exc:
             raise self._capability_error("interval body wrench", str(exc)) from exc
-        if not capabilities.supports_interval_body_force:
+        if not capabilities.supports_interval_term(INTERVAL_TERM_BODY_FORCE):
             raise self._capability_error(
                 "interval body wrench",
                 f"EventManager term '{term_name}' requested an unsupported backend capability",
             )
-        if torque and not capabilities.supports_interval_body_torque:
+        if torque and not capabilities.supports_interval_term(INTERVAL_TERM_BODY_TORQUE):
             raise self._capability_error(
                 "interval body wrench",
                 f"EventManager term '{term_name}' requested an unsupported backend "
@@ -3722,14 +3741,13 @@ class Entity:
             label="torque",
             term_name=term_name,
         )
+        ops = []
+        if force_values is not None:
+            ops.append(IntervalTermOp(INTERVAL_TERM_BODY_FORCE, force_values, body_ids=body_ids))
+        if torque_values is not None:
+            ops.append(IntervalTermOp(INTERVAL_TERM_BODY_TORQUE, torque_values, body_ids=body_ids))
         try:
-            self._backend.apply_interval_randomization(
-                IntervalRandomizationPlan(
-                    body_ids=body_ids,
-                    body_force=force_values,
-                    body_torque=torque_values,
-                )
-            )
+            self._backend.apply_interval_randomization(IntervalRandomizationPlan(ops=tuple(ops)))
         except NotImplementedError as exc:
             raise self._capability_error(
                 "interval body wrench",

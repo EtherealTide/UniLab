@@ -316,21 +316,6 @@ class _KeyframeBackend(_ResetBackend):
         return self.keyframe_qpos
 
 
-class _LegacyWireBackend(_ResetBackend):
-    """Subprocess backend whose only public lifecycle is the NumPy wire."""
-
-    tensor_controls: list[torch.Tensor]
-
-    def tensor_execution(self) -> TensorExecution:
-        return TensorExecution.UNSUPPORTED
-
-    def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
-        return TensorLifecycleCapabilities(execution=TensorExecution.UNSUPPORTED)
-
-    def step_tensor(self, ctrl: torch.Tensor, nsteps: int = 1) -> None:
-        raise AssertionError("the legacy CPU wire must not call step_tensor")
-
-
 class _DeferredTensorBackend(_FakeBackend):
     """External worker whose capabilities only become known after materialize."""
 

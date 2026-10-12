@@ -18,6 +18,10 @@ from unisim.backend.base import (
     TensorProcessTopology,
 )
 from unisim.dr.types import (
+    INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
+    INTERVAL_TERM_BODY_FORCE,
+    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+    INTERVAL_TERM_BODY_TORQUE,
     RESET_TERM_BODY_INERTIA,
     RESET_TERM_BODY_IPOS,
     RESET_TERM_BODY_MASS,
@@ -40,6 +44,10 @@ from unilab.managers._types import ManagerBasedRlEnv
 from unilab.managers.torch_rng import TorchManagerRng
 
 requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+
+
+def _interval_op(plan: IntervalRandomizationPlan, term: str):
+    return next((op for op in plan.ops if op.term == term), None)
 
 
 class _CaptureEntity:
@@ -357,12 +365,22 @@ class _Backend:
                     RESET_TERM_GRAVITY,
                 )
             )
+        interval_terms = {
+            term
+            for term, supported in (
+                (INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA, self.interval_velocity_supported),
+                (
+                    INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
+                    self.interval_angular_velocity_supported,
+                ),
+                (INTERVAL_TERM_BODY_FORCE, self.interval_force_supported),
+                (INTERVAL_TERM_BODY_TORQUE, self.interval_torque_supported),
+            )
+            if supported
+        }
         return DomainRandomizationCapabilities(
             supported_reset_terms=frozenset(terms),
-            supports_interval_body_velocity_delta=self.interval_velocity_supported,
-            supports_interval_body_angular_velocity_delta=self.interval_angular_velocity_supported,
-            supports_interval_body_force=self.interval_force_supported,
-            supports_interval_body_torque=self.interval_torque_supported,
+            supported_interval_terms=frozenset(interval_terms),
         )
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
@@ -1103,22 +1121,27 @@ def test_apply_body_impulse_lifecycle_stages_sustains_and_expires() -> None:
     manager.apply(mode="step", dt=0.02)
     assert len(backend.interval_plans) == 1
     plan = backend.interval_plans[0]
-    np.testing.assert_array_equal(plan.body_ids, [0])
-    assert plan.body_force is not None
-    np.testing.assert_allclose(plan.body_force[:, 0], 5.0)
-    assert plan.body_torque is None
+    force_op = _interval_op(plan, INTERVAL_TERM_BODY_FORCE)
+    assert force_op is not None
+    np.testing.assert_array_equal(force_op.body_ids, [0])
+    np.testing.assert_allclose(force_op.payload[:, 0], 5.0)
+    assert _interval_op(plan, INTERVAL_TERM_BODY_TORQUE) is None
 
     manager.apply(mode="step", dt=0.02)
     manager.apply(mode="step", dt=0.02)
     assert len(backend.interval_plans) == 3
-    np.testing.assert_allclose(backend.interval_plans[1].body_force[:, 0], 5.0)
-    np.testing.assert_allclose(backend.interval_plans[2].body_force[:, 0], 5.0)
+    for plan in backend.interval_plans[1:3]:
+        force_op = _interval_op(plan, INTERVAL_TERM_BODY_FORCE)
+        assert force_op is not None
+        np.testing.assert_allclose(force_op.payload[:, 0], 5.0)
 
     # Expiry stages zeros once (persistent wrench channels clear), then the
     # term stays idle through the next cooldown instead of re-staging.
     manager.apply(mode="step", dt=0.02)
     assert len(backend.interval_plans) == 4
-    np.testing.assert_allclose(backend.interval_plans[3].body_force[:, 0], 0.0)
+    force_op = _interval_op(backend.interval_plans[3], INTERVAL_TERM_BODY_FORCE)
+    assert force_op is not None
+    np.testing.assert_allclose(force_op.payload[:, 0], 0.0)
     manager.apply(mode="step", dt=0.02)
     assert len(backend.interval_plans) == 4
 
@@ -1153,12 +1176,14 @@ def test_apply_body_impulse_offset_generates_cross_torque() -> None:
 
     assert len(backend.interval_plans) == 1
     plan = backend.interval_plans[0]
-    assert plan.body_force is not None and plan.body_torque is not None
-    np.testing.assert_allclose(plan.body_force[:, 0], 1.0)
+    force_op = _interval_op(plan, INTERVAL_TERM_BODY_FORCE)
+    torque_op = _interval_op(plan, INTERVAL_TERM_BODY_TORQUE)
+    assert force_op is not None and torque_op is not None
+    np.testing.assert_allclose(force_op.payload[:, 0], 1.0)
     # Identity link orientation: offset_w = (0, 0, 0.1), force = (1, 1, 1),
     # cross(offset_w, force) = (-0.1, 0.1, 0).
     np.testing.assert_allclose(
-        plan.body_torque[:, 0],
+        torque_op.payload[:, 0],
         [[-0.1, 0.1, 0.0]] * 3,
         atol=1e-12,
     )
@@ -1188,13 +1213,15 @@ def test_apply_body_impulse_reset_clears_active_wrench() -> None:
 
     manager.reset(torch.tensor([1], dtype=torch.int64))
     assert len(backend.interval_plans) == 2
-    np.testing.assert_allclose(backend.interval_plans[1].body_force[:, 0], 0.0)
+    force_op = _interval_op(backend.interval_plans[1], INTERVAL_TERM_BODY_FORCE)
+    assert force_op is not None
+    np.testing.assert_allclose(force_op.payload[:, 0], 0.0)
 
     manager.apply(mode="step", dt=0.02)
-    sustained = backend.interval_plans[-1].body_force
+    sustained = _interval_op(backend.interval_plans[-1], INTERVAL_TERM_BODY_FORCE)
     assert sustained is not None
-    np.testing.assert_allclose(sustained[1, 0], 0.0)
-    np.testing.assert_allclose(sustained[[0, 2], 0], 5.0)
+    np.testing.assert_allclose(sustained.payload[1, 0], 0.0)
+    np.testing.assert_allclose(sustained.payload[[0, 2], 0], 5.0)
 
 
 @pytest.mark.parametrize(
@@ -1300,10 +1327,11 @@ def test_velocity_push_uses_env_rng_and_interval_subset_plan() -> None:
 
     assert len(backend.interval_plans) == 1
     plan = backend.interval_plans[0]
-    np.testing.assert_array_equal(plan.body_ids, [0])
-    assert plan.body_linear_velocity_delta is not None
+    velocity_op = _interval_op(plan, INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA)
+    assert velocity_op is not None
+    np.testing.assert_array_equal(velocity_op.body_ids, [0])
     np.testing.assert_allclose(
-        plan.body_linear_velocity_delta[:, 0],
+        velocity_op.payload[:, 0],
         [[0.2, -0.3, 0.4], [0.0, 0.0, 0.0], [0.2, -0.3, 0.4]],
     )
 
@@ -1332,15 +1360,16 @@ def test_velocity_push_dispatches_angular_delta_when_supported() -> None:
 
     assert len(backend.interval_plans) == 1
     plan = backend.interval_plans[0]
-    np.testing.assert_array_equal(plan.body_ids, [0])
-    assert plan.body_linear_velocity_delta is not None
+    linear_op = _interval_op(plan, INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA)
+    angular_op = _interval_op(plan, INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA)
+    assert linear_op is not None and angular_op is not None
+    np.testing.assert_array_equal(linear_op.body_ids, [0])
     np.testing.assert_allclose(
-        plan.body_linear_velocity_delta[:, 0],
+        linear_op.payload[:, 0],
         [[0.2, 0.0, 0.0], [0.0, 0.0, 0.0], [0.2, 0.0, 0.0]],
     )
-    assert plan.body_angular_velocity_delta is not None
     np.testing.assert_allclose(
-        plan.body_angular_velocity_delta[:, 0],
+        angular_op.payload[:, 0],
         [[0.0, 0.0, -0.5], [0.0, 0.0, 0.0], [0.0, 0.0, -0.5]],
     )
 
@@ -1658,15 +1687,7 @@ class _InertiaBackend(_Backend):
             supported_reset_terms=frozenset(
                 set(capabilities.supported_reset_terms) | {RESET_TERM_BODY_INERTIA}
             ),
-            supports_interval_push=capabilities.supports_interval_push,
-            supports_interval_body_velocity_delta=(
-                capabilities.supports_interval_body_velocity_delta
-            ),
-            supports_interval_body_angular_velocity_delta=(
-                capabilities.supports_interval_body_angular_velocity_delta
-            ),
-            supports_interval_body_force=capabilities.supports_interval_body_force,
-            supports_interval_body_torque=capabilities.supports_interval_body_torque,
+            supported_interval_terms=capabilities.supported_interval_terms,
         )
 
     def get_reset_term_default(self, term: str) -> np.ndarray:

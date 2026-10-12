@@ -7,11 +7,8 @@
 """Local A/B microbenchmark for Motrix selected-body world-state reads (#1308).
 
 Measures the UniLab motion-tracking body-state read pattern (8192 envs x 14
-tracked bodies) across four paths against the same ``MotrixBackend`` instance:
+tracked bodies) across current paths against the same ``MotrixBackend`` instance:
 
-* ``legacy_copy`` — the pre-fused path: ``SimBackend.copy_body_state_w``
-  default, i.e. cache-based ``get_body_state_w`` (full-link pose/velocity
-  materialization + selected gather) followed by a copy into caller buffers.
 * ``fused_packed`` — one native ``SceneModel.get_link_states`` call for the
   selected link ids returning packed arrays, then assigned into caller
   buffers (no caller-owned native outs).
@@ -49,8 +46,6 @@ ROOT_DIR = Path(__file__).resolve().parents[3]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from unisim.backend.base import SimBackend  # noqa: E402
-
 from unilab.assets import ASSETS_ROOT_PATH  # noqa: E402
 from unilab.base.scene import SceneCfg  # noqa: E402
 
@@ -74,9 +69,6 @@ _TRACKED_BODIES = (
     "right_wrist_yaw_link",
 )
 
-_COPY_ARMS = ("legacy_copy", "fused_packed", "fused_out")
-_GETTER_ARMS = ("getter_cache", "getter_fused")
-
 
 def _make_backend(num_envs: int):
     from unisim.backend.motrix.backend import MotrixBackend
@@ -90,11 +82,6 @@ def _make_backend(num_envs: int):
         sim_dt=0.005,
         base_name="pelvis",
     )
-
-
-def _legacy_copy(backend, ids: np.ndarray, outs: tuple[np.ndarray, ...]) -> None:
-    # Unbound base-class default: cache-based get_body_state_w + copy.
-    SimBackend.copy_body_state_w(backend, ids, *outs)
 
 
 def _fused_packed(backend, ids: np.ndarray, outs: tuple[np.ndarray, ...]) -> None:
@@ -124,10 +111,10 @@ def _check_parity(
     ids: np.ndarray,
     dtype: np.dtype,
 ) -> None:
-    """All arms must agree with the legacy path within the test tolerances."""
+    """All arms must agree within the benchmark tolerances."""
     num_envs, num_bodies = backend.num_envs, len(ids)
     ref_outs = _alloc_outs(num_envs, num_bodies, dtype)
-    _legacy_copy(backend, ids, ref_outs)
+    _fused_out(backend, ids, ref_outs)
 
     arm_outs = _alloc_outs(num_envs, num_bodies, dtype)
     for name, fn in (("fused_packed", _fused_packed), ("fused_out", _fused_out)):
@@ -135,14 +122,14 @@ def _check_parity(
         for ref, got, label in zip(ref_outs, arm_outs, ("pos", "quat", "lin_vel", "ang_vel")):
             tol = 1e-5 if label in ("pos", "quat") else 1e-4
             if not np.allclose(ref, got, atol=tol, rtol=tol):
-                raise AssertionError(f"{name} {label} diverges from legacy path")
+                raise AssertionError(f"{name} {label} diverges from fused_out")
 
     for name, fn in (("getter_cache", _getter_cache), ("getter_fused", _getter_fused)):
         got = fn(backend, ids)
         for ref, arr, label in zip(ref_outs, got, ("pos", "quat", "lin_vel", "ang_vel")):
             tol = 1e-5 if label in ("pos", "quat") else 1e-4
             if not np.allclose(ref, arr, atol=tol, rtol=tol):
-                raise AssertionError(f"{name} {label} diverges from legacy path")
+                raise AssertionError(f"{name} {label} diverges from fused_out")
 
 
 def _alloc_outs(num_envs: int, num_bodies: int, dtype: np.dtype) -> tuple[np.ndarray, ...]:
@@ -217,10 +204,9 @@ def main(argv: list[str] | None = None) -> int:
 
     invalidate = None if args.warm_cache else backend._invalidate_link_velocity_cache
     _check_parity(backend, ids, dtype)
-    print("parity: all arms agree with the legacy path")
+    print("parity: all arms agree with fused_out")
 
     copy_fns: dict[str, Callable[[], None]] = {
-        "legacy_copy": lambda: _legacy_copy(backend, ids, outs),
         "fused_packed": lambda: _fused_packed(backend, ids, outs),
         "fused_out": lambda: _fused_out(backend, ids, outs),
     }
@@ -242,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     print("\n== copy into caller-owned buffers (8192x14 pattern) ==")
-    print(_format_table(results["copy"], "legacy_copy"))
+    print(_format_table(results["copy"], "fused_out"))
     print("\n== allocating get_body_state_w variants ==")
     print(_format_table(results["getter"], "getter_cache"))
 
