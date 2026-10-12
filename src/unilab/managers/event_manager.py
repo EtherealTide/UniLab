@@ -273,11 +273,6 @@ class EventManager(ManagerBase):
             ):
                 self._mode_class_term_cfgs[term_cfg.mode].append(term_cfg)
             if term_cfg.mode == "reset":
-                if getattr(term_cfg.func, "mask_reset_supported", True) is False:
-                    raise NotImplementedError(
-                        f"EventManager reset term '{term_name}' uses reset randomization, "
-                        "which has no fixed-width mask commit boundary"
-                    )
                 if term_cfg.min_step_count_between_reset:
                     raise NotImplementedError(
                         f"EventManager reset term '{term_name}' uses "

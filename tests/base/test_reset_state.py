@@ -102,7 +102,7 @@ class _Backend:
 
 
 class _TensorResetBackend(_Backend):
-    """CPU fake exposing the public selected tensor-reset boundary."""
+    """CPU fake exposing the public packed tensor-reset boundary."""
 
     def __init__(self) -> None:
         super().__init__(
@@ -111,8 +111,6 @@ class _TensorResetBackend(_Backend):
         )
         self.default_body_mass = np.array([2.0, 4.0])
         self.tensor_reset_calls: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
-        self.tensor_mask_reset_calls: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
-        self.tensor_mask_full_refresh_calls: list[bool] = []
 
     def tensor_execution(self):
         return TensorExecution.DEVICE_RESIDENT
@@ -130,10 +128,6 @@ class _TensorResetBackend(_Backend):
         return super().get_reset_term_default(term)
 
     def get_tensor_capabilities(self):
-        kwargs = {}
-        if "mask_selected_reset" in TensorLifecycleCapabilities.__dataclass_fields__:
-            kwargs["mask_selected_reset"] = True
-            kwargs["mask_selected_reset_full_refresh"] = True
         return TensorLifecycleCapabilities(
             execution=TensorExecution.DEVICE_RESIDENT,
             state_views=True,
@@ -148,8 +142,16 @@ class _TensorResetBackend(_Backend):
             torch_devices=("cpu",),
             device_reset_randomization=True,
             selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
-            **kwargs,
+            packed_reset=True,
+            packed_reset_fields=frozenset(
+                (RESET_TERM_KP, RESET_TERM_KD, RESET_TERM_BODY_MASS, "gravity")
+            ),
         )
+
+    def begin_packed_reset(self, *, device=None):
+        from unisim.backend.packed_reset import TorchPackedResetComposer
+
+        return TorchPackedResetComposer(self, device=device)
 
     def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> dict:
         rows = torch.as_tensor(env_indices, dtype=torch.int64)
@@ -159,17 +161,9 @@ class _TensorResetBackend(_Backend):
     def get_public_state_widths(self):
         return PublicStateWidths(len(self.qpos), len(self.qvel))
 
-    def set_state_tensor_mask(
-        self, reset_mask, qpos, qvel, randomization=None, full_refresh=False
-    ) -> dict:
-        assert randomization is None
-        self.tensor_mask_reset_calls.append((reset_mask.clone(), qpos.clone(), qvel.clone()))
-        self.tensor_mask_full_refresh_calls.append(bool(full_refresh))
-        return {"ok": True}
-
 
 class _PackedTensorResetBackend(_TensorResetBackend):
-    """CPU fake delegating composition to the public UniSim transaction."""
+    """CPU packed fake adding the public mocap tensor-write boundary."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -180,17 +174,8 @@ class _PackedTensorResetBackend(_TensorResetBackend):
         capabilities = super().get_tensor_capabilities()
         return replace(
             capabilities,
-            packed_reset=True,
             packed_reset_mocap=True,
-            packed_reset_fields=frozenset(
-                (RESET_TERM_KP, RESET_TERM_KD, RESET_TERM_BODY_MASS, "gravity")
-            ),
         )
-
-    def begin_packed_reset(self, *, device=None):
-        from unisim.backend.packed_reset import TorchPackedResetComposer
-
-        return TorchPackedResetComposer(self, device=device)
 
     def bind_mocap_pose(self, body_name: str):
         return BackendMocapPoseBinding(
@@ -298,6 +283,33 @@ class _PerWorldBodyMassBackend(_Backend):
             supported_reset_terms=frozenset((RESET_TERM_BODY_MASS,))
         )
 
+    def get_tensor_capabilities(self):
+        return TensorLifecycleCapabilities(
+            execution=TensorExecution.DEVICE_RESIDENT,
+            state_views=True,
+            state_fields=frozenset({"qpos", "qvel"}),
+            sensor_views=False,
+            stepping=True,
+            selected_reset=True,
+            reset_randomization=True,
+            process_topology=TensorProcessTopology.IN_PROCESS,
+            data_plane=TensorDataPlane.DIRECT,
+            stream_event_ownership="fake synchronous stream",
+            torch_devices=("cpu",),
+            device_reset_randomization=True,
+            selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
+            packed_reset=True,
+            packed_reset_fields=frozenset((RESET_TERM_BODY_MASS,)),
+        )
+
+    def get_public_state_widths(self):
+        return PublicStateWidths(len(self.qpos), len(self.qvel))
+
+    def begin_packed_reset(self, *, device=None):
+        from unisim.backend.packed_reset import TorchPackedResetComposer
+
+        return TorchPackedResetComposer(self, device=device)
+
     def get_reset_term_default(self, term: str) -> np.ndarray:
         if term != RESET_TERM_BODY_MASS:
             raise NotImplementedError(term)
@@ -318,6 +330,12 @@ class _StartupModelFieldBackend(_PerWorldBodyMassBackend):
     def get_dr_capabilities(self):
         return DomainRandomizationCapabilities(
             supported_reset_terms=frozenset((RESET_TERM_BODY_MASS, RESET_TERM_BODY_IPOS))
+        )
+
+    def get_tensor_capabilities(self):
+        return replace(
+            super().get_tensor_capabilities(),
+            packed_reset_fields=frozenset((RESET_TERM_BODY_MASS, RESET_TERM_BODY_IPOS)),
         )
 
     def get_reset_term_default(self, term: str) -> np.ndarray:
@@ -366,7 +384,7 @@ def test_reset_term_default_shapes_fail_closed(field: str, value: Any, match: st
             )
 
 
-def test_mask_reset_combines_default_and_joint_writes() -> None:
+def test_packed_reset_combines_default_and_joint_writes() -> None:
     backend = _TensorResetBackend()
     transaction = _transaction(backend)
     transaction.declare_packed_reset_device(torch.device("cpu"))
@@ -383,19 +401,17 @@ def test_mask_reset_combines_default_and_joint_writes() -> None:
             term_name="joints",
         )
 
-    assert backend.tensor_reset_calls == []
-    assert len(backend.tensor_mask_reset_calls) == 1
-    committed_mask, qpos, qvel = backend.tensor_mask_reset_calls[0]
-    torch.testing.assert_close(committed_mask, reset_mask)
-    np.testing.assert_allclose(qpos[[0, 3], 7:], np.tile(backend.qpos[7:], (2, 1)))
-    np.testing.assert_allclose(qvel[[0, 3], 6:], np.tile(backend.qvel[6:], (2, 1)))
-    np.testing.assert_allclose(qpos[1, 7:], [0.1, 0.2])
-    np.testing.assert_allclose(qpos[2, 7:], [0.3, 0.4])
-    np.testing.assert_allclose(qvel[1, 6:], [1.0, 2.0])
-    np.testing.assert_allclose(qvel[2, 6:], [3.0, 4.0])
+    assert len(backend.tensor_reset_calls) == 1
+    committed_rows, qpos, qvel, randomization = backend.tensor_reset_calls[0]
+    torch.testing.assert_close(committed_rows, torch.tensor([1, 2]))
+    assert randomization is None
+    np.testing.assert_allclose(qpos[:, :7], np.tile(backend.qpos[:7], (2, 1)), rtol=0, atol=1e-7)
+    np.testing.assert_allclose(qpos[:, 7:], [[0.1, 0.2], [0.3, 0.4]], rtol=0, atol=1e-7)
+    np.testing.assert_allclose(qvel[:, :6], np.tile(backend.qvel[:6], (2, 1)), rtol=0, atol=1e-7)
+    np.testing.assert_allclose(qvel[:, 6:], [[1.0, 2.0], [3.0, 4.0]], rtol=0, atol=1e-7)
 
 
-def test_mask_reset_without_writes_does_not_commit() -> None:
+def test_packed_reset_without_writes_does_not_commit() -> None:
     backend = _TensorResetBackend()
     transaction = _transaction(backend)
     transaction.declare_packed_reset_device(torch.device("cpu"))
@@ -403,11 +419,11 @@ def test_mask_reset_without_writes_does_not_commit() -> None:
     with transaction.scoped_device_event_tensor(torch.zeros(4, dtype=torch.bool)):
         pass
 
-    assert backend.tensor_mask_reset_calls == []
+    assert backend.tensor_reset_calls == []
     assert not transaction.last_commit_had_writes
 
 
-def test_mask_reset_preserves_full_width_carrier_and_full_refresh_flag() -> None:
+def test_packed_reset_commits_selected_rows_with_default_fill() -> None:
     backend = _TensorResetBackend()
     transaction = _transaction(backend)
     transaction.declare_packed_reset_device(torch.device("cpu"))
@@ -417,24 +433,30 @@ def test_mask_reset_preserves_full_width_carrier_and_full_refresh_flag() -> None
     root_state[:, 3] = 1.0
     root_state[:, 0] = torch.tensor([0.1, 0.2, 0.3, 0.4])
 
-    with transaction.scoped_device_event_tensor(reset_mask, full_refresh=True):
+    with transaction.scoped_device_event_tensor(reset_mask):
         transaction.write_root_state_tensor(reset_mask, layout, root_state, term_name="root")
 
-    committed_mask, qpos, _qvel = backend.tensor_mask_reset_calls[0]
-    torch.testing.assert_close(committed_mask, reset_mask)
-    assert backend.tensor_mask_full_refresh_calls == [True]
-    np.testing.assert_allclose(
-        qpos[:, 0], [0.1, backend.qpos[0], 0.3, backend.qpos[0]], rtol=0, atol=1e-7
-    )
+    committed_rows, qpos, _qvel, randomization = backend.tensor_reset_calls[0]
+    torch.testing.assert_close(committed_rows, torch.tensor([0, 2]))
+    assert randomization is None
+    np.testing.assert_allclose(qpos[:, 0], [0.1, 0.3], rtol=0, atol=1e-7)
 
 
-def test_mask_reset_randomization_fails_closed() -> None:
-    backend = _TensorResetBackend()
+def test_packed_reset_randomization_fails_closed_without_field_support() -> None:
+    class _MissingFieldBackend(_TensorResetBackend):
+        def get_tensor_capabilities(self):
+            return replace(
+                super().get_tensor_capabilities(),
+                packed_reset_fields=frozenset((RESET_TERM_KP, RESET_TERM_KD, "gravity")),
+            )
+
+    backend = _MissingFieldBackend()
     transaction = _transaction(backend)
     transaction.declare_packed_reset_device(torch.device("cpu"))
+    _bind_device_mass(transaction)
     reset_mask = torch.tensor([False, True, False, False])
 
-    with pytest.raises(NotImplementedError, match="unsupported by the fixed-width mask reset"):
+    with pytest.raises(NotImplementedError, match="does not support packed reset field"):
         with transaction.scoped_device_event_tensor(reset_mask):
             transaction.write_randomization_tensor_mask(
                 RESET_TERM_BODY_MASS,
@@ -444,10 +466,10 @@ def test_mask_reset_randomization_fails_closed() -> None:
                 term_name="randomize_rigid_body_mass",
             )
 
-    assert backend.tensor_mask_reset_calls == []
+    assert backend.tensor_reset_calls == []
 
 
-def test_owner_tensor_subset_keeps_full_width_contract() -> None:
+def test_owner_tensor_subset_preserves_unwritten_active_rows() -> None:
     backend = _TensorResetBackend()
     transaction = _transaction(backend)
     transaction.declare_packed_reset_device(torch.device("cpu"))
@@ -475,25 +497,87 @@ def test_owner_tensor_subset_keeps_full_width_contract() -> None:
             term_name="owner",
         )
 
-    committed_mask, qpos, qvel = backend.tensor_mask_reset_calls[0]
-    torch.testing.assert_close(committed_mask, owner_mask)
-    np.testing.assert_allclose(
-        qpos[:, 7],
-        [backend.qpos[7], 0.7, backend.qpos[7], backend.qpos[7]],
-        rtol=0,
-        atol=1e-7,
-    )
-    np.testing.assert_allclose(
-        qvel[:, 6],
-        [backend.qvel[6], 1.7, backend.qvel[6], backend.qvel[6]],
-        rtol=0,
-        atol=1e-7,
-    )
+    committed_rows, qpos, qvel, randomization = backend.tensor_reset_calls[0]
+    torch.testing.assert_close(committed_rows, torch.tensor([1]))
+    assert randomization is None
+    np.testing.assert_allclose(qpos[:, 7], [0.7], rtol=0, atol=1e-7)
+    np.testing.assert_allclose(qvel[:, 6], [1.7], rtol=0, atol=1e-7)
+
+
+def test_owner_tensor_subset_commits_disjoint_write_union() -> None:
+    backend = _TensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    active_mask = torch.tensor([False, True, True, True])
+
+    with transaction.scoped_device_owner_tensor(active_mask):
+        for owner_mask, position, velocity in (
+            (
+                torch.tensor([False, True, False, False]),
+                torch.tensor([[0.0], [0.7], [0.0], [0.0]]),
+                torch.tensor([[0.0], [1.7], [0.0], [0.0]]),
+            ),
+            (
+                torch.tensor([False, False, False, True]),
+                torch.tensor([[0.0], [0.0], [0.0], [0.9]]),
+                torch.tensor([[0.0], [0.0], [0.0], [1.9]]),
+            ),
+        ):
+            transaction.write_joint_state_mask(
+                owner_mask,
+                np.array([7], dtype=np.int32),
+                np.array([6], dtype=np.int32),
+                position,
+                velocity,
+                term_name="owner",
+            )
+
+    committed_rows, qpos, qvel, randomization = backend.tensor_reset_calls[0]
+    torch.testing.assert_close(committed_rows, torch.tensor([1, 3]))
+    assert randomization is None
+    np.testing.assert_allclose(qpos[:, 7], [0.7, 0.9], rtol=0, atol=1e-7)
+    np.testing.assert_allclose(qvel[:, 6], [1.7, 1.9], rtol=0, atol=1e-7)
+
+
+def test_owner_tensor_subset_without_actual_rows_does_not_commit() -> None:
+    backend = _TensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+
+    with transaction.scoped_device_owner_tensor(torch.ones(4, dtype=torch.bool)):
+        transaction.write_joint_state_mask(
+            torch.zeros(4, dtype=torch.bool),
+            np.array([7], dtype=np.int32),
+            np.array([6], dtype=np.int32),
+            torch.zeros((4, 1)),
+            torch.zeros((4, 1)),
+            term_name="empty_owner",
+        )
+
+    assert backend.tensor_reset_calls == []
+    assert not transaction.last_commit_had_writes
+
+
+def test_owner_tensor_subset_default_reset_commits_only_requested_rows() -> None:
+    backend = _TensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    active_mask = torch.tensor([False, True, True, False])
+    default_mask = torch.tensor([False, True, False, False])
+
+    with transaction.scoped_device_owner_tensor(active_mask):
+        transaction.reset_to_default(default_mask, term_name="owner_default")
+
+    committed_rows, qpos, _qvel, randomization = backend.tensor_reset_calls[0]
+    torch.testing.assert_close(committed_rows, torch.tensor([1]))
+    assert randomization is None
+    np.testing.assert_allclose(qpos[0], backend.qpos, rtol=0, atol=1e-7)
 
 
 def test_startup_model_field_commit_becomes_reset_baseline() -> None:
     backend = _StartupModelFieldBackend()
     transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
     all_rows = torch.arange(backend.num_envs, dtype=torch.int64)
     columns = np.arange(3, dtype=np.int32)
     _, mass_defaults = transaction.bind_body_mass_write(columns, term_name="startup_mass")
@@ -525,7 +609,7 @@ def test_startup_model_field_commit_becomes_reset_baseline() -> None:
         )
 
     startup_payload = backend.randomization_calls[-1]
-    assert startup_payload is not None
+    assert isinstance(startup_payload, TensorResetRandomizationPayload)
     assert startup_payload.body_mass is not None
     assert startup_payload.body_ipos is not None
 
@@ -534,6 +618,7 @@ def test_startup_model_field_baseline_promotion_is_deferred_until_commit() -> No
     backend = _StartupModelFieldBackend()
     backend.fail_set_state = True
     transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
     rows = torch.arange(backend.num_envs, dtype=torch.int64)
     columns = np.array([1], dtype=np.int32)
     _, selected_defaults = transaction.bind_body_mass_write(columns, term_name="startup_mass")

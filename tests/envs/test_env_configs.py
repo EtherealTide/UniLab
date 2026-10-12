@@ -439,6 +439,7 @@ def test_flashsac_g1_motion_mjwarp_anchor_observations_roll_out() -> None:
         from unisim.backend.base import SelectedResetPublication
 
         capabilities = env.backend.get_tensor_capabilities()
+        assert capabilities.packed_reset
         assert capabilities.mask_selected_reset
         assert capabilities.selected_reset_publication is (
             SelectedResetPublication.AUTHORITATIVE_VIEWS
@@ -775,6 +776,7 @@ def test_selected_reset_publication_requires_no_manager_readiness_step(
     )
     try:
         capabilities = env.backend.get_tensor_capabilities()
+        assert capabilities.packed_reset
         assert capabilities.mask_selected_reset
         assert (
             capabilities.selected_reset_publication is SelectedResetPublication.AUTHORITATIVE_VIEWS

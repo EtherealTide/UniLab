@@ -5,6 +5,15 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+from unisim.backend.base import (
+    PublicStateWidths,
+    SelectedResetPublication,
+    TensorDataPlane,
+    TensorExecution,
+    TensorLifecycleCapabilities,
+    TensorProcessTopology,
+)
+from unisim.backend.packed_reset import TorchPackedResetComposer
 from unisim.scene_layout import CompiledSceneLayout, EntityLayout, JointLayout
 
 from unilab.base.reset_state import ResetStateTransaction
@@ -44,14 +53,40 @@ def fixture(num_envs: int = 5):
         return {key: values.copy() for key, values in state.items()}
 
     backend = SimpleNamespace(
+        backend_type="fake",
         num_envs=num_envs,
         get_entity_state=read,
         reset_entities=commits.append,
         get_entity_default_state=lambda name, ids: {
             key: values[ids].copy() for key, values in state.items()
         },
+        get_default_qpos=lambda: np.zeros(9),
+        get_init_qvel=lambda: np.zeros(8),
+        get_public_state_widths=lambda: PublicStateWidths(9, 8),
+        get_tensor_capabilities=lambda: TensorLifecycleCapabilities(
+            execution=TensorExecution.DEVICE_RESIDENT,
+            state_views=True,
+            state_fields=frozenset({"qpos", "qvel"}),
+            sensor_views=False,
+            stepping=True,
+            selected_reset=True,
+            reset_randomization=True,
+            process_topology=TensorProcessTopology.IN_PROCESS,
+            data_plane=TensorDataPlane.DIRECT,
+            stream_event_ownership="fake synchronous stream",
+            torch_devices=("cpu",),
+            device_reset_randomization=True,
+            selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
+            packed_reset=True,
+            packed_reset_fields=frozenset(),
+        ),
     )
-    return ResetStateTransaction(backend, scene_layout=layout), reads, commits
+    backend.begin_packed_reset = lambda *, device=None: TorchPackedResetComposer(
+        backend, device=device
+    )
+    transaction = ResetStateTransaction(backend, scene_layout=layout)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    return transaction, reads, commits
 
 
 def test_startup_rejects_a_subset_of_rows() -> None:

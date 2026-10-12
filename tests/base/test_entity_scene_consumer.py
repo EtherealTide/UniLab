@@ -110,7 +110,7 @@ def test_hydra_constructs_new_scene_without_early_unisim_tuple_validation():
 def test_host_bridge_manager_entity_writes_fail_closed_before_runtime():
     env = make_manager_based_rl_env(build_fixture_cfg(passive=False), 2, "mujoco")
     try:
-        with pytest.raises(NotImplementedError, match="mapped entity"):
+        with pytest.raises(NotImplementedError, match="mapped entity default-state restoration"):
             env.init_state()
     finally:
         env.close()
@@ -119,7 +119,7 @@ def test_host_bridge_manager_entity_writes_fail_closed_before_runtime():
 def test_host_bridge_manager_rejects_entity_row_runtime():
     env = make_manager_based_rl_env(build_fixture_cfg(passive=False), 2, "mujoco")
     try:
-        with pytest.raises(NotImplementedError, match="mapped entity"):
+        with pytest.raises(NotImplementedError, match="mapped entity default-state restoration"):
             env.init_state()
     finally:
         env.close()
@@ -152,7 +152,7 @@ def test_per_environment_entity_defaults_are_not_broadcast_from_first_variant():
         path.write_text(text)
     env = make_manager_based_rl_env(cfg, 2, "mujoco")
     try:
-        with pytest.raises(NotImplementedError, match="mapped entity"):
+        with pytest.raises(NotImplementedError, match="mapped entity default-state restoration"):
             env.init_state()
     finally:
         env.close()

@@ -61,7 +61,7 @@ def test_stage_curriculum_demo_owner_materializes_declared_ladders() -> None:
         assert not OmegaConf.is_config(term.params["stages"])
 
 
-def test_stage_curriculum_demo_real_backend_uses_mask_reset() -> None:
+def test_stage_curriculum_demo_real_backend_runs_packed_reset_lifecycle() -> None:
     pytest.importorskip(
         "unisim.backend.mujoco.backend",
         reason="unisim-core MuJoCo adapter (mjbatch build) not available",
@@ -76,6 +76,11 @@ def test_stage_curriculum_demo_real_backend_uses_mask_reset() -> None:
     try:
         state = env.init_state()
         assert all(torch.isfinite(values).all() for values in state.obs.values())
+        assert state.obs["obs"].shape[0] == 4
+        reset_mask = torch.zeros(4, dtype=torch.bool, device=env.device)
+        reset_mask[1] = True
+        obs, _ = env.reset(reset_mask)
+        assert obs["obs"].shape[0] == 4
     finally:
         env.close()
 

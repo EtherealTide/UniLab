@@ -9,7 +9,6 @@ import pickle
 import subprocess
 import sys
 import tempfile
-import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -202,13 +201,17 @@ for _backend in ("mujoco",):
 
 
 @pytest.mark.parametrize("num_envs", [2, 5])
-def test_registry_factory_mujoco_multi_entity_constructs(num_envs):
+def test_registry_factory_mujoco_multi_entity_reset_isolation(num_envs):
     factory = pickle.loads(pickle.dumps(registry_env_factory(TASK, "mujoco")))
     env = factory(
         num_envs=num_envs,
         env_cfg_override={"scene": build_fixture_cfg(passive=True, num_envs=num_envs).scene},
     )
-    env.close()
+    try:
+        with pytest.raises(NotImplementedError, match="mapped entity default-state restoration"):
+            env.init_state()
+    finally:
+        env.close()
 
 
 def test_registry_factory_mujoco_consumes_portable_profile_operation_fixture():
@@ -218,20 +221,29 @@ def test_registry_factory_mujoco_consumes_portable_profile_operation_fixture():
         num_envs=5,
         env_cfg_override={"scene": build_fixture_cfg(passive=True, num_envs=5, mirror=True).scene},
     )
-    env.close()
+    try:
+        with pytest.raises(NotImplementedError, match="mapped entity default-state restoration"):
+            env.init_state()
+    finally:
+        env.close()
 
 
 def test_factory_can_be_unpickled_in_a_fresh_process_without_parent_registry():
     encoded = base64.b64encode(pickle.dumps(registry_env_factory(TASK, "mujoco"))).decode()
-    script = textwrap.dedent(
-        """
-    import base64, pickle, sys
-    factory = pickle.loads(base64.b64decode(sys.argv[1]))
-    env = factory(num_envs=2)
+    script = """
+import base64, pickle, sys
+factory = pickle.loads(base64.b64decode(sys.argv[1]))
+env = factory(num_envs=2)
+try:
+    env.init_state()
+except NotImplementedError as exc:
+    assert "mapped entity default-state restoration" in str(exc)
+else:
+    raise AssertionError("HOST_BRIDGE Manager mapped entity reset must fail closed")
+finally:
     env.close()
-    print("FACTORY_OK")
-    """
-    )
+print("FACTORY_OK")
+"""
     process_env = dict(os.environ)
     # This validates physics/registry reconstruction, without a renderer. An
     # inherited OSMesa choice otherwise makes SDK import require libOSMesa.

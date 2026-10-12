@@ -14,8 +14,8 @@ from unilab.base.registry import ensure_registries
 ROOT_DIR = Path(__file__).parents[2]
 
 
-def test_g1_reward_override_keeps_fixed_width_reset_contract():
-    """Reward overrides compose with the fixed-width reset contract."""
+def test_g1_reset_randomization_runs_for_reward_override_fixture():
+    """Reward overrides keep the packed reset randomization lifecycle functional."""
     pytest.importorskip(
         "unisim.backend.mujoco.backend",
         reason="unisim-core MuJoCo adapter (mjbatch build) not available",
@@ -45,5 +45,7 @@ def test_g1_reward_override_keeps_fixed_width_reset_contract():
         state = env.init_state()
         assert state.reward.shape == (1,)
         assert torch.isfinite(state.reward).all()
+        obs, _ = env.reset()
+        assert obs["obs"].shape[0] == 1
     finally:
         env.close()

@@ -40,24 +40,24 @@ def test_go2_superdex_preserves_mujoco_policy_contract() -> None:
     assert target.env.ctrl_dt == source.env.ctrl_dt
 
 
-def test_go2_superdex_native_backend_fails_closed_for_mask_reset() -> None:
+def test_go2_superdex_native_backend_fails_closed_for_packed_reset() -> None:
     pytest.importorskip("superdex.physics")
     if not (ROOT / "src/unilab/assets/robots/go2/assets/base_0.obj").is_file():
         pytest.skip("native Go2 rollout requires the registered Go2 robot assets")
     _, override = _owner("superdex")
-    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
+    with pytest.raises(NotImplementedError, match="packed_reset"):
         registry.make(
             "Go2JoystickFlat", sim_backend="superdex", num_envs=2, env_cfg_override=override
         )
 
 
-def test_go2_superdex_parallel_backend_fails_closed_for_mask_reset() -> None:
+def test_go2_superdex_parallel_backend_fails_closed_for_packed_reset() -> None:
     pytest.importorskip("superdex.physics")
     if not (ROOT / "src/unilab/assets/robots/go2/assets/base_0.obj").is_file():
         pytest.skip("native Go2 rollout requires the registered Go2 robot assets")
     _, override = _owner("superdex")
     for workers in (1, 2):
-        with pytest.raises(NotImplementedError, match="mask_selected_reset"):
+        with pytest.raises(NotImplementedError, match="packed_reset"):
             registry.make(
                 "Go2JoystickFlat",
                 sim_backend="superdex",
