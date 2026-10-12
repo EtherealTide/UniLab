@@ -1,9 +1,9 @@
 """Shared training helpers for entrypoint scripts.
 
-Deprecated compatibility layer: the re-exports below are kept for existing
-callers only. New code should import from the canonical locations instead
-(``unilab.utils.*`` for layer-0 helpers, ``unilab.base.config_adapter`` /
-``unisim.backend.base`` for base-layer helpers).
+The re-exports below keep the owner-facing ``unilab.training`` import path
+clear. New code should import from canonical owner modules instead
+(``unilab.training.*``, ``unilab.base.config_adapter``, and
+``unisim.backend.base``).
 """
 
 from unisim.backend.base import log_playback_plan
@@ -28,6 +28,12 @@ from unilab.training.run import (
     resolve_nan_guard_cfg,
     should_run_playback,
 )
+from unilab.training.seed import (
+    TrainingSeedInfo,
+    apply_configured_training_seed,
+    apply_training_seed,
+    resolve_training_seed,
+)
 from unilab.utils.checkpoint import (
     get_entrypoint_log_root,
     get_latest_checkpoint,
@@ -36,12 +42,6 @@ from unilab.utils.checkpoint import (
     resolve_checkpoint_path,
     resolve_offpolicy_checkpoint_path,
     resolve_task_checkpoint_path,
-)
-from unilab.utils.seed import (
-    TrainingSeedInfo,
-    apply_configured_training_seed,
-    apply_training_seed,
-    resolve_training_seed,
 )
 
 __all__ = [

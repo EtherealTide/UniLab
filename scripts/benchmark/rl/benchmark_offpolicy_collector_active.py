@@ -983,7 +983,7 @@ def _build_and_run_case(
 ) -> CollectorResult:
     from unilab.base.config_adapter import BackendAdapter
     from unilab.training import ensure_registries
-    from unilab.utils.seed import apply_training_seed
+    from unilab.training.seed import apply_training_seed
 
     algo, task, sim, profile = _parse_case(spec)
     owner_path = _owner_config_path(algo, task, sim, profile)
