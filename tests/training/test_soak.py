@@ -69,6 +69,17 @@ def _completed_summary() -> dict[str, Any]:
                 "max_publication_lag": 1,
             },
             "replay_ingress": _valid_replay_ingress(),
+            "backend_diagnostics": {
+                "available": True,
+                "backend_type": "mjwarp",
+                "diagnostics": {
+                    "cuda_graph": {
+                        "requested": True,
+                        "enabled": True,
+                        "disable_reason": None,
+                    },
+                },
+            },
             "shutdown": _normal_shutdown(),
         },
     }
@@ -524,6 +535,47 @@ def test_soak_monitor_requires_completed_runtime_manifest_stable_fields(
 
     with pytest.raises(SoakFailureError, match=missing_field):
         _run_with_summary(tmp_path, summary)
+
+
+@pytest.mark.parametrize(
+    "section",
+    [
+        "mjwarp",
+        {"available": True, "backend_type": "mjwarp"},
+        {
+            "available": True,
+            "backend_type": "mjwarp",
+            "diagnostics": {
+                "cuda_graph": {"requested": True, "enabled": False, "disable_reason": None}
+            },
+        },
+        {"available": False},
+    ],
+)
+def test_soak_monitor_fails_closed_on_malformed_backend_diagnostics(
+    tmp_path: Path, section: object
+) -> None:
+    """uni_rl 1.4.12 validates the optional producer section fail-closed."""
+    summary = _completed_summary()
+    summary["runtime_manifest"]["backend_diagnostics"] = section
+
+    with pytest.raises(SoakFailureError, match="backend_diagnostics"):
+        _run_with_summary(tmp_path, summary)
+
+
+def test_soak_monitor_accepts_valid_backend_diagnostics(tmp_path: Path) -> None:
+    summary = _completed_summary()
+    summary["runtime_manifest"]["backend_diagnostics"] = {
+        "available": True,
+        "backend_type": "mjwarp",
+        "diagnostics": {
+            "cuda_graph": {"requested": True, "enabled": True, "disable_reason": None},
+        },
+    }
+
+    artifact = _run_with_summary(tmp_path, summary)
+
+    assert artifact["failure_classification"] is None
 
 
 @pytest.mark.skipif(not Path("/proc/self").exists(), reason="requires Linux procfs")

@@ -16,6 +16,7 @@ from unisim.backend.base import (
     TensorDataPlane,
     TensorExecution,
     TensorLifecycleCapabilities,
+    TensorRuntimeDiagnostic,
 )
 
 from unilab.base.base import EnvCfg, EnvPlayCapabilities
@@ -549,3 +550,48 @@ def test_training_state_round_trip_and_close() -> None:
 
     env.close()
     backend.cleanup_scene_assets.assert_called_once_with()
+
+
+def test_backend_runtime_diagnostics_serialize_tensor_runtime_state() -> None:
+    backend = _backend()
+    backend.backend_type = "mjwarp"
+    backend.get_tensor_runtime_diagnostics.return_value = {
+        "cuda_graph": TensorRuntimeDiagnostic(
+            requested=True,
+            enabled=False,
+            disable_reason="graph capture failed",
+        ),
+    }
+    env = _StubTorchEnv(backend=backend)
+
+    assert env.get_backend_runtime_diagnostics() == {
+        "available": True,
+        "backend_type": "mjwarp",
+        "diagnostics": {
+            "cuda_graph": {
+                "requested": True,
+                "enabled": False,
+                "disable_reason": "graph capture failed",
+            },
+        },
+    }
+
+
+def test_backend_runtime_diagnostics_record_unavailable_marker() -> None:
+    backend = _backend()
+    backend.get_tensor_runtime_diagnostics.return_value = {}
+    env = _StubTorchEnv(backend=backend)
+
+    payload = env.get_backend_runtime_diagnostics()
+    assert payload["available"] is False
+    assert payload["backend_type"] == "mujoco"
+    assert "no tensor runtime diagnostics" in payload["unavailable_reason"]
+
+    failing_backend = _backend()
+    failing_backend.get_tensor_runtime_diagnostics.side_effect = RuntimeError("probe blew up")
+    failing_env = _StubTorchEnv(backend=failing_backend)
+
+    failure_payload = failing_env.get_backend_runtime_diagnostics()
+    assert failure_payload["available"] is False
+    assert failure_payload["backend_type"] == "mujoco"
+    assert "RuntimeError" in failure_payload["unavailable_reason"]
