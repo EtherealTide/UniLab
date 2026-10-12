@@ -69,6 +69,17 @@ def _completed_summary() -> dict[str, Any]:
                 "max_publication_lag": 1,
             },
             "replay_ingress": _valid_replay_ingress(),
+            "backend_diagnostics": {
+                "available": True,
+                "backend_type": "mjwarp",
+                "diagnostics": {
+                    "cuda_graph": {
+                        "requested": True,
+                        "enabled": True,
+                        "disable_reason": None,
+                    },
+                },
+            },
             "shutdown": _normal_shutdown(),
         },
     }

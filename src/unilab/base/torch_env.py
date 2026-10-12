@@ -788,6 +788,36 @@ class TorchEnv(ABEnv):
             tuple(value.reshape(self._num_envs, -1) for value in values), dim=1
         ).detach()
 
+    def get_backend_runtime_diagnostics(self) -> dict[str, Any]:
+        """Serialize the backend's tensor runtime diagnostics on the cold path.
+
+        This is the collection boundary consumed by training runtimes (the
+        uni_rl off-policy collector publishes it into the run manifest). The
+        payload is plain JSON: ``available`` and ``backend_type`` plus, when
+        available, one ``diagnostics`` entry per backend optimization with
+        ``requested``/``enabled``/``disable_reason``. Backends that declare
+        no optional tensor runtime optimization, or whose diagnostic probe
+        fails, record an explicit unavailable marker instead of a null field.
+        """
+        payload: dict[str, Any] = {"backend_type": str(self._backend.backend_type)}
+        try:
+            diagnostics = self._backend.get_tensor_runtime_diagnostics()
+        except Exception as exc:
+            payload["available"] = False
+            payload["unavailable_reason"] = f"{type(exc).__name__}: {exc}"
+            return payload
+        if not diagnostics:
+            payload["available"] = False
+            payload["unavailable_reason"] = (
+                f"backend {self._backend.backend_type} declares no tensor runtime diagnostics"
+            )
+            return payload
+        payload["available"] = True
+        payload["diagnostics"] = {
+            name: dataclasses.asdict(diagnostic) for name, diagnostic in diagnostics.items()
+        }
+        return payload
+
     def export_training_state(self) -> dict[str, Any]:
         return {"version": 1, "step_counter": self.step_counter}
 
