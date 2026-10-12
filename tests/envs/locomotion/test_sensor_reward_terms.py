@@ -156,6 +156,7 @@ def test_alive_returns_unconditional_ones() -> None:
     result = manager_terms.alive(env)
     np.testing.assert_array_equal(result, np.ones(2))
     assert result.dtype == torch.float32
+    assert result.device == torch.device("cpu")
 
 
 def test_hot_paths_use_only_cached_runtime_objects() -> None:

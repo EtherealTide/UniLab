@@ -135,6 +135,7 @@ class ResetStateTransaction:
         self._packed_reset_transaction: TorchPackedResetComposer | None = None
         self._packed_state_default_installed = False
         self._tensor_rows: torch.Tensor | None = None
+        self._tensor_write_mask: torch.Tensor | None = None
         self._tensor_root_columns: (
             tuple[tuple[int, ...], tuple[int, ...], torch.Tensor, torch.Tensor] | None
         ) = None
@@ -292,6 +293,7 @@ class ResetStateTransaction:
         self._tensor_rows = torch.nonzero(reset_mask, as_tuple=False).flatten()
         transaction.begin_state(self._tensor_rows)
         self._tensor_active_mask = reset_mask
+        self._tensor_write_mask = torch.zeros_like(reset_mask) if owner_subset else None
         self._tensor_has_writes = False
         self._tensor_owner_subset = owner_subset
         self._requesting_terms.clear()
@@ -1021,7 +1023,7 @@ class ResetStateTransaction:
             values.index_select(0, rows),
             columns=resolved,
         )
-        self._tensor_has_writes = True
+        self._mark_tensor_rows(rows)
 
     def _materialize_tensor_randomization_default(self, field: str, term_name: str) -> torch.Tensor:
         """Build the immutable per-env device base for one DR field on the cold path."""
@@ -1048,7 +1050,14 @@ class ResetStateTransaction:
         active_mask = self._tensor_active_mask
         if active_mask is None:
             raise RuntimeError("fixed-width default reset requires an active mask transaction")
-        if active_mask is not reset_mask:
+        if self._tensor_owner_subset:
+            if bool((reset_mask & ~active_mask).any()):
+                raise ValueError(
+                    f"EventManager term '{term_name}' attempted default reset outside "
+                    "the active mask"
+                )
+            self._record_tensor_write_mask(reset_mask)
+        elif active_mask is not reset_mask:
             raise ValueError(
                 f"EventManager term '{term_name}' attempted default reset outside the active mask"
             )
@@ -1061,7 +1070,7 @@ class ResetStateTransaction:
         self._requesting_terms.add(term_name)
         rows = torch.nonzero(reset_mask, as_tuple=False).flatten()
         self._require_packed_transaction().begin_state(rows)
-        self._tensor_has_writes = True
+        self._mark_tensor_rows(rows)
 
     def write_joint_state(
         self,
@@ -1191,6 +1200,7 @@ class ResetStateTransaction:
         assert device is not None
         if self._tensor_owner_subset:
             rows = torch.nonzero(reset_mask, as_tuple=False).flatten()
+            self._record_tensor_write_mask(reset_mask)
         else:
             rows = self._tensor_rows
             assert rows is not None
@@ -1205,7 +1215,7 @@ class ResetStateTransaction:
             .index_select(0, rows)
             .contiguous(),
         )
-        self._tensor_has_writes = True
+        self._mark_tensor_rows(rows)
 
     def write_root_state(
         self,
@@ -1316,7 +1326,7 @@ class ResetStateTransaction:
             qvel_columns=qvel_columns_t,
             qvel_values=selected[:, 7:13].contiguous(),
         )
-        self._tensor_has_writes = True
+        self._mark_tensor_rows(rows)
 
     def _require_tensor_mask_write(
         self, reset_mask: torch.Tensor, *, capability: str
@@ -1325,7 +1335,14 @@ class ResetStateTransaction:
             raise RuntimeError(
                 f"ManagerBased tensor mask {capability} requires an active mask reset"
             )
-        if not self._tensor_owner_subset and reset_mask is not self._tensor_active_mask:
+        if self._tensor_owner_subset:
+            active_mask = self._tensor_active_mask
+            if bool((reset_mask & ~active_mask).any()):
+                raise ValueError(
+                    f"ManagerBased tensor mask {capability} attempted a write outside "
+                    "the active mask"
+                )
+        elif reset_mask is not self._tensor_active_mask:
             raise ValueError(f"ManagerBased tensor mask {capability} must use the transaction mask")
         self._requesting_terms.add(capability)
         return self._tensor_active_mask
@@ -1334,17 +1351,33 @@ class ResetStateTransaction:
         """Resolve the packed rows selected by a mask inside the active tensor reset.
 
         Owner-subset scopes own exactly ``_tensor_rows``; a caller mask that
-        reaches beyond the owner mask is clipped to the owned rows so the
-        commit still covers the active mask only, in one owner commit.
+        reaches beyond the owner mask is rejected. Actual writes are recorded in
+        a fixed-width mask so only touched rows are committed and unwritten
+        active rows preserve their backend state.
         """
         self._require_tensor_mask_write(reset_mask, capability=capability)
         if self._tensor_owner_subset:
             active_mask = self._tensor_active_mask
             assert active_mask is not None
+            self._record_tensor_write_mask(reset_mask)
             return torch.nonzero(reset_mask & active_mask, as_tuple=False).flatten()
         rows = self._tensor_rows
         assert rows is not None
         return rows
+
+    def _record_tensor_write_mask(self, reset_mask: torch.Tensor) -> None:
+        """Extend the packed owner-subset carrier with one actual write mask."""
+        write_mask = self._tensor_write_mask
+        if write_mask is None:
+            if not self._tensor_owner_subset:
+                return
+            raise RuntimeError("owner tensor reset has no packed actual-write mask")
+        write_mask.logical_or_(reset_mask)
+
+    def _mark_tensor_rows(self, rows: torch.Tensor) -> None:
+        """Mark a commit only when a selected row was actually written."""
+        if rows.numel():
+            self._tensor_has_writes = True
 
     def write_motion_state_tensor(
         self,
@@ -1415,7 +1448,7 @@ class ResetStateTransaction:
             qvel_columns=qvel_columns,
             qvel_values=joint_velocity.index_select(0, rows),
         )
-        self._tensor_has_writes = True
+        self._mark_tensor_rows(rows)
 
     def write_root_pose(
         self,
@@ -1662,8 +1695,13 @@ class ResetStateTransaction:
                     "fixed-width tensor reset supports scalar qpos/qvel rows only; mapped "
                     "entity writes remain an explicit migration boundary"
                 )
-            rows = self._tensor_rows
-            assert rows is not None
+            if self._tensor_owner_subset:
+                write_mask = self._tensor_write_mask
+                assert write_mask is not None
+                rows = torch.nonzero(write_mask, as_tuple=False).flatten()
+            else:
+                rows = self._tensor_rows
+                assert rows is not None
             if not rows.numel():
                 return None
             try:
@@ -2372,6 +2410,7 @@ class ResetStateTransaction:
         self._tensor_has_writes = False
         self._tensor_owner_subset = False
         self._tensor_rows = None
+        self._tensor_write_mask = None
 
 
 __all__ = ["ResetStateTransaction"]

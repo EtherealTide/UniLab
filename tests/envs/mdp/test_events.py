@@ -716,6 +716,39 @@ def test_pd_gains_missing_backend_capability_fails_during_manager_construction()
     assert backend.set_state_calls == []
 
 
+def test_pd_gains_commits_masked_packed_model_fields() -> None:
+    env, backend, transaction = _transaction_env(rng_seed=11)
+    manager = EventManager(
+        {
+            "gain": EventTermCfg(
+                func=mdp.pd_gains,
+                mode="reset",
+                params={
+                    "kp_range": (2.0, 2.0),
+                    "kd_range": (3.0, 3.0),
+                    "operation": "abs",
+                },
+            )
+        },
+        env,
+    )
+    reset_mask = torch.tensor([False, True, True])
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+
+    with transaction.scoped_device_event_tensor(reset_mask):
+        manager.apply_reset(reset_mask, global_env_step_count=0)
+
+    assert len(backend.set_state_calls) == 1
+    rows, _qpos, _qvel = backend.set_state_calls[0]
+    np.testing.assert_array_equal(rows, np.asarray([1, 2]))
+    payload = backend.randomization_calls[0]
+    assert payload is not None
+    assert payload.kp is not None
+    assert payload.kd is not None
+    np.testing.assert_allclose(payload.kp.numpy(), [[2.0] * 3, [2.0] * 3])
+    np.testing.assert_allclose(payload.kd.numpy(), [[3.0] * 3, [3.0] * 3])
+
+
 def test_model_field_aliases_are_identical_and_capability_gaps_fail_cold() -> None:
     assert mdp.dof_armature is mdp.joint_armature
     env, backend, _ = _transaction_env(randomization_supported=False)

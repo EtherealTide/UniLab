@@ -2865,6 +2865,42 @@ class Entity:
             term_name=f"{term_name}:{self.name}",
         )
 
+    def write_actuator_gains_tensor_mask(
+        self,
+        reset_mask: torch.Tensor,
+        kp: torch.Tensor,
+        kd: torch.Tensor,
+        actuator_ids: np.ndarray | Sequence[int] | slice | None = None,
+        *,
+        term_name: str = "pd_gains",
+    ) -> None:
+        """Stage full-width actuator gains selected by the transaction mask."""
+        if self._reset_state is None or self._actuator_ids is None:
+            raise self._capability_error(
+                "reset actuator-gain write",
+                "actuator metadata or the env-owned reset transaction was not materialized",
+            )
+        local_ids = self._normalize_local_actuator_ids(
+            actuator_ids,
+            capability="reset actuator-gain write",
+        )
+        backend_ids = self._actuator_ids[local_ids]
+        owner_name = f"{term_name}:{self.name}"
+        self._reset_state.write_randomization_tensor_mask(
+            RESET_TERM_KP,
+            reset_mask,
+            backend_ids,
+            kp,
+            term_name=owner_name,
+        )
+        self._reset_state.write_randomization_tensor_mask(
+            RESET_TERM_KD,
+            reset_mask,
+            backend_ids,
+            kd,
+            term_name=owner_name,
+        )
+
     def bind_geom_size_write(
         self,
         geom_ids: np.ndarray | Sequence[int] | slice | None = None,

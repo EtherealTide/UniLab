@@ -786,6 +786,8 @@ dof_armature = joint_armature
 class PdGains(_ResetRandomizationTerm):
     """Pinned-mjlab-compatible PD gain randomization on UniLab reset payloads."""
 
+    mask_reset_supported = True
+
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedRlEnv):
         super().__init__(env)
         if cfg.mode != "reset":
@@ -839,6 +841,47 @@ class PdGains(_ResetRandomizationTerm):
                 asset_cfg.actuator_ids,
                 term_name="pd_gains",
             )
+        )
+
+    def reset(
+        self,
+        env: ManagerBasedRlEnv,
+        reset_mask: torch.Tensor,
+        **kwargs: object,
+    ) -> None:
+        """Sample full-width final gains and commit only masked rows."""
+        del kwargs
+        ids = torch.arange(env.num_envs, dtype=torch.int64, device=reset_mask.device)
+        shape = (ids.numel(), len(self._actuator_ids))
+        kp = _sample_gain_range(
+            _require_torch_rng(env, "pd_gains"), self._kp_range, shape, self._distribution
+        )
+        kd = _sample_gain_range(
+            _require_torch_rng(env, "pd_gains"), self._kd_range, shape, self._distribution
+        )
+        if self._operation == "scale":
+            default_kp = _selected_reset_defaults_tensor(
+                self._default_kp,
+                ids,
+                canonical_ndim=1,
+                device=kp.device,
+            )
+            default_kd = _selected_reset_defaults_tensor(
+                self._default_kd,
+                ids,
+                canonical_ndim=1,
+                device=kd.device,
+            )
+            kp = kp * default_kp.to(dtype=kp.dtype, device=kp.device)
+            kd = kd * default_kd.to(dtype=kd.dtype, device=kd.device)
+        kp = kp.to(dtype=torch.float32).contiguous()
+        kd = kd.to(dtype=torch.float32).contiguous()
+        self._entity.write_actuator_gains_tensor_mask(
+            reset_mask,
+            kp,
+            kd,
+            actuator_ids=self._actuator_ids,
+            term_name="pd_gains",
         )
 
     def __call__(

@@ -1357,17 +1357,22 @@ def test_mujoco_host_bridge_packed_reset_lifecycle(
         "mujoco", scene, 2, cfg.sim_dt, base_name="base", add_body_sensors=True
     )
     try:
-        assert backend.get_tensor_capabilities().execution is TensorExecution.HOST_BRIDGE
-        assert backend.get_tensor_capabilities().packed_reset
+        capabilities = backend.get_tensor_capabilities()
+        assert capabilities.execution is TensorExecution.HOST_BRIDGE
+        assert capabilities.packed_reset
         env = ManagerBasedRlEnv(cfg, backend, 2)
         state = env.init_state()
         assert state.obs["obs"].shape == (2, 1)
         assert state.obs["obs"].device == env.device
+        assert all(torch.isfinite(values).all() for values in state.obs.values())
         env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
         obs, _ = env.reset(torch.tensor([False, True], dtype=torch.bool, device=env.device))
         assert obs["obs"].shape == (2, 1)
+        assert all(torch.isfinite(values).all() for values in obs.values())
         env.close()
     finally:
+        if "env" in locals():
+            env.close()
         backend.close()
 
 
@@ -1917,9 +1922,14 @@ def test_real_mujoco_backend_runs_packed_reset_lifecycle() -> None:
     env = make_manager_based_rl_env(cfg, num_envs=2, backend_type="mujoco")
     try:
         state = env.init_state()
-        assert state.obs["obs"].shape[0] == 2
+        assert state.obs["obs"].shape == (2, 1)
+        assert torch.isfinite(state.obs["obs"]).all()
+        stepped = env.step(torch.empty((2, 0), dtype=torch.float32, device=env.device))
+        assert torch.isfinite(stepped.obs["obs"]).all()
+        assert torch.isfinite(stepped.reward).all()
         obs, _ = env.reset(torch.tensor([True, False], dtype=torch.bool))
-        assert obs["obs"].shape[0] == 2
+        assert obs["obs"].shape == (2, 1)
+        assert torch.isfinite(obs["obs"]).all()
     finally:
         env.close()
 
@@ -1998,9 +2008,20 @@ def test_real_mujoco_default_state_applies_keyframe_baseline(
     )
     try:
         env = ManagerBasedRlEnv(cfg, backend, 2)
+        robot = env.scene["robot"]
+        torch.testing.assert_close(
+            robot.data.default_root_state_torch(env.device)[:, 2],
+            torch.full((2,), expected_root_z, dtype=torch.float32),
+        )
+        expected_batch = np.broadcast_to(expected_joint_pos, (2, expected_joint_pos.size))
+        torch.testing.assert_close(
+            robot.data.default_joint_pos_torch(env.device),
+            torch.as_tensor(expected_batch),
+        )
+
         env.init_state()
         env.reset()
-        robot_data = env.scene["robot"].data
+        robot_data = robot.data
         np.testing.assert_allclose(
             robot_data._host_root_link_pos_w[:, 2],
             np.full(2, expected_root_z),
@@ -2015,6 +2036,7 @@ def test_real_mujoco_default_state_applies_keyframe_baseline(
         )
         env.close()
     finally:
+        env.close()
         backend.close()
 
 

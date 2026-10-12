@@ -541,6 +541,19 @@ def _build_rsl_lifecycle_case(
         num_envs = 1
         play_capabilities = types.SimpleNamespace(supports_physics_state_playback=False)
 
+        def get_backend_runtime_diagnostics(self) -> dict[str, Any]:
+            return {
+                "available": True,
+                "backend_type": "mjwarp",
+                "diagnostics": {
+                    "cuda_graph": {
+                        "requested": True,
+                        "enabled": True,
+                        "disable_reason": None,
+                    }
+                },
+            }
+
         def close(self) -> None:
             captured["env_close"] += 1
             if close_exception is not None:
@@ -659,6 +672,11 @@ def test_train_rsl_rl_success_keeps_playback_and_single_cleanup(
     assert captured["playback"] == 1
     assert captured["summaries"][0]["status"] == "completed"
     assert captured["summaries"][0]["run_env_steps"] == 8
+    assert captured["summaries"][0]["backend_diagnostics"]["diagnostics"]["cuda_graph"] == {
+        "requested": True,
+        "enabled": True,
+        "disable_reason": None,
+    }
 
 
 def test_train_rsl_rl_runtime_error_propagates_after_single_cleanup(

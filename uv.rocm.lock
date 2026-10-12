@@ -3800,8 +3800,8 @@ requires-dist = [
     { name = "triton-rocm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==3.8.0", index = "https://download.pytorch.org/whl/rocm7.2" },
     { name = "typing-extensions" },
     { name = "unilab-rl", marker = "extra == 'uni-rl'", specifier = "==1.4.11" },
-    { name = "unisim-core", specifier = ">=1.7.16" },
-    { name = "unisim-core", extras = ["motrix"], marker = "extra == 'motrix'", specifier = ">=1.7.16" },
+    { name = "unisim-core", specifier = ">=1.7.17" },
+    { name = "unisim-core", extras = ["motrix"], marker = "extra == 'motrix'", specifier = ">=1.7.17" },
     { name = "viser", specifier = ">=1.0.26" },
     { name = "wandb" },
 ]

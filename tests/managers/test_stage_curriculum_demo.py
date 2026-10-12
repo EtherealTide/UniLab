@@ -75,6 +75,7 @@ def test_stage_curriculum_demo_real_backend_runs_packed_reset_lifecycle() -> Non
     )
     try:
         state = env.init_state()
+        assert all(torch.isfinite(values).all() for values in state.obs.values())
         assert state.obs["obs"].shape[0] == 4
         reset_mask = torch.zeros(4, dtype=torch.bool, device=env.device)
         reset_mask[1] = True

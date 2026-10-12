@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
@@ -41,6 +42,9 @@ def test_g1_reset_randomization_runs_for_reward_override_fixture():
         env_cfg_override=env_cfg_override,
     )
     try:
+        state = env.init_state()
+        assert state.reward.shape == (1,)
+        assert torch.isfinite(state.reward).all()
         obs, _ = env.reset()
         assert obs["obs"].shape[0] == 1
     finally:
