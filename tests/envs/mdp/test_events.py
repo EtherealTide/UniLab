@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -226,6 +227,7 @@ class _Backend:
         interval_force_supported: bool = False,
         interval_torque_supported: bool = False,
         per_world_defaults: bool = False,
+        packed_reset: bool = False,
     ) -> None:
         self.root_layout_supported = root_layout_supported
         self.gain_supported = gain_supported
@@ -235,6 +237,7 @@ class _Backend:
         self.interval_force_supported = interval_force_supported
         self.interval_torque_supported = interval_torque_supported
         self.per_world_defaults = per_world_defaults
+        self.packed_reset = packed_reset
         self.default_qpos = np.asarray([0.0, 0.0, 0.5, 1.0, 0.0, 0.0, 0.0])
         self.init_qvel = np.zeros(6)
         self.set_state_calls: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
@@ -394,7 +397,7 @@ class _Backend:
         )
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
-        return TensorLifecycleCapabilities(
+        capabilities = TensorLifecycleCapabilities(
             execution=TensorExecution.DEVICE_RESIDENT,
             state_views=True,
             state_fields=frozenset({"qpos", "qvel"}),
@@ -411,6 +414,18 @@ class _Backend:
             device_reset_randomization=True,
             selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
         )
+        if self.packed_reset:
+            capabilities = replace(
+                capabilities,
+                packed_reset=True,
+                packed_reset_fields=frozenset((RESET_TERM_KP, RESET_TERM_KD)),
+            )
+        return capabilities
+
+    def begin_packed_reset(self, *, device=None):
+        from unisim.backend.packed_reset import TorchPackedResetComposer
+
+        return TorchPackedResetComposer(self, device=device)
 
     def get_reset_term_default(self, term: str) -> np.ndarray:
         if not self.get_dr_capabilities().supports_reset_term(term):
@@ -458,6 +473,7 @@ def _transaction_env(
     *,
     root_layout_supported: bool = True,
     gain_supported: bool = True,
+    packed_reset: bool = False,
     randomization_supported: bool = True,
     interval_velocity_supported: bool = True,
     interval_angular_velocity_supported: bool = False,
@@ -471,6 +487,7 @@ def _transaction_env(
     backend = _Backend(
         root_layout_supported=root_layout_supported,
         gain_supported=gain_supported,
+        packed_reset=packed_reset,
         randomization_supported=randomization_supported,
         interval_velocity_supported=interval_velocity_supported,
         interval_angular_velocity_supported=interval_angular_velocity_supported,
@@ -529,26 +546,6 @@ def test_uniform_root_state_composes_in_one_reset_transaction_commit() -> None:
     np.testing.assert_array_equal(qpos[2], backend.default_qpos + [1.0, 0, 0, 0, 0, 0, 0])
     np.testing.assert_array_equal(qvel[0], backend.init_qvel + [0.5, 0, 0, 0, 0, 0])
     np.testing.assert_array_equal(qvel[2], backend.init_qvel + [0.5, 0, 0, 0, 0, 0])
-
-
-def test_pd_gains_reset_randomization_fails_at_construction() -> None:
-    env, backend, _ = _transaction_env(rng_seed=11)
-
-    with pytest.raises(
-        NotImplementedError,
-        match="reset term 'randomize_pd'.*no fixed-width mask commit boundary",
-    ):
-        EventManager(
-            {
-                "randomize_pd": EventTermCfg(
-                    func=mdp.pd_gains,
-                    mode="reset",
-                    params={"kp_range": (2.0, 2.0), "kd_range": (3.0, 3.0)},
-                )
-            },
-            env,
-        )
-    assert backend.set_state_calls == []
 
 
 @pytest.mark.parametrize(
@@ -649,6 +646,39 @@ def test_pd_gains_missing_backend_capability_fails_during_manager_construction()
     ):
         EventManager({"gain": cfg}, env)
     assert backend.set_state_calls == []
+
+
+def test_pd_gains_commits_masked_packed_model_fields() -> None:
+    env, backend, transaction = _transaction_env(packed_reset=True, rng_seed=11)
+    manager = EventManager(
+        {
+            "gain": EventTermCfg(
+                func=mdp.pd_gains,
+                mode="reset",
+                params={
+                    "kp_range": (2.0, 2.0),
+                    "kd_range": (3.0, 3.0),
+                    "operation": "abs",
+                },
+            )
+        },
+        env,
+    )
+    reset_mask = torch.tensor([False, True, True])
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+
+    with transaction.scoped_device_event_tensor(reset_mask):
+        manager.apply_reset(reset_mask, global_env_step_count=0)
+
+    assert len(backend.set_state_calls) == 1
+    rows, _qpos, _qvel = backend.set_state_calls[0]
+    np.testing.assert_array_equal(rows, np.asarray([1, 2]))
+    payload = backend.randomization_calls[0]
+    assert payload is not None
+    assert payload.kp is not None
+    assert payload.kd is not None
+    np.testing.assert_allclose(payload.kp.numpy(), [[2.0] * 3, [2.0] * 3])
+    np.testing.assert_allclose(payload.kd.numpy(), [[3.0] * 3, [3.0] * 3])
 
 
 def test_model_field_aliases_are_identical_and_capability_gaps_fail_cold() -> None:

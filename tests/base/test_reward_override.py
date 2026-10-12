@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
@@ -13,8 +14,8 @@ from unilab.base.registry import ensure_registries
 ROOT_DIR = Path(__file__).parents[2]
 
 
-def test_g1_reset_randomization_fails_closed_for_reward_override_fixture():
-    """Reward overrides cannot bypass the fixed-width reset contract."""
+def test_g1_reward_override_keeps_fixed_width_reset_contract():
+    """Reward overrides compose with the fixed-width reset contract."""
     pytest.importorskip(
         "unisim.backend.mujoco.backend",
         reason="unisim-core MuJoCo adapter (mjbatch build) not available",
@@ -34,10 +35,15 @@ def test_g1_reset_randomization_fails_closed_for_reward_override_fixture():
         "weight": 20.0,
     }
 
-    with pytest.raises(NotImplementedError, match="reset randomization"):
-        registry.make(
-            "G1WalkFlat",
-            num_envs=1,
-            sim_backend="mujoco",
-            env_cfg_override=env_cfg_override,
-        )
+    env = registry.make(
+        "G1WalkFlat",
+        num_envs=1,
+        sim_backend="mujoco",
+        env_cfg_override=env_cfg_override,
+    )
+    try:
+        state = env.init_state()
+        assert state.reward.shape == (1,)
+        assert torch.isfinite(state.reward).all()
+    finally:
+        env.close()
