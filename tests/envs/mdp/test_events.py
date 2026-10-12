@@ -234,6 +234,8 @@ class _Backend:
         self.body_quat = np.zeros((self.num_envs, 1, 4))
         self.body_quat[:, :, 0] = 1.0
         self.body_velocity = np.zeros((self.num_envs, 1, 3))
+        self.dof_pos = np.zeros((self.num_envs, 3))
+        self.dof_vel = np.zeros((self.num_envs, 3))
         canonical_friction = np.array([[0.5, 0.01, 0.001], [0.7, 0.02, 0.002], [0.9, 0.03, 0.003]])
         canonical_armature = np.array([0.0] * 6 + [1.0, 2.0, 3.0])
         if per_world_defaults:
@@ -290,12 +292,6 @@ class _Backend:
     def get_init_qvel(self) -> np.ndarray:
         return self.init_qvel.copy()
 
-    def get_dof_pos(self) -> np.ndarray:
-        return np.zeros((self.num_envs, 3))
-
-    def get_dof_vel(self) -> np.ndarray:
-        return np.zeros((self.num_envs, 3))
-
     def get_default_dof_pos(self) -> np.ndarray:
         return np.zeros(3)
 
@@ -312,6 +308,30 @@ class _Backend:
 
     def get_joint_dof_vel_indices(self, names) -> np.ndarray:
         return self.get_joint_dof_pos_indices(names)
+
+    def get_joint_state_qpos_indices(self, names) -> np.ndarray:
+        return self.get_joint_dof_pos_indices(names)
+
+    def get_joint_state_qvel_indices(self, names) -> np.ndarray:
+        return self.get_joint_dof_pos_indices(names)
+
+    def get_state_views(self, fields, device=None) -> dict[str, torch.Tensor]:
+        target = torch.device(device) if device is not None else torch.device("cpu")
+        return {
+            field: torch.from_numpy(getattr(self, source).copy()).to(target)
+            for field, source in (("qpos", "dof_pos"), ("qvel", "dof_vel"))
+            if field in fields
+        }
+
+    def get_sensor_view(self, name, device=None) -> torch.Tensor:
+        sources = {
+            "track_pos_w_base": self.body_pos[:, 0],
+            "track_quat_w_base": self.body_quat[:, 0],
+            "track_linvel_w_base": self.body_velocity[:, 0],
+            "track_angvel_w_base": self.body_velocity[:, 0],
+        }
+        target = torch.device(device) if device is not None else torch.device("cpu")
+        return torch.from_numpy(np.array(sources[name], copy=True)).to(target)
 
     def get_geom_names(self) -> tuple[str, ...]:
         return ("floor", "foot", "base_geom")
@@ -369,32 +389,20 @@ class _Backend:
     def apply_interval_randomization(self, plan: IntervalRandomizationPlan) -> None:
         self.interval_plans.append(plan)
 
-    def get_body_pos_w(self, ids: np.ndarray) -> np.ndarray:
-        return self.body_pos[:, ids]
-
-    def get_body_quat_w(self, ids: np.ndarray) -> np.ndarray:
-        return self.body_quat[:, ids]
-
-    def get_body_lin_vel_w(self, ids: np.ndarray) -> np.ndarray:
-        return self.body_velocity[:, ids]
-
-    def get_body_ang_vel_w(self, ids: np.ndarray) -> np.ndarray:
-        return self.body_velocity[:, ids]
-
-    def get_body_lin_vel_b(self, ids: np.ndarray) -> np.ndarray:
-        return self.body_velocity[:, ids]
-
-    def get_body_ang_vel_b(self, ids: np.ndarray) -> np.ndarray:
-        return self.body_velocity[:, ids]
-
-    def set_state(
+    def set_state_tensor(
         self,
-        env_ids: np.ndarray,
-        qpos: np.ndarray,
-        qvel: np.ndarray,
+        env_indices: torch.Tensor,
+        qpos: torch.Tensor,
+        qvel: torch.Tensor,
         randomization=None,
     ) -> None:
-        self.set_state_calls.append((env_ids.copy(), qpos.copy(), qvel.copy()))
+        self.set_state_calls.append(
+            (
+                env_indices.detach().cpu().numpy().copy(),
+                qpos.detach().cpu().numpy().copy(),
+                qvel.detach().cpu().numpy().copy(),
+            )
+        )
         self.randomization_calls.append(randomization)
 
 

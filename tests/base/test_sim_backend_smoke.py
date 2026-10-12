@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.mujoco.xml import get_named_body_ids
 from unisim.dr.types import IntervalRandomizationPlan, ResetRandomizationPayload
 
@@ -73,12 +74,35 @@ def _mujoco_expected_dof_dims(model) -> tuple[int, int]:
     return model.nq, model.nv
 
 
+def _step(backend, ctrl: np.ndarray, nsteps: int = 1) -> None:
+    backend.step_tensor(torch.as_tensor(ctrl, dtype=torch.float32), nsteps=nsteps)
+
+
+def _set_state(
+    backend, env_ids: np.ndarray, qpos: np.ndarray, qvel: np.ndarray, randomization=None
+) -> None:
+    backend.set_state_tensor(
+        torch.as_tensor(env_ids, dtype=torch.int64),
+        torch.as_tensor(qpos, dtype=torch.float32),
+        torch.as_tensor(qvel, dtype=torch.float32),
+        randomization=randomization,
+    )
+
+
+def _sensor(backend, name: str) -> np.ndarray:
+    return backend.get_sensor_view(name).detach().cpu().numpy()
+
+
 @pytest.mark.parametrize("robot", BASIC_ROBOTS)
 def test_mujoco_backend_smoke_contract(robot):
     from unisim.backend.mujoco.backend import MuJoCoBackend
 
     bkd = MuJoCoBackend(
-        SceneCfg(model_file=robot["model_file"]), NUM_ENVS, SIM_DT, base_name=robot["base_name"]
+        SceneCfg(model_file=robot["model_file"]),
+        NUM_ENVS,
+        SIM_DT,
+        base_name=robot["base_name"],
+        add_body_sensors=True,
     )
     bkd.materialize()
 
@@ -86,14 +110,16 @@ def test_mujoco_backend_smoke_contract(robot):
     assert bkd.model is not None
     assert bkd._pool is not None
 
-    bkd.step(np.zeros((NUM_ENVS, bkd.model.nu)), nsteps=2)
+    _step(bkd, np.zeros((NUM_ENVS, bkd.model.nu)), nsteps=2)
 
     assert bkd.get_scene_visual_model_file() == str(bkd.scene_visual_model_file)
 
     qpos = _identity_qpos_mujoco(bkd.model.nq, xyz=(1.0, 2.0, 0.8))
-    bkd.set_state(np.array([0]), qpos, np.zeros((1, bkd.model.nv)))
-    np.testing.assert_allclose(bkd.get_base_pos()[0], (1.0, 2.0, 0.8), atol=1e-5)
-    _unit_quat(bkd.get_base_quat(), "MuJoCo smoke")
+    _set_state(bkd, np.array([0]), qpos, np.zeros((1, bkd.model.nv)))
+    np.testing.assert_allclose(
+        _sensor(bkd, f"track_pos_w_{robot['base_name']}")[0], (1.0, 2.0, 0.8), atol=1e-5
+    )
+    _unit_quat(_sensor(bkd, f"track_quat_w_{robot['base_name']}"), "MuJoCo smoke")
 
     caps = bkd.get_dr_capabilities()
     assert {
@@ -128,8 +154,8 @@ def test_mujoco_interval_root_velocity_kick_is_row_selective_and_refreshes_senso
     bkd.materialize()
     qpos = np.broadcast_to(bkd.get_default_qpos(), (NUM_ENVS, bkd.model.nq)).copy()
     qvel = np.zeros((NUM_ENVS, bkd.model.nv), dtype=np.float64)
-    bkd.set_state(np.arange(NUM_ENVS, dtype=np.int32), qpos, qvel)
-    bkd.step(np.zeros((NUM_ENVS, bkd.model.nu)), nsteps=1)
+    _set_state(bkd, np.arange(NUM_ENVS, dtype=np.int32), qpos, qvel)
+    _step(bkd, np.zeros((NUM_ENVS, bkd.model.nu)), nsteps=1)
     assert bkd._pool is not None
     # Refresh the derived fields (sensors one substep behind after step()).
     bkd._pool.forward()
@@ -140,7 +166,7 @@ def test_mujoco_interval_root_velocity_kick_is_row_selective_and_refreshes_senso
 
     body_ids = bkd.get_body_ids(("base",))
     state_before = bkd.get_physics_state().copy()
-    body_velocity_before = bkd.get_body_lin_vel_w(body_ids).copy()
+    body_velocity_before = _sensor(bkd, "track_linvel_w_base").copy()
     delta = np.zeros((NUM_ENVS, 1, 3), dtype=np.float64)
     delta[1, 0] = (0.25, -0.4, 0.15)
 
@@ -152,7 +178,7 @@ def test_mujoco_interval_root_velocity_kick_is_row_selective_and_refreshes_senso
     )
 
     state_after = bkd.get_physics_state()
-    body_velocity_after = bkd.get_body_lin_vel_w(body_ids)
+    body_velocity_after = _sensor(bkd, "track_linvel_w_base")
     np.testing.assert_array_equal(state_after[0], state_before[0])
     np.testing.assert_allclose(state_after[1, 0], state_before[1, 0], atol=1e-12)
     np.testing.assert_allclose(
@@ -171,8 +197,8 @@ def test_mujoco_interval_root_velocity_kick_is_row_selective_and_refreshes_senso
         atol=1e-7,
     )
     np.testing.assert_allclose(
-        body_velocity_after[1, 0],
-        body_velocity_before[1, 0] + delta[1, 0],
+        body_velocity_after[1],
+        body_velocity_before[1] + delta[1, 0],
         atol=1e-6,
     )
 
@@ -255,7 +281,7 @@ def test_mujoco_interval_root_angular_velocity_kick_converts_to_body_frame():
     half = np.sqrt(0.5)
     qpos[:, 3:7] = [half, 0.0, 0.0, half]
     qvel = np.zeros((NUM_ENVS, bkd.model.nv), dtype=np.float64)
-    bkd.set_state(np.arange(NUM_ENVS, dtype=np.int32), qpos, qvel)
+    _set_state(bkd, np.arange(NUM_ENVS, dtype=np.int32), qpos, qvel)
 
     body_ids = bkd.get_body_ids(("base",))
     delta = np.zeros((NUM_ENVS, 1, 3), dtype=np.float64)
@@ -284,12 +310,12 @@ def test_mujoco_interval_root_angular_velocity_kick_converts_to_body_frame():
     )
     # The world-frame read-back recovers the sampled delta.
     np.testing.assert_allclose(
-        bkd.get_body_ang_vel_w(body_ids)[1, 0],
+        _sensor(bkd, "track_angvel_w_base")[1],
         [0.5, 0.0, 0.0],
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        bkd.get_body_ang_vel_w(body_ids)[0, 0],
+        _sensor(bkd, "track_angvel_w_base")[0],
         [0.0, 0.0, 0.0],
         atol=1e-6,
     )
@@ -326,8 +352,8 @@ def test_mujoco_interval_body_force_and_torque_have_observable_effect(tmp_path):
     ids = np.arange(NUM_ENVS, dtype=np.int32)
     ctrl = np.zeros((NUM_ENVS, bkd.model.nu))
 
-    bkd.set_state(ids, qpos, qvel0)
-    bkd.step(ctrl, nsteps=1)
+    _set_state(bkd, ids, qpos, qvel0)
+    _step(bkd, ctrl, nsteps=1)
     idx_qvel = 1 + bkd.nq
     baseline = bkd.get_physics_state()[:, idx_qvel : idx_qvel + 6].copy()
 
@@ -336,7 +362,7 @@ def test_mujoco_interval_body_force_and_torque_have_observable_effect(tmp_path):
     torque = np.zeros((NUM_ENVS, 1, 3), dtype=np.float64)
     torque[:, 0, 2] = 1.0  # Nm, world z
 
-    bkd.set_state(ids, qpos, qvel0)
+    _set_state(bkd, ids, qpos, qvel0)
     bkd.apply_interval_randomization(
         IntervalRandomizationPlan(
             body_ids=body_ids,
@@ -344,7 +370,7 @@ def test_mujoco_interval_body_force_and_torque_have_observable_effect(tmp_path):
             body_torque=torque,
         )
     )
-    bkd.step(ctrl, nsteps=1)
+    _step(bkd, ctrl, nsteps=1)
     kicked = bkd.get_physics_state()[:, idx_qvel : idx_qvel + 6]
 
     # Free fall is common to both runs, so the staged wrench adds exactly
@@ -369,21 +395,22 @@ def test_motrix_backend_smoke_contract(robot):
     assert bkd.data is not None
 
     ctrl = np.zeros_like(bkd.data.actuator_ctrls)
-    bkd.step(ctrl, nsteps=2)
+    _step(bkd, ctrl, nsteps=2)
 
-    nq = bkd.get_dof_pos().shape[-1] + 7
-    nv = bkd.get_dof_vel().shape[-1] + 6
+    nq = bkd.get_default_qpos().size
+    nv = bkd.get_init_qvel().size
     qpos = _identity_qpos_mujoco(nq, xyz=(1.0, 2.0, 0.8))
     gravity = np.asarray([[1.0, 2.0, -3.0]], dtype=np.float64)
-    bkd.set_state(
+    _set_state(
+        bkd,
         np.array([0]),
         qpos,
         np.zeros((1, nv)),
         randomization=ResetRandomizationPayload(gravity=gravity),
     )
-    np.testing.assert_allclose(bkd.get_base_pos()[0], (1.0, 2.0, 0.8), atol=1e-4)
+    np.testing.assert_allclose(_sensor(bkd, "track_pos_w_pelvis")[0], (1.0, 2.0, 0.8), atol=1e-4)
     np.testing.assert_allclose(bkd.model.get_gravity_override(bkd.data)[0], gravity[0])
-    _unit_quat(bkd.get_base_quat(), "Motrix smoke")
+    _unit_quat(_sensor(bkd, "track_quat_w_pelvis"), "Motrix smoke")
 
     caps = bkd.get_dr_capabilities()
     assert {"base_mass_delta", "base_com_offset", "gravity", "kp", "kd"}.issubset(
@@ -472,17 +499,14 @@ def test_backend_batch_sensor_data_matches_individual_sensors(backend_type):
 
     names = ("FR_pos", "FL_pos", "gyro", "upvector")
     expected = np.concatenate(
-        [np.asarray(bkd.get_sensor_data(name)).reshape(NUM_ENVS, -1) for name in names],
+        [_sensor(bkd, name).reshape(NUM_ENVS, -1) for name in names],
         axis=1,
     )
-
-    np.testing.assert_allclose(bkd.get_sensor_data_batch(names), expected)
-    _shape(bkd.get_sensor_data_batch(()), NUM_ENVS, 0)
 
     view = bkd.bind_sensor_data(names)
     assert view.names == names
     assert view.dimensions == tuple(
-        int(np.asarray(bkd.get_sensor_data(name)).reshape(NUM_ENVS, -1).shape[1]) for name in names
+        int(_sensor(bkd, name).reshape(NUM_ENVS, -1).shape[1]) for name in names
     )
     np.testing.assert_allclose(view.read(), expected)
 
@@ -585,7 +609,7 @@ def test_mujoco_metadata_getters_return_stable_copies():
     assert not np.isclose(dof_armature[-1], model.dof_armature[-1])
 
 
-def test_mujoco_copy_body_state_matches_split_queries():
+def test_mujoco_body_sensor_views_match_tracked_fields():
     from unisim.backend.mujoco.backend import MuJoCoBackend
 
     bkd = MuJoCoBackend(
@@ -596,36 +620,23 @@ def test_mujoco_copy_body_state_matches_split_queries():
         add_body_sensors=True,
     )
     bkd.materialize()
-    bkd.step(np.zeros((NUM_ENVS, bkd.model.nu)), nsteps=1)
-    body_ids = bkd.get_body_ids(["pelvis", "torso_link"])
-
-    expected_pos = bkd.get_body_pos_w(body_ids)
-    expected_quat = bkd.get_body_quat_w(body_ids)
-    expected_lin_vel = bkd.get_body_lin_vel_w(body_ids)
-    expected_ang_vel = bkd.get_body_ang_vel_w(body_ids)
-    out_pos = np.empty_like(expected_pos)
-    out_quat = np.empty_like(expected_quat)
-    out_lin_vel = np.empty_like(expected_lin_vel)
-    out_ang_vel = np.empty_like(expected_ang_vel)
-
-    result = bkd.copy_body_state_w(body_ids, out_pos, out_quat, out_lin_vel, out_ang_vel)
-
-    assert result == (out_pos, out_quat, out_lin_vel, out_ang_vel)
-    np.testing.assert_allclose(out_pos, expected_pos)
-    np.testing.assert_allclose(out_quat, expected_quat)
-    np.testing.assert_allclose(out_lin_vel, expected_lin_vel)
-    np.testing.assert_allclose(out_ang_vel, expected_ang_vel)
-
-    # Issue #1295: row-scoped velocity getters are parity with full+slice.
-    row_ids = np.array([1, 0, 1], dtype=np.int32)
-    np.testing.assert_allclose(
-        bkd.get_body_lin_vel_w_rows(row_ids, body_ids),
-        bkd.get_body_lin_vel_w(body_ids)[row_ids],
+    _step(bkd, np.zeros((NUM_ENVS, bkd.model.nu)), nsteps=1)
+    body_names = ("pelvis", "torso_link")
+    fields = (
+        ("track_pos_w_", 3),
+        ("track_quat_w_", 4),
+        ("track_linvel_w_", 3),
+        ("track_angvel_w_", 3),
     )
-    np.testing.assert_allclose(
-        bkd.get_body_ang_vel_w_rows(row_ids, body_ids),
-        bkd.get_body_ang_vel_w(body_ids)[row_ids],
-    )
+
+    for prefix, width in fields:
+        values = np.stack(
+            [_sensor(bkd, prefix + body_name) for body_name in body_names],
+            axis=1,
+        )
+        assert values.shape == (NUM_ENVS, len(body_names), width)
+        assert np.isfinite(values).all()
+    _unit_quat(np.stack([_sensor(bkd, "track_quat_w_" + name) for name in body_names], axis=1))
 
 
 def test_motrix_model_properties_smoke():
@@ -717,14 +728,14 @@ def test_motrix_default_qpos_uses_mujoco_quaternion_convention():
         )
 
     env_ids = np.arange(NUM_ENVS, dtype=np.int32)
-    bkd.set_state(
+    _set_state(
+        bkd,
         env_ids,
         np.broadcast_to(qpos, (NUM_ENVS, qpos.shape[0])).copy(),
-        np.zeros((NUM_ENVS, bkd.model.num_dof_vel), dtype=np.float64),
+        np.zeros((NUM_ENVS, bkd.get_init_qvel().size), dtype=np.float64),
     )
-    base_body_id = bkd.get_body_id(_G1["base_name"])
     np.testing.assert_allclose(
-        np.abs(bkd.get_body_quat_w(np.asarray([base_body_id], dtype=np.int32))[:, 0, :]),
+        np.abs(_sensor(bkd, "track_quat_w_pelvis")),
         np.broadcast_to([1.0, 0.0, 0.0, 0.0], (NUM_ENVS, 4)),
         atol=1.0e-6,
     )

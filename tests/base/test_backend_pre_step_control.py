@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.base import SimBackend
 
 
@@ -141,6 +142,7 @@ def _fake_mujoco_backend(pre_step_control_fn=None):
     backend._tracked_sensor_slices = {}
     backend._refresh_pre_step_body_state = True
     backend._pre_step_control_fn = pre_step_control_fn
+    backend._model = SimpleNamespace(nu=2)
     backend._tracked_sensor_copyout_range = None
     backend._tracked_sensor_slices = ()
     backend._tracked_body_state_dirty = np.zeros(1, dtype=bool)
@@ -172,7 +174,7 @@ def test_mujoco_step_without_pre_step_control_keeps_batched_nsteps() -> None:
     backend = _fake_mujoco_backend()
     ctrl = np.array([[0.5, -0.5]], dtype=np.float32)
 
-    result = backend.step(ctrl, nsteps=3)
+    result = backend.step_tensor(torch.from_numpy(ctrl), nsteps=3)
 
     pool = backend._pool
     assert len(pool.step_calls) == 1
@@ -184,45 +186,22 @@ def test_mujoco_step_without_pre_step_control_keeps_batched_nsteps() -> None:
     np.testing.assert_allclose(backend._xfrc_view.reshape(1, -1), [[0.0] * 6])
     np.testing.assert_allclose(backend._pending_xfrc_applied, [[0.0] * 6])
     np.testing.assert_allclose(backend._qpos_view, [[3.0]])
-    assert set(result["timing"]) == {"set_ctrl_ms", "physics_ms", "refresh_cache_ms"}
+    assert set(result["timing"]) == {
+        "set_ctrl_ms",
+        "physics_ms",
+        "refresh_cache_ms",
+        "tensor_control_d2h_ms",
+    }
 
 
-def test_mujoco_step_with_pre_step_control_uses_single_dispatch_callback() -> None:
-    seen_qpos: list[np.ndarray] = []
-    seen_sensors: list[np.ndarray] = []
-
+def test_mujoco_step_tensor_with_pre_step_control_fails_closed() -> None:
     backend = _fake_mujoco_backend()
-
-    def hook(current_backend, owner_ctrl: np.ndarray) -> np.ndarray:
-        seen_qpos.append(current_backend._qpos_view.copy())
-        seen_sensors.append(current_backend._sensor_data.copy())
-        return owner_ctrl + len(seen_qpos)
-
-    backend.set_pre_step_control(hook)
+    backend.set_pre_step_control(lambda current_backend, owner_ctrl: owner_ctrl)
     ctrl = np.array([[0.5, -0.5]], dtype=np.float32)
 
-    result = backend.step(ctrl, nsteps=3)
-
-    pool = backend._pool
-    assert len(pool.step_calls) == 1
-    call = pool.step_calls[0]
-    assert call["nstep"] == 3
-    assert call["callback"] is not None
-    # k=0 refreshes nothing (the bound views already hold the pre-call state);
-    # k>0 receives the state after substep k-1.
-    np.testing.assert_allclose(seen_qpos, [[[0.0]], [[1.0]], [[2.0]]])
-    # The slim callback protocol carries no sensordata argument, so the hook
-    # never sees a sensor refresh; the bound sensordata view only catches up
-    # via the end-of-call copy-out.
-    np.testing.assert_allclose(seen_sensors, [[[0.0]], [[0.0]], [[0.0]]])
-    assert len(pool.callback_controls) == 3
-    np.testing.assert_allclose(pool.callback_controls[0], ctrl + 1)
-    np.testing.assert_allclose(pool.callback_controls[1], ctrl + 2)
-    np.testing.assert_allclose(pool.callback_controls[2], ctrl + 3)
-    assert pool.callback_controls[0].dtype == np.float64
-    np.testing.assert_allclose(backend._qpos_view, [[3.0]])
-    np.testing.assert_allclose(backend._sensor_data, [[2.0]])  # one substep behind
-    assert set(result["timing"]) == {"set_ctrl_ms", "physics_ms", "refresh_cache_ms"}
+    with pytest.raises(NotImplementedError, match="tensor stepping.*host pre-step"):
+        backend.step_tensor(torch.from_numpy(ctrl), nsteps=3)
+    assert backend._pool.step_calls == []
 
 
 def test_mujoco_step_writes_xfrc_absolutely_and_clears_pending() -> None:
@@ -230,7 +209,7 @@ def test_mujoco_step_writes_xfrc_absolutely_and_clears_pending() -> None:
     backend._pending_xfrc_applied = np.full((1, 6), 7.0, dtype=np.float64)
     ctrl = np.array([[0.5, -0.5]], dtype=np.float32)
 
-    backend.step(ctrl, nsteps=2)
+    backend.step_tensor(torch.from_numpy(ctrl), nsteps=2)
 
     pool = backend._pool
     assert len(pool.step_calls) == 1
@@ -241,37 +220,23 @@ def test_mujoco_step_writes_xfrc_absolutely_and_clears_pending() -> None:
 
     # An idle second dispatch must overwrite the channel with zeros, not leave
     # the previous wrench to decay on its own.
-    backend.step(ctrl, nsteps=1)
+    backend.step_tensor(torch.from_numpy(ctrl), nsteps=1)
 
     assert len(pool.step_calls) == 2
     np.testing.assert_allclose(backend._xfrc_view.reshape(1, -1), [[0.0] * 6])
     np.testing.assert_allclose(backend._pending_xfrc_applied, [[0.0] * 6])
 
 
-def test_mujoco_step_with_pre_step_control_applies_staged_xfrc_each_substep() -> None:
+def test_mujoco_step_tensor_callback_reject_occurs_before_state_mutation() -> None:
     backend = _fake_mujoco_backend()
     backend._pending_xfrc_applied = np.full((1, 6), 7.0, dtype=np.float64)
-
-    backend.set_pre_step_control(lambda current_backend, owner_ctrl: owner_ctrl + 1.0)
+    backend.set_pre_step_control(lambda current_backend, owner_ctrl: owner_ctrl)
     ctrl = np.array([[0.5, -0.5]], dtype=np.float32)
 
-    backend.step(ctrl, nsteps=2)
-
-    pool = backend._pool
-    assert len(pool.step_calls) == 1
-    # The staged wrench is recomposed onto the persistent channel before every
-    # substep; each recorded channel is the wrench that substep's physics
-    # actually consumed.
-    assert len(pool.callback_controls) == 2
-    for cb_control in pool.callback_controls:
-        np.testing.assert_allclose(cb_control, [[1.5, 0.5]])
-    assert len(pool.callback_channels) == 2
-    for channel in pool.callback_channels:
-        np.testing.assert_allclose(channel.reshape(1, -1), [[7.0] * 6])
-    # The call finishes by clearing the persistent channel and the staging
-    # buffer so nothing leaks into the next control step.
-    np.testing.assert_allclose(backend._xfrc_view.reshape(1, -1), [[0.0] * 6])
-    np.testing.assert_allclose(backend._pending_xfrc_applied, [[0.0] * 6])
+    with pytest.raises(NotImplementedError, match="tensor stepping.*host pre-step"):
+        backend.step_tensor(torch.from_numpy(ctrl), nsteps=2)
+    assert backend._pool.step_calls == []
+    np.testing.assert_allclose(backend._pending_xfrc_applied, [[7.0] * 6])
 
 
 class _FakeMotrixModel:
@@ -305,23 +270,17 @@ def _fake_motrix_backend(pre_step_control_fn=None):
     return backend
 
 
-def test_motrix_step_with_pre_step_control_uses_single_step_loop() -> None:
-    seen_sensors: list[float] = []
+def test_motrix_step_tensor_with_pre_step_control_fails_closed() -> None:
     backend = _fake_motrix_backend()
-
-    def hook(current_backend, owner_ctrl: np.ndarray) -> np.ndarray:
-        seen_sensors.append(float(current_backend._data.sensor_value))
-        return owner_ctrl + len(seen_sensors)
-
-    backend.set_pre_step_control(hook)
+    backend._closed = False
+    backend._portable_variant_assignment = None
+    backend.set_pre_step_control(lambda current_backend, owner_ctrl: owner_ctrl)
     ctrl = np.array([[1.0, 2.0]], dtype=np.float32)
 
-    backend.step(ctrl, nsteps=3)
-
-    assert backend._model.step_calls == 3
+    with pytest.raises(NotImplementedError, match="tensor stepping.*host pre-step"):
+        backend.step_tensor(torch.from_numpy(ctrl), nsteps=3)
+    assert backend._model.step_calls == 0
     assert backend._model.step_n_calls == []
-    assert seen_sensors == [0.0, 1.0, 2.0]
-    np.testing.assert_allclose(backend._data.actuator_ctrls, ctrl + 3)
 
 
 def test_motrix_native_video_capture_uses_headless_system_camera(monkeypatch) -> None:
@@ -573,7 +532,7 @@ def test_motrix_native_video_capture_tracks_primary_env_base(monkeypatch) -> Non
     backend._render_app = None
     backend._render_headless = None
     backend._render_capture_enabled = False
-    backend.get_base_pos = lambda: base_positions
+    backend._legacy_get_base_pos = lambda: base_positions
 
     backend.init_renderer(
         spacing=1.5,

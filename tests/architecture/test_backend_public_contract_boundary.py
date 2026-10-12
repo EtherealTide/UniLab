@@ -1,4 +1,4 @@
-"""Architecture boundary for backend-private probing and name dispatch."""
+"""Architecture boundary for backend-private and removed API usage."""
 
 from __future__ import annotations
 
@@ -19,6 +19,39 @@ _NAME_DISPATCH_EXEMPT_FILES = {
 }
 
 _MIGRATION_DEBT_NODES = frozenset()
+
+REMOVED_BACKEND_METHODS = frozenset(
+    {
+        "step",
+        "reset",
+        "get_state",
+        "set_state",
+        "get_base_pos",
+        "get_base_quat",
+        "get_base_lin_vel",
+        "get_base_ang_vel",
+        "get_dof_pos",
+        "get_dof_vel",
+        "get_body_pos_w",
+        "get_body_quat_w",
+        "get_body_pose_w",
+        "get_body_lin_vel_w",
+        "get_body_vel_w",
+        "get_body_ang_vel_w",
+        "get_body_state_w",
+        "copy_body_state_w",
+        "get_body_pose_w_rows",
+        "get_body_lin_vel_w_rows",
+        "get_body_ang_vel_w_rows",
+        "get_body_pos_b",
+        "get_body_quat_b",
+        "get_body_lin_vel_b",
+        "get_body_ang_vel_b",
+        "get_sensor_data",
+        "get_sensor_data_rows",
+        "get_sensor_data_batch",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +75,19 @@ def find_violations() -> list[Violation]:
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute):
                 receiver = node.value
+                if (
+                    node.attr in REMOVED_BACKEND_METHODS
+                    and isinstance(receiver, ast.Name)
+                    and receiver.id in backend_names
+                ):
+                    violations.append(
+                        Violation(
+                            relative,
+                            node.lineno,
+                            "removed-backend-api",
+                            f"{relative}:{node.attr}",
+                        )
+                    )
                 if (
                     node.attr.startswith("_")
                     and isinstance(receiver, ast.Name)
@@ -83,3 +129,9 @@ def test_runtime_and_tasks_do_not_probe_backend_private_state() -> None:
 
 def test_migration_exception_list_remains_explicit() -> None:
     assert not _MIGRATION_DEBT_NODES
+
+
+def test_unisim_public_backend_api_has_no_legacy_numpy_lifecycle() -> None:
+    from unisim.backend.base import SimBackend
+
+    assert not REMOVED_BACKEND_METHODS.intersection(SimBackend.__dict__)

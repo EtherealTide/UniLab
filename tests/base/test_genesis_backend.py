@@ -54,7 +54,7 @@ def _bypass_cuda_only_platform_gate(monkeypatch: pytest.MonkeyPatch):
     )
 
 
-from .genesis_fake_runtime import ACTUATED_DOFS, N_LINKS, NQ, NV, make_fake_genesis
+from .genesis_fake_runtime import N_LINKS, NQ, NV, make_fake_genesis
 
 # Must stay in sync with the model spec in genesis_fake_runtime.py.
 TINY_MODEL_XML = """
@@ -108,6 +108,34 @@ def tiny_model_file(tmp_path: Path) -> str:
 @pytest.fixture
 def fake_genesis(monkeypatch: pytest.MonkeyPatch):
     fake = make_fake_genesis()
+    fake.backend = fake.gpu
+    fake.cuda = fake.gpu
+    fake.use_zerocopy = True
+    original_add_entity = fake.Scene.add_entity
+    device_getters = (
+        "get_qpos",
+        "get_dofs_velocity",
+        "get_dofs_kp",
+        "get_dofs_kv",
+        "get_links_pos",
+        "get_links_quat",
+        "get_links_vel",
+        "get_links_ang",
+        "get_links_net_contact_force",
+    )
+
+    def add_device_entity(scene, morph):
+        entity = original_add_entity(scene, morph)
+        for getter_name in device_getters:
+            original_getter = getattr(entity, getter_name)
+
+            def device_getter(*args, _getter=original_getter, **kwargs):
+                return _getter(*args, **kwargs).cuda()
+
+            setattr(entity, getter_name, device_getter)
+        return entity
+
+    fake.Scene.add_entity = add_device_entity
     deps = GenesisDependencies(genesis=fake, torch=torch, mujoco=mujoco)
     monkeypatch.setattr(genesis_dependencies, "load_genesis_dependencies", lambda: deps)
     # The backend resolves the viewer class via importlib.import_module; the
@@ -116,6 +144,7 @@ def fake_genesis(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(sys.modules, "genesis.vis.viewer", fake.viewer_module)
     genesis_materialization._reset_session_state_for_tests()
     yield fake
+    fake.Scene.add_entity = original_add_entity
     genesis_materialization._reset_session_state_for_tests()
 
 
@@ -132,10 +161,10 @@ def _backend(model_file: str, num_envs: int = 4, **kwargs):
     return backend
 
 
-def _stand_state(backend, rows: int) -> tuple[np.ndarray, np.ndarray]:
+def _stand_state(backend, rows: int) -> tuple[torch.Tensor, torch.Tensor]:
     qpos = np.tile(backend.get_keyframe_qpos("stand"), (rows, 1)).astype(np.float32)
     qvel = np.zeros((rows, backend.get_init_qvel().size), dtype=np.float32)
-    return qpos, qvel
+    return torch.from_numpy(qpos).cuda(), torch.from_numpy(qvel).cuda()
 
 
 def test_dependency_boundary_errors_are_actionable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -177,7 +206,7 @@ def test_session_lifecycle_and_reinit_guard(fake_genesis, tiny_model_file: str) 
     with pytest.raises(RuntimeError, match="exactly one gs.init per process"):
         _backend(tiny_model_file)
     with pytest.raises(RuntimeError, match="genesis backend is closed"):
-        first.step(np.zeros((4, 2), dtype=np.float32))
+        first.step_tensor(torch.zeros((4, 2), dtype=torch.float32, device="cuda"))
     first.materialize()  # no-op when already materialized, even after close
     second.close()
     assert fake_genesis.destroy_count == 1  # idempotent: session already destroyed
@@ -216,7 +245,8 @@ def test_cold_metadata_matches_mjcf_scan(fake_genesis, tiny_model_file: str) -> 
     np.testing.assert_allclose(backend.get_default_qpos()[:3], [0.0, 0.0, 0.8])
     np.testing.assert_allclose(backend.get_default_dof_pos(), [0.0, 0.0], atol=1e-6)
     assert backend.get_init_qvel().shape == (NV,)
-    np.testing.assert_allclose(backend.get_dof_pos()[0], backend.get_default_dof_pos())
+    current_dof_pos = backend.get_state_views(("qpos",))["qpos"].detach().cpu().numpy()
+    np.testing.assert_allclose(current_dof_pos[0, 7:], backend.get_default_dof_pos())
     np.testing.assert_array_equal(backend.get_body_ids(["pelvis", "shank"]), [1, 3])
     np.testing.assert_array_equal(backend.get_joint_dof_indices(["joint_b"]), [7])
     np.testing.assert_array_equal(backend.get_joint_dof_pos_indices(["joint_b"]), [1])
@@ -250,14 +280,19 @@ def test_control_target_held_across_substeps(fake_genesis, tiny_model_file: str)
     backend = _backend(tiny_model_file)
     entity = backend._entity
     qpos, qvel = _stand_state(backend, 4)
-    backend.set_state(np.arange(4, dtype=np.int32), qpos, qvel)
+    backend.set_state_tensor(torch.arange(4, dtype=torch.int64, device="cuda"), qpos, qvel)
 
     ctrl = np.tile(np.array([[0.3, -0.3]], dtype=np.float32), (4, 1))
-    result = backend.step(ctrl, nsteps=3)
-    assert set(result["timing"]) == {"physics_ms", "host_cache_refresh_ms"}
+    ctrl_tensor = torch.from_numpy(ctrl).cuda()
+    result = backend.step_tensor(ctrl_tensor, nsteps=3)
+    assert set(result["timing"]) == {
+        "tensor_control_upload_ms",
+        "tensor_physics_ms",
+        "tensor_host_cache_refresh_ms",
+    }
     assert len(entity.control_calls) == 1  # target pushed once, held across substeps
     assert entity.step_count == 3
-    dof_pos = backend.get_dof_pos()
+    dof_pos = backend.get_state_views(("qpos",))["qpos"][:, 7:].detach().cpu().numpy()
     assert dof_pos.shape == (4, 2) and dof_pos.dtype == np.float32
     assert np.isfinite(dof_pos).all()
     assert np.all(dof_pos[:, 0] > 0.1)  # PD pulled joint_a toward 0.3
@@ -265,12 +300,14 @@ def test_control_target_held_across_substeps(fake_genesis, tiny_model_file: str)
     np.testing.assert_allclose(entity.control_calls[0], ctrl, atol=1e-6)
 
     with pytest.raises(ValueError, match="ctrl must have shape"):
-        backend.step(np.zeros((4, 3), dtype=np.float32))
+        backend.step_tensor(torch.zeros((4, 3), dtype=torch.float32, device="cuda"))
     with pytest.raises(ValueError, match="nsteps must be a positive integer"):
-        backend.step(ctrl, nsteps=0)
+        backend.step_tensor(ctrl_tensor, nsteps=0)
 
 
-def test_pre_step_control_runs_per_substep(fake_genesis, tiny_model_file: str) -> None:
+def test_pre_step_control_fails_closed_for_tensor_stepping(
+    fake_genesis, tiny_model_file: str
+) -> None:
     backend = _backend(tiny_model_file)
     entity = backend._entity
     calls: list[np.ndarray] = []
@@ -282,53 +319,56 @@ def test_pre_step_control_runs_per_substep(fake_genesis, tiny_model_file: str) -
 
     backend.set_pre_step_control(convert)
     ctrl = np.full((4, 2), 0.25, dtype=np.float32)
-    backend.step(ctrl, nsteps=4)
-    assert len(calls) == 4  # conversion runs before every physics substep
-    assert len(entity.control_calls) == 4
-    np.testing.assert_allclose(entity.control_calls[-1], np.zeros((4, 2)), atol=1e-6)
-
-    backend.set_pre_step_control(lambda _owner, c: np.zeros((4, 3), dtype=c.dtype))
-    with pytest.raises(ValueError, match="pre-step control must return shape"):
-        backend.step(ctrl)
-    backend.set_pre_step_control(None)
-    backend.step(ctrl)
-    assert len(entity.control_calls) == 5
+    with pytest.raises(
+        NotImplementedError, match="tensor stepping does not support host pre-step control"
+    ):
+        backend.step_tensor(torch.from_numpy(ctrl).cuda(), nsteps=4)
+    assert calls == []
+    assert entity.control_calls == []
+    assert entity.step_count == 0
 
 
 def test_set_state_subset_reset_isolated(fake_genesis, tiny_model_file: str) -> None:
     backend = _backend(tiny_model_file)
     qpos, qvel = _stand_state(backend, 4)
-    qpos[:, 0] = np.array([-0.3, -0.1, 0.1, 0.3], dtype=np.float32)
-    qvel[:, 0] = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
-    backend.set_state(np.arange(4, dtype=np.int32), qpos, qvel)
-    previous_pos = backend.get_base_pos().copy()
-    previous_vel = backend.get_base_lin_vel().copy()
+    qpos[:, 0] = torch.tensor([-0.3, -0.1, 0.1, 0.3], device=qpos.device)
+    qvel[:, 0] = torch.tensor([0.1, 0.2, 0.3, 0.4], device=qvel.device)
+    backend.set_state_tensor(torch.arange(4, dtype=torch.int64, device="cuda"), qpos, qvel)
+    previous = backend.get_state_views()
+    previous_pos = previous["qpos"][:, :3].detach().clone()
+    previous_vel = previous["qvel"][:, :3].detach().clone()
 
-    rows = np.array([3, 1], dtype=np.int32)
+    rows = torch.tensor([3, 1], dtype=torch.int64, device="cuda")
     reset_qpos, reset_qvel = _stand_state(backend, 2)
-    result = backend.set_state(rows, reset_qpos, reset_qvel)
+    result = backend.set_state_tensor(rows, reset_qpos, reset_qvel)
     timing = result["timing"]
-    assert timing["set_state_reset_upload_ms"] >= 0.0
-    assert timing["set_state_host_cache_refresh_ms"] >= 0.0
-    assert "set_state_internal_gap_ms" in timing
+    assert timing["tensor_reset_ms"] >= 0.0
 
-    np.testing.assert_allclose(backend.get_base_pos()[rows, 2], 0.8, atol=1e-5)
-    np.testing.assert_allclose(backend.get_dof_pos()[rows], [[0.1, -0.2], [0.1, -0.2]], atol=1e-6)
+    state = backend.get_state_views()
+    current_qpos = state["qpos"].detach().cpu().numpy()
+    current_qvel = state["qvel"].detach().cpu().numpy()
+    rows_host = rows.detach().cpu().numpy()
+    np.testing.assert_allclose(current_qpos[rows_host, 2], 0.8, atol=1e-5)
+    np.testing.assert_allclose(current_qpos[rows_host, 7:], [[0.1, -0.2], [0.1, -0.2]], atol=1e-6)
     complement = np.array([0, 2], dtype=np.int32)
-    np.testing.assert_allclose(backend.get_base_pos()[complement], previous_pos[complement])
-    np.testing.assert_allclose(backend.get_base_lin_vel()[complement], previous_vel[complement])
-    assert np.isfinite(backend.get_dof_vel()).all()
+    np.testing.assert_allclose(current_qpos[complement, :3], previous_pos[complement].cpu().numpy())
+    np.testing.assert_allclose(current_qvel[complement, :3], previous_vel[complement].cpu().numpy())
+    assert np.isfinite(current_qvel).all()
 
-    with pytest.raises(ValueError, match="duplicate rows"):
-        backend.set_state(np.array([1, 1], dtype=np.int32), reset_qpos, reset_qvel)
+    with pytest.raises(ValueError, match="env_indices must be unique"):
+        backend.set_state_tensor(
+            torch.tensor([1, 1], dtype=torch.int64, device="cuda"), reset_qpos, reset_qvel
+        )
     with pytest.raises(ValueError, match="must be in \\[0, 4\\)"):
-        backend.set_state(np.array([9], dtype=np.int32), reset_qpos[:1], reset_qvel[:1])
+        backend.set_state_tensor(
+            torch.tensor([9], dtype=torch.int64, device="cuda"), reset_qpos[:1], reset_qvel[:1]
+        )
     with pytest.raises(ValueError, match="qpos must have shape"):
-        backend.set_state(rows, reset_qpos[:, :5], reset_qvel)
-    empty = backend.set_state(
-        np.array([], dtype=np.int32),
-        np.zeros((0, NQ), dtype=np.float32),
-        np.zeros((0, NV), dtype=np.float32),
+        backend.set_state_tensor(rows, reset_qpos[:, :5], reset_qvel)
+    empty = backend.set_state_tensor(
+        torch.empty(0, dtype=torch.int64, device="cuda"),
+        torch.zeros((0, NQ), dtype=torch.float32, device="cuda"),
+        torch.zeros((0, NV), dtype=torch.float32, device="cuda"),
     )
     assert all(value == 0.0 for value in empty["timing"].values())
 
@@ -337,83 +377,87 @@ def test_base_velocity_frame_conventions(fake_genesis, tiny_model_file: str) -> 
     backend = _backend(tiny_model_file, num_envs=1)
     qpos, qvel = _stand_state(backend, 1)
     half = np.sqrt(0.5)
-    qpos[0, 3:7] = [half, half, 0.0, 0.0]  # 90 deg about x (wxyz)
-    qvel[0, 0:3] = [1.0, 2.0, 3.0]
-    qvel[0, 3:6] = [0.0, 0.0, 1.0]  # body-frame angular velocity
-    backend.set_state(np.array([0], dtype=np.int32), qpos, qvel)
+    qpos[0, 3:7] = torch.tensor(
+        [half, half, 0.0, 0.0], dtype=qpos.dtype, device=qpos.device
+    )  # 90 deg about x (wxyz)
+    qvel[0, 0:3] = torch.tensor([1.0, 2.0, 3.0], device=qvel.device)
+    qvel[0, 3:6] = torch.tensor([0.0, 0.0, 1.0], device=qvel.device)  # body-frame angular velocity
+    backend.set_state_tensor(torch.tensor([0], dtype=torch.int64, device="cuda"), qpos, qvel)
 
-    np.testing.assert_allclose(backend.get_base_lin_vel()[0], [1.0, 2.0, 3.0], atol=1e-6)
+    lin_vel = backend.get_sensor_view("track_linvel_w_pelvis").detach().cpu().numpy()
+    np.testing.assert_allclose(lin_vel[0], [1.0, 2.0, 3.0], atol=1e-6)
     # World-frame angular velocity: R_x90 @ [0,0,1] = [0,-1,0].
-    np.testing.assert_allclose(backend.get_base_ang_vel()[0], [0.0, -1.0, 0.0], atol=1e-6)
-    pelvis_id = backend.get_body_ids(["pelvis"])
-    np.testing.assert_allclose(
-        backend.get_body_ang_vel_w(pelvis_id)[0, 0], [0.0, -1.0, 0.0], atol=1e-6
-    )
+    ang_vel = backend.get_sensor_view("track_angvel_w_pelvis").detach().cpu().numpy()
+    np.testing.assert_allclose(ang_vel[0], [0.0, -1.0, 0.0], atol=1e-6)
     # Body-frame velocities are the world-frame values rotated by R^-1:
     # R_x90^-1 @ [1,2,3] = [1,3,-2]; the angular pair round-trips the qvel
     # body-frame columns (REPORT §3.2 [2d] semantics).
-    np.testing.assert_allclose(
-        backend.get_body_lin_vel_b(pelvis_id)[0, 0], [1.0, 3.0, -2.0], atol=1e-6
-    )
-    np.testing.assert_allclose(
-        backend.get_body_ang_vel_b(pelvis_id)[0, 0], [0.0, 0.0, 1.0], atol=1e-6
-    )
+    state_qvel = backend.get_state_views(("qvel",))["qvel"].detach().cpu().numpy()
+    np.testing.assert_allclose(state_qvel[0, 0:3], [1.0, 2.0, 3.0], atol=1e-6)
+    np.testing.assert_allclose(state_qvel[0, 3:6], [0.0, 0.0, 1.0], atol=1e-6)
     # Gyro reports body/sensor-frame components: identity site frame recovers
     # the qvel body-frame columns.
-    np.testing.assert_allclose(backend.get_sensor_data("base_gyro")[0], [0.0, 0.0, 1.0], atol=1e-6)
+    gyro = backend.get_sensor_view("base_gyro").detach().cpu().numpy()
+    np.testing.assert_allclose(gyro[0], [0.0, 0.0, 1.0], atol=1e-6)
 
 
-def test_body_pose_base_frame(fake_genesis, tiny_model_file: str) -> None:
+def test_body_pose_world_frame(fake_genesis, tiny_model_file: str) -> None:
     backend = _backend(tiny_model_file, num_envs=1)
     qpos, qvel = _stand_state(backend, 1)
-    backend.set_state(np.array([0], dtype=np.int32), qpos, qvel)
-    ids = backend.get_body_ids(["pelvis", "shank"])
-    # Root sits at its own frame origin; the fake shank rides at a fixed
-    # [0,0,-0.6] offset in the pelvis frame, and both frames align.
-    np.testing.assert_allclose(backend.get_body_pos_b(ids)[0, 0], [0.0, 0.0, 0.0], atol=1e-6)
-    np.testing.assert_allclose(backend.get_body_pos_b(ids)[0, 1], [0.0, 0.0, -0.6], atol=1e-6)
+    backend.set_state_tensor(torch.tensor([0], dtype=torch.int64, device="cuda"), qpos, qvel)
+    # Root keeps the qpos pose; the fake shank rides at the transformed world
+    # [0,0,-0.6] offset, and both frames align.
+    pelvis_pos = backend.get_sensor_view("track_pos_w_pelvis").detach().cpu().numpy()
+    shank_pos = backend.get_sensor_view("track_pos_w_shank").detach().cpu().numpy()
+    pelvis_quat = backend.get_sensor_view("track_quat_w_pelvis").detach().cpu().numpy()
+    shank_quat = backend.get_sensor_view("track_quat_w_shank").detach().cpu().numpy()
+    np.testing.assert_allclose(pelvis_pos[0], [0.0, 0.0, 0.8], atol=1e-6)
+    np.testing.assert_allclose(shank_pos[0], [0.0, 0.0, 0.2], atol=1e-6)
     np.testing.assert_allclose(
-        backend.get_body_quat_b(ids)[0], [[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], atol=1e-6
+        [pelvis_quat[0], shank_quat[0]],
+        [[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+        atol=1e-6,
     )
 
 
 def test_sensor_equivalents_from_link_state(fake_genesis, tiny_model_file: str) -> None:
     backend = _backend(tiny_model_file, num_envs=1)
     qpos, qvel = _stand_state(backend, 1)
-    qvel[0, 0:3] = [1.0, 2.0, 3.0]
-    qvel[0, 3:6] = [0.1, 0.2, 0.3]
-    backend.set_state(np.array([0], dtype=np.int32), qpos, qvel)
+    qvel[0, 0:3] = torch.tensor([1.0, 2.0, 3.0], device=qvel.device)
+    qvel[0, 3:6] = torch.tensor([0.1, 0.2, 0.3], device=qvel.device)
+    backend.set_state_tensor(torch.tensor([0], dtype=torch.int64, device="cuda"), qpos, qvel)
 
     site_pos = np.array([0.05, 0.0, -0.08])
-    expected_linvel = qvel[0, 0:3] + np.cross(qvel[0, 3:6], site_pos)
-    np.testing.assert_allclose(
-        backend.get_sensor_data("base_linvel")[0], expected_linvel, atol=1e-6
-    )
-    np.testing.assert_allclose(backend.get_sensor_data("base_gyro")[0], [0.1, 0.2, 0.3], atol=1e-6)
-    np.testing.assert_allclose(backend.get_sensor_data("base_up")[0], [0.0, 0.0, 1.0], atol=1e-6)
-    np.testing.assert_allclose(
-        backend.get_sensor_data("foot_pos")[0], [0.02, 0.0, 0.8 - 0.63], atol=1e-6
-    )
-    np.testing.assert_allclose(
-        backend.get_sensor_data("foot_quat")[0], [1.0, 0.0, 0.0, 0.0], atol=1e-6
-    )
+
+    def sensor_view(name: str) -> np.ndarray:
+        return backend.get_sensor_view(name).detach().cpu().numpy()
+
+    expected_linvel = qvel[0, 0:3].cpu().numpy() + np.cross(qvel[0, 3:6].cpu().numpy(), site_pos)
+    np.testing.assert_allclose(sensor_view("base_linvel")[0], expected_linvel, atol=1e-6)
+    np.testing.assert_allclose(sensor_view("base_gyro")[0], [0.1, 0.2, 0.3], atol=1e-6)
+    np.testing.assert_allclose(sensor_view("base_up")[0], [0.0, 0.0, 1.0], atol=1e-6)
+    np.testing.assert_allclose(sensor_view("foot_pos")[0], [0.02, 0.0, 0.8 - 0.63], atol=1e-6)
+    np.testing.assert_allclose(sensor_view("foot_quat")[0], [1.0, 0.0, 0.0, 0.0], atol=1e-6)
 
     # Accelerometer reads through the registered IMUSensor equivalent.
     imu = backend._imu_sensors["base_acc"]
     imu.lin_acc = torch.full((1, 3), 7.5)
-    backend.step(np.zeros((1, 2), dtype=np.float32))
-    np.testing.assert_allclose(backend.get_sensor_data("base_acc")[0], [7.5, 7.5, 7.5])
+    backend.step_tensor(torch.zeros((1, 2), dtype=torch.float32, device="cuda"))
+    with pytest.raises(
+        NotImplementedError, match="genesis tensor sensor 'base_acc' has unsupported kind"
+    ):
+        sensor_view("base_acc")
 
     # contact(found): per-link net force threshold, both directions.
-    assert backend.get_sensor_data("foot_contact")[0, 0] == 0.0
+    assert sensor_view("foot_contact")[0, 0] == 0.0
     entity = backend._entity
     entity.net_contact_force = torch.zeros(1, N_LINKS, 3)
     entity.net_contact_force[0, 3, 2] = 50.0
-    backend.step(np.zeros((1, 2), dtype=np.float32))
-    assert backend.get_sensor_data("foot_contact")[0, 0] == 1.0
+    backend.step_tensor(torch.zeros((1, 2), dtype=torch.float32, device="cuda"))
+    assert sensor_view("foot_contact")[0, 0] == 1.0
     entity.net_contact_force[0, 3, 2] = 0.5
-    backend.step(np.zeros((1, 2), dtype=np.float32))
-    assert backend.get_sensor_data("foot_contact")[0, 0] == 0.0
+    backend.step_tensor(torch.zeros((1, 2), dtype=torch.float32, device="cuda"))
+    assert sensor_view("foot_contact")[0, 0] == 0.0
 
 
 def test_bind_sensor_data_view(fake_genesis, tiny_model_file: str) -> None:
@@ -423,14 +467,19 @@ def test_bind_sensor_data_view(fake_genesis, tiny_model_file: str) -> None:
     assert view.names == names and view.dimensions == (3, 3)
     values = view.read()
     assert values.shape == (2, 6) and np.isfinite(values).all()
-    np.testing.assert_allclose(values, backend.get_sensor_data_batch(names))
-    with pytest.raises(ValueError, match="missing_sensor"):
+    sensor_values = np.concatenate(
+        [backend.get_sensor_view(name).detach().cpu().numpy() for name in names], axis=1
+    )
+    np.testing.assert_allclose(values, sensor_values)
+    with pytest.raises(KeyError, match="missing_sensor"):
         backend.bind_sensor_data(("missing_sensor",))
-    with pytest.raises(ValueError, match="Sensor 'does_not_exist' not found"):
-        backend.get_sensor_data("does_not_exist")
+    with pytest.raises(NotImplementedError, match="genesis tensor sensor view is unsupported"):
+        backend.get_sensor_view("does_not_exist")
 
 
-def test_dr_capabilities_and_reset_randomization(fake_genesis, tiny_model_file: str) -> None:
+def test_dr_capabilities_and_tensor_reset_randomization_boundary(
+    fake_genesis, tiny_model_file: str
+) -> None:
     backend = _backend(tiny_model_file)
     caps = backend.get_dr_capabilities()
     assert caps.supported_reset_terms == {"body_mass", "base_mass_delta", "kp", "kd"}
@@ -438,35 +487,18 @@ def test_dr_capabilities_and_reset_randomization(fake_genesis, tiny_model_file: 
     assert caps.supports_interval_push is False
     assert caps.supports_interval_body_velocity_delta is False
 
-    entity = backend._entity
-    rows = np.array([1, 3], dtype=np.int32)
+    rows = torch.tensor([1, 3], dtype=torch.int64, device="cuda")
     qpos, qvel = _stand_state(backend, 2)
-    body_mass = np.tile(np.array([[0.0, 6.0, 2.5, 1.5]], dtype=np.float32), (2, 1))
     payload = ResetRandomizationPayload(
-        body_mass=body_mass,
+        gravity=np.zeros((2, 3)),
         kp=np.full((2, 2), 55.0),
         kd=np.full((2, 2), 6.5),
     )
-    backend.set_state(rows, qpos, qvel, randomization=payload)
-    np.testing.assert_allclose(entity.link_mass[1].numpy(), [0.0, 6.0, 2.5, 1.5])
-    np.testing.assert_allclose(entity.link_mass[0, 1].numpy(), 5.0)  # untouched row
-    np.testing.assert_allclose(entity.dof_kp.numpy()[rows][:, ACTUATED_DOFS], 55.0)
-    np.testing.assert_allclose(entity.dof_kv.numpy()[rows][:, ACTUATED_DOFS], 6.5)
-
-    delta_payload = ResetRandomizationPayload(base_mass_delta=np.array([0.25, -0.5]))
-    backend.set_state(rows, qpos, qvel, randomization=delta_payload)
-    # Delta composes onto the scanned nominal base mass (5.0), matching the
-    # MuJoCo backend's base-table semantics.
-    np.testing.assert_allclose(entity.link_mass.numpy()[rows, 1], [5.25, 4.5])
-
-    with pytest.raises(NotImplementedError, match="gravity"):
-        backend.set_state(
-            rows, qpos, qvel, randomization=ResetRandomizationPayload(gravity=np.zeros((2, 3)))
-        )
-    with pytest.raises(ValueError, match="kp must have shape"):
-        backend.set_state(
-            rows, qpos, qvel, randomization=ResetRandomizationPayload(kp=np.zeros((2, 5)))
-        )
+    backend.set_state_tensor(rows, qpos, qvel)
+    with pytest.raises(
+        NotImplementedError, match="genesis tensor reset does not support randomization"
+    ):
+        backend.set_state_tensor(rows, qpos, qvel, randomization=payload)
 
 
 def test_interval_randomization_and_body_force(fake_genesis, tiny_model_file: str) -> None:
@@ -613,14 +645,18 @@ def test_step_translates_viewer_closed(
     monkeypatch.setenv("DISPLAY", ":0")
     backend = _backend(tiny_model_file)
     backend.render()  # attaches the interactive viewer
-    ctrl = np.zeros((backend.num_envs, backend.num_actuators), dtype=np.float32)
-    backend.step(ctrl)  # live viewer: scene.step updates it fine
+    ctrl = torch.zeros(
+        (backend.num_envs, backend.num_actuators), dtype=torch.float32, device="cuda"
+    )
+    backend.step_tensor(ctrl)  # live viewer: scene.step updates it fine
     backend._viewer.alive = False
     with pytest.raises(RenderClosedError, match="viewer window was closed"):
-        backend.step(ctrl)
+        backend.step_tensor(ctrl)
     assert backend._viewer is None
-    # Dead viewer is detached: physics keeps working without a renderer.
-    backend.step(ctrl)
+    # A partial native submission fail-closes the tensor lane instead of
+    # attempting further physics after renderer failure.
+    with pytest.raises(RuntimeError, match="genesis backend state is faulted"):
+        backend.step_tensor(ctrl)
 
 
 def test_interactive_viewer_requires_display(
@@ -644,7 +680,8 @@ def test_camera_tracking_follows_root(fake_genesis, tiny_model_file: str) -> Non
     camera = backend._render_camera
     assert camera.poses, "tracking must re-pose the camera on every capture"
     _, lookat = camera.poses[-1]
-    np.testing.assert_allclose(lookat, backend.get_base_pos()[1], atol=1e-5)
+    root_pos = backend.get_sensor_view("track_pos_w_pelvis").detach().cpu().numpy()
+    np.testing.assert_allclose(lookat, root_pos[1], atol=1e-5)
 
 
 def test_run_playback_record_writes_video(
@@ -736,7 +773,8 @@ def test_constructor_validation_and_factory_wiring(fake_genesis, tiny_model_file
     # First state access lazily builds the scene (isaacgym-style idempotent
     # materialize), so Entity validators that read state before the env's
     # explicit materialize hook work (#1382).
-    np.testing.assert_allclose(backend.get_dof_pos()[0], [0.0, 0.0])
+    current_dof_pos = backend.get_state_views(("qpos",))["qpos"].detach().cpu().numpy()
+    np.testing.assert_allclose(current_dof_pos[0, 7:], [0.0, 0.0])
     assert backend._scene.build_count == 1
     backend.materialize()
     assert backend._scene.build_count == 1

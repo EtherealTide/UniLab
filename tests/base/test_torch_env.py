@@ -59,7 +59,7 @@ def _unsupported_backend() -> MagicMock:
     backend.get_tensor_capabilities.return_value = TensorLifecycleCapabilities(
         execution=TensorExecution.UNSUPPORTED
     )
-    backend.step.return_value = None
+    backend.step_tensor.return_value = None
     return backend
 
 

@@ -21,10 +21,10 @@ def test_unisim_dependency_uses_an_approved_source() -> None:
         return
 
     metadata = json.loads(direct_url)
-    assert metadata.get("url") == "https://github.com/unilabsim/unisim.git"
-    vcs_info = metadata.get("vcs_info", {})
-    assert vcs_info.get("vcs") == "git"
-    assert vcs_info.get("commit_id"), "Git-sourced UniSim must be pinned to a commit"
+    local_unisim = (_REPO_ROOT / "third-party" / "unisim").resolve()
+    assert metadata.get("url") == local_unisim.as_uri()
+    dir_info = metadata.get("dir_info", {})
+    assert dir_info.get("editable") is True
 
 
 def test_materializer_consumers_use_unisim_owner_module() -> None:

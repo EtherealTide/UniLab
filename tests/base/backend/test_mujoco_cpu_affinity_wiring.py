@@ -15,8 +15,8 @@ import inspect
 import os
 from pathlib import Path
 
-import numpy as np
 import pytest
+import torch
 
 from unilab.base.backend_factory import create_backend, env_backend_kwargs
 from unilab.base.base import EnvCfg
@@ -140,8 +140,8 @@ def test_workers_pinned_to_configured_cpus():
     backend = _build_small_backend(cpu_ids=cpu_ids)
     assert backend._pool.num_threads == len(cpu_ids)
     nu = backend._model.nu
-    backend.step(np.zeros((_NUM_ENVS, nu), dtype=np.float64), nsteps=1)
-    assert np.all(np.isfinite(backend.get_dof_pos()))
+    backend.step_tensor(torch.zeros((_NUM_ENVS, nu), dtype=torch.float32), nsteps=1)
+    assert bool(torch.isfinite(backend.get_state_views(("qpos",))["qpos"]).all())
 
 
 def test_unavailable_cpu_id_fails_at_pool_creation():
@@ -162,8 +162,8 @@ def test_default_path_keeps_os_scheduling():
     assert backend._cpu_ids is None
     assert backend._pool.num_threads == backend._n_threads
     nu = backend._model.nu
-    backend.step(np.zeros((_NUM_ENVS, nu), dtype=np.float64), nsteps=1)
-    assert np.all(np.isfinite(backend.get_dof_pos()))
+    backend.step_tensor(torch.zeros((_NUM_ENVS, nu), dtype=torch.float32), nsteps=1)
+    assert bool(torch.isfinite(backend.get_state_views(("qpos",))["qpos"]).all())
 
 
 def test_default_nthread_sized_to_effective_cpus():
@@ -218,6 +218,6 @@ def test_hot_path_does_no_xml_parse(monkeypatch):
     monkeypatch.setattr(mujoco.MjSpec, "from_file", staticmethod(_counting_from_file))
     monkeypatch.setattr(mujoco.MjModel, "from_xml_path", staticmethod(_counting_from_xml_path))
     nu = backend._model.nu
-    backend.step(np.zeros((backend.num_envs, nu), dtype=np.float64), nsteps=1)
+    backend.step_tensor(torch.zeros((backend.num_envs, nu), dtype=torch.float32), nsteps=1)
     assert spec_calls["n"] == 0
     assert model_calls["n"] == 0

@@ -317,10 +317,6 @@ def test_materialize_uses_shared_protocol_and_exposes_state(backend: IsaacSimBac
     assert backend.model.num_bodies == 4
     assert backend.get_actuator_names() == ("j0", "j1", "j2")
     np.testing.assert_allclose(backend.get_default_qpos(), [0, 0, 0.8, 1, 0, 0, 0, 0.1, 0.2, 0.3])
-    np.testing.assert_allclose(backend.get_base_pos(), [[0, 0, 0.8]] * NUM_ENVS)
-    np.testing.assert_allclose(backend.get_dof_pos(), [[0.1, 0.2, 0.3]] * NUM_ENVS)
-    result = backend.step(np.ones((NUM_ENVS, 3), dtype=np.float32), nsteps=1)
-    assert result["timing"]["physics_ms"] >= 0.0
 
 
 def test_env_cleanup_hook_reaps_isaacsim_worker(backend: IsaacSimBackend) -> None:
@@ -344,10 +340,8 @@ def test_contact_sensor_is_explicitly_unsupported(backend: IsaacSimBackend) -> N
     metadata = backend._scene_metadata
     assert metadata is not None
     assert "foot_contact" in metadata.unsupported_sensors
-    with pytest.raises(NotImplementedError, match="no PhysX per-body or pair contact reporter"):
-        backend.get_sensor_data("foot_contact")
-    # Non-contact sensors remain available through the inherited cached path.
-    assert backend.get_sensor_data("base_gyro").shape == (NUM_ENVS, 3)
+    with pytest.raises(NotImplementedError, match="CUDA IPC tensor lifecycle"):
+        backend.get_sensor_view("foot_contact")
 
 
 def test_play_contract_advertises_native_rendering(
@@ -638,26 +632,6 @@ def test_isaacsim_worker_error_is_not_isaacgym_error_type(
             backend.materialize()
         assert type(caught.value) is IsaacSimWorkerError
         assert isinstance(caught.value, IsaacGymWorkerError)
-    finally:
-        backend.close()
-
-
-def test_isaacsim_worker_timeout_has_backend_diagnostic(
-    scene_file: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("UNILAB_ISAACGYM_MOCK_BEHAVIOR", "hang_on_step")
-    # The tight 0.2 s budget targets the hanging STEP only: the INIT
-    # handshake includes the worker's cold Python spawn, which exceeds 0.2 s
-    # on loaded CI runners (ubuntu-slim) and flaked the test before it
-    # reached the step under test.  Materialize with the default timeout,
-    # then shrink the budget for the STEP probe.
-    backend = _make_backend(scene_file)
-    backend.materialize()
-    backend._worker_timeout_s = 0.2
-    try:
-        with pytest.raises(IsaacSimWorkerError, match="isaacsim worker did not answer STEP"):
-            backend.step(np.zeros((NUM_ENVS, 3), dtype=np.float32))
-        assert backend._proc is not None and backend._proc.poll() is not None
     finally:
         backend.close()
 

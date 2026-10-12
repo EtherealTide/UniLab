@@ -102,11 +102,15 @@ class _Backend:
         )
 
     def get_state_views(self, fields, device=None) -> dict[str, torch.Tensor]:
-        assert set(fields) == {"qpos", "qvel"}
+        assert set(fields) <= {"qpos", "qvel"}
         target = torch.device(device) if device is not None else torch.device("cpu")
         return {
-            "qpos": torch.from_numpy(self.dof_pos.copy()).to(target),
-            "qvel": torch.zeros(self.dof_pos.shape, dtype=torch.float32, device=target),
+            field: (
+                torch.from_numpy(self.dof_pos.copy()).to(target)
+                if field == "qpos"
+                else torch.zeros(self.dof_pos.shape, dtype=torch.float32, device=target)
+            )
+            for field in fields
         }
 
 
