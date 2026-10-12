@@ -117,6 +117,7 @@ class ResetStateTransaction:
         self._tensor_active_mask: torch.Tensor | None = None
         self._tensor_has_writes = False
         self._tensor_owner_subset = False
+        self._mask_count = torch.zeros((), dtype=torch.int64)
         self._begin_rows: torch.Tensor | None = None
         self._begin_ids: np.ndarray | None = None
         self._host_has_writes = False
@@ -1073,7 +1074,7 @@ class ResetStateTransaction:
         if active_mask is None:
             raise RuntimeError("fixed-width default reset requires an active mask transaction")
         if self._tensor_owner_subset:
-            if bool((reset_mask & ~active_mask).any()):
+            if self._tensor_mask_has_outside_rows(reset_mask, active_mask):
                 raise ValueError(
                     f"EventManager term '{term_name}' attempted default reset outside "
                     "the active mask"
@@ -1087,7 +1088,7 @@ class ResetStateTransaction:
             raise NotImplementedError(
                 "mask reset does not support mapped entity default-state restoration"
             )
-        if not bool(reset_mask.any()):
+        if self._mask_is_empty(reset_mask):
             return
         self._requesting_terms.add(term_name)
         self._require_packed_transaction().begin_state_mask(reset_mask)
@@ -1174,7 +1175,7 @@ class ResetStateTransaction:
         if active_mask is None:
             raise RuntimeError("ManagerBased mask reset transaction is not active")
         if self._tensor_owner_subset:
-            if bool((reset_mask & ~active_mask).any()):
+            if self._tensor_mask_has_outside_rows(reset_mask, active_mask):
                 raise ValueError(
                     f"EventManager term '{term_name}' attempted joint-state mutation outside "
                     "the active mask"
@@ -1221,7 +1222,7 @@ class ResetStateTransaction:
         assert device is not None
         if self._tensor_owner_subset:
             self._record_tensor_write_mask(reset_mask)
-            if not bool(reset_mask.any()):
+            if self._mask_is_empty(reset_mask):
                 return
         transaction.write_state_mask(
             reset_mask,
@@ -1357,7 +1358,7 @@ class ResetStateTransaction:
             )
         if self._tensor_owner_subset:
             active_mask = self._tensor_active_mask
-            if bool((reset_mask & ~active_mask).any()):
+            if self._tensor_mask_has_outside_rows(reset_mask, active_mask):
                 raise ValueError(
                     f"ManagerBased tensor mask {capability} attempted a write outside "
                     "the active mask"
@@ -1376,6 +1377,17 @@ class ResetStateTransaction:
             self._record_tensor_write_mask(reset_mask)
             return reset_mask & active_mask
         return reset_mask
+
+    @staticmethod
+    def _tensor_mask_has_outside_rows(reset_mask: torch.Tensor, active_mask: torch.Tensor) -> bool:
+        return bool((reset_mask & ~active_mask).any())
+
+    def _mask_is_empty(self, reset_mask: torch.Tensor) -> bool:
+        self._mask_count.copy_(reset_mask.sum())
+        return bool(self._mask_count.item() == 0)
+
+    def _commit_has_rows(self, commit_mask: torch.Tensor) -> bool:
+        return not self._mask_is_empty(commit_mask)
 
     def _record_tensor_write_mask(self, reset_mask: torch.Tensor) -> None:
         """Extend the packed owner-subset carrier with one actual write mask."""
@@ -1588,7 +1600,7 @@ class ResetStateTransaction:
             assert active_mask is not None
             requested_mask = torch.zeros_like(active_mask)
             requested_mask[ids] = True
-            outside = bool((requested_mask & ~active_mask).any())
+            outside = self._tensor_mask_has_outside_rows(requested_mask, active_mask)
         else:
             begin_ids = self._begin_ids
             assert begin_ids is not None
@@ -1711,7 +1723,7 @@ class ResetStateTransaction:
             else:
                 commit_mask = self._tensor_active_mask
                 assert commit_mask is not None
-            if not bool(commit_mask.any()):
+            if not self._commit_has_rows(commit_mask):
                 return None
             try:
                 started = time.perf_counter()
@@ -2143,7 +2155,7 @@ class ResetStateTransaction:
         assert active_mask is not None
         requested_mask = torch.zeros_like(active_mask)
         requested_mask[ids] = True
-        if bool((requested_mask & ~active_mask).any()):
+        if self._tensor_mask_has_outside_rows(requested_mask, active_mask):
             raise ValueError(
                 f"EventManager term '{term_name}' attempted {capability} mutation "
                 "outside the active tensor reset"
@@ -2422,6 +2434,7 @@ class ResetStateTransaction:
         self._requesting_terms.clear()
         self._tensor_active = False
         self._tensor_active_mask = None
+        self._mask_count.zero_()
         self._tensor_has_writes = False
         self._tensor_owner_subset = False
         self._tensor_write_mask = None

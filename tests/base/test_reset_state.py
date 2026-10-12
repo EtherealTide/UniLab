@@ -778,6 +778,19 @@ def test_packed_reset_rejects_invalid_mask_layout() -> None:
     assert backend.tensor_reset_calls == []
 
 
+def test_tensor_transaction_reuses_mask_count_carrier() -> None:
+    backend = _TensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+
+    with transaction.scoped_device_event_tensor(torch.tensor([False, True, False, True])):
+        pass
+
+    assert isinstance(transaction._mask_count, torch.Tensor)
+    assert transaction._mask_count.dtype is torch.int64
+    assert transaction._mask_count.item() == 0
+
+
 def test_packed_motion_root_state_payloads_remain_contiguous() -> None:
     backend = _RecordingPackedTensorResetBackend()
     transaction = _transaction(backend)
