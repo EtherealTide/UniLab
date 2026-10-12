@@ -1448,6 +1448,19 @@ class ManagerBasedRlEnv(TorchEnv):
             owner_failures.append("mapped entity reset layout has no K=1 graph carrier")
         if not self.reward_manager.step_reward_names:
             owner_failures.append("reward component layout is empty")
+        final_observation_carrier = self._final_observation_scratch
+        if final_observation_carrier is None:
+            owner_failures.append("terminal observation carrier is not materialized")
+        else:
+            expected_groups = set(self.obs_groups_spec)
+            if set(final_observation_carrier) != expected_groups:
+                owner_failures.append("terminal observation carrier groups do not match outputs")
+            elif any(
+                value.device != self.device
+                or value.shape != (self.num_envs, self.obs_groups_spec[name])
+                for name, value in final_observation_carrier.items()
+            ):
+                owner_failures.append("terminal observation carrier layout does not match outputs")
         if owner_failures:
             return {
                 "requested": True,
@@ -1468,6 +1481,7 @@ class ManagerBasedRlEnv(TorchEnv):
                     name: int(dim) for name, dim in self.obs_groups_spec.items()
                 },
                 "reward_components": len(self.reward_manager.step_reward_names),
+                "terminal_observation_groups": sorted(self.obs_groups_spec),
             },
         }
 

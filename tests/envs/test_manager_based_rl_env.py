@@ -1337,7 +1337,13 @@ def test_deferred_validation_boundaries_fail_closed_without_backend_capability()
 def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
     env, _backend = _make_env()
 
-    object.__setattr__(env, "_device", torch.device("cuda")) if torch.cuda.is_available() else None
+    env.init_state()
+    if torch.cuda.is_available():
+        object.__setattr__(env, "_device", torch.device("cuda", index=torch.cuda.current_device()))
+        env._final_observation_scratch = {
+            name: value.to(device=env.device)
+            for name, value in env._final_observation_scratch.items()
+        }
     supported = env.preflight_graph_candidate(requested=True)
     unrequested = env.preflight_graph_candidate(requested=False)
 
@@ -1352,6 +1358,7 @@ def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
             "action_dim": 1,
             "observation_groups": {"obs": 2, "critic": 1},
             "reward_components": 1,
+            "terminal_observation_groups": ["critic", "obs"],
         },
     }
     assert unrequested == {
@@ -1365,15 +1372,26 @@ def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
 
 def test_env_graph_candidate_preflight_rejects_cpu_carrier() -> None:
     env, _backend = _make_env()
+    env.init_state()
 
     result = env.preflight_graph_candidate(requested=True)
 
-    assert result == {
-        "requested": True,
-        "supported": False,
-        "disable_reason": "environment output carrier is not CUDA-resident",
-        "backend_stream_contract": "test",
-    }
+    assert result["supported"] is False
+    assert "environment output carrier is not CUDA-resident" in result["disable_reason"]
+    assert "terminal observation carrier is not materialized" not in result["disable_reason"]
+    env.close()
+
+
+def test_env_graph_candidate_preflight_requires_terminal_carrier() -> None:
+    env, _backend = _make_env()
+
+    result = env.preflight_graph_candidate(requested=True)
+
+    assert result["supported"] is False
+    assert result["disable_reason"] == (
+        "environment output carrier is not CUDA-resident; "
+        "terminal observation carrier is not materialized"
+    )
     env.close()
 
 
