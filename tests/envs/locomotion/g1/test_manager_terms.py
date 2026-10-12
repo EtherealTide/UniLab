@@ -105,7 +105,7 @@ def test_gait_phase_advances_with_counter_and_resamples_per_init_mode():
     )
 
     np.testing.assert_array_equal(term(env), np.zeros((4, 2)))
-    term.reset(torch.arange(4, dtype=torch.int64))
+    term.reset(torch.ones(4, dtype=torch.bool))
     phase = term(env)
     np.testing.assert_allclose(phase[:, 1] - phase[:, 0], np.pi, rtol=1.0e-6)
     assert bool(torch.all(phase[:, 0] >= 0.0)) and bool(torch.all(phase[:, 0] < 2.0 * np.pi))
@@ -129,7 +129,7 @@ def test_gait_phase_independent_mode_samples_feet_independently():
         ObservationTermCfg(func=G1GaitPhase, params={"frequency": 1.5, "init_mode": "independent"}),
         cast(Any, env),
     )
-    term.reset(torch.arange(64, dtype=torch.int64))
+    term.reset(torch.ones(64, dtype=torch.bool))
     phase = term(env)
     assert not np.allclose(phase[:, 1] - phase[:, 0], np.pi)
 
@@ -143,7 +143,7 @@ def test_gait_phase_reset_fails_closed_without_torch_rng() -> None:
     )
 
     with pytest.raises(RuntimeError, match="Manager-owned Torch generator"):
-        term.reset(torch.arange(4, dtype=torch.int64))
+        term.reset(torch.ones(4, dtype=torch.bool))
 
 
 def test_bezier_targets_match_legacy_reference_values():

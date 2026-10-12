@@ -82,6 +82,10 @@ class ActionTerm(ManagerTermBase):
     def apply_actions(self) -> None:
         raise NotImplementedError
 
+    @abc.abstractmethod
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        raise NotImplementedError
+
     @property
     @abc.abstractmethod
     def raw_action(self) -> torch.Tensor:
@@ -168,36 +172,16 @@ class ActionManager(ManagerBase):
     def get_term(self, name: str) -> ActionTerm:
         return self._terms[name]
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
-        if env_ids is None:
-            env_ids = slice(None)
-        self.clear_action_state(env_ids)
+    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        self.clear_action_state(reset_mask)
         return {}
 
-    def clear_action_state(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        """Clear selected manager and term action state without logging.
+    def clear_action_state(self, reset_mask: torch.Tensor) -> None:
+        """Clear fixed-width manager and term action state without logging.
 
         Reset owners consume this boundary when they own the action reset pass.
-        It preserves the exact generic reset state mutation while leaving the
-        ordinary reset extras contract to the caller.
-        """
-        if env_ids is None:
-            env_ids = slice(None)
-        # Reset action history.
-        selector = self._reset_selector(env_ids)
-        self._prev_action[selector] = 0.0
-        self._prev_prev_action[selector] = 0.0
-        self._action[selector] = 0.0
-        # Reset action terms.
-        for term in self._terms.values():
-            term.reset(env_ids=env_ids)
-
-    def clear_action_state_mask(self, reset_mask: torch.Tensor) -> None:
-        """Clear issue #2285's research fixed-shape action state.
-
         Manager-owned histories are mask-cleared. Each action term must provide
-        its own mask-preserving boundary; there is deliberately no selected-row
-        fallback in the experiment.
+        its own mask-preserving boundary; there is no selected-row fallback.
         """
         self._validate_reset_mask(reset_mask)
         expanded = reset_mask[:, None]
@@ -213,13 +197,12 @@ class ActionManager(ManagerBase):
         )
         self._action.copy_(torch.where(expanded, torch.zeros_like(self._action), self._action))
         for name, term in self._terms.items():
-            reset_mask_impl = getattr(term, "reset_mask", None)
-            if not callable(reset_mask_impl):
+            if not callable(getattr(term, "reset", None)):
                 raise NotImplementedError(
-                    f"ActionManager term '{name}' does not define the issue #2285 "
+                    f"ActionManager term '{name}' does not define the "
                     "mask-preserving reset boundary"
                 )
-            reset_mask_impl(reset_mask)
+            term.reset(reset_mask)
 
     def _validate_reset_mask(self, reset_mask: torch.Tensor) -> None:
         if (
@@ -230,7 +213,7 @@ class ActionManager(ManagerBase):
             or reset_mask.device != self._device
         ):
             raise ValueError(
-                f"ActionManager research reset mask must have shape {(self.num_envs,)}, "
+                f"ActionManager reset mask must have shape {(self.num_envs,)}, "
                 f"bool dtype, and device {self._device}"
             )
 
@@ -276,26 +259,6 @@ class ActionManager(ManagerBase):
             except (TypeError, ValueError, NotImplementedError) as exc:
                 raise type(exc)(f"ActionManager term '{name}': {exc}") from exc
             idx += term.action_dim
-
-    def _reset_selector(self, env_ids: torch.Tensor | slice) -> torch.Tensor | slice:
-        if env_ids is None:
-            return slice(None)
-        if isinstance(env_ids, slice):
-            return env_ids
-        if (
-            not isinstance(env_ids, torch.Tensor)
-            or env_ids.ndim != 1
-            or env_ids.dtype
-            not in {
-                torch.int32,
-                torch.int64,
-            }
-        ):
-            raise TypeError("ActionManager reset rows must be one-dimensional integers")
-        rows = env_ids.to(self._device)
-        if rows.numel() and (rows.min() < 0 or rows.max() >= self.num_envs):
-            raise IndexError(f"ActionManager reset rows out of range: {rows.tolist()}")
-        return rows.to(torch.int64)
 
     def apply_action(self) -> None:
         """Write processed actions to entity actuator targets.

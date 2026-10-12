@@ -37,15 +37,9 @@ from unilab.envs.mdp.events import reset_root_state_uniform as reset_root_state_
 from unilab.envs.mdp.events import (
     reset_root_state_uniform_tensor as reset_root_state_uniform_tensor,
 )
-from unilab.envs.mdp.events import (
-    reset_root_state_uniform_tensor_mask as reset_root_state_uniform_tensor_mask,
-)
 from unilab.envs.mdp.events import reset_scene_to_default as reset_scene_to_default
 from unilab.envs.mdp.events import (
     reset_scene_to_default_tensor as reset_scene_to_default_tensor,
-)
-from unilab.envs.mdp.events import (
-    reset_scene_to_default_tensor_mask as reset_scene_to_default_tensor_mask,
 )
 from unilab.envs.mdp.events import resolve_env_ids as resolve_env_ids
 from unilab.envs.mdp.observations import base_ang_vel as base_ang_vel
@@ -140,10 +134,8 @@ __all__ = [
     "projected_gravity_imu_misaligned",
     "reset_root_state_uniform",
     "reset_root_state_uniform_tensor",
-    "reset_root_state_uniform_tensor_mask",
     "reset_scene_to_default",
     "reset_scene_to_default_tensor",
-    "reset_scene_to_default_tensor_mask",
     "resolve_env_ids",
     "reward_curriculum",
     "root_height_below_minimum",

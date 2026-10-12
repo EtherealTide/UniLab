@@ -301,35 +301,6 @@ def resolve_env_ids(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> tor
     return torch.as_tensor(env_ids, dtype=torch.int64)
 
 
-def _probe_device_reset_randomization(env: ManagerBasedRlEnv) -> bool:
-    """Whether the backend declares device-resident reset DR commits."""
-    return bool(env.backend.get_tensor_capabilities().device_reset_randomization)
-
-
-def _device_reset_randomization_active(
-    env: ManagerBasedRlEnv,
-    env_ids: torch.Tensor | None,
-    entity: Entity,
-    *,
-    capable: bool,
-) -> bool:
-    """Whether this apply can stage DR values wholly on the reset device.
-
-    All four gates must hold: the backend declares the
-    ``device_reset_randomization`` tensor capability, the reset rows are
-    already CUDA tensors, the environment owns a device Torch RNG, and the
-    active reset transaction composes device tensor rows
-    (``scoped_device_event_tensor``). Any miss keeps the NumPy staging path.
-    """
-    return (
-        capable
-        and isinstance(env_ids, torch.Tensor)
-        and env_ids.is_cuda
-        and isinstance(getattr(env, "torch_rng", None), TorchManagerRng)
-        and entity.reset_state_tensor_active
-    )
-
-
 def _device_reset_table(values: torch.Tensor, device: torch.device) -> torch.Tensor:
     """Materialize one immutable default/parameter table on a device."""
     return values.to(device=device, dtype=torch.float32)
@@ -411,14 +382,28 @@ def _shared_parameter_groups(
         )
 
 
-class _ModelFieldRandomizer(ManagerTermBase):
+class _UnsupportedResetRandomizationTerm(ManagerTermBase):
+    """Reset DR base that fails closed before a reset transaction opens."""
+
+    mask_reset_supported = False
+
+    def reset(
+        self,
+        env: ManagerBasedRlEnv,
+        reset_mask: torch.Tensor,
+        **kwargs: object,
+    ) -> None:
+        del env, reset_mask, kwargs
+        raise NotImplementedError("reset randomization has no fixed-width mask commit boundary")
+
+
+class _ModelFieldRandomizer(_UnsupportedResetRandomizationTerm):
     """Pinned mjlab-style model-field DR terms with Torch sampling tables."""
 
     _term_name = "model_field"
     _field_width = 1
     _default_axes: tuple[int, ...] = (0,)
     _valid_axes: tuple[int, ...] = (0,)
-    _supports_device_reset_tensor = False
     _PARAMS = frozenset(
         ("ranges", "asset_cfg", "distribution", "operation", "axes", "shared_random")
     )
@@ -470,8 +455,6 @@ class _ModelFieldRandomizer(ManagerTermBase):
         self._defaults = defaults
         self._axes = self._resolve_axes(cfg.params.get("axes"), ranges)
         self._ranges = self._resolve_ranges(ranges, names)
-        self._device_dr_capable = _probe_device_reset_randomization(env)
-        self._device_defaults: torch.Tensor | None = None
         self._device_ranges: torch.Tensor | None = None
         self._device_axis_groups: dict[
             int, list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
@@ -674,48 +657,6 @@ class _ModelFieldRandomizer(ManagerTermBase):
             samples[:, indices] = shared
         return samples
 
-    def _apply_device(self, env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> None:
-        """Stage model-field DR rows wholly on the reset device.
-
-        The host path's finite/non-negative output check is deliberately
-        skipped here: validation is deferred to the backend commit contract
-        behind ``device_reset_randomization`` (mjwarp validates the dense
-        payload rows before applying them), which keeps this hot path free of
-        device synchronization.
-        """
-        rows = env_ids.to(dtype=torch.int64)
-        count = rows.numel()
-        if count == 0:
-            return
-        device = env_ids.device
-        rng = cast(TorchManagerRng, env.torch_rng)
-        if self._device_defaults is None or self._device_defaults.device != device:
-            self._device_defaults = _device_reset_table(self._defaults, device)
-        if self._device_ranges is None or self._device_ranges.device != device:
-            self._device_ranges = _device_reset_table(self._ranges, device)
-            self._device_axis_groups.clear()
-        defaults = self._device_defaults
-        canonical_ndim = 1 if self._field_width == 1 else 2
-        if defaults.ndim == canonical_ndim:
-            values = defaults.expand(count, *defaults.shape).clone()
-        else:
-            values = defaults.index_select(0, rows)
-        for axis in self._axes:
-            samples = self._sample_axis_tensor(rng, axis, count)
-            if self._field_width == 1:
-                values = _apply_randomization_operation_tensor(
-                    values,
-                    samples,
-                    self._operation,
-                )
-            else:
-                values[..., axis] = _apply_randomization_operation_tensor(
-                    values[..., axis],
-                    samples,
-                    self._operation,
-                )
-        self._write_tensor(values.contiguous(), rows)
-
     def _sample_device(self, env: ManagerBasedRlEnv) -> torch.device:
         return _require_torch_rng(env, self.name).device
 
@@ -742,11 +683,6 @@ class _ModelFieldRandomizer(ManagerTermBase):
         shared_random: bool = False,
     ) -> None:
         del ranges, asset_cfg, distribution, operation, axes, shared_random
-        if self._supports_device_reset_tensor and _device_reset_randomization_active(
-            env, env_ids, self._entity, capable=self._device_dr_capable
-        ):
-            self._apply_device(env, cast(torch.Tensor, env_ids))
-            return
         ids = resolve_env_ids(env, env_ids)
         default_values = _model_field_default_rows(
             self._defaults,
@@ -788,7 +724,6 @@ class GeomFriction(_ModelFieldRandomizer):
     _field_width = 3
     _default_axes = (0,)
     _valid_axes = (0, 1, 2)
-    _supports_device_reset_tensor = True
 
     def _bind(
         self,
@@ -804,14 +739,6 @@ class GeomFriction(_ModelFieldRandomizer):
 
     def _write(self, values: torch.Tensor, env_ids: torch.Tensor) -> None:
         self._entity.write_geom_friction_to_sim(
-            values,
-            self._local_ids,
-            env_ids,
-            term_name=self._term_name,
-        )
-
-    def _write_tensor(self, values: torch.Tensor, env_ids: torch.Tensor) -> None:
-        self._entity.write_geom_friction_tensor_to_sim(
             values,
             self._local_ids,
             env_ids,
@@ -850,10 +777,8 @@ joint_armature = JointArmature
 dof_armature = joint_armature
 
 
-class PdGains(ManagerTermBase):
+class PdGains(_UnsupportedResetRandomizationTerm):
     """Pinned-mjlab-compatible PD gain randomization on UniLab reset payloads."""
-
-    uses_tensor_rows = True
 
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedRlEnv):
         super().__init__(env)
@@ -909,51 +834,6 @@ class PdGains(ManagerTermBase):
                 term_name="pd_gains",
             )
         )
-        self._device_dr_capable = _probe_device_reset_randomization(env)
-        self._device_default_kp: torch.Tensor | None = None
-        self._device_default_kd: torch.Tensor | None = None
-
-    def _device_gain_table(self, values: torch.Tensor, device: torch.device) -> torch.Tensor:
-        """Cache one immutable gain-default table on the reset device."""
-        return _device_reset_table(values, device)
-
-    def _apply_device(self, env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> None:
-        """Stage PD gain DR rows wholly on the reset device.
-
-        Finite/non-negative output validation is deferred to the backend
-        commit contract behind ``device_reset_randomization`` (mjwarp
-        validates the dense payload rows before applying them), which keeps
-        this hot path free of device synchronization.
-        """
-        rows = env_ids.to(dtype=torch.int64)
-        count = rows.numel()
-        if count == 0:
-            return
-        device = env_ids.device
-        rng = cast(TorchManagerRng, env.torch_rng)
-        shape = (count, len(self._actuator_ids))
-        if self._distribution == "log_uniform":
-            kp = rng.uniform(math.log(self._kp_range[0]), math.log(self._kp_range[1]), shape).exp()
-            kd = rng.uniform(math.log(self._kd_range[0]), math.log(self._kd_range[1]), shape).exp()
-        else:
-            kp = rng.uniform(self._kp_range[0], self._kp_range[1], shape)
-            kd = rng.uniform(self._kd_range[0], self._kd_range[1], shape)
-        if self._operation == "scale":
-            if self._device_default_kp is None or self._device_default_kp.device != device:
-                self._device_default_kp = self._device_gain_table(self._default_kp, device)
-                self._device_default_kd = self._device_gain_table(self._default_kd, device)
-            default_kp = self._device_default_kp
-            default_kd = self._device_default_kd
-            assert default_kp is not None and default_kd is not None
-            kp = kp * (default_kp if default_kp.ndim == 1 else default_kp.index_select(0, rows))
-            kd = kd * (default_kd if default_kd.ndim == 1 else default_kd.index_select(0, rows))
-        self._entity.write_actuator_gains_tensor_to_sim(
-            kp.contiguous(),
-            kd.contiguous(),
-            actuator_ids=self._actuator_ids,
-            env_ids=rows,
-            term_name="pd_gains",
-        )
 
     def __call__(
         self,
@@ -966,11 +846,6 @@ class PdGains(ManagerTermBase):
         operation: Literal["scale", "abs"] = "scale",
     ) -> None:
         del kp_range, kd_range, asset_cfg, distribution, operation
-        if _device_reset_randomization_active(
-            env, env_ids, self._entity, capable=self._device_dr_capable
-        ):
-            self._apply_device(env, cast(torch.Tensor, env_ids))
-            return
         ids = resolve_env_ids(env, env_ids)
         shape = (ids.numel(), len(self._actuator_ids))
         kp = _sample_gain_range(
@@ -1006,7 +881,7 @@ class PdGains(ManagerTermBase):
 pd_gains = PdGains
 
 
-class RandomizeRigidBodyMass(ManagerTermBase):
+class RandomizeRigidBodyMass(_UnsupportedResetRandomizationTerm):
     """Community-compatible body-mass randomization via reset/startup payloads."""
 
     _PARAMS = frozenset(
@@ -1077,9 +952,6 @@ class RandomizeRigidBodyMass(ManagerTermBase):
             asset_cfg.body_ids,
             term_name=term_name,
         )
-        self._device_dr_capable = _probe_device_reset_randomization(env)
-        self._device_params: torch.Tensor | None = None
-        self._device_default_mass: torch.Tensor | None = None
         self._startup = cfg.mode == "startup"
         self._startup_values: torch.Tensor | None = None
 
@@ -1088,7 +960,7 @@ class RandomizeRigidBodyMass(ManagerTermBase):
 
         Manager startup always supplies every environment row. The event is
         full-width so the backend pays its derived-constant refresh once and
-        later selected-row resets can omit this field entirely.
+        later mask resets can omit this field entirely.
         """
         ids = resolve_env_ids(env, env_ids)
         if not torch.equal(ids, torch.arange(env.num_envs, dtype=torch.int64)):
@@ -1127,48 +999,6 @@ class RandomizeRigidBodyMass(ManagerTermBase):
             term_name="randomize_rigid_body_mass",
         )
 
-    def _apply_device(self, env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> None:
-        """Stage body-mass DR rows wholly on the reset device.
-
-        The host path's min-mass clamp is preserved; further finite-value
-        validation is deferred to the backend commit contract behind
-        ``device_reset_randomization`` (mjwarp validates the dense payload
-        rows before applying them), which keeps this hot path free of device
-        synchronization.
-        """
-        rows = env_ids.to(dtype=torch.int64)
-        count = rows.numel()
-        if count == 0:
-            return
-        device = env_ids.device
-        rng = cast(TorchManagerRng, env.torch_rng)
-        if self._device_params is None or self._device_params.device != device:
-            self._device_params = _device_reset_table(self._distribution_params, device)
-        if self._device_default_mass is None or self._device_default_mass.device != device:
-            self._device_default_mass = _device_reset_table(self._default_mass, device)
-        params = self._device_params
-        samples = _sample_distribution_tensor(
-            rng,
-            params[0],
-            params[1],
-            (count, self._body_ids.size),
-            self._distribution,
-        )
-        defaults = self._device_default_mass
-        default_rows = defaults if defaults.ndim == 1 else defaults.index_select(0, rows)
-        values = _apply_randomization_operation_tensor(
-            default_rows,
-            samples,
-            self._operation,
-        )
-        values = values.clamp_min(self._min_mass).contiguous()
-        self._entity.write_body_mass_tensor_to_sim(
-            values,
-            body_ids=self._body_ids,
-            env_ids=rows,
-            term_name="randomize_rigid_body_mass",
-        )
-
     def __call__(
         self,
         env: ManagerBasedRlEnv,
@@ -1190,11 +1020,6 @@ class RandomizeRigidBodyMass(ManagerTermBase):
         )
         if self._startup:
             self._apply_startup(env, env_ids)
-            return
-        if _device_reset_randomization_active(
-            env, env_ids, self._entity, capable=self._device_dr_capable
-        ):
-            self._apply_device(env, cast(torch.Tensor, env_ids))
             return
         ids = resolve_env_ids(env, env_ids)
         sampled = _sample_distribution(
@@ -1229,7 +1054,7 @@ class RandomizeRigidBodyMass(ManagerTermBase):
 randomize_rigid_body_mass = RandomizeRigidBodyMass
 
 
-class RandomizeBodyMassInertia(ManagerTermBase):
+class RandomizeBodyMassInertia(_UnsupportedResetRandomizationTerm):
     """Startup-style mass+inertia scaling via one shared per-env factor.
 
     NumPy adapter for the alpha-only slice of mjlab's ``dr.pseudo_inertia``:
@@ -1341,7 +1166,7 @@ class RandomizeBodyMassInertia(ManagerTermBase):
 randomize_body_mass_inertia = RandomizeBodyMassInertia
 
 
-class RandomizeRigidBodyCom(ManagerTermBase):
+class RandomizeRigidBodyCom(_UnsupportedResetRandomizationTerm):
     """Community-compatible additive rigid-body CoM randomization.
 
     The ``com_range`` param is re-resolved from the live term params on every
@@ -1384,8 +1209,6 @@ class RandomizeRigidBodyCom(ManagerTermBase):
             asset_cfg.body_ids,
             term_name=term_name,
         )
-        self._device_dr_capable = _probe_device_reset_randomization(env)
-        self._device_default_ipos: torch.Tensor | None = None
         self._startup = cfg.mode == "startup"
         self._startup_values: torch.Tensor | None = None
 
@@ -1435,47 +1258,6 @@ class RandomizeRigidBodyCom(ManagerTermBase):
             term_name="randomize_rigid_body_com",
         )
 
-    def _apply_device(
-        self,
-        env: ManagerBasedRlEnv,
-        env_ids: torch.Tensor,
-        com_range: dict[str, tuple[float, float]],
-    ) -> None:
-        """Stage additive CoM offsets wholly on the reset device.
-
-        ``com_range`` is re-resolved from the live term params on every apply
-        (curricula can stage it); the resulting tiny bounds table is re-uploaded
-        per reset. Finite-value validation is deferred to the backend commit
-        contract behind ``device_reset_randomization`` (mjwarp validates the
-        dense payload rows before applying them), which keeps this hot path
-        free of device synchronization.
-        """
-        rows = env_ids.to(dtype=torch.int64)
-        count = rows.numel()
-        if count == 0:
-            return
-        device = env_ids.device
-        rng = cast(TorchManagerRng, env.torch_rng)
-        ranges = _axis_ranges(
-            com_range,
-            term_name="randomize_rigid_body_com",
-            name="com_range",
-            keys=_XYZ_KEYS,
-        )
-        bounds = _device_reset_table(ranges, device)
-        if self._device_default_ipos is None or self._device_default_ipos.device != device:
-            self._device_default_ipos = _device_reset_table(self._default_ipos, device)
-        offsets = rng.uniform(bounds[:, 0], bounds[:, 1], (count, 3))
-        defaults = self._device_default_ipos
-        default_rows = defaults if defaults.ndim == 2 else defaults.index_select(0, rows)
-        values = (default_rows + offsets[:, None, :]).contiguous()
-        self._entity.write_body_ipos_tensor_to_sim(
-            values,
-            body_ids=self._body_ids,
-            env_ids=rows,
-            term_name="randomize_rigid_body_com",
-        )
-
     def __call__(
         self,
         env: ManagerBasedRlEnv,
@@ -1486,11 +1268,6 @@ class RandomizeRigidBodyCom(ManagerTermBase):
         del asset_cfg
         if self._startup:
             self._apply_startup(env, env_ids, com_range)
-            return
-        if _device_reset_randomization_active(
-            env, env_ids, self._entity, capable=self._device_dr_capable
-        ):
-            self._apply_device(env, cast(torch.Tensor, env_ids), com_range)
             return
         ranges = _axis_ranges(
             com_range,
@@ -1523,7 +1300,7 @@ class RandomizeRigidBodyCom(ManagerTermBase):
 randomize_rigid_body_com = RandomizeRigidBodyCom
 
 
-class RandomizePhysicsSceneGravity(ManagerTermBase):
+class RandomizePhysicsSceneGravity(_UnsupportedResetRandomizationTerm):
     """Community-compatible gravity randomization through reset transactions."""
 
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedRlEnv):
@@ -1944,24 +1721,31 @@ class ApplyBodyImpulse(ManagerTermBase):
                 term_name="apply_body_impulse",
             )
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        host_ids = resolve_env_ids(self._env, env_ids)
-        was_active = torch.nonzero(self._active.index_select(0, host_ids)).flatten()
-        self._active[host_ids] = False
-        self._active_forces[host_ids] = 0.0
-        self._active_torques[host_ids] = 0.0
-        self._time_remaining[host_ids] = 0.0
-        self._interval_time_left[host_ids] = self._sample_cooldown(host_ids.numel())
-        if was_active.numel():
-            zeros = torch.zeros(
-                (was_active.numel(), self._backend_body_ids.size, 3),
-                dtype=torch.float64,
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        was_active = self._active.any()
+        forces = self._active_forces.clone()
+        torques = self._active_torques.clone()
+        keep_mask = ~reset_mask
+        self._active.copy_(self._active & keep_mask)
+        self._active_forces.copy_(self._active_forces * keep_mask[:, None, None])
+        self._active_torques.copy_(self._active_torques * keep_mask[:, None, None])
+        self._time_remaining.copy_(self._time_remaining * keep_mask)
+        self._interval_time_left.copy_(
+            torch.where(
+                reset_mask,
+                self._sample_cooldown(self.num_envs),
+                self._interval_time_left,
             )
+        )
+        if bool(was_active):
+            zeros = torch.zeros_like(self._active_forces)
+            full_forces = torch.where(reset_mask[:, None, None], zeros, forces)
+            full_torques = torch.where(reset_mask[:, None, None], zeros, torques)
             self._entity.apply_body_wrench_to_sim(
-                zeros,
-                zeros.clone() if self._uses_torque else None,
+                full_forces,
+                full_torques if self._uses_torque else None,
                 self._backend_body_ids,
-                env_ids=host_ids.index_select(0, was_active),
+                env_ids=None,
                 term_name="apply_body_impulse",
             )
 
@@ -2025,18 +1809,16 @@ class RandomizeEncoderBias(ManagerTermBase):
             )
         self._joint_ids = joint_ids
 
-    def __call__(
+    def reset(
         self,
         env: ManagerBasedRlEnv,
-        env_ids: torch.Tensor | None,
+        reset_mask: torch.Tensor,
         bias_range: tuple[float, float],
         asset_cfg: SceneEntityCfg,
     ) -> None:
         del bias_range, asset_cfg
-        ids = resolve_env_ids(env, env_ids)
         control = getattr(self._entity.data, "control_buffer", None)
         if isinstance(control, torch.Tensor):
-            rows = torch.as_tensor(ids, dtype=torch.int64, device=control.device)
             columns = torch.tensor(self._joint_ids, dtype=torch.int64, device=control.device)
             rng_owner = getattr(env, "torch_rng", None)
             if rng_owner is None:
@@ -2047,10 +1829,10 @@ class RandomizeEncoderBias(ManagerTermBase):
             sampled = rng_owner.uniform(
                 lower,
                 upper,
-                (rows.numel(), columns.numel()),
+                (self.num_envs, columns.numel()),
                 dtype=torch.float32,
             )
-            self._entity.data.update_encoder_bias_tensor(rows, columns, sampled)
+            self._entity.data.update_encoder_bias_tensor_mask(reset_mask, columns, sampled)
             return
         raise NotImplementedError(
             "EventManager term 'randomize_encoder_bias' requires a Torch control plane"
@@ -2060,16 +1842,19 @@ class RandomizeEncoderBias(ManagerTermBase):
 randomize_encoder_bias = RandomizeEncoderBias
 
 
-def reset_scene_to_default(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> None:
+def reset_scene_to_default(env: ManagerBasedRlEnv, reset_mask: torch.Tensor) -> None:
     """Reset all materialized scene entities to backend default qpos/qvel."""
     if not env.scene.entities:
         return
-    env.scene.reset_to_default(env_ids, term_name="reset_scene_to_default")
+    env.scene.reset_to_default(reset_mask, term_name="reset_scene_to_default")
+
+
+setattr(reset_scene_to_default, "reset", reset_scene_to_default)
 
 
 def reset_root_state_uniform(
     env: ManagerBasedRlEnv,
-    env_ids: torch.Tensor | None,
+    reset_mask: torch.Tensor,
     pose_range: dict[str, tuple[float, float]],
     velocity_range: dict[str, tuple[float, float]] | None = None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
@@ -2080,12 +1865,12 @@ def reset_root_state_uniform(
     no public mocap-pose write contract, so fixed-base/mocap requests fail through
     the entity's cached floating-root capability instead of falling back.
     """
-    ids = resolve_env_ids(env, env_ids)
     asset = cast("Entity", env.scene[asset_cfg.name])
+    if reset_mask.shape != (env.num_envs,) or reset_mask.dtype != torch.bool:
+        raise ValueError("reset_root_state_uniform requires a full-width bool reset mask")
     try:
         default_root_state = asset.data.default_root_state_torch(torch.device(env.device))
-        rows = ids.to(dtype=torch.int64)
-        root_states = default_root_state.index_select(0, rows).clone()
+        root_states = default_root_state.clone()
     except NotImplementedError as exc:
         raise NotImplementedError(
             "EventManager term 'reset_root_state_uniform' requires a floating-root "
@@ -2094,12 +1879,12 @@ def reset_root_state_uniform(
         ) from exc
 
     pose_samples = _sample_se3_range(
-        pose_range, (ids.numel(), 6), _require_torch_rng(env, "reset_root_state_uniform")
+        pose_range, (env.num_envs, 6), _require_torch_rng(env, "reset_root_state_uniform")
     )
     root_states[:, 0:3] = (
         root_states[:, 0:3]
         + pose_samples[:, 0:3].to(dtype=root_states.dtype)
-        + env.scene.env_origins_torch(torch.device(env.device)).index_select(0, rows)
+        + env.scene.env_origins_torch(torch.device(env.device))
     )
     orientation_delta = _tensor_quat_from_euler_xyz(
         pose_samples[:, 3], pose_samples[:, 4], pose_samples[:, 5]
@@ -2109,10 +1894,13 @@ def reset_root_state_uniform(
     )
 
     velocity_samples = _sample_se3_range(
-        velocity_range, (ids.numel(), 6), _require_torch_rng(env, "reset_root_state_uniform")
+        velocity_range, (env.num_envs, 6), _require_torch_rng(env, "reset_root_state_uniform")
     )
     root_states[:, 7:13] = root_states[:, 7:13] + velocity_samples.to(dtype=root_states.dtype)
-    asset.write_root_state_to_sim(root_states, env_ids=ids)
+    asset.write_root_state_tensor_to_sim(root_states, reset_mask)
+
+
+setattr(reset_root_state_uniform, "reset", reset_root_state_uniform)
 
 
 def _tensor_se3_bounds(range_dict: dict[str, tuple[float, float]] | None) -> torch.Tensor:
@@ -2214,118 +2002,19 @@ def _bind_tensor_root_reset() -> _TensorRootResetFn:
 
 def reset_root_state_uniform_tensor(
     env: ManagerBasedRlEnv,
-    env_ids: torch.Tensor,
-    pose_range: dict[str, tuple[float, float]],
-    velocity_range: dict[str, tuple[float, float]] | None = None,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> None:
-    """Sample and stage a floating-root reset wholly on the declared device.
-
-    This owner-level event is the device-resident peer of
-    :func:`reset_root_state_uniform`. It consumes the environment's public CUDA
-    Torch generator and entity default table, so selected rows do not traverse a
-    NumPy composer or three host-to-device transfers.
-    """
-    if env.torch_rng is None:
-        raise NotImplementedError(
-            "reset_root_state_uniform_tensor requires env.torch_rng on a CUDA "
-            "Manager tensor runtime"
-        )
-    if env_ids.device != torch.device(env.device):
-        raise ValueError("reset_root_state_uniform_tensor reset rows must live on env.device")
-    ids = env_ids
-    asset = env.scene[asset_cfg.name]
-    device = torch.device(env.device)
-    try:
-        asset.data.default_root_state_torch(torch.device(env.device))
-    except NotImplementedError as exc:
-        raise NotImplementedError(
-            "EventManager term 'reset_root_state_uniform_tensor' requires a "
-            f"floating-root state for entity '{asset_cfg.name}'"
-        ) from exc
-    rows = ids.to(dtype=torch.int64)
-    count = rows.numel()
-    if count == 0:
-        return
-
-    pose_bounds_tensor = getattr(env, "_tensor_reset_pose_bounds", None)
-    velocity_bounds_tensor = getattr(env, "_tensor_reset_velocity_bounds", None)
-    bounds_key = getattr(env, "_tensor_reset_bounds_key", None)
-    origins_enabled = getattr(env, "_tensor_reset_env_origins_nonzero", None)
-    new_bounds_key = (
-        (asset_cfg.name, tuple(sorted(pose_range.items())), tuple(sorted(velocity_range.items())))
-        if velocity_range is not None
-        else (asset_cfg.name, tuple(sorted(pose_range.items())), None)
-    )
-    origins_tensor = env.scene.env_origins_torch(device)
-    if origins_enabled is None:
-        # Decide immutable origin applicability once on the cold path. A hot
-        # ``max().item()`` would synchronize every selected reset.
-        origins_enabled = bool(torch.not_equal(origins_tensor, 0.0).any().item())
-        setattr(env, "_tensor_reset_env_origins_nonzero", origins_enabled)
-    if pose_bounds_tensor is None or bounds_key != new_bounds_key:
-        new_pose_bounds = _tensor_se3_bounds(pose_range).to(device=device)
-        new_velocity_bounds = _tensor_se3_bounds(velocity_range).to(device=device)
-        env._tensor_reset_pose_bounds = new_pose_bounds
-        pose_bounds_tensor = new_pose_bounds
-        env._tensor_reset_velocity_bounds = new_velocity_bounds
-        velocity_bounds_tensor = new_velocity_bounds
-        env._tensor_reset_bounds_key = new_bounds_key
-    reset_unit = torch.rand(
-        (count, 2 * len(_SE3_KEYS)),
-        dtype=torch.float32,
-        device=device,
-        generator=env.torch_rng.generator,
-    )
-    bounds = torch.cat((pose_bounds_tensor, velocity_bounds_tensor), dim=0)
-    deltas = torch.addcmul(
-        bounds[None, :, 0],
-        reset_unit,
-        bounds[None, :, 1] - bounds[None, :, 0],
-    )
-    pose_delta, velocity_delta = torch.split(deltas, len(_SE3_KEYS), dim=1)
-
-    default_tensor = asset.data.default_root_state_torch(device)
-
-    default_rows = (
-        default_tensor if count == default_tensor.shape[0] else default_tensor.index_select(0, rows)
-    )
-    origins_rows = None
-    if origins_enabled:
-        origins_rows = (
-            origins_tensor
-            if count == origins_tensor.shape[0]
-            else origins_tensor.index_select(0, rows)
-        )
-    root_state = torch.empty_like(default_rows)
-    _bind_tensor_root_reset()(
-        default_rows,
-        origins_rows,
-        pose_delta,
-        velocity_delta,
-        root_state,
-    )
-    asset.write_root_state_tensor_to_sim(root_state, env_ids=rows)
-
-
-setattr(reset_root_state_uniform_tensor, "uses_tensor_rows", True)
-
-
-def reset_root_state_uniform_tensor_mask(
-    env: ManagerBasedRlEnv,
     reset_mask: torch.Tensor,
     pose_range: dict[str, tuple[float, float]],
     velocity_range: dict[str, tuple[float, float]] | None = None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
-    """Issue #2285 research-only full-width root reset."""
+    """Full-width root reset."""
     if env.torch_rng is None:
         raise NotImplementedError(
-            "reset_root_state_uniform_tensor_mask requires env.torch_rng on a CUDA "
+            "reset_root_state_uniform_tensor requires env.torch_rng on a CUDA "
             "Manager tensor runtime"
         )
     if reset_mask.device != torch.device(env.device):
-        raise ValueError("reset_root_state_uniform_tensor_mask rows must live on env.device")
+        raise ValueError("reset_root_state_uniform_tensor mask must live on env.device")
     asset = cast("Entity", env.scene[asset_cfg.name])
     device = torch.device(env.device)
     asset.data.default_root_state_torch(device)
@@ -2362,14 +2051,13 @@ def reset_root_state_uniform_tensor_mask(
     origins = env.scene.env_origins_torch(device)
     root_state = torch.empty_like(default_tensor)
     _bind_tensor_root_reset()(default_tensor, origins, pose_delta, velocity_delta, root_state)
-    asset.write_root_state_tensor_to_sim_mask(root_state, reset_mask=reset_mask)
+    asset.write_root_state_tensor_to_sim(root_state, reset_mask)
 
 
-setattr(reset_root_state_uniform_tensor_mask, "reset_mask", reset_root_state_uniform_tensor_mask)
-setattr(reset_root_state_uniform_tensor_mask, "uses_tensor_rows", True)
+setattr(reset_root_state_uniform_tensor, "reset", reset_root_state_uniform_tensor)
 
 
-def reset_scene_to_default_tensor_mask(
+def reset_scene_to_default_tensor(
     env: ManagerBasedRlEnv,
     reset_mask: torch.Tensor,
 ) -> None:
@@ -2377,22 +2065,7 @@ def reset_scene_to_default_tensor_mask(
     del env, reset_mask
 
 
-setattr(reset_scene_to_default_tensor_mask, "reset_mask", reset_scene_to_default_tensor_mask)
-setattr(reset_scene_to_default_tensor_mask, "uses_tensor_rows", True)
-
-
-def reset_scene_to_default_tensor(env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> None:
-    """Initialize canonical scalar reset defaults for selected device rows.
-
-    The tensor root reset term owns the same transaction and materializes the
-    full-width default state before writing sampled roots. This owner event
-    preserves the community reset hook while avoiding a duplicate selected-row
-    commit.
-    """
-    del env, env_ids
-
-
-setattr(reset_scene_to_default_tensor, "uses_tensor_rows", True)
+setattr(reset_scene_to_default_tensor, "reset", reset_scene_to_default_tensor)
 
 
 __all__ = [

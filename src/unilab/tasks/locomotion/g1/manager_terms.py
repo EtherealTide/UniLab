@@ -347,16 +347,7 @@ class G1GaitPhase(ManagerTermBase):
             return phase
         return phase.copy()
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        if env_ids is None:
-            rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._env.device)
-        elif isinstance(env_ids, slice):
-            rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._env.device)[env_ids]
-        else:
-            rows = env_ids.to(dtype=torch.int64, device=self._env.device).reshape(-1)
-        _resample_gait(cast("_G1Env", self._env), self._context, rows)
-
-    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+    def reset(self, reset_mask: torch.Tensor) -> None:
         _resample_gait_mask(cast("_G1Env", self._env), self._context, reset_mask)
 
 
@@ -547,10 +538,7 @@ class feet_air_time(_FootContactTerm):
             (env.num_envs, 2), dtype=torch.float32, device=torch.device(env.device)
         )
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        self._air_time[env_ids if env_ids is not None else slice(None)] = 0.0
-
-    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+    def reset(self, reset_mask: torch.Tensor) -> None:
         self._air_time.masked_fill_(reset_mask.reshape(-1, 1), 0.0)
 
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
@@ -838,7 +826,7 @@ class weighted_pose(ManagerTermBase):
             )
         return (self._weights * (position - default).square()).sum(dim=1)
 
-    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+    def reset(self, reset_mask: torch.Tensor) -> None:
         del reset_mask
 
 
@@ -872,7 +860,6 @@ class G1VelocityCommandCfg(UniformVelocityCommandCfg):
 
 class G1VelocityCommand(UniformVelocityCommand):
     cfg: G1VelocityCommandCfg  # pyright: ignore[reportIncompatibleVariableOverride]
-    uses_tensor_reset_rows = True
 
     def __init__(self, cfg: G1VelocityCommandCfg, env: ManagerBasedRlEnv):
         self._planar_dead_zone = _real(
@@ -886,13 +873,13 @@ class G1VelocityCommand(UniformVelocityCommand):
             )
         super().__init__(cfg, env)
 
-    def _resample_command(self, env_ids: torch.Tensor) -> None:
-        super()._resample_command(env_ids)
+    def _resample_command(self, reset_mask: torch.Tensor) -> None:
+        super()._resample_command(reset_mask)
         tensor = self._tensor_command
         assert tensor is not None
-        planar = tensor[env_ids, :2]
+        planar = tensor[:, :2]
         moving = torch.linalg.vector_norm(planar, dim=1) > self._planar_dead_zone
-        tensor[env_ids, :2] = planar * moving[:, None]
+        tensor[:, :2] = torch.where(reset_mask[:, None], planar * moving[:, None], planar)
 
     def _merge_samples_masked(self, samples: torch.Tensor, reset_mask: torch.Tensor) -> None:
         moving = torch.linalg.vector_norm(samples[:, :2], dim=1) > self._planar_dead_zone
@@ -1023,17 +1010,17 @@ class G1PenaltyCurriculum(ManagerTermBase):
             "penalty_scale": self._current_scale,
         }
 
-    def reset_mask(self, reset_mask: torch.Tensor) -> None:
-        """Issue #2285 mask boundary for the global curriculum state."""
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        """Mask boundary for the global curriculum state."""
         del reset_mask
 
-    def __call_mask__(
+    def __call_reset__(
         self,
         env: _G1Env,
         reset_mask: torch.Tensor,
         **params: Any,
     ) -> dict[str, float]:
-        """Issue #2285 research-only fixed-shape curriculum update."""
+        """Fixed-shape curriculum update at reset."""
         del params
         reset_buf = env.reset_buf
         if not isinstance(reset_buf, torch.Tensor):
@@ -1101,61 +1088,21 @@ class G1WalkResetOwner(ResetOwner):
         if getattr(env, "torch_rng", None) is None:
             raise NotImplementedError("G1WalkResetOwner requires the Manager Torch RNG")
 
-    def _rows(self, env_ids: torch.Tensor | slice | None) -> torch.Tensor:
-        device = torch.device(getattr(self._env, "device", torch.device("cpu")))
-        if isinstance(env_ids, torch.Tensor):
-            return env_ids.to(dtype=torch.int64, device=device)
-        num_envs = int(getattr(self._env, "num_envs", 0))
-        return torch.arange(num_envs, dtype=torch.int64, device=device)
-
-    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
-        env = cast("_G1Env", self._env)
-        rows = self._rows(env_ids)
-        extras, _commands = cast(
-            Any,
-            env.command_manager,
-        ).reset_command_state(
-            rows,
-            publish_metrics=False,
-            validate_commands=False,
-        )
-        return cast(dict[str, float], extras)
-
-    def reset_transaction_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+    def reset_transaction(self, reset_mask: torch.Tensor) -> dict[str, float]:
         env = cast("_G1Env", self._env)
         command = env.command_manager.get_term(self.cfg.command_name)
-        reset_mask_impl = getattr(command, "reset_mask", None)
-        if not callable(reset_mask_impl):
+        if not callable(getattr(command, "reset", None)):
             raise NotImplementedError(
                 f"G1WalkResetOwner command '{self.cfg.command_name}' does not define "
-                "the issue #2285 mask-preserving reset boundary"
+                "the mask-preserving reset boundary"
             )
-        reset_mask_impl(reset_mask)
+        command.reset(reset_mask)
         return {}
 
-    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+    def reset_committed(self, reset_mask: torch.Tensor) -> dict[str, float]:
         env = cast("_G1Env", self._env)
-        rows = self._rows(env_ids)
-        cast(Any, env.action_manager).clear_action_state(rows)
-        clear_metrics = getattr(env.metrics_manager, "clear_episode_state", None)
-        if callable(clear_metrics):
-            clear_metrics(rows)
-        return {}
-
-    def reset_committed_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        env = cast("_G1Env", self._env)
-        clear_action_state_mask = getattr(env.action_manager, "clear_action_state_mask", None)
-        if not callable(clear_action_state_mask):
-            raise NotImplementedError(
-                "G1WalkResetOwner requires ActionManager.clear_action_state_mask"
-            )
-        clear_action_state_mask(reset_mask)
-        clear_metrics_mask = getattr(env.metrics_manager, "clear_episode_state_mask", None)
-        if not callable(clear_metrics_mask):
-            raise NotImplementedError(
-                "G1WalkResetOwner requires MetricsManager.clear_episode_state_mask"
-            )
-        clear_metrics_mask(reset_mask)
+        env.action_manager.clear_action_state(reset_mask)
+        env.metrics_manager.clear_episode_state(reset_mask)
         return {}
 
 
@@ -1375,8 +1322,8 @@ class G1WalkTerminationPack(ManagerTermBase):
     def entity_name(self) -> str:
         return self.cfg.entity_name
 
-    def reset_mask(self, reset_mask: torch.Tensor) -> None:
-        """Issue #2285 mask boundary for the stateless termination pack."""
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        """Mask boundary for the stateless termination pack."""
         del reset_mask
 
     def __call__(self, env: _G1Env) -> torch.Tensor:

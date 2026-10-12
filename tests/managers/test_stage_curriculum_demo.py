@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
@@ -61,48 +60,19 @@ def test_stage_curriculum_demo_owner_materializes_declared_ladders() -> None:
         assert not OmegaConf.is_config(term.params["stages"])
 
 
-def test_stage_curriculum_demo_runtime_ramps_with_step_counter() -> None:
+def test_stage_curriculum_demo_real_backend_fails_closed_for_mask_reset() -> None:
     pytest.importorskip(
         "unisim.backend.mujoco.backend",
         reason="unisim-core MuJoCo adapter (mjbatch build) not available",
     )
     _, override = _materialize()
-    env = registry.make(
-        FIXTURE_ENV_NAME,
-        sim_backend="mujoco",
-        env_cfg_override=override,
-        num_envs=4,
-    )
-    try:
-        assert env.curriculum_manager.active_terms == ["smooth_reward_weight", "pole_tilt_limit"]
-        weight_cfg = env.reward_manager.get_term_cfg("smooth_reward")
-        tilt_cfg = env.termination_manager.get_term_cfg("pole_tilt")
-
-        env.reset(seed=7)
-        assert env.common_step_counter == 0
-        assert weight_cfg.weight == pytest.approx(1.0)
-        assert tilt_cfg.params["limit_angle"] == pytest.approx(0.4)
-
-        actions = torch.zeros((4, 1), dtype=torch.float32, device=env.device)
-        for _ in range(2):
-            env.step(actions)
-        env.reset()
-        assert env.common_step_counter == 2
-        assert weight_cfg.weight == pytest.approx(0.5)
-        assert tilt_cfg.params["limit_angle"] == pytest.approx(0.2)
-
-        for _ in range(2):
-            env.step(actions)
-        env.reset()
-        assert env.common_step_counter == 4
-        assert weight_cfg.weight == pytest.approx(0.25)
-        assert tilt_cfg.params["limit_angle"] == pytest.approx(0.2)
-
-        extras = env.curriculum_manager.reset()
-        assert extras["Curriculum/smooth_reward_weight/weight"] == pytest.approx(0.25)
-        assert extras["Curriculum/pole_tilt_limit/limit_angle"] == pytest.approx(0.2)
-    finally:
-        env.close()
+    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
+        registry.make(
+            FIXTURE_ENV_NAME,
+            sim_backend="mujoco",
+            env_cfg_override=override,
+            num_envs=4,
+        )
 
 
 def test_stage_curriculum_demo_owner_invalid_stages_fail_closed() -> None:

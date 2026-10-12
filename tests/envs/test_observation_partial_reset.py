@@ -1,11 +1,9 @@
-"""Row-scoped partial-reset observation rebuild tests (issue #1259 R2).
+"""Mask reset observation rebuild tests.
 
-On the partial-reset path the observation manager returns only the reset rows
-instead of a full batch that the env then slices. These tests pin the env-level
+The public reset boundary is fixed-width. These tests pin the env-level
 contract:
 
-- reset observations arrive row-shaped, are finite, and are scattered into the
-  env state at exactly the reset rows;
+- reset observations and the resulting state stay full-width and finite;
 - untouched rows of ``state.obs`` keep their per-step values bit-identically;
 - a subsequent step recomputes full-batch observations normally.
 """
@@ -49,7 +47,7 @@ def _make_env(config_root: str, task: str, backend: str, identity: str, num_envs
     )
 
 
-def test_observation_partial_reset_row_contract() -> None:
+def test_observation_mask_reset_contract() -> None:
     pytest.importorskip("mujoco")
     pytest.importorskip("mjbatch", reason="mjbatch not installed")
     pytest.importorskip(
@@ -72,10 +70,12 @@ def test_observation_partial_reset_row_contract() -> None:
         obs_before = {name: values.clone() for name, values in env.state.obs.items()}
         reset_ids = np.array([0, 2], dtype=np.int32)
         keep_ids = np.array([1, 3], dtype=np.int32)
-        reset_obs, _ = env.reset(env_indices=torch.tensor(reset_ids, dtype=torch.int64))
+        reset_mask = torch.zeros(num_envs, dtype=torch.bool, device=env.device)
+        reset_mask[torch.from_numpy(reset_ids).to(env.device)] = True
+        reset_obs, _ = env.reset(reset_mask=reset_mask)
 
         for group, values in reset_obs.items():
-            assert values.shape == (len(reset_ids), obs_before[group].shape[1])
+            assert values.shape == obs_before[group].shape
             assert np.isfinite(values).all()
             np.testing.assert_array_equal(env.state.obs[group][reset_ids], values)
             np.testing.assert_array_equal(

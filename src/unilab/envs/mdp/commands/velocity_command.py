@@ -155,8 +155,7 @@ class UniformVelocityCommand(CommandTerm):
             f"compiled={tuple(packed)}"
         )
 
-    def _update_metrics(self, env_ids: torch.Tensor | None = None) -> None:
-        del env_ids  # Metrics accumulate over all rows on every compute.
+    def _update_metrics(self) -> None:
         max_command_steps = self.cfg.resampling_time_range[1] / self._env.step_dt
         lin_vel, ang_vel = self._metric_velocities()
         command = torch.as_tensor(self.command, device=lin_vel.device)
@@ -171,74 +170,16 @@ class UniformVelocityCommand(CommandTerm):
         self.metrics["error_vel_xy"] += errors[:, 0]
         self.metrics["error_vel_yaw"] += errors[:, 1]
 
-    def _resample_command(self, env_ids: torch.Tensor) -> None:
-        self._resample_tensor_command(env_ids)
-
-    def _resample_tensor_command(self, env_ids: torch.Tensor) -> None:
-        count = env_ids.numel()
-        if count == 0:
-            return
-        tensor = self._tensor_command
-        assert tensor is not None
-        rows = env_ids.to(dtype=torch.int64, device=self._device)
+    def _resample_command(self, reset_mask: torch.Tensor) -> None:
+        """Sample at full width and merge only selected rows."""
         ranges = self.cfg.ranges
-        samples = torch.empty((count, 3), dtype=torch.float32, device=self._device)
-        for column, bounds in enumerate((ranges.lin_vel_x, ranges.lin_vel_y, ranges.ang_vel_z)):
-            samples[:, column] = self._sample_uniform(bounds[0], bounds[1], count)
-
-        if self.cfg.heading_command:
-            assert ranges.heading is not None
-            self._heading_target[rows] = self._sample_uniform(*ranges.heading, count)
-            self._is_heading_env[rows] = self._sample_uniform(0.0, 1.0, count) <= (
-                self.cfg.rel_heading_envs
-            )
-        self._is_standing_env[rows] = self._sample_uniform(0.0, 1.0, count) <= (
-            self.cfg.rel_standing_envs
-        )
-        self._is_world_env[rows] = self._sample_uniform(0.0, 1.0, count) <= self.cfg.rel_world_envs
-        self._is_forward_env[rows] = self._sample_uniform(0.0, 1.0, count) <= (
-            self.cfg.rel_forward_envs
-        )
-        forward = self._is_forward_env.index_select(0, rows)
-        if bool(forward.any()):
-            forward_rows = rows[forward]
-            tensor[forward_rows, 0] = torch.clamp(samples[forward, 0].abs(), min=0.3)
-            tensor[forward_rows, 1:] = 0.0
-            self._world_command[forward_rows] = tensor[forward_rows]
-            return
-        tensor.index_copy_(0, rows, samples)
-        self._world_command.index_copy_(0, rows, samples)
-
-    def reset_mask(self, reset_mask: torch.Tensor) -> None:
-        """Issue #2285 research-only full-width command resampling.
-
-        Samples are generated at full width, then merged into every public
-        command carrier only where the reset mask is true. The RNG stream is
-        intentionally full-width and differs from the production selected-row
-        stream; throughput—not seed parity—is the experiment's acceptance.
-        """
-        if (
-            reset_mask.shape != (self.num_envs,)
-            or reset_mask.dtype != torch.bool
-            or reset_mask.device != self._device
-        ):
-            raise ValueError(
-                f"{self.name} research reset mask must have shape {(self.num_envs,)}, "
-                f"bool dtype, and device {self._device}"
-            )
-        tensor = self._tensor_command
-        assert tensor is not None
         samples = self._sample_full_width()
         if self.cfg.heading_command:
-            assert self.cfg.ranges.heading is not None
+            assert ranges.heading is not None
             self._heading_target.copy_(
                 torch.where(
                     reset_mask,
-                    self._sample_uniform(
-                        self.cfg.ranges.heading[0],
-                        self.cfg.ranges.heading[1],
-                        self.num_envs,
-                    ),
+                    self._sample_uniform(ranges.heading[0], ranges.heading[1], self.num_envs),
                     self._heading_target,
                 )
             )
@@ -276,8 +217,6 @@ class UniformVelocityCommand(CommandTerm):
             forward[:, None], torch.zeros_like(samples[:, 1:]), samples[:, 1:]
         )
         self._merge_samples_masked(samples, reset_mask)
-        self.command_counter.masked_fill_(reset_mask, 0)
-        self.clear_episode_metrics_masked(reset_mask)
 
     def _sample_full_width(self) -> torch.Tensor:
         ranges = self.cfg.ranges
@@ -299,7 +238,7 @@ class UniformVelocityCommand(CommandTerm):
                 raise TypeError("CommandTerm metrics must be torch.Tensor carriers")
             metric_value.masked_fill_(reset_mask, 0.0)
 
-    def _update_command_mask(self, reset_mask: torch.Tensor) -> None:
+    def _update_command_reset(self, reset_mask: torch.Tensor) -> None:
         tensor = self._tensor_command
         assert tensor is not None
 
@@ -345,7 +284,7 @@ class UniformVelocityCommand(CommandTerm):
                 )
             )
 
-    def post_compute_mask(self) -> None:
+    def post_compute_reset(self) -> None:
         self.post_compute()
 
     def _sample_uniform(self, lower: float, upper: float, count: int) -> torch.Tensor:
@@ -370,8 +309,7 @@ class UniformVelocityCommand(CommandTerm):
             1.0 - 2.0 * (y * y + z * z),
         ).to(dtype=torch.float32)
 
-    def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
-        del env_ids
+    def _update_command(self) -> None:
         tensor = self._tensor_command
         assert tensor is not None
 
@@ -383,28 +321,30 @@ class UniformVelocityCommand(CommandTerm):
                 )
                 - torch.pi
             )
-            heading_ids = self._is_heading_env.nonzero(as_tuple=False).flatten()
-            if heading_ids.numel():
-                tensor[heading_ids, 2] = torch.clamp(
-                    self.cfg.heading_control_stiffness * heading_error[heading_ids],
-                    min=self.cfg.ranges.ang_vel_z[0],
-                    max=self.cfg.ranges.ang_vel_z[1],
-                )
+            controlled_yaw = torch.clamp(
+                self.cfg.heading_control_stiffness * heading_error,
+                min=self.cfg.ranges.ang_vel_z[0],
+                max=self.cfg.ranges.ang_vel_z[1],
+            )
+            tensor[:, 2] = torch.where(self._is_heading_env, controlled_yaw, tensor[:, 2])
 
-        world_ids = self._is_world_env.nonzero(as_tuple=False).flatten()
-        if world_ids.numel():
-            heading = self._heading()[world_ids]
-            cos_heading = torch.cos(heading)
-            sin_heading = torch.sin(heading)
-            velocity_x_w = self._world_command[world_ids, 0]
-            velocity_y_w = self._world_command[world_ids, 1]
-            tensor[world_ids, 0] = cos_heading * velocity_x_w + sin_heading * velocity_y_w
-            tensor[world_ids, 1] = -sin_heading * velocity_x_w + cos_heading * velocity_y_w
+        heading = self._heading()
+        cos_heading = torch.cos(heading)
+        sin_heading = torch.sin(heading)
+        velocity_x_w = self._world_command[:, 0]
+        velocity_y_w = self._world_command[:, 1]
+        velocity_x_b = cos_heading * velocity_x_w + sin_heading * velocity_y_w
+        velocity_y_b = -sin_heading * velocity_x_w + cos_heading * velocity_y_w
+        tensor[:, 0] = torch.where(self._is_world_env, velocity_x_b, tensor[:, 0])
+        tensor[:, 1] = torch.where(self._is_world_env, velocity_y_b, tensor[:, 1])
 
-        standing_ids = self._is_standing_env.nonzero(as_tuple=False).flatten()
-        if standing_ids.numel():
-            tensor[standing_ids] = 0.0
-            self._world_command[standing_ids] = 0.0
+        standing = self._is_standing_env
+        tensor.copy_(torch.where(standing[:, None], torch.zeros_like(tensor), tensor))
+        self._world_command.copy_(
+            torch.where(
+                standing[:, None], torch.zeros_like(self._world_command), self._world_command
+            )
+        )
 
 
 @dataclass(kw_only=True)

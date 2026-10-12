@@ -117,8 +117,8 @@ class SensorTermBase(ManagerTermBase):
                 f"materialized for {sensor_names}: {exc}"
             ) from exc
 
-    def reset_mask(self, reset_mask: torch.Tensor) -> None:
-        """Issue #2285 mask boundary for stateless sensor terms."""
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        """Mask boundary for stateless sensor terms."""
         del reset_mask
 
 

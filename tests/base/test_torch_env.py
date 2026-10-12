@@ -77,7 +77,7 @@ class _StubTorchEnv(TorchEnv):
     ):
         super().__init__(cfg or _StubCfg(), backend or _backend(), num_envs, device=device)
         self.terminate = terminate
-        self.reset_rows: list[torch.Tensor] = []
+        self.reset_masks: list[torch.Tensor] = []
 
     @property
     def obs_groups_spec(self) -> dict[str, int]:
@@ -109,11 +109,12 @@ class _StubTorchEnv(TorchEnv):
         )
 
     def reset(
-        self, env_indices: torch.Tensor | None = None
+        self, reset_mask: torch.Tensor | None = None
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
-        rows = self._normalize_reset_indices(env_indices)
-        self.reset_rows.append(rows.clone())
-        count = rows.numel()
+        if reset_mask is None:
+            reset_mask = torch.ones((self.num_envs,), dtype=torch.bool, device=self.device)
+        self.reset_masks.append(reset_mask.clone())
+        count = self.num_envs
         return (
             {
                 "obs": torch.full((count, 3), -1.0, dtype=torch.float32, device=self.device),
@@ -135,7 +136,7 @@ def test_scene_visual_model_file_reads_backend_getter() -> None:
     assert env.get_scene_visual_model_file() == "/visual.xml"
 
 
-def test_init_state_uses_tensor_dict_obs_and_selected_reset() -> None:
+def test_init_state_uses_tensor_dict_obs_and_mask_reset() -> None:
     env = _StubTorchEnv()
     state = env.init_state()
 
@@ -166,7 +167,7 @@ def test_step_uses_backend_tensor_contract_and_autoreset() -> None:
     backend = _backend()
     env = _StubTorchEnv(backend=backend)
     env.init_state()
-    env.reset_rows.clear()
+    env.reset_masks.clear()
     actions = _actions(env)
 
     state = env.step(actions)
@@ -174,7 +175,7 @@ def test_step_uses_backend_tensor_contract_and_autoreset() -> None:
     backend.step_tensor.assert_called_once()
     assert backend.step_tensor.call_args.args[1] == 1
     torch.testing.assert_close(backend.step_tensor.call_args.args[0], actions * 2.0)
-    assert [rows.tolist() for rows in env.reset_rows] == [[0, 1, 2]]
+    assert [mask.tolist() for mask in env.reset_masks] == [[True, True, True]]
     torch.testing.assert_close(state.reward, torch.full((3,), 2.0))
     torch.testing.assert_close(state.obs["obs"], torch.full((3, 3), -1.0))
     assert state.final_observation is not None
@@ -210,10 +211,10 @@ def test_unsupported_backend_tensor_runtime_fails_closed() -> None:
 def test_step_without_done_does_not_create_final_observation() -> None:
     env = _StubTorchEnv(terminate=False)
     env.init_state()
-    env.reset_rows.clear()
+    env.reset_masks.clear()
     state = env.step(_actions(env))
 
-    assert env.reset_rows == []
+    assert env.reset_masks == []
     assert state.final_observation is None
     assert state.info["timing"]["reset_done_count"] == 0.0
 
@@ -227,10 +228,10 @@ def test_partial_autoreset_preserves_non_done_rows() -> None:
 
     env = _PartialEnv()
     env.init_state()
-    env.reset_rows.clear()
+    env.reset_masks.clear()
     state = env.step(_actions(env))
 
-    assert [rows.tolist() for rows in env.reset_rows] == [[0, 2]]
+    assert [mask.tolist() for mask in env.reset_masks] == [[True, False, True]]
     torch.testing.assert_close(state.obs["obs"], torch.tensor([[-1.0] * 3, [1.0] * 3, [-1.0] * 3]))
     torch.testing.assert_close(state.info["steps"], torch.tensor([0, 1, 0], dtype=torch.int64))
     assert state.final_observation is not None
@@ -240,63 +241,54 @@ def test_partial_autoreset_preserves_non_done_rows() -> None:
 def test_manual_autoreset_disabled_keeps_terminal_state() -> None:
     env = _StubTorchEnv()
     env.init_state()
-    env.reset_rows.clear()
+    env.reset_masks.clear()
     env.set_autoreset(False)
     state = env.step(_actions(env))
 
-    assert env.reset_rows == []
+    assert env.reset_masks == []
     assert state.final_observation is None
     torch.testing.assert_close(state.obs["obs"], torch.ones((3, 3)))
     torch.testing.assert_close(state.info["steps"], torch.ones(3, dtype=torch.int64))
 
 
-def test_reset_indices_are_normalized_and_validated() -> None:
+def test_autoreset_does_not_materialize_reset_rows() -> None:
     env = _StubTorchEnv()
-    assert env._normalize_reset_indices(None).tolist() == [0, 1, 2]
-    assert env._normalize_reset_indices(torch.tensor([2, 0])).tolist() == [2, 0]
-    with pytest.raises(ValueError, match="unique"):
-        env._normalize_reset_indices(torch.tensor([0, 0]))
-    with pytest.raises(ValueError, match=r"\[0, 3\)"):
-        env._normalize_reset_indices(torch.tensor([3]))
+    env.init_state()
+    env.reset_masks.clear()
+
+    class _PartialEnv(_StubTorchEnv):
+        def update_state(self, state: TorchEnvState) -> TorchEnvState:
+            result = super().update_state(state)
+            terminated = torch.tensor([True, False, True])
+            return result.replace(terminated=terminated)
+
+    partial = _PartialEnv(backend=env.backend)
+    partial.init_state()
+    partial.reset_masks.clear()
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            torch.Tensor,
+            "nonzero",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("autoreset materialized reset rows")
+            ),
+        )
+        partial.step(_actions(partial))
+
+    assert partial.reset_masks[0].tolist() == [True, False, True]
 
 
-def test_reset_indices_from_mask_skip_redundant_public_validation() -> None:
-    env = _StubTorchEnv()
-    scalar_conversions = 0
-    original_bool = torch.Tensor.__bool__
-
-    def counted_bool(self: torch.Tensor) -> bool:
-        nonlocal scalar_conversions
-        scalar_conversions += 1
-        return original_bool(self)
-
-    monkeypatch_holder = pytest.MonkeyPatch()
-    monkeypatch_holder.setattr(torch.Tensor, "__bool__", counted_bool)
-    try:
-        rows = env._reset_indices_from_mask(torch.tensor([False, True, True]))
-    finally:
-        monkeypatch_holder.undo()
-
-    assert rows.tolist() == [1, 2]
-    assert rows.dtype == torch.int64
-    assert scalar_conversions == 0
-    with pytest.raises(ValueError, match="reset mask"):
-        env._reset_indices_from_mask(torch.zeros(2, dtype=torch.bool))
-    with pytest.raises(ValueError, match="reset mask"):
-        env._reset_indices_from_mask(torch.zeros(3, dtype=torch.int32))
-
-
-def test_timeout_computes_truncation_and_selected_reset() -> None:
+def test_timeout_computes_truncation_and_mask_reset() -> None:
     env = _StubTorchEnv(cfg=_StubCfg(max_episode_seconds=0.2), terminate=False)
     env.init_state()
-    env.reset_rows.clear()
+    env.reset_masks.clear()
 
     first = env.step(_actions(env))
     second = env.step(_actions(env))
 
     assert not bool(first.truncated.any())
     assert bool(second.truncated.any())
-    assert [rows.tolist() for rows in env.reset_rows] == [[0, 1, 2]]
+    assert [mask.tolist() for mask in env.reset_masks] == [[True, True, True]]
 
 
 def test_numpy_actions_and_wrong_device_fail_closed() -> None:
@@ -304,7 +296,7 @@ def test_numpy_actions_and_wrong_device_fail_closed() -> None:
 
     with pytest.raises(TypeError, match="torch.Tensor"):
         env.step(cast(Any, np.zeros((env.num_envs, 4), dtype=np.float32)))
-    assert env.reset_rows == []
+    assert env.reset_masks == []
     assert env.state is None
     with pytest.raises(ValueError, match="shape"):
         env.step(torch.zeros((env.num_envs, 5)))
@@ -464,7 +456,7 @@ def test_backend_capability_mismatch_fails_closed() -> None:
     capabilities = backend.get_tensor_capabilities.return_value
     backend.get_tensor_capabilities.return_value = dataclasses.replace(capabilities, stepping=False)
     env = _StubTorchEnv(backend=backend)
-    with pytest.raises(ValueError, match="stepping and selected reset"):
+    with pytest.raises(ValueError, match="stepping and mask reset"):
         env.init_state()
 
     backend.tensor_execution.return_value = TensorExecution.DEVICE_RESIDENT
@@ -493,7 +485,7 @@ def test_invalid_final_observation_fails_closed() -> None:
         env.step(_actions(env))
 
 
-def test_device_resident_backend_requires_cuda() -> None:
+def test_device_resident_backend_honors_declared_torch_device() -> None:
     backend = _backend()
     backend.tensor_execution.return_value = TensorExecution.DEVICE_RESIDENT
     backend.get_tensor_capabilities.return_value = TensorLifecycleCapabilities(
@@ -507,8 +499,8 @@ def test_device_resident_backend_requires_cuda() -> None:
     )
     cfg = _StubCfg()
     env = _StubTorchEnv(cfg=cfg, backend=backend, device="cpu")
-    with pytest.raises(ValueError, match="requires a CUDA device"):
-        env.init_state()
+    env.init_state()
+    assert env.device.type == "cpu"
 
 
 def test_backend_device_must_match_capability() -> None:

@@ -57,7 +57,8 @@ class ManagerTermBaseCfg:
 
         RewardTermCfg(func=posture, params={"std": {".*knee.*": 0.3}}, weight=1.0)
 
-    Class-based terms can optionally implement ``reset(env_ids)`` for per-episode state.
+    Class-based terms can optionally implement ``reset(reset_mask)`` for fixed-width
+    per-episode state.
     """
 
     func: Any
@@ -87,11 +88,6 @@ class ManagerTermBase:
 
     # Methods.
 
-    def reset(self, env_ids: torch.Tensor | slice | None) -> Any:
-        """Resets the manager term."""
-        del env_ids  # Unused.
-        pass
-
     def __call__(self, *args, **kwargs) -> Any:
         """Returns the value of the term required by the manager."""
         raise NotImplementedError
@@ -118,9 +114,9 @@ class ManagerBase(abc.ABC):
 
     # Methods.
 
-    def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, Any]:
-        """Resets the manager and returns logging info for the current step."""
-        del env_ids  # Unused.
+    def reset(self, reset_mask: torch.Tensor) -> dict[str, Any]:
+        """Resets manager state through the fixed-width mask boundary."""
+        del reset_mask
         return {}
 
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:

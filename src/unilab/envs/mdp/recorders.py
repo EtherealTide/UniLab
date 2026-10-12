@@ -21,11 +21,11 @@ class LifecycleCounterRecorder(RecorderTerm):
         self.post_reset_count = 0
         self.post_step_count = 0
 
-    def record_pre_reset(self, env_ids: torch.Tensor) -> None:
-        self.pre_reset_count += int(len(env_ids))
+    def record_pre_reset(self, reset_mask: torch.Tensor) -> None:
+        self.pre_reset_count += int(reset_mask.sum().item())
 
-    def record_post_reset(self, env_ids: torch.Tensor) -> None:
-        self.post_reset_count += int(len(env_ids))
+    def record_post_reset(self, reset_mask: torch.Tensor) -> None:
+        self.post_reset_count += int(reset_mask.sum().item())
 
     def record_post_step(self) -> None:
         self.post_step_count += 1

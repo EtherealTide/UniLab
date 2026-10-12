@@ -130,11 +130,10 @@ class RslRlVecEnvAdapter:
         self.episode_lengths += 1
 
         infos: dict[str, torch.Tensor | dict[str, Any]] = {}
-        done_idx = torch.nonzero(dones).flatten()
-        if len(done_idx) > 0:
+        if bool(dones.any()):
             infos["time_outs"] = _to_policy_tensor(state.truncated, self.device).bool()
-            self.episode_returns[done_idx] = 0
-            self.episode_lengths[done_idx] = 0
+            self.episode_returns.masked_fill_(dones, 0.0)
+            self.episode_lengths.masked_fill_(dones, 0)
 
         if "log" in state.info:
             infos["log"] = state.info["log"]
@@ -148,8 +147,7 @@ class RslRlVecEnvAdapter:
         env_device = getattr(self.env, "device", None)
         if env_device is None:
             raise TypeError("TorchEnv must expose its authoritative device")
-        env_indices = torch.arange(self.num_envs, dtype=torch.int64, device=env_device)
-        obs_out, info = self.env.reset(env_indices)
+        obs_out, info = self.env.reset()
         self.episode_returns[:] = 0
         self.episode_lengths[:] = 0
         return self._obs_to_tensordict(obs_out), info

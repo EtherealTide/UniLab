@@ -592,8 +592,6 @@ class MotionCommand(CommandTerm):
             (self.num_envs, num_joints), dtype=torch.float32, device=self._device
         )
         self._robot_cache_step = -1
-        self._tensor_post_compute_env_ids: torch.Tensor | None = None
-        self._tensor_resample_ingested: torch.Tensor | None = None
         self._robot_body_pos_w = torch.empty_like(self._body_pos_w)
         self._robot_body_quat_w = torch.empty((self.num_envs, num_bodies, 4), device=self._device)
         self._robot_body_lin_vel_w = torch.empty_like(self._body_pos_w)
@@ -621,6 +619,9 @@ class MotionCommand(CommandTerm):
         )
         self._bind_read_phase = False
         self._tensor_all_rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._device)
+        self._tensor_all_reset_mask = torch.ones(
+            self.num_envs, dtype=torch.bool, device=self._device
+        )
         self._tensor_resample_ingested_mask: torch.Tensor | None = None
         self.last_step_timing_ms: dict[str, float] = {}
         self.last_post_compute_timing_ms: dict[str, float] = {}
@@ -671,7 +672,7 @@ class MotionCommand(CommandTerm):
         else:
             self._seed_robot_state_torch_from_defaults()
         self._refresh_relative_state()
-        self._update_metrics(self._tensor_all_rows)
+        self._update_metrics()
 
     def _make_motion_loader(
         self,
@@ -887,44 +888,23 @@ class MotionCommand(CommandTerm):
     def anchor_ang_vel_w(self) -> torch.Tensor:
         return cast("torch.Tensor", self._motion_data.body_ang_vel_w)[:, self.anchor_body_idx]
 
-    def reset(
-        self,
-        env_ids: torch.Tensor | slice | None,
-        *,
-        publish_metrics: bool = True,
-    ) -> dict[str, float]:
-        rows = (
-            env_ids.to(dtype=torch.int64)
-            if isinstance(env_ids, torch.Tensor)
-            else self._tensor_all_rows
-            if env_ids is None
-            else self._tensor_all_rows[env_ids]
-        )
-        if publish_metrics:
-            self._update_torch_error_metrics(rows)
+    def reset(self, reset_mask: torch.Tensor, *, publish_metrics: bool = True) -> dict[str, float]:
+        """Full-width motion command reset."""
+        del publish_metrics
+        if (
+            reset_mask.shape != (self.num_envs,)
+            or reset_mask.dtype != torch.bool
+            or reset_mask.device != self._device
+        ):
+            raise ValueError(
+                f"MotionCommand reset mask must have shape {(self.num_envs,)}, "
+                f"bool dtype, and device {self._device}"
+            )
         if self._env.torch_rng is None:
             raise NotImplementedError(
                 "MotionCommand reset requires the Manager-owned Torch generator"
             )
-        lower, upper = self._joint_default_position_range
-        self.joint_default_bias[rows] = self._env.torch_rng.uniform(
-            lower,
-            upper,
-            (rows.numel(), self.motion.num_joints),
-            dtype=torch.float32,
-        )
-        self._last_reset_payload_validated = False
-        return CommandTerm.reset(self, rows, publish_metrics=publish_metrics)
-
-    def reset_mask(self, reset_mask: torch.Tensor) -> None:
-        """Issue #2285 research-only full-width motion command reset."""
-        if reset_mask.shape != (self.num_envs,) or reset_mask.dtype != torch.bool:
-            raise ValueError("MotionCommand reset mask must be full-width bool")
-        if self._env.torch_rng is None:
-            raise NotImplementedError(
-                "MotionCommand reset requires the Manager-owned Torch generator"
-            )
-        self._update_torch_error_metrics_mask(reset_mask)
+        self._update_torch_error_metrics_mask()
         lower, upper = self._joint_default_position_range
         self.joint_default_bias.copy_(
             torch.where(
@@ -935,14 +915,14 @@ class MotionCommand(CommandTerm):
                 self.joint_default_bias,
             )
         )
-        self._resample_command_mask(reset_mask)
+        self._resample_command(reset_mask)
         self._tensor_resample_ingested_mask = reset_mask
         self._last_reset_payload_validated = False
+        return {}
 
-    def _update_torch_error_metrics_mask(self, reset_mask: torch.Tensor) -> None:
-        """Update error metrics for masked rows with fixed-shape where ops."""
+    def _update_torch_error_metrics_mask(self) -> None:
+        """Update full-width error metrics."""
         self._update_torch_error_metrics(self._tensor_all_rows)
-        del reset_mask
 
     def sampler_reset_diagnostics(self) -> dict[str, float]:
         dispatches = self.tensor_sampler.diagnostics.reset_dispatches
@@ -955,126 +935,19 @@ class MotionCommand(CommandTerm):
             ),
         }
 
-    def _update_metrics(self, env_ids: torch.Tensor | None = None) -> None:
-        if env_ids is not None:
-            self._update_torch_error_metrics(env_ids)
+    def _update_metrics(self) -> None:
+        self._update_torch_error_metrics(self._tensor_all_rows)
         self._update_torch_sampling_metrics()
-
-    @property
-    def uses_tensor_reset_rows(self) -> bool:
-        return True
 
     @property
     def last_reset_payload_validated(self) -> bool:
         """Whether the current reset payload already passed owner validation."""
         return bool(self._last_reset_payload_validated)
 
-    def _resample_command(self, env_ids: torch.Tensor) -> None:
-        rows = env_ids.to(dtype=torch.int64, device=self._device)
-        sampler_started = time.perf_counter()
-        if self._env.torch_rng is None:
-            raise NotImplementedError("MotionCommand reset requires the Manager Torch RNG")
-        frames = self.tensor_sampler.sample_frames(rows, self._env.torch_rng.generator)
-        sampler_ms = (time.perf_counter() - sampler_started) * 1000.0
-        sampler_dispatch_ms = getattr(self.tensor_sampler, "last_reset_dispatch_ms", 0.0)
-        packet_started = time.perf_counter()
-        packet = self._motion_packet(frames)
-        packet_ms = (time.perf_counter() - packet_started) * 1000.0
-        tails, offsets = self._cached_motion_feature_shapes()
-        if self._env.torch_rng is None:
-            raise NotImplementedError(
-                "MotionCommand reset sampling requires the Manager-owned Torch generator"
-            )
-        pose = self._env.torch_rng.uniform(
-            self._pose_range_torch[:, 0],
-            self._pose_range_torch[:, 1],
-            (rows.numel(), 6),
-            dtype=torch.float32,
-        )
-        velocity = self._env.torch_rng.uniform(
-            self._velocity_range_torch[:, 0],
-            self._velocity_range_torch[:, 1],
-            (rows.numel(), 6),
-            dtype=torch.float32,
-        )
-        rng_ms = (time.perf_counter() - sampler_started) * 1000.0 - sampler_ms - packet_ms
-        values_started = time.perf_counter()
-        joint_start, joint_end = offsets["joint_pos"]
-        vel_start, vel_end = offsets["joint_vel"]
-        count = rows.numel()
-        origins = (
-            self._env_origins if count == self.num_envs else self._env_origins.index_select(0, rows)
-        )
-        joint_pos = self._reset_joint_values[:count]
-        root_state = self._reset_root_state[:count]
-        joint_noise = self._env.torch_rng.uniform(
-            self._joint_position_range_torch[0],
-            self._joint_position_range_torch[1],
-            joint_pos.shape,
-            dtype=torch.float32,
-        )
-        packet_joint_pos = packet[:, joint_start:joint_end]
-        packet_joint_vel = packet[:, vel_start:vel_end].contiguous()
-        _bind_compiled_motion_reset_values()(
-            packet_joint_pos,
-            packet_joint_vel,
-            packet[:, offsets["body_pos_w"][0] : offsets["body_pos_w"][1]].view(
-                count, *tails["body_pos_w"]
-            ),
-            packet[:, offsets["body_quat_w"][0] : offsets["body_quat_w"][1]].view(
-                count, *tails["body_quat_w"]
-            ),
-            packet[:, offsets["body_lin_vel_w"][0] : offsets["body_lin_vel_w"][1]].view(
-                count, *tails["body_lin_vel_w"]
-            ),
-            packet[:, offsets["body_ang_vel_w"][0] : offsets["body_ang_vel_w"][1]].view(
-                count, *tails["body_ang_vel_w"]
-            ),
-            origins,
-            pose,
-            velocity,
-            joint_noise,
-            self._soft_joint_limits,
-            joint_pos,
-            root_state,
-        )
-        motion_joint_vel = packet_joint_vel
-        values_ms = (time.perf_counter() - values_started) * 1000.0
-        root_write_started = time.perf_counter()
-        self.robot.write_motion_state_tensor_to_sim(
-            root_state=root_state,
-            position=joint_pos,
-            velocity=motion_joint_vel,
-            env_ids=rows,
-        )
-        root_write_ms = (time.perf_counter() - root_write_started) * 1000.0
-        publish_started = time.perf_counter()
-        self._ingest_motion_packet(rows, packet, origins=origins)
-        publish_ms = (time.perf_counter() - publish_started) * 1000.0
-        self._tensor_resample_ingested = env_ids
-        self._last_reset_payload_validated = True
-        self.last_reset_timing_ms.update(
-            {
-                "reset_done_motion_sampler_ms": sampler_ms,
-                "reset_done_motion_sampler_dispatch_ms": sampler_dispatch_ms,
-                "reset_done_motion_packet_ms": packet_ms,
-                "reset_done_motion_reset_rng_ms": rng_ms,
-                "reset_done_motion_reset_values_ms": values_ms,
-                "reset_done_motion_reset_construction_ms": values_ms + root_write_ms,
-                "reset_done_motion_reset_write_ms": root_write_ms,
-                "reset_done_motion_reset_publish_ms": publish_ms,
-            }
-        )
-        sync_started = time.perf_counter()
-        self._sync_tensor_sampler_state(rows)
-        self.last_reset_timing_ms["reset_done_motion_sampler_sync_ms"] = (
-            time.perf_counter() - sync_started
-        ) * 1000.0
-
-    def _resample_command_mask(self, reset_mask: torch.Tensor) -> None:
+    def _resample_command(self, reset_mask: torch.Tensor) -> None:
         """Full-width motion sampling and masked state publication."""
         sampler_started = time.perf_counter()
-        frames = self.tensor_sampler.sample_frames_mask(reset_mask, self._env.torch_rng.generator)
+        frames = self.tensor_sampler.sample_frames(reset_mask, self._env.torch_rng.generator)
         packet = self._motion_packet(frames)
         tails, offsets = self._cached_motion_feature_shapes()
         pose = self._env.torch_rng.uniform(
@@ -1122,7 +995,7 @@ class MotionCommand(CommandTerm):
             joint_pos,
             root_state,
         )
-        self.robot.write_motion_state_tensor_to_sim_mask(
+        self.robot.write_motion_state_tensor_to_sim(
             root_state=root_state,
             position=joint_pos,
             velocity=packet[:, vel_start:vel_end].contiguous(),
@@ -1133,20 +1006,8 @@ class MotionCommand(CommandTerm):
             time.perf_counter() - sampler_started
         ) * 1000.0
 
-    def _update_command(self, env_ids: torch.Tensor | None) -> None:
-        self._tensor_post_compute_env_ids = env_ids
+    def _update_command(self) -> None:
         timing = self.last_step_timing_ms
-        if env_ids is not None:
-            ingested = self._tensor_resample_ingested
-            self._tensor_resample_ingested = None
-            if (
-                ingested is None
-                or ingested.shape != env_ids.shape
-                or not bool(torch.equal(ingested, env_ids))
-            ):
-                self._refresh_motion_torch(env_ids)
-            return
-        self._tensor_resample_ingested = None
         if not self.cfg.params.truncate_on_clip_end and not self.robot.reset_state_tensor_active:
             raise RuntimeError(
                 "MotionCommand clip wrap requires an active tensor reset transaction"
@@ -1158,22 +1019,21 @@ class MotionCommand(CommandTerm):
             time.perf_counter() - failure_started
         ) * 1000.0
         sampler_started = time.perf_counter()
-        wrap_rows = self._step_tensor_sampler()
+        wrap_mask = self._step_tensor_sampler()
         timing["update_state_motion_step_sampler_ms"] = (
             time.perf_counter() - sampler_started
         ) * 1000.0
-        if wrap_rows.numel() and not self.cfg.params.truncate_on_clip_end:
-            self._resample_command(wrap_rows)
+        if not self.cfg.params.truncate_on_clip_end:
+            self._resample_command(wrap_mask)
         refresh_started = time.perf_counter()
         self._refresh_motion_torch()
         timing["update_state_motion_refresh_current_ms"] = (
             time.perf_counter() - refresh_started
         ) * 1000.0
 
-    def _update_command_mask(self, reset_mask: torch.Tensor) -> None:
-        """Consume issue #2285's full-width reset mask without row comparison."""
+    def _update_command_reset(self, reset_mask: torch.Tensor) -> None:
+        """Consume the full-width reset mask without row comparison."""
         timing = self.last_step_timing_ms
-        self._tensor_post_compute_env_ids = None
         ingested = self._tensor_resample_ingested_mask
         self._tensor_resample_ingested_mask = None
         update_started = time.perf_counter()
@@ -1183,9 +1043,8 @@ class MotionCommand(CommandTerm):
             time.perf_counter() - update_started
         ) * 1000.0
 
-    def post_compute_mask(self) -> None:
-        """Run full-width post-compute after an issue #2285 reset."""
-        self._tensor_post_compute_env_ids = None
+    def post_compute_reset(self) -> None:
+        """Run full-width post-compute after reset."""
         self.post_compute()
 
     def _step_tensor_sampler(self) -> torch.Tensor:
@@ -1197,7 +1056,6 @@ class MotionCommand(CommandTerm):
         )
 
     def post_compute(self) -> None:
-        rows = self._tensor_post_compute_env_ids
         read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
         view_started = time.perf_counter()
         if read_plan is None or not read_plan.ready:
@@ -1208,7 +1066,7 @@ class MotionCommand(CommandTerm):
         view_ms = (time.perf_counter() - view_started) * 1000.0
         robot_started = time.perf_counter()
         _bind_compiled_motion_post_compute()(
-            self._tensor_all_rows if rows is None else rows,
+            self._tensor_all_rows,
             self.anchor_body_idx,
             view.pos_w,
             view.quat_w,
@@ -1243,28 +1101,20 @@ class MotionCommand(CommandTerm):
         }
         self.last_post_compute_timing_ms["reset_done_motion_relative_refresh_ms"] = 0.0
 
-    def _sync_tensor_sampler_state(self, rows: torch.Tensor | None = None) -> None:
-        selector = self._tensor_all_rows if rows is None else rows
-        cast(torch.Tensor, self.time_steps).index_copy_(
-            0, selector, self.tensor_sampler.current_frames.index_select(0, selector)
-        )
-        cast(torch.Tensor, self.current_clip_end_frames).index_copy_(
-            0, selector, self.tensor_sampler.current_clip_end_frames.index_select(0, selector)
+    def _sync_tensor_sampler_state(self) -> None:
+        cast(torch.Tensor, self.time_steps).copy_(self.tensor_sampler.current_frames)
+        cast(torch.Tensor, self.current_clip_end_frames).copy_(
+            self.tensor_sampler.current_clip_end_frames
         )
 
     @staticmethod
     def _validate_cfg(cfg: MotionCommandCfg) -> None:
         _validate_motion_command_cfg(cfg)
 
-    def _refresh_motion_torch(self, rows: torch.Tensor | None = None) -> None:
-        """Gather motion rows and publish the device-resident command carrier."""
-        frames = (
-            cast(torch.Tensor, self.time_steps)
-            if rows is None
-            else cast(torch.Tensor, self.time_steps)[rows]
-        )
-        self._ingest_motion_packet(
-            self._tensor_all_rows if rows is None else rows, self._motion_packet(frames)
+    def _refresh_motion_torch(self) -> None:
+        """Publish the device-resident command carrier at full width."""
+        self._ingest_motion_packet_mask(
+            self._tensor_all_reset_mask, self._motion_packet(self.time_steps)
         )
 
     def _seed_robot_state_torch_from_defaults(self) -> None:
@@ -1394,10 +1244,9 @@ class MotionCommand(CommandTerm):
         )
         self._command.copy_(torch.where(reset_mask[:, None], packet[:, :vel_end], self._command))
 
-    def _refresh_relative_state_torch(self, rows: torch.Tensor | None = None) -> None:
-        row_selector = self._tensor_all_rows if rows is None else rows
+    def _refresh_relative_state_torch(self) -> None:
         _bind_compiled_motion_relative_state()(
-            row_selector,
+            self._tensor_all_rows,
             self.anchor_body_idx,
             cast("torch.Tensor", self._motion_data.body_pos_w),
             self._body_pos_w,
@@ -1504,21 +1353,8 @@ class MotionJointPositionAction(JointPositionAction):
         if not bool(torch.isfinite(self._raw_actions).all()):
             raise ValueError(f"{type(self).__name__} received NaN or Inf actions")
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        super().reset(env_ids)
-        selector = (
-            slice(None)
-            if env_ids is None
-            else self._reset_selector(
-                torch.arange(self.num_envs, device=self._device)[env_ids]
-                if isinstance(env_ids, slice)
-                else env_ids
-            )
-        )
-        self._previous_raw_actions[selector] = 0.0
-
-    def reset_mask(self, reset_mask: torch.Tensor) -> None:
-        super().reset_mask(reset_mask)
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        super().reset(reset_mask)
         self._previous_raw_actions.masked_fill_(reset_mask.reshape(-1, 1), 0.0)
 
     def apply_actions(self) -> None:
@@ -1663,8 +1499,8 @@ class _BodyTerm(ManagerTermBase):
             )
         return _command(self._env, command_name), _positive_std(std, term_name=type(self).__name__)
 
-    def reset_mask(self, reset_mask: torch.Tensor) -> None:
-        """Issue #2285 mask boundary for stateless motion reward reads."""
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        """Mask boundary for stateless motion reward reads."""
         del reset_mask
 
     @staticmethod
@@ -1824,8 +1660,8 @@ class bad_anchor_pos_z_only(ManagerTermBase):
             - robot_anchor_pos[:, command.anchor_body_idx, 2]
         ).abs() > threshold
 
-    def reset_mask(self, reset_mask: torch.Tensor) -> None:
-        """Issue #2285 mask boundary for the stateless termination read."""
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        """Mask boundary for the stateless termination read."""
         del reset_mask
 
 

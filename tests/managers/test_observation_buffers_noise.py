@@ -298,7 +298,6 @@ def test_observation_groups_pipeline_order_and_history(fake_env: FakeEnv) -> Non
                     func=lambda env: env.obs,
                     clip=(-1.0, 4.0),
                     scale=2.0,
-                    history_length=2,
                 ),
                 "bias": ObservationTermCfg(
                     func=lambda env: torch.ones((env.num_envs, 1), dtype=torch.float32)
@@ -313,15 +312,14 @@ def test_observation_groups_pipeline_order_and_history(fake_env: FakeEnv) -> Non
     manager = ObservationManager(cfg, fake_env)
     first = manager.compute(update_history=True)
     expected_first = fake_env.obs.clamp(-1, 4) * 2
-    torch.testing.assert_close(first["policy"][:, :4], expected_first.repeat(1, 2))
+    torch.testing.assert_close(first["policy"][:, :2], expected_first)
     assert list(first["dict_group"]) == ["state"]
-    assert manager.group_obs_dim["policy"] == (5,)
+    assert manager.group_obs_dim["policy"] == (3,)
 
     fake_env.obs = fake_env.obs + 10
     second = manager.compute(update_history=True)["policy"]
     expected_second = fake_env.obs.clamp(-1, 4) * 2
-    torch.testing.assert_close(second[:, :2], expected_first)
-    torch.testing.assert_close(second[:, 2:4], expected_second)
+    torch.testing.assert_close(second[:, :2], expected_second)
     assert manager.get_active_iterable_terms(0)[0][0] == "policy-state"
 
 
@@ -368,45 +366,32 @@ def test_non_temporal_tensor_terms_stay_on_device_for_clip_scale_concat(
     assert source.isfinite().all()
 
 
-def test_tensor_delay_and_history_stay_on_device_without_host_detour(
+@pytest.mark.parametrize(
+    ("term_name", "term_cfg", "message"),
+    [
+        (
+            "delayed",
+            ObservationTermCfg(func=lambda env: env.obs, delay_min_lag=1, delay_max_lag=1),
+            "delay or history state",
+        ),
+        (
+            "history",
+            ObservationTermCfg(func=lambda env: env.obs, history_length=2),
+            "delay or history state",
+        ),
+    ],
+)
+def test_tensor_delay_and_history_fail_closed(
     fake_env: FakeEnv,
+    term_name: str,
+    term_cfg: ObservationTermCfg,
+    message: str,
 ) -> None:
-    device = fake_env.device
-    source = torch.arange(fake_env.num_envs * 2, dtype=torch.float32, device=device).reshape(
-        fake_env.num_envs, 2
-    )
-    manager = ObservationManager(
-        {
-            "policy": ObservationGroupCfg(
-                terms={
-                    "delayed": ObservationTermCfg(
-                        func=lambda env: source, delay_min_lag=1, delay_max_lag=1
-                    ),
-                    "history": ObservationTermCfg(func=lambda env: source, history_length=2),
-                }
-            )
-        },
-        fake_env,
-    )
-
-    first = manager.compute(update_history=True)["policy"]
-    assert isinstance(first, torch.Tensor)
-    assert first.device == device
-
-    history_buffer = manager._group_obs_term_history_buffer["policy"]["history"]
-    delay_buffer = manager._group_obs_term_delay_buffer["policy"]["delayed"]
-    assert history_buffer.buffer.device == device
-    assert delay_buffer.peek().device == device
-
-    source = source + 10
-    second = manager.compute(update_history=True)["policy"]
-    assert second.device == device
-    torch.testing.assert_close(second[:, :2], first[:, :2])
-    torch.testing.assert_close(
-        second[:, 2:4],
-        first[:, 2:4],
-    )
-    torch.testing.assert_close(second[:, 4:6], source)
+    with pytest.raises(NotImplementedError, match=message):
+        ObservationManager(
+            {"policy": ObservationGroupCfg(terms={term_name: term_cfg})},
+            fake_env,
+        )
 
 
 def test_tensor_noise_stays_on_device_without_observation_host_detour(
@@ -450,7 +435,7 @@ def test_tensor_noise_stays_on_device_without_observation_host_detour(
     assert torch.isfinite(result).all()
 
 
-def test_tensor_terms_are_row_scoped_on_reset(fake_env: FakeEnv) -> None:
+def test_tensor_terms_compute_at_full_width(fake_env: FakeEnv) -> None:
     device = fake_env.device
     source = torch.arange(fake_env.num_envs * 2, dtype=torch.float32, device=device).reshape(
         fake_env.num_envs, 2
@@ -464,13 +449,12 @@ def test_tensor_terms_are_row_scoped_on_reset(fake_env: FakeEnv) -> None:
         fake_env,
     )
 
-    rows = manager.compute(update_history=True, env_ids=torch.tensor([1], dtype=torch.int64))[
-        "policy"
-    ]
+    rows = manager.compute(update_history=True)["policy"]
+    manager.reset(torch.zeros(fake_env.num_envs, dtype=torch.bool, device=device))
 
     assert isinstance(rows, torch.Tensor)
     assert rows.device == device
-    torch.testing.assert_close(rows, source[[1]])
+    torch.testing.assert_close(rows, source)
 
 
 def test_concatenated_result_owns_each_result_and_protects_term_buffers(
@@ -564,8 +548,6 @@ def test_observation_noise_model_delay_and_seed_reproducibility() -> None:
                         noise_cfg=GaussianNoiseCfg(std=0.1),
                         bias_noise_cfg=UniformNoiseCfg(n_min=-0.2, n_max=0.2),
                     ),
-                    delay_min_lag=1,
-                    delay_max_lag=1,
                 )
             },
             enable_corruption=True,

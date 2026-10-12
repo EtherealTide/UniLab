@@ -98,7 +98,7 @@ def test_action_split_history_apply_and_partial_reset(fake_env: FakeEnv) -> None
     torch.testing.assert_close(manager.get_term("legs").raw_action, second[:, :2])
     manager.apply_action()
     assert manager.get_term("legs").applied == 1
-    manager.reset(torch.tensor([1, 3], dtype=torch.int64))
+    manager.reset(torch.tensor([False, True, False, True], dtype=torch.bool))
     torch.testing.assert_close(manager.action[[1, 3]], torch.zeros(2, 3))
     torch.testing.assert_close(manager.action[[0, 2]], second[[0, 2]])
 
@@ -445,7 +445,7 @@ def test_termination_splits_timeouts_and_failures(fake_env: FakeEnv) -> None:
     torch.testing.assert_close(dones, timeout | failure)
     torch.testing.assert_close(manager.time_outs, timeout)
     torch.testing.assert_close(manager.terminated, failure)
-    assert manager.reset(torch.tensor([0, 1], dtype=torch.int64)) == {
+    assert manager.reset(torch.tensor([True, True, False, False], dtype=torch.bool)) == {
         "Episode_Termination/timeout": 1,
         "Episode_Termination/failure": 1,
     }
@@ -480,15 +480,16 @@ def test_transient_tensor_termination_opt_in_preserves_manager_buffers(
 
 
 def test_curriculum_and_null_semantics(fake_env: FakeEnv) -> None:
-    def update(env: FakeEnv, env_ids: np.ndarray | slice) -> dict[str, float]:
+    def update(env: FakeEnv, env_ids: slice) -> dict[str, float]:
         return {"difficulty": 3.0}
 
     manager = CurriculumManager({"terrain": CurriculumTermCfg(func=update)}, fake_env)
-    manager.compute(np.array([1, 2]))
-    assert manager.reset()["Curriculum/terrain/difficulty"] == 3.0
+    manager.compute()
+    reset_mask = torch.ones(4, dtype=torch.bool)
+    assert manager.reset(reset_mask)["Curriculum/terrain/difficulty"] == 3.0
     null = NullCurriculumManager()
     assert null.active_terms == []
-    assert null.reset() == {}
+    assert null.reset(reset_mask) == {}
 
     bad = CurriculumManager({"bad": CurriculumTermCfg(func=lambda env, env_ids: np.nan)}, fake_env)
     with pytest.raises(ValueError, match="CurriculumManager term 'bad'"):

@@ -83,12 +83,10 @@ class UniformPoseCommand(CommandTerm):
     def command(self) -> torch.Tensor:
         return self._command
 
-    def _update_metrics(self, env_ids: torch.Tensor | None = None) -> None:
-        del env_ids
+    def _update_metrics(self) -> None:
+        pass
 
-    def _resample_command(self, env_ids: torch.Tensor) -> None:
-        if len(env_ids) == 0:
-            return
+    def _resample_command(self, reset_mask: torch.Tensor) -> None:
         ranges = self._validated_ranges(self.cfg.ranges)
         if len(ranges) != self._command.shape[1]:
             raise ValueError(
@@ -97,14 +95,15 @@ class UniformPoseCommand(CommandTerm):
                 "change per-axis bounds"
             )
         samples = torch.stack(
-            tuple(self._host_uniform(lower, upper, env_ids.numel()) for lower, upper in ranges),
+            tuple(self._host_uniform(lower, upper, self.num_envs) for lower, upper in ranges),
             dim=1,
         )
-        self._command.index_copy_(0, env_ids, samples)
+        expanded = reset_mask[:, None]
+        self._command.copy_(torch.where(expanded, samples, self._command))
         if self._zero_command_prob > 0.0:
-            zero = self._host_uniform(0.0, 1.0, env_ids.numel()) < self._zero_command_prob
-            zero_rows = env_ids[zero]
-            self._command[zero_rows] = 0.0
+            zero = self._host_uniform(0.0, 1.0, self.num_envs) < self._zero_command_prob
+            zeros = torch.zeros_like(self._command)
+            self._command.copy_(torch.where((reset_mask & zero)[:, None], zeros, self._command))
 
     def _host_uniform(self, lower: float, upper: float, count: int) -> torch.Tensor:
         rng_owner = getattr(self._env, "torch_rng", None)
@@ -114,8 +113,8 @@ class UniformPoseCommand(CommandTerm):
             )
         return rng_owner.uniform(lower, upper, (count,), dtype=torch.float32)
 
-    def _update_command(self, env_ids: torch.Tensor | None) -> None:
-        del env_ids
+    def _update_command(self) -> None:
+        pass
 
 
 __all__ = ["UniformPoseCommand", "UniformPoseCommandCfg"]
