@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
@@ -60,19 +61,27 @@ def test_stage_curriculum_demo_owner_materializes_declared_ladders() -> None:
         assert not OmegaConf.is_config(term.params["stages"])
 
 
-def test_stage_curriculum_demo_real_backend_fails_closed_for_mask_reset() -> None:
+def test_stage_curriculum_demo_real_backend_runs_packed_reset_lifecycle() -> None:
     pytest.importorskip(
         "unisim.backend.mujoco.backend",
         reason="unisim-core MuJoCo adapter (mjbatch build) not available",
     )
     _, override = _materialize()
-    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
-        registry.make(
-            FIXTURE_ENV_NAME,
-            sim_backend="mujoco",
-            env_cfg_override=override,
-            num_envs=4,
-        )
+    env = registry.make(
+        FIXTURE_ENV_NAME,
+        sim_backend="mujoco",
+        env_cfg_override=override,
+        num_envs=4,
+    )
+    try:
+        state = env.init_state()
+        assert state.obs["obs"].shape[0] == 4
+        reset_mask = torch.zeros(4, dtype=torch.bool, device=env.device)
+        reset_mask[1] = True
+        obs, _ = env.reset(reset_mask)
+        assert obs["obs"].shape[0] == 4
+    finally:
+        env.close()
 
 
 def test_stage_curriculum_demo_owner_invalid_stages_fail_closed() -> None:

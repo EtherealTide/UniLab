@@ -1,14 +1,17 @@
-"""NumPy host-bound rotation helpers owned by the base/reset boundary.
+"""Rotation helpers owned by the base/reset boundary.
 
-These helpers are intentionally private to ``unilab.base``. They serve the
-explicit reset/entity host boundary; task cold loaders own their data-format
-conversion locally rather than depending on this transition shim. No
-compatibility import for ``unilab.utils.rotation`` is retained.
+The ``np_*`` helpers are intentionally private to ``unilab.base``. They serve
+the explicit reset/entity host boundary; task cold loaders own their
+data-format conversion locally rather than depending on this transition shim.
+``quat_apply_inverse`` is the Torch counterpart used by the packed reset
+transaction's device-side pose/velocity encoding. No compatibility import for
+``unilab.utils.rotation`` is retained.
 """
 
 from __future__ import annotations
 
 import numpy as np
+import torch
 
 
 def np_quat_mul(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
@@ -479,3 +482,14 @@ def np_subtract_anchor_frame_transforms(
         axis=-1,
     )
     return rel_pos, rel_quat
+
+
+def quat_apply_inverse(quat_wxyz: torch.Tensor, vector: torch.Tensor) -> torch.Tensor:
+    """Rotate vectors by the inverse of broadcast-compatible wxyz quaternions."""
+    quat = torch.cat((quat_wxyz[..., 0:1], -quat_wxyz[..., 1:4]), dim=-1)
+    quat_xyz = quat[..., 1:4]
+    if vector.ndim < quat_xyz.ndim:
+        vector = vector.expand_as(quat_xyz)
+    cross = torch.linalg.cross(quat_xyz, vector, dim=-1)
+    second_cross = torch.linalg.cross(quat_xyz, cross, dim=-1)
+    return vector + 2.0 * quat[..., 0:1] * cross + 2.0 * second_cross

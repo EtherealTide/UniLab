@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
@@ -68,19 +69,27 @@ def test_mjlab_fixture_hydra_materializes_source_structure() -> None:
     _assert_plain(cfg)
 
 
-def test_mjlab_fixture_real_mujoco_manager_fails_closed_without_mask_reset() -> None:
+def test_mjlab_fixture_real_mujoco_manager_runs_packed_reset_lifecycle() -> None:
     pytest.importorskip(
         "unisim.backend.mujoco.backend",
         reason="unisim-core MuJoCo adapter (mjbatch build) not available",
     )
     _, override = _materialize()
-    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
-        registry.make(
-            FIXTURE_ENV_NAME,
-            sim_backend="mujoco",
-            env_cfg_override=override,
-            num_envs=8,
-        )
+    env = registry.make(
+        FIXTURE_ENV_NAME,
+        sim_backend="mujoco",
+        env_cfg_override=override,
+        num_envs=8,
+    )
+    try:
+        state = env.init_state()
+        assert state.obs["obs"].shape[0] == 8
+        reset_mask = torch.zeros(8, dtype=torch.bool, device=env.device)
+        reset_mask[1] = True
+        obs, _ = env.reset(reset_mask)
+        assert obs["obs"].shape[0] == 8
+    finally:
+        env.close()
 
 
 def test_mjlab_fixture_missing_actuator_fails_on_cold_path() -> None:

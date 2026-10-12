@@ -396,15 +396,19 @@ class ManagerBasedRlEnv(TorchEnv):
 
         self._materialize_backend()
         materialized_capabilities = self._backend.get_tensor_capabilities()
-        if not materialized_capabilities.mask_selected_reset:
+        if not (
+            materialized_capabilities.packed_reset
+            and materialized_capabilities.device_reset_randomization
+        ):
             raise NotImplementedError(
-                "backend does not declare the mask_selected_reset capability required "
-                "by the fixed-width reset contract"
+                "backend does not declare the packed_reset capability required "
+                "by the packed reset contract: SimBackend.begin_packed_reset"
             )
+        self._reset_state.declare_packed_reset_device(self.device)
         if "startup" in self.event_manager.available_modes:
             # Startup model-field DR uses the same public set_state transaction
             # as reset DR. Materialize the backend first: adapters may make the
-            # mask reset boundary and model pools available only there.
+            # packed reset boundary and model pools available only there.
             # This remains a cold-path commit before read-plan binding/reset.
             with self._reset_state.scoped_startup(self._all_env_rows):
                 self.event_manager.apply(

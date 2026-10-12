@@ -69,13 +69,13 @@ class _FakeBackend:
         *,
         reject_pre_step: bool = False,
         reject_materialize: bool = False,
-        mask_reset: bool = True,
+        packed_reset: bool = True,
     ) -> None:
         self.num_envs = num_envs
         self.num_actuators = 1
         self.reject_pre_step = reject_pre_step
         self.reject_materialize = reject_materialize
-        self.mask_reset = mask_reset
+        self.packed_reset = packed_reset
         self.pre_step_control = None
         self.applied_controls: list[np.ndarray] = []
         self.tensor_controls: list[torch.Tensor] = []
@@ -84,7 +84,7 @@ class _FakeBackend:
         self.materialize_calls = 0
         self.lifecycle: list[str] = []
         self.sensors: dict[str, torch.Tensor] = {}
-        self.mask_reset_calls: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, Any, bool]] = []
+        self.set_state_calls: list[tuple[Any, Any, Any]] = []
         self.qpos = torch.zeros((num_envs, 4), dtype=torch.float32)
         self.qvel = torch.zeros((num_envs, 3), dtype=torch.float32)
 
@@ -169,24 +169,46 @@ class _FakeBackend:
         self.pre_step_control = fn
 
     def tensor_execution(self) -> TensorExecution:
-        return TensorExecution.DEVICE_RESIDENT if self.mask_reset else TensorExecution.HOST_BRIDGE
+        return TensorExecution.DEVICE_RESIDENT if self.packed_reset else TensorExecution.HOST_BRIDGE
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
         return TensorLifecycleCapabilities(
             execution=self.tensor_execution(),
-            state_views=self.mask_reset,
+            state_views=self.packed_reset,
             state_fields=frozenset({"qpos", "qvel"}),
             stepping=True,
             selected_reset=True,
-            packed_host_bridge=not self.mask_reset,
-            mask_selected_reset=self.mask_reset,
-            selected_reset_publication=(
-                SelectedResetPublication.AUTHORITATIVE_VIEWS if self.mask_reset else None
+            packed_host_bridge=not self.packed_reset,
+            packed_reset=self.packed_reset,
+            device_reset_randomization=self.packed_reset,
+            packed_reset_fields=(
+                frozenset(("body_mass", "body_ipos", "geom_friction", "kp", "kd"))
+                if self.packed_reset
+                else frozenset()
             ),
-            data_plane=(TensorDataPlane.DIRECT if self.mask_reset else TensorDataPlane.HOST_BRIDGE),
+            selected_reset_publication=(
+                SelectedResetPublication.AUTHORITATIVE_VIEWS if self.packed_reset else None
+            ),
+            data_plane=(
+                TensorDataPlane.DIRECT if self.packed_reset else TensorDataPlane.HOST_BRIDGE
+            ),
             stream_event_ownership="test",
             torch_devices=("cpu",),
             reset_randomization=True,
+        )
+
+    def begin_packed_reset(self, *, device=None):
+        from unisim.backend.packed_reset import TorchPackedResetComposer
+
+        return TorchPackedResetComposer(self, device=device)
+
+    def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> None:
+        self.set_state_calls.append(
+            (
+                env_indices.detach().clone(),
+                qpos.detach().clone(),
+                qvel.detach().clone(),
+            )
         )
 
     def get_public_state_widths(self):
@@ -235,7 +257,6 @@ class _ResetBackend(_FakeBackend):
         self.joint_layout_calls = 0
         self.set_state_calls: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         self.randomization_calls: list[Any] = []
-        self.mask_reset_calls: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, Any, bool]] = []
         self.qpos = torch.zeros((num_envs, 4), dtype=torch.float32)
         self.qvel = torch.zeros((num_envs, 3), dtype=torch.float32)
         self.state_view_calls = 0
@@ -294,34 +315,6 @@ class _ResetBackend(_FakeBackend):
         self.randomization_calls.append(randomization)
         self.qpos[rows] = torch.as_tensor(host_qpos, device=self.qpos.device)
         self.qvel[rows] = torch.as_tensor(host_qvel, device=self.qvel.device)
-
-    def set_state_tensor_mask(
-        self,
-        reset_mask: torch.Tensor,
-        qpos: torch.Tensor,
-        qvel: torch.Tensor,
-        randomization=None,
-        *,
-        full_refresh: bool = False,
-    ) -> None:
-        assert randomization is None
-        assert not full_refresh
-        expanded = reset_mask[:, None]
-        self.mask_reset_calls.append(
-            (
-                reset_mask.detach().clone(),
-                qpos.detach().clone(),
-                qvel.detach().clone(),
-                randomization,
-                full_refresh,
-            )
-        )
-        self.qpos.copy_(torch.where(expanded, qpos, self.qpos))
-        self.qvel.copy_(torch.where(expanded, qvel, self.qvel))
-        if hasattr(self, "dof_pos"):
-            joint_pos = getattr(self, "dof_pos", None)
-            if isinstance(joint_pos, np.ndarray):
-                self.dof_pos[reset_mask.cpu().numpy(), 0] = qpos[reset_mask, 3].cpu().numpy()
 
 
 class _StateBackend(_ResetBackend):
@@ -454,12 +447,20 @@ class _ScenePlanBackend(_StateBackend):
             sensor_views=True,
             stepping=True,
             selected_reset=True,
-            packed_host_bridge=not self.mask_reset,
-            mask_selected_reset=self.mask_reset,
-            selected_reset_publication=(
-                SelectedResetPublication.AUTHORITATIVE_VIEWS if self.mask_reset else None
+            packed_host_bridge=not self.packed_reset,
+            packed_reset=self.packed_reset,
+            device_reset_randomization=self.packed_reset,
+            packed_reset_fields=(
+                frozenset(("body_mass", "body_ipos", "geom_friction", "kp", "kd"))
+                if self.packed_reset
+                else frozenset()
             ),
-            data_plane=(TensorDataPlane.DIRECT if self.mask_reset else TensorDataPlane.HOST_BRIDGE),
+            selected_reset_publication=(
+                SelectedResetPublication.AUTHORITATIVE_VIEWS if self.packed_reset else None
+            ),
+            data_plane=(
+                TensorDataPlane.DIRECT if self.packed_reset else TensorDataPlane.HOST_BRIDGE
+            ),
             stream_event_ownership="test",
             torch_devices=("cpu",),
             reset_randomization=True,
@@ -604,7 +605,10 @@ class _DeviceResidentScenePlanBackend(_ScenePlanBackend):
             sensor_views=True,
             stepping=True,
             selected_reset=True,
-            mask_selected_reset=True,
+            reset_randomization=True,
+            packed_reset=True,
+            device_reset_randomization=True,
+            packed_reset_fields=frozenset(("body_mass", "body_ipos", "geom_friction", "kp", "kd")),
             selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
             process_topology=TensorProcessTopology.IN_PROCESS,
             data_plane=TensorDataPlane.DIRECT,
@@ -618,17 +622,7 @@ class _DeviceResidentScenePlanBackend(_ScenePlanBackend):
     def compile_host_bridge_io(self, spec: TensorIOSpec):
         raise AssertionError("DEVICE_RESIDENT reset must not compile a host bridge plan")
 
-    def set_state_tensor_mask(
-        self,
-        reset_mask: torch.Tensor,
-        qpos: torch.Tensor,
-        qvel: torch.Tensor,
-        randomization=None,
-        *,
-        full_refresh: bool = False,
-    ) -> None:
-        assert randomization is None
-        assert not full_refresh
+    def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> None:
         if self.qpos.shape[1] != qpos.shape[1]:
             self.qpos = torch.zeros(
                 (self.num_envs, qpos.shape[1]), dtype=qpos.dtype, device=self.qpos.device
@@ -637,16 +631,16 @@ class _DeviceResidentScenePlanBackend(_ScenePlanBackend):
             self.qvel = torch.zeros(
                 (self.num_envs, qvel.shape[1]), dtype=qvel.dtype, device=self.qvel.device
             )
+        rows = env_indices
         self.tensor_reset_calls.append(
             (
-                reset_mask.detach().clone(),
+                rows.detach().clone(),
                 qpos.detach().clone(),
                 qvel.detach().clone(),
             )
         )
-        expanded = reset_mask[:, None]
-        self.qpos.copy_(torch.where(expanded, qpos, self.qpos))
-        self.qvel.copy_(torch.where(expanded, qvel, self.qvel))
+        self.qpos[rows] = qpos
+        self.qvel[rows] = qvel
 
     def step_tensor(self, ctrl: torch.Tensor, nsteps: int = 1) -> None:
         self.tensor_steps += 1
@@ -1129,7 +1123,7 @@ def _startup_event(env: _TestEnv, env_ids: np.ndarray | None) -> None:
 def _observe_uncommitted_reset(env: _TestEnv, reset_mask: torch.Tensor) -> None:
     del reset_mask
     backend = cast(_ResetBackend, env._backend)
-    env.trace.append(("commit_count_during_event", len(backend.mask_reset_calls)))
+    env.trace.append(("commit_count_during_event", len(backend.set_state_calls)))
 
 
 def _write_reset_joint_state(env: _TestEnv, reset_mask: torch.Tensor) -> None:
@@ -1316,7 +1310,7 @@ def test_manager_torch_device_rejects_non_tensor_device_and_invalid_syntax() -> 
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
-def test_mujoco_host_bridge_fails_closed_for_mask_reset(
+def test_mujoco_host_bridge_packed_reset_lifecycle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, device: str
 ) -> None:
     pytest.importorskip("unisim.backend.mujoco.backend")
@@ -1364,8 +1358,15 @@ def test_mujoco_host_bridge_fails_closed_for_mask_reset(
     )
     try:
         assert backend.get_tensor_capabilities().execution is TensorExecution.HOST_BRIDGE
-        with pytest.raises(NotImplementedError, match="mask_selected_reset"):
-            ManagerBasedRlEnv(cfg, backend, 2)
+        assert backend.get_tensor_capabilities().packed_reset
+        env = ManagerBasedRlEnv(cfg, backend, 2)
+        state = env.init_state()
+        assert state.obs["obs"].shape == (2, 1)
+        assert state.obs["obs"].device == env.device
+        env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+        obs, _ = env.reset(torch.tensor([False, True], dtype=torch.bool, device=env.device))
+        assert obs["obs"].shape == (2, 1)
+        env.close()
     finally:
         backend.close()
 
@@ -1746,9 +1747,9 @@ def test_startup_model_field_dr_commits_after_backend_materialization() -> None:
 
     env.init_state()
     assert backend.lifecycle == ["materialize"]
-    assert len(backend.set_state_calls) == 1
-    assert len(backend.mask_reset_calls) == 1
-    assert len(backend.randomization_calls) == 1
+    assert len(backend.set_state_calls) == 2
+    assert len(backend.randomization_calls) == 2
+    assert backend.randomization_calls[-1] is None
 
     env.reset(torch.tensor([True, False], dtype=torch.bool))
     env.step(torch.zeros((2, 1), dtype=torch.float32))
@@ -1873,22 +1874,22 @@ def test_named_keyframe_snapshot_is_shared_by_entity_and_reset_cold_path() -> No
     assert backend.keyframe_qpos_calls == 1
     assert backend.default_qpos_calls == 0
     assert backend.joint_layout_calls == 1
-    assert len(backend.mask_reset_calls) == 2
+    assert len(backend.set_state_calls) == 2
     np.testing.assert_allclose(
-        backend.mask_reset_calls[0][1].cpu().numpy(),
+        backend.set_state_calls[0][1],
         [[0.0, 0.0, 0.3, 0.75], [0.0, 0.0, 0.3, 0.75]],
         rtol=0,
         atol=1e-7,
     )
     np.testing.assert_allclose(
-        backend.mask_reset_calls[1][1].cpu().numpy(),
-        [[0.0, 0.0, 0.3, 0.75], [0.0, 0.0, 0.3, 0.75]],
+        backend.set_state_calls[1][1],
+        [[0.0, 0.0, 0.3, 0.75]],
         rtol=0,
         atol=1e-7,
     )
 
 
-def test_real_mujoco_backend_fails_closed_before_first_reset() -> None:
+def test_real_mujoco_backend_runs_packed_reset_lifecycle() -> None:
     pytest.importorskip(
         "unisim.backend.mujoco.backend",
         reason="unisim-core MuJoCo adapter (mjbatch build) not available",
@@ -1913,8 +1914,14 @@ def test_real_mujoco_backend_fails_closed_before_first_reset() -> None:
         terminations={"time_out": TerminationTermCfg(func=mdp.time_out, time_out=True)},
         policy_observation_group="actor",
     )
-    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
-        make_manager_based_rl_env(cfg, num_envs=2, backend_type="mujoco")
+    env = make_manager_based_rl_env(cfg, num_envs=2, backend_type="mujoco")
+    try:
+        state = env.init_state()
+        assert state.obs["obs"].shape[0] == 2
+        obs, _ = env.reset(torch.tensor([True, False], dtype=torch.bool))
+        assert obs["obs"].shape[0] == 2
+    finally:
+        env.close()
 
 
 @pytest.mark.parametrize(
@@ -1931,7 +1938,7 @@ def test_real_mujoco_backend_fails_closed_before_first_reset() -> None:
         ),
     ],
 )
-def test_real_mujoco_default_state_fails_closed_without_mask_reset(
+def test_real_mujoco_default_state_applies_keyframe_baseline(
     default_keyframe_name: str | None,
     expected_root_z: float,
     expected_joint_pos: np.ndarray,
@@ -1989,10 +1996,24 @@ def test_real_mujoco_default_state_fails_closed_without_mask_reset(
         add_body_sensors=True,
         **env_backend_kwargs(cfg),
     )
-    del expected_root_z, expected_joint_pos
     try:
-        with pytest.raises(NotImplementedError, match="mask_selected_reset"):
-            ManagerBasedRlEnv(cfg, backend, 2)
+        env = ManagerBasedRlEnv(cfg, backend, 2)
+        env.init_state()
+        env.reset()
+        robot_data = env.scene["robot"].data
+        np.testing.assert_allclose(
+            robot_data._host_root_link_pos_w[:, 2],
+            np.full(2, expected_root_z),
+            rtol=0,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            robot_data._host_joint_pos,
+            np.tile(expected_joint_pos, (2, 1)),
+            rtol=0,
+            atol=1e-6,
+        )
+        env.close()
     finally:
         backend.close()
 
@@ -2161,9 +2182,9 @@ def test_reset_events_compose_then_commit_default_state_once() -> None:
     assert env.trace[-1] == ("commit_count_during_event", 0)
     assert backend.default_qpos_calls == 1
     assert backend.init_qvel_calls == 1
-    assert len(backend.mask_reset_calls) == 1
-    reset_mask, qpos, qvel, _randomization, _full_refresh = backend.mask_reset_calls[0]
-    torch.testing.assert_close(reset_mask, torch.ones(2, dtype=torch.bool))
+    assert len(backend.set_state_calls) == 1
+    committed_rows, qpos, qvel = backend.set_state_calls[0]
+    np.testing.assert_array_equal(committed_rows, [0, 1])
     np.testing.assert_array_equal(
         qpos,
         [[0.0, 0.0, 0.5, 0.25], [0.0, 0.0, 0.5, 0.25]],
@@ -2173,10 +2194,8 @@ def test_reset_events_compose_then_commit_default_state_once() -> None:
 
     env.reset(torch.tensor([False, True], dtype=torch.bool))
     assert ("commit_count_during_event", 1) in env.trace
-    assert len(backend.mask_reset_calls) == 2
-    torch.testing.assert_close(
-        backend.mask_reset_calls[1][0], torch.tensor([False, True], dtype=torch.bool)
-    )
+    assert len(backend.set_state_calls) == 2
+    np.testing.assert_array_equal(backend.set_state_calls[1][0], [1])
     assert backend.default_qpos_calls == 1
     assert backend.init_qvel_calls == 1
     assert backend.joint_layout_calls == 2
@@ -2198,9 +2217,9 @@ def test_reset_event_and_command_state_writes_share_one_commit() -> None:
 
     env.reset()
 
-    assert len(backend.mask_reset_calls) == 1
-    reset_mask, qpos, qvel, _randomization, _full_refresh = backend.mask_reset_calls[0]
-    torch.testing.assert_close(reset_mask, torch.ones(2, dtype=torch.bool))
+    assert len(backend.set_state_calls) == 1
+    committed_rows, qpos, qvel = backend.set_state_calls[0]
+    np.testing.assert_array_equal(committed_rows, [0, 1])
     np.testing.assert_array_equal(
         qpos,
         [[0.0, 0.0, 0.5, 0.75], [0.0, 0.0, 0.5, 0.75]],
@@ -2214,7 +2233,7 @@ def test_pure_reset_event_does_not_request_backend_state_capability() -> None:
     env.reset(torch.tensor([True, False], dtype=torch.bool))
 
     assert isinstance(backend, _FakeBackend)
-    assert backend.mask_reset_calls == []
+    assert backend.set_state_calls == []
 
 
 def test_update_state_reuses_backend_state_once_and_refreshes_after_physics() -> None:
@@ -2600,14 +2619,14 @@ def test_command_packed_sensor_read_negotiates_backend_local_alias() -> None:
     )
     cfg.commands = {"twist": _AliasedSensorCommandCfg(resampling_time_range=(1.0, 1.0))}
     backend = _ScenePlanBackend(2)
-    backend.mask_reset = False
+    backend.packed_reset = False
     backend.sensors.update(
         {
             "local_linvel": torch.tensor([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=torch.float32),
             "gyro": torch.tensor([[-0.1, -0.2, -0.3], [-0.4, -0.5, -0.6]], dtype=torch.float32),
         }
     )
-    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
+    with pytest.raises(NotImplementedError, match="packed_reset capability"):
         _TestEnv(cfg, cast(SimBackend, backend), 2)
 
 
@@ -2636,16 +2655,15 @@ def test_scene_read_plan_pairs_reset_with_selected_packed_transfer() -> None:
 
         env.reset()
 
-        assert backend.set_state_calls == []
-        assert len(backend.mask_reset_calls) == 1
-        reset_mask, qpos, qvel, _randomization, _full_refresh = backend.mask_reset_calls[0]
-        torch.testing.assert_close(reset_mask, torch.ones(2, dtype=torch.bool))
+        assert len(backend.set_state_calls) == 1
+        committed_rows, qpos, qvel = backend.set_state_calls[0]
+        np.testing.assert_array_equal(committed_rows, [0, 1])
         torch.testing.assert_close(
-            qpos,
+            torch.as_tensor(qpos),
             torch.tensor([[0.0, 0.0, 0.5, 0.25], [0.0, 0.0, 0.5, 0.25]], dtype=torch.float32),
         )
         torch.testing.assert_close(
-            qvel,
+            torch.as_tensor(qvel),
             torch.tensor(
                 [[0.0, 0.0, -0.5], [0.0, 0.0, -0.5]], dtype=torch.float32, device=env.device
             ),
@@ -2654,10 +2672,8 @@ def test_scene_read_plan_pairs_reset_with_selected_packed_transfer() -> None:
         assert backend.selected_reads == 0
 
         env.reset(torch.tensor([False, True], dtype=torch.bool))
-        assert len(backend.mask_reset_calls) == 2
-        torch.testing.assert_close(
-            backend.mask_reset_calls[1][0], torch.tensor([False, True], dtype=torch.bool)
-        )
+        assert len(backend.set_state_calls) == 2
+        np.testing.assert_array_equal(backend.set_state_calls[1][0], [1])
         assert backend.full_reads == 0
         assert backend.selected_reads == 0
     finally:
@@ -2667,7 +2683,7 @@ def test_scene_read_plan_pairs_reset_with_selected_packed_transfer() -> None:
         env.close()
 
 
-def test_host_bridge_reset_randomization_fails_closed_without_mask_commit() -> None:
+def test_reset_randomization_commits_through_packed_boundary() -> None:
     cfg = _make_cfg(include_optional_managers=False)
     cfg.observations = {
         "actor": ObservationGroupCfg(
@@ -2732,11 +2748,35 @@ def test_host_bridge_reset_randomization_fails_closed_without_mask_commit() -> N
         ),
     }
     backend = _ScenePlanBackend(2)
-    with pytest.raises(
-        NotImplementedError,
-        match="reset randomization, which has no fixed-width mask commit boundary",
-    ):
-        _TestEnv(cfg, cast(SimBackend, backend), 2)
+    env = _TestEnv(cfg, cast(SimBackend, backend), 2)
+    try:
+        env.reset()
+
+        assert len(backend.set_state_calls) == 1
+        committed_rows, _, _ = backend.set_state_calls[0]
+        np.testing.assert_array_equal(committed_rows, [0, 1])
+        payload = backend.randomization_calls[0]
+        assert payload is not None
+        np.testing.assert_allclose(payload.body_mass.numpy(), [[15.0], [15.0]], rtol=1e-6)
+        np.testing.assert_allclose(payload.body_ipos.numpy(), [[[0.1, 0.0, -0.2]]] * 2, atol=1e-7)
+        np.testing.assert_allclose(
+            payload.geom_friction.numpy(), [[[0.75, 0.02, 0.002]]] * 2, rtol=1e-6
+        )
+        np.testing.assert_allclose(payload.kp.numpy(), [[30.0], [30.0]], rtol=1e-6)
+        np.testing.assert_allclose(payload.kd.numpy(), [[3.0], [3.0]], rtol=1e-6)
+
+        # A partial mask reset recomposes only the selected rows in one commit.
+        env.reset(torch.tensor([False, True], dtype=torch.bool))
+        assert len(backend.set_state_calls) == 2
+        np.testing.assert_array_equal(backend.set_state_calls[1][0], [1])
+        replay = backend.randomization_calls[1]
+        assert replay is not None
+        np.testing.assert_allclose(replay.body_mass.numpy(), [[15.0]], rtol=1e-6)
+    finally:
+        if env.scene._tensor_read_plan is not None:
+            env.scene._tensor_read_plan.close()
+            env.scene._tensor_read_plan = None
+        env.close()
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a local CUDA device")
@@ -2776,8 +2816,10 @@ def test_device_resident_reset_dispatches_selected_tensor_commit() -> None:
         assert backend.set_state_calls == []
         assert backend.reset_calls == []
         assert len(backend.tensor_reset_calls) == 1
-        reset_mask, qpos, qvel = backend.tensor_reset_calls[0]
-        torch.testing.assert_close(reset_mask, torch.ones(2, dtype=torch.bool, device=env.device))
+        committed_rows, qpos, qvel = backend.tensor_reset_calls[0]
+        torch.testing.assert_close(
+            committed_rows, torch.tensor([0, 1], dtype=torch.int64, device=env.device)
+        )
         torch.testing.assert_close(
             qpos,
             torch.tensor(
@@ -2804,7 +2846,7 @@ def test_device_resident_reset_dispatches_selected_tensor_commit() -> None:
         assert len(backend.tensor_reset_calls) == 2
         torch.testing.assert_close(
             backend.tensor_reset_calls[1][0],
-            torch.tensor([False, True], dtype=torch.bool, device=env.device),
+            torch.tensor([1], dtype=torch.int64, device=env.device),
         )
         assert backend.set_state_calls == []
         assert backend.reset_calls == []
@@ -2899,8 +2941,10 @@ def test_device_resident_tensor_root_event_commits_selected_rows_once() -> None:
         assert env.scene._tensor_read_plan is not None
         env.reset()
         assert len(backend.tensor_reset_calls) == 1
-        reset_mask, qpos, qvel = backend.tensor_reset_calls[0]
-        torch.testing.assert_close(reset_mask, torch.ones(2, dtype=torch.bool, device=env.device))
+        committed_rows, qpos, qvel = backend.tensor_reset_calls[0]
+        torch.testing.assert_close(
+            committed_rows, torch.tensor([0, 1], dtype=torch.int64, device=env.device)
+        )
         torch.testing.assert_close(
             qpos[:, 0], torch.full((2,), 0.1, device=env.device), rtol=0, atol=1e-6
         )
@@ -2982,8 +3026,10 @@ def test_device_resident_tensor_joint_event_commits_selected_columns_once() -> N
         assert env.scene._tensor_read_plan is not None
         env.reset()
         assert len(backend.tensor_reset_calls) == 1
-        reset_mask, qpos, qvel = backend.tensor_reset_calls[0]
-        torch.testing.assert_close(reset_mask, torch.ones(2, dtype=torch.bool, device=env.device))
+        committed_rows, qpos, qvel = backend.tensor_reset_calls[0]
+        torch.testing.assert_close(
+            committed_rows, torch.tensor([0, 1], dtype=torch.int64, device=env.device)
+        )
         torch.testing.assert_close(
             qpos[:, 7], torch.full((2,), 0.25, device=env.device), rtol=0, atol=1e-6
         )
@@ -3059,8 +3105,10 @@ def test_device_resident_tensor_command_reset_commits_selected_rows_once() -> No
         assert env.scene._tensor_read_plan is not None
         env.reset()
         assert len(backend.tensor_reset_calls) == 1
-        reset_mask, qpos, qvel = backend.tensor_reset_calls[0]
-        torch.testing.assert_close(reset_mask, torch.ones(2, dtype=torch.bool, device=env.device))
+        committed_rows, qpos, qvel = backend.tensor_reset_calls[0]
+        torch.testing.assert_close(
+            committed_rows, torch.tensor([0, 1], dtype=torch.int64, device=env.device)
+        )
         torch.testing.assert_close(qpos[:, 4], torch.full((2,), 0.75, device=env.device))
         torch.testing.assert_close(qvel[:, 3], torch.full((2,), -0.75, device=env.device))
         torch.testing.assert_close(

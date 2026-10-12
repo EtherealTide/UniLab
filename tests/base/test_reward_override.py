@@ -13,8 +13,8 @@ from unilab.base.registry import ensure_registries
 ROOT_DIR = Path(__file__).parents[2]
 
 
-def test_g1_reset_randomization_fails_closed_for_reward_override_fixture():
-    """Reward overrides cannot bypass the fixed-width reset contract."""
+def test_g1_reset_randomization_runs_for_reward_override_fixture():
+    """Reward overrides keep the packed reset randomization lifecycle functional."""
     pytest.importorskip(
         "unisim.backend.mujoco.backend",
         reason="unisim-core MuJoCo adapter (mjbatch build) not available",
@@ -34,10 +34,14 @@ def test_g1_reset_randomization_fails_closed_for_reward_override_fixture():
         "weight": 20.0,
     }
 
-    with pytest.raises(NotImplementedError, match="reset randomization"):
-        registry.make(
-            "G1WalkFlat",
-            num_envs=1,
-            sim_backend="mujoco",
-            env_cfg_override=env_cfg_override,
-        )
+    env = registry.make(
+        "G1WalkFlat",
+        num_envs=1,
+        sim_backend="mujoco",
+        env_cfg_override=env_cfg_override,
+    )
+    try:
+        obs, _ = env.reset()
+        assert obs["obs"].shape[0] == 1
+    finally:
+        env.close()

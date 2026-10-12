@@ -382,22 +382,28 @@ def _shared_parameter_groups(
         )
 
 
-class _UnsupportedResetRandomizationTerm(ManagerTermBase):
-    """Reset DR base that fails closed before a reset transaction opens."""
+class _ResetRandomizationTerm(ManagerTermBase):
+    """Reset DR base delegating the mask reset to the packed transaction.
 
-    mask_reset_supported = False
+    The environment owns the packed reset transaction
+    (``ResetStateTransaction.scoped_device_event_tensor``); ``reset`` resolves
+    the selected rows from the fixed-width mask and reuses the term's
+    ``__call__`` sampling and facade staging, so the whole lifecycle composes
+    into the same exactly-once commit. Backends missing a field's reset
+    capability still fail closed at construction binding.
+    """
 
     def reset(
         self,
         env: ManagerBasedRlEnv,
         reset_mask: torch.Tensor,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> None:
-        del env, reset_mask, kwargs
-        raise NotImplementedError("reset randomization has no fixed-width mask commit boundary")
+        rows = torch.nonzero(reset_mask, as_tuple=False).flatten()
+        self(env, rows, **kwargs)
 
 
-class _ModelFieldRandomizer(_UnsupportedResetRandomizationTerm):
+class _ModelFieldRandomizer(_ResetRandomizationTerm):
     """Pinned mjlab-style model-field DR terms with Torch sampling tables."""
 
     _term_name = "model_field"
@@ -777,7 +783,7 @@ joint_armature = JointArmature
 dof_armature = joint_armature
 
 
-class PdGains(_UnsupportedResetRandomizationTerm):
+class PdGains(_ResetRandomizationTerm):
     """Pinned-mjlab-compatible PD gain randomization on UniLab reset payloads."""
 
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedRlEnv):
@@ -870,8 +876,8 @@ class PdGains(_UnsupportedResetRandomizationTerm):
             kp = kp * default_kp.to(dtype=kp.dtype, device=kp.device)
             kd = kd * default_kd.to(dtype=kd.dtype, device=kd.device)
         self._entity.write_actuator_gains_to_sim(
-            kp,
-            kd,
+            kp.cpu(),
+            kd.cpu(),
             actuator_ids=self._actuator_ids,
             env_ids=ids,
             term_name="pd_gains",
@@ -881,7 +887,7 @@ class PdGains(_UnsupportedResetRandomizationTerm):
 pd_gains = PdGains
 
 
-class RandomizeRigidBodyMass(_UnsupportedResetRandomizationTerm):
+class RandomizeRigidBodyMass(_ResetRandomizationTerm):
     """Community-compatible body-mass randomization via reset/startup payloads."""
 
     _PARAMS = frozenset(
@@ -1054,7 +1060,7 @@ class RandomizeRigidBodyMass(_UnsupportedResetRandomizationTerm):
 randomize_rigid_body_mass = RandomizeRigidBodyMass
 
 
-class RandomizeBodyMassInertia(_UnsupportedResetRandomizationTerm):
+class RandomizeBodyMassInertia(_ResetRandomizationTerm):
     """Startup-style mass+inertia scaling via one shared per-env factor.
 
     NumPy adapter for the alpha-only slice of mjlab's ``dr.pseudo_inertia``:
@@ -1166,7 +1172,7 @@ class RandomizeBodyMassInertia(_UnsupportedResetRandomizationTerm):
 randomize_body_mass_inertia = RandomizeBodyMassInertia
 
 
-class RandomizeRigidBodyCom(_UnsupportedResetRandomizationTerm):
+class RandomizeRigidBodyCom(_ResetRandomizationTerm):
     """Community-compatible additive rigid-body CoM randomization.
 
     The ``com_range`` param is re-resolved from the live term params on every
@@ -1300,7 +1306,7 @@ class RandomizeRigidBodyCom(_UnsupportedResetRandomizationTerm):
 randomize_rigid_body_com = RandomizeRigidBodyCom
 
 
-class RandomizePhysicsSceneGravity(_UnsupportedResetRandomizationTerm):
+class RandomizePhysicsSceneGravity(_ResetRandomizationTerm):
     """Community-compatible gravity randomization through reset transactions."""
 
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedRlEnv):
@@ -1371,7 +1377,7 @@ class RandomizePhysicsSceneGravity(_UnsupportedResetRandomizationTerm):
             self._operation,
         )
         env.scene.write_gravity_to_sim(
-            values,
+            values.cpu(),
             ids,
             term_name="randomize_physics_scene_gravity",
         )
@@ -1480,7 +1486,9 @@ class PushBySettingVelocity(ManagerTermBase):
         unit = torch.rand(size, generator=rng.generator, device=rng.device)
         scale = torch.as_tensor(upper - lower, dtype=unit.dtype, device=unit.device)
         offset = torch.as_tensor(lower, dtype=unit.dtype, device=unit.device)
-        return unit * scale + offset
+        # The interval host plan consumes CPU tensors; sampling follows the
+        # Manager generator device, so move the result to the host.
+        return (unit * scale + offset).cpu()
 
 
 push_by_setting_velocity = PushBySettingVelocity

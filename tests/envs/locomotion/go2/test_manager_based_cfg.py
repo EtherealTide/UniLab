@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
@@ -289,13 +290,19 @@ def test_go2_flat_registry_executes_real_manager_runtime(backend: str, owner: st
         **env_override,
         "events": {**env_override.get("events", {}), "pd_gains": None},
     }
-    with pytest.raises(NotImplementedError, match="mask_selected_reset"):
-        registry.make(
-            str(hydra_cfg.training.task_name),
-            sim_backend=backend,
-            env_cfg_override=override,
-            num_envs=2,
-        )
+    env = registry.make(
+        str(hydra_cfg.training.task_name),
+        sim_backend=backend,
+        env_cfg_override=override,
+        num_envs=2,
+    )
+    try:
+        state = env.init_state()
+        assert state.obs["obs"].shape[0] == 2
+        obs, _ = env.reset(torch.tensor([False, True], dtype=torch.bool, device=env.device))
+        assert obs["obs"].shape[0] == 2
+    finally:
+        env.close()
 
 
 def test_go2_flat_flashsac_uses_canonical_manager_events_and_numpy_noise() -> None:

@@ -915,6 +915,15 @@ class MotionCommand(CommandTerm):
                 self.joint_default_bias,
             )
         )
+        # MotionCommand bypasses CommandTerm.reset, so refresh the resample
+        # timer here: a stale zero timer would force a spurious full-width
+        # resample at the next compute, overwriting frames the reset just
+        # sampled (and rows owned by an active owner-subset transaction).
+        resample_lower, resample_upper = self._resampling_time_range
+        sampled = self._torch_rng.uniform(
+            resample_lower, resample_upper, (self.num_envs,), dtype=torch.float32
+        )
+        self.time_left.copy_(torch.where(reset_mask, sampled, self.time_left))
         self._resample_command(reset_mask)
         self._tensor_resample_ingested_mask = reset_mask
         self._last_reset_payload_validated = False
@@ -946,6 +955,10 @@ class MotionCommand(CommandTerm):
 
     def _resample_command(self, reset_mask: torch.Tensor) -> None:
         """Full-width motion sampling and masked state publication."""
+        if not bool(reset_mask.any()):
+            # No selected rows: skip sampling entirely so reset diagnostics only
+            # count real sampler dispatches (issue #2285 lifecycle contract).
+            return
         sampler_started = time.perf_counter()
         frames = self.tensor_sampler.sample_frames(reset_mask, self._env.torch_rng.generator)
         packet = self._motion_packet(frames)
