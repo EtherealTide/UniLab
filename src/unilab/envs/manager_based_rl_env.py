@@ -1418,11 +1418,17 @@ class ManagerBasedRlEnv(TorchEnv):
         super().set_deferred_validation_boundaries(enabled)
         self.reward_manager.set_deferred_validation_boundaries(enabled)
         self._reset_state.set_deferred_payload_validation(enabled)
+        set_backend_deferred = getattr(self._backend, "set_defer_torch_fused_validation", None)
+        if callable(set_backend_deferred):
+            set_backend_deferred(enabled)
 
     def publish_validation_verdicts(self) -> None:
         """Publish env, reward, and fused reset verdicts at one boundary."""
         self.reward_manager.publish_validation_verdict()
         self._reset_state.publish_payload_validation_verdicts(term_name="reset_state")
+        publish_backend = getattr(self._backend, "publish_torch_fused_validation", None)
+        if callable(publish_backend):
+            publish_backend()
         super().publish_validation_verdicts()
 
     def _publish_reward_components(self, state: TorchEnvState) -> None:
