@@ -12,6 +12,7 @@ import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, cast
 
 import gymnasium as gym
@@ -1193,7 +1194,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 "when auto_reset=False"
             )
         state = super().step(actions)
-        state.info["log"].update(self.publish_reward_log())
+        self._publish_reward_components(state)
         if not self._autoreset:
             self._manual_reset_pending.logical_or_(state.terminated | state.truncated)
         self.recorder_manager.record_post_step()
@@ -1404,6 +1405,16 @@ class ManagerBasedRlEnv(TorchEnv):
             f"reward/{name}": float(mean)
             for name, mean in zip(self._reward_log_names, means, strict=True)
         }
+
+    @property
+    def algo_capabilities(self) -> Any:
+        """Expose cold-path reward component metadata to algorithm owners."""
+        return SimpleNamespace(reward_component_names=self.reward_manager.step_reward_names)
+
+    def _publish_reward_components(self, state: TorchEnvState) -> None:
+        """Publish fixed-width reward components for tensor-native consumers."""
+        if self.reward_manager.step_reward_names:
+            state.info["reward_components"] = self.reward_manager.step_rewards
 
     def _refresh_tensor_reads_after_mutation(self) -> None:
         """Repack scene tensor reads after an in-phase simulation mutation."""

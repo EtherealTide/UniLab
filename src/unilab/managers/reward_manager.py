@@ -251,6 +251,11 @@ class RewardManager(ManagerBase):
             return torch.empty(0, dtype=torch.float32, device=self._device)
         return self._step_reward.mean(dim=0)
 
+    @property
+    def step_rewards(self) -> torch.Tensor:
+        """Latest full-width per-term weighted rewards on the Manager device."""
+        return self._step_reward
+
     def get_active_iterable_terms(self, env_idx: int) -> list[tuple[str, list[float]]]:
         terms = []
         for idx, name in enumerate(self._term_names):
