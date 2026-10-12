@@ -1338,12 +1338,19 @@ def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
     env, _backend = _make_env()
 
     env.init_state()
+    env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
     if torch.cuda.is_available():
         object.__setattr__(env, "_device", torch.device("cuda", index=torch.cuda.current_device()))
         env._final_observation_scratch = {
             name: value.to(device=env.device)
             for name, value in env._final_observation_scratch.items()
         }
+        env._public_obs = {
+            name: value.to(device=env.device) for name, value in env._public_obs.items()
+        }
+        env._public_reward = env._public_reward.to(device=env.device)
+        env._public_terminated = env._public_terminated.to(device=env.device)
+        env._public_truncated = env._public_truncated.to(device=env.device)
     supported = env.preflight_graph_candidate(requested=True)
     unrequested = env.preflight_graph_candidate(requested=False)
 
@@ -1359,6 +1366,7 @@ def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
             "observation_groups": {"obs": 2, "critic": 1},
             "reward_components": 1,
             "terminal_observation_groups": ["critic", "obs"],
+            "persistent_output_carriers": True,
         },
     }
     assert unrequested == {
@@ -1390,8 +1398,28 @@ def test_env_graph_candidate_preflight_requires_terminal_carrier() -> None:
     assert result["supported"] is False
     assert result["disable_reason"] == (
         "environment output carrier is not CUDA-resident; "
-        "terminal observation carrier is not materialized"
+        "terminal observation carrier is not materialized; "
+        "persistent observation output carrier is not graph-ready"
     )
+    env.close()
+
+
+def test_step_reuses_persistent_public_output_carriers() -> None:
+    env, _backend = _make_env()
+    env.init_state()
+    first = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+    obs_ptrs = {name: value.data_ptr() for name, value in first.obs.items()}
+    reward_ptr = first.reward.data_ptr()
+    terminated_ptr = first.terminated.data_ptr()
+    truncated_ptr = first.truncated.data_ptr()
+
+    second = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+
+    assert {name: value.data_ptr() for name, value in second.obs.items()} == obs_ptrs
+    assert second.reward.data_ptr() == reward_ptr
+    assert second.terminated.data_ptr() == terminated_ptr
+    assert second.truncated.data_ptr() == truncated_ptr
+    assert second.obs is env._public_obs
     env.close()
 
 

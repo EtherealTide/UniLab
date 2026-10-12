@@ -383,6 +383,8 @@ class ManagerBasedRlEnv(TorchEnv):
         self._public_terminated = torch.zeros_like(self.reset_buf)
         self._public_truncated = torch.zeros_like(self.reset_buf)
         self.reward_buf = torch.zeros(num_envs, dtype=self._dtype, device=self.device)
+        self._public_reward = torch.zeros_like(self.reward_buf)
+        self._public_obs: dict[str, torch.Tensor] = {}
         self.obs_buf: dict[str, torch.Tensor] = {}
         self.extras: dict[str, Any] = {"log": {}}
         self._command_dt = torch.full(
@@ -1349,11 +1351,27 @@ class ManagerBasedRlEnv(TorchEnv):
         phase_started = time.perf_counter()
 
         publish_started = time.perf_counter()
-        public_obs = {
-            name: self._manager_tensor(values, dtype=self._dtype)
-            for name, values in mapped_obs.items()
-        }
+        if set(self._public_obs) != set(mapped_obs) or any(
+            self._public_obs[name].shape != value.shape
+            or self._public_obs[name].dtype != self._dtype
+            or self._public_obs[name].device != self.device
+            for name, value in mapped_obs.items()
+        ):
+            self._public_obs = {
+                name: torch.empty(
+                    (self.num_envs, self.obs_groups_spec[name]),
+                    dtype=self._dtype,
+                    device=self.device,
+                )
+                for name in mapped_obs
+            }
+        for name, values in mapped_obs.items():
+            self._public_obs[name].copy_(self._manager_tensor(values, dtype=self._dtype))
+        public_obs = self._public_obs
         public_reward = self._manager_tensor(self.reward_buf, dtype=self._dtype)
+        if public_reward is self.reward_buf:
+            public_reward = self._public_reward
+            public_reward.copy_(self.reward_buf)
         public_terminated = self._manager_tensor(self.reset_terminated, dtype=torch.bool)
         public_truncated = self._manager_tensor(self.reset_time_outs, dtype=torch.bool)
         if public_terminated is self.reset_terminated:
@@ -1461,6 +1479,26 @@ class ManagerBasedRlEnv(TorchEnv):
                 for name, value in final_observation_carrier.items()
             ):
                 owner_failures.append("terminal observation carrier layout does not match outputs")
+        if set(self._public_obs) != set(self.obs_groups_spec) or any(
+            value.device != self.device
+            or value.shape != (self.num_envs, self.obs_groups_spec[name])
+            or value.dtype != self._dtype
+            for name, value in self._public_obs.items()
+        ):
+            owner_failures.append("persistent observation output carrier is not graph-ready")
+        if (
+            self._public_reward.shape != (self.num_envs,)
+            or self._public_reward.dtype != self._dtype
+            or self._public_reward.device != self.device
+        ):
+            owner_failures.append("persistent reward output carrier is not graph-ready")
+        if any(
+            value.shape != (self.num_envs,)
+            or value.dtype != torch.bool
+            or value.device != self.device
+            for value in (self._public_terminated, self._public_truncated)
+        ):
+            owner_failures.append("persistent done output carriers are not graph-ready")
         if owner_failures:
             return {
                 "requested": True,
@@ -1482,6 +1520,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 },
                 "reward_components": len(self.reward_manager.step_reward_names),
                 "terminal_observation_groups": sorted(self.obs_groups_spec),
+                "persistent_output_carriers": True,
             },
         }
 
