@@ -1351,6 +1351,11 @@ def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
         env._public_reward = env._public_reward.to(device=env.device)
         env._public_terminated = env._public_terminated.to(device=env.device)
         env._public_truncated = env._public_truncated.to(device=env.device)
+        env._torch_rng_owner = TorchManagerRng(
+            device=env.device, generator=torch.Generator(device=env.device)
+        ).manual_seed(7)
+        env.torch_rng = env._torch_rng_owner
+        env._torch_generator = env._torch_rng_owner.generator
     supported = env.preflight_graph_candidate(requested=True)
     unrequested = env.preflight_graph_candidate(requested=False)
 
@@ -1367,6 +1372,10 @@ def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
             "reward_components": 1,
             "terminal_observation_groups": ["critic", "obs"],
             "persistent_output_carriers": True,
+        },
+        "rng_state": {
+            "device": str(env.device),
+            "state_version": env.torch_rng.state_version,
         },
     }
     assert unrequested == {
@@ -1442,6 +1451,30 @@ def test_graph_rng_state_snapshot_is_versioned_and_restoreable() -> None:
     first_after_restore = env.torch_rng.random(1)
     env.torch_rng.set_state(restored["state"])
     torch.testing.assert_close(env.torch_rng.random(1), first_after_restore)
+    env.close()
+
+
+def test_graph_preflight_rejects_mismatched_rng_device() -> None:
+    env, _backend = _make_env()
+    env.init_state()
+    env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+    if torch.cuda.is_available():
+        object.__setattr__(env, "_device", torch.device("cuda", index=torch.cuda.current_device()))
+        env._final_observation_scratch = {
+            name: value.to(device=env.device)
+            for name, value in env._final_observation_scratch.items()
+        }
+        env._public_obs = {
+            name: value.to(device=env.device) for name, value in env._public_obs.items()
+        }
+        env._public_reward = env._public_reward.to(device=env.device)
+        env._public_terminated = env._public_terminated.to(device=env.device)
+        env._public_truncated = env._public_truncated.to(device=env.device)
+
+    result = env.preflight_graph_candidate(requested=True)
+
+    assert result["supported"] is False
+    assert "Torch RNG device does not match the graph carrier" in result["disable_reason"]
     env.close()
 
 

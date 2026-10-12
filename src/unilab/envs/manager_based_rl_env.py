@@ -1508,6 +1508,8 @@ class ManagerBasedRlEnv(TorchEnv):
             for value in (self._public_terminated, self._public_truncated)
         ):
             owner_failures.append("persistent done output carriers are not graph-ready")
+        if self.torch_rng.device != self.device:
+            owner_failures.append("Torch RNG device does not match the graph carrier")
         if owner_failures:
             return {
                 "requested": True,
@@ -1530,6 +1532,10 @@ class ManagerBasedRlEnv(TorchEnv):
                 "reward_components": len(self.reward_manager.step_reward_names),
                 "terminal_observation_groups": sorted(self.obs_groups_spec),
                 "persistent_output_carriers": True,
+            },
+            "rng_state": {
+                "device": str(self.torch_rng.device),
+                "state_version": self.torch_rng.state_version,
             },
         }
 
