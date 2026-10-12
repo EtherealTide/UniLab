@@ -624,6 +624,7 @@ def main(cfg: DictConfig) -> None:
                         run_training_time = total_training_time - initial_training_time
                         pending_summary = {
                             "status": "completed",
+                            "backend_diagnostics": env.get_backend_runtime_diagnostics(),
                             "completed_iterations": int(runner.current_learning_iteration),
                             "total_env_steps": total_timesteps,
                             "run_env_steps": run_timesteps,
