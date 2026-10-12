@@ -1411,6 +1411,20 @@ class ManagerBasedRlEnv(TorchEnv):
         """Expose cold-path reward component metadata to algorithm owners."""
         return SimpleNamespace(reward_component_names=self.reward_manager.step_reward_names)
 
+    def set_deferred_validation_boundaries(self, enabled: bool) -> None:
+        """Propagate graph-candidate deferred validation to all owners."""
+        if not isinstance(enabled, bool):
+            raise TypeError(f"deferred validation boundaries must be bool, got {type(enabled)}")
+        super().set_deferred_validation_boundaries(enabled)
+        self.reward_manager.set_deferred_validation_boundaries(enabled)
+        self._reset_state.set_deferred_payload_validation(enabled)
+
+    def publish_validation_verdicts(self) -> None:
+        """Publish env, reward, and fused reset verdicts at one boundary."""
+        self.reward_manager.publish_validation_verdict()
+        self._reset_state.publish_payload_validation_verdicts(term_name="reset_state")
+        super().publish_validation_verdicts()
+
     def _publish_reward_components(self, state: TorchEnvState) -> None:
         """Publish fixed-width reward components for tensor-native consumers."""
         if self.reward_manager.step_reward_names:

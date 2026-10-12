@@ -1278,6 +1278,20 @@ def test_step_publishes_fixed_width_reward_components_for_tensor_collectors() ->
     env.close()
 
 
+def test_deferred_validation_boundaries_propagate_to_owner_verdicts() -> None:
+    env, _backend = _make_env()
+    env.set_deferred_validation_boundaries(True)
+
+    assert env.deferred_validation_boundaries is True
+    assert env.reward_manager.deferred_validation_boundaries is True
+    assert env._reset_state.deferred_payload_validation is True
+
+    env.reward_manager._finite_valid.fill_(False)
+    with pytest.raises(ValueError, match="RewardManager returned a non-finite reward"):
+        env.publish_validation_verdicts()
+    env.close()
+
+
 def test_no_done_step_still_invokes_fixed_width_pre_reset_recorder() -> None:
     cfg = _make_cfg(auto_reset=True)
     cfg.max_episode_seconds = 10.0
