@@ -192,6 +192,48 @@ class ActionManager(ManagerBase):
         for term in self._terms.values():
             term.reset(env_ids=env_ids)
 
+    def clear_action_state_mask(self, reset_mask: torch.Tensor) -> None:
+        """Clear issue #2285's research fixed-shape action state.
+
+        Manager-owned histories are mask-cleared. Each action term must provide
+        its own mask-preserving boundary; there is deliberately no selected-row
+        fallback in the experiment.
+        """
+        self._validate_reset_mask(reset_mask)
+        expanded = reset_mask[:, None]
+        self._prev_action.copy_(
+            torch.where(expanded, torch.zeros_like(self._prev_action), self._prev_action)
+        )
+        self._prev_prev_action.copy_(
+            torch.where(
+                expanded,
+                torch.zeros_like(self._prev_prev_action),
+                self._prev_prev_action,
+            )
+        )
+        self._action.copy_(torch.where(expanded, torch.zeros_like(self._action), self._action))
+        for name, term in self._terms.items():
+            reset_mask_impl = getattr(term, "reset_mask", None)
+            if not callable(reset_mask_impl):
+                raise NotImplementedError(
+                    f"ActionManager term '{name}' does not define the issue #2285 "
+                    "mask-preserving reset boundary"
+                )
+            reset_mask_impl(reset_mask)
+
+    def _validate_reset_mask(self, reset_mask: torch.Tensor) -> None:
+        if (
+            not isinstance(reset_mask, torch.Tensor)
+            or reset_mask.ndim != 1
+            or reset_mask.shape[0] != self.num_envs
+            or reset_mask.dtype != torch.bool
+            or reset_mask.device != self._device
+        ):
+            raise ValueError(
+                f"ActionManager research reset mask must have shape {(self.num_envs,)}, "
+                f"bool dtype, and device {self._device}"
+            )
+
     def process_action(self, action: torch.Tensor) -> None:
         """Store the raw policy output and route slices to each action term.
 

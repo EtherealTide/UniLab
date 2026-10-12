@@ -113,7 +113,8 @@ class ResetStateTransaction:
         self._restore_entity_controls = False
         self._active = False
         self._tensor_active = False
-        self._tensor_has_writes = False
+        self._tensor_active_mask: torch.Tensor | None = None
+        self._mask_full_refresh = False
         self._tensor_owner_subset = False
         self._active_mask = np.zeros(self._num_envs, dtype=np.bool_)
         self._dirty_mask = np.zeros(self._num_envs, dtype=np.bool_)
@@ -241,6 +242,20 @@ class ResetStateTransaction:
             raise
         else:
             self.commit_device_tensor()
+
+    @contextmanager
+    def scoped_device_event_tensor_mask(
+        self, reset_mask: torch.Tensor, *, full_refresh: bool = False
+    ) -> Iterator[ResetStateTransaction]:
+        """Begin issue #2285's fixed-width owner reset and commit it."""
+        self.begin_tensor_mask(reset_mask, full_refresh=full_refresh)
+        try:
+            yield self
+        except BaseException:
+            self.abort()
+            raise
+        else:
+            self.commit_device_tensor_mask()
 
     @contextmanager
     def scoped_device_owner_tensor(self, env_ids: torch.Tensor) -> Iterator[ResetStateTransaction]:
@@ -395,6 +410,10 @@ class ResetStateTransaction:
             )
         rows = env_ids.to(dtype=torch.int64)
         self._materialize_tensor_default_state("begin_tensor")
+        if self._tensor_domain_mask.device != rows.device:
+            self._tensor_domain_mask = torch.zeros(
+                self._num_envs, dtype=torch.bool, device=rows.device
+            )
         self._reset_tensor_staging_rows(rows)
         self._tensor_rows = rows
         self._tensor_has_writes = False
@@ -402,6 +421,44 @@ class ResetStateTransaction:
         self._tensor_written_rows = None
         self._tensor_domain_mask.fill_(False)
         self._tensor_domain_mask[rows] = True
+        self._tensor_dr_dense.clear()
+        self._requesting_terms.clear()
+        self._tensor_active = True
+
+    def begin_tensor_mask(
+        self,
+        reset_mask: torch.Tensor,
+        *,
+        owner_subset: bool = False,
+        full_refresh: bool = False,
+    ) -> None:
+        """Open issue #2285's fixed-width research reset transaction."""
+        if self._active or self._tensor_active:
+            raise RuntimeError("ManagerBased reset-state transaction is already active")
+        if owner_subset:
+            raise ValueError("the fixed-width research reset does not support owner subsets")
+        device = self._packed_reset_device
+        if device is None:
+            raise RuntimeError(
+                "tensor reset transaction requires its selected device to be declared"
+            )
+        if not isinstance(reset_mask, torch.Tensor):
+            raise TypeError("fixed-width tensor reset requires a Torch bool mask")
+        if reset_mask.shape != (self._num_envs,) or reset_mask.dtype != torch.bool:
+            raise ValueError(
+                f"fixed-width tensor reset mask must have shape {(self._num_envs,)} and bool dtype"
+            )
+        if reset_mask.device != device:
+            raise ValueError(
+                "fixed-width tensor reset mask must live on the declared reset device "
+                f"{device}; got {reset_mask.device}"
+            )
+        self._materialize_tensor_default_state("begin_tensor_mask")
+        self._tensor_active_mask = reset_mask
+        self._mask_full_refresh = bool(full_refresh)
+        self._tensor_has_writes = False
+        self._tensor_owner_subset = False
+        self._tensor_written_rows = None
         self._tensor_dr_dense.clear()
         self._requesting_terms.clear()
         self._tensor_active = True
@@ -1494,6 +1551,129 @@ class ResetStateTransaction:
                 )
         self._validate_tensor_root_quaternions(root_state[:, 3:7], term_name=term_name)
 
+    def write_root_state_tensor_mask(
+        self,
+        reset_mask: torch.Tensor,
+        layout: BackendRootStateLayout,
+        root_state: torch.Tensor,
+        *,
+        term_name: str,
+    ) -> None:
+        """Stage a full-width root-state payload selected by a bool mask."""
+        mask = self._require_tensor_mask_write(capability="write_root_state_tensor_mask")
+        if root_state.shape != (self._num_envs, 13):
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor mask root state must have shape "
+                f"{(self._num_envs, 13)}; got {tuple(root_state.shape)}"
+            )
+        if root_state.dtype != torch.float32 or not root_state.is_contiguous():
+            raise TypeError(
+                f"EventManager term '{term_name}' tensor mask root state must be contiguous float32"
+            )
+        if root_state.device != self._packed_reset_device:
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor mask root state must live on "
+                f"{self._packed_reset_device}; got {root_state.device}"
+            )
+        self._validate_tensor_root_payload(root_state, term_name=term_name)
+        qpos = self._tensor_qpos
+        qvel = self._tensor_qvel
+        assert qpos is not None and qvel is not None
+        qpos_columns_t, qvel_columns_t = self._tensor_root_columns_for_layout(
+            layout, term_name=term_name
+        )
+        selected_qpos = torch.where(mask[:, None], root_state[:, :7], qpos[:, qpos_columns_t])
+        selected_qvel = torch.where(mask[:, None], root_state[:, 7:13], qvel[:, qvel_columns_t])
+        qpos[:, qpos_columns_t] = selected_qpos
+        qvel[:, qvel_columns_t] = selected_qvel
+        self._tensor_has_writes = True
+
+    def _require_tensor_mask_write(self, *, capability: str) -> torch.Tensor:
+        if not self._tensor_active or self._tensor_active_mask is None:
+            raise RuntimeError(
+                f"ManagerBased tensor mask {capability} requires an active mask reset"
+            )
+        if self._tensor_owner_subset:
+            raise RuntimeError(
+                f"ManagerBased tensor mask {capability} does not support owner subsets"
+            )
+        self._requesting_terms.add(capability)
+        return self._tensor_active_mask
+
+    def write_motion_state_tensor_mask(
+        self,
+        reset_mask: torch.Tensor,
+        layout: BackendRootStateLayout,
+        qpos_indices: np.ndarray,
+        qvel_indices: np.ndarray,
+        root_state: torch.Tensor,
+        joint_position: torch.Tensor,
+        joint_velocity: torch.Tensor,
+        *,
+        term_name: str,
+    ) -> None:
+        """Stage one full-width motion root and joint payload by bool mask."""
+        mask = self._require_tensor_mask_write(capability="write_motion_state_tensor_mask")
+        qpos_columns, qvel_columns = self._tensor_joint_columns_for_indices(
+            qpos_indices, qvel_indices, term_name=term_name
+        )
+        width = qpos_columns.numel()
+        expected = (self._num_envs, width)
+        if root_state.shape != (self._num_envs, 13):
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor mask motion root state must "
+                f"have shape {(self._num_envs, 13)}; got {tuple(root_state.shape)}"
+            )
+        if joint_position.shape != expected:
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor mask motion joint position must "
+                f"have shape {expected}; got {tuple(joint_position.shape)}"
+            )
+        if joint_velocity.shape != joint_position.shape:
+            raise ValueError(
+                f"EventManager term '{term_name}' tensor mask motion joint velocity must "
+                f"have shape {tuple(joint_position.shape)}"
+            )
+        for name, values in (
+            ("root state", root_state),
+            ("joint position", joint_position),
+            ("joint velocity", joint_velocity),
+        ):
+            if values.dtype != torch.float32 or not values.is_contiguous():
+                raise TypeError(
+                    f"EventManager term '{term_name}' tensor mask motion {name} must "
+                    "be contiguous float32"
+                )
+        self._validate_motion_tensor_payload(
+            root_state=root_state,
+            joint_position=joint_position,
+            joint_velocity=joint_velocity,
+            term_name=term_name,
+        )
+        qpos = self._tensor_qpos
+        qvel = self._tensor_qvel
+        assert qpos is not None and qvel is not None
+        root_qpos_columns, root_qvel_columns = self._tensor_root_columns_for_layout(
+            layout, term_name=term_name
+        )
+        next_qpos = qpos.clone()
+        next_qvel = qvel.clone()
+        next_qpos[:, root_qpos_columns] = torch.where(
+            mask[:, None], root_state[:, :7], qpos[:, root_qpos_columns]
+        )
+        next_qvel[:, root_qvel_columns] = torch.where(
+            mask[:, None], root_state[:, 7:13], qvel[:, root_qvel_columns]
+        )
+        next_qpos[:, qpos_columns] = torch.where(
+            mask[:, None], joint_position, qpos[:, qpos_columns]
+        )
+        next_qvel[:, qvel_columns] = torch.where(
+            mask[:, None], joint_velocity, qvel[:, qvel_columns]
+        )
+        qpos.copy_(next_qpos)
+        qvel.copy_(next_qvel)
+        self._tensor_has_writes = True
+
     def write_joint_state_tensor(
         self,
         env_ids: torch.Tensor,
@@ -1895,6 +2075,89 @@ class ResetStateTransaction:
                     "EventManager reset-state capability 'SimBackend.set_state_tensor' is "
                     f"unavailable for term(s) [{terms}] on backend "
                     f"'{self._backend.backend_type}': {exc}"
+                ) from exc
+        finally:
+            self._finish()
+
+    def commit_device_tensor_mask(self) -> dict | None:
+        """Commit the fixed-width research reset through the public mask API."""
+        self._require_active()
+        self._last_commit_had_writes = self._tensor_has_writes
+        if self._tensor_active_mask is None:
+            raise RuntimeError("fixed-width tensor reset is not active")
+        try:
+            if not self._tensor_has_writes:
+                return None
+            if self.scene_layout is not None:
+                raise NotImplementedError(
+                    "fixed-width tensor reset supports scalar qpos/qvel rows only; mapped "
+                    "entity writes remain an explicit migration boundary"
+                )
+            capabilities = self._backend.get_tensor_capabilities()
+            if capabilities.execution is not TensorExecution.DEVICE_RESIDENT:
+                raise NotImplementedError(
+                    "fixed-width reset requires DEVICE_RESIDENT tensor execution; "
+                    f"backend '{self._backend.backend_type}' declares {capabilities.execution}"
+                )
+            if not capabilities.selected_reset:
+                raise NotImplementedError(
+                    "fixed-width reset requires the backend's declared selected_reset "
+                    "tensor capability"
+                )
+            if not getattr(capabilities, "mask_selected_reset", False):
+                raise NotImplementedError(
+                    "fixed-width reset requires the backend's declared "
+                    "'mask_selected_reset' temporary research capability"
+                )
+            if self._tensor_dr_dense or self._host_randomization_staged():
+                raise NotImplementedError(
+                    "the issue #2285 fixed-width research reset does not support reset "
+                    "randomization"
+                )
+            assert self._tensor_qpos is not None
+            assert self._tensor_qvel is not None
+            reset_mask = self._tensor_active_mask
+            try:
+                started = time.perf_counter()
+                set_state_mask = getattr(self._backend, "set_state_tensor_mask", None)
+                if not callable(set_state_mask):
+                    raise NotImplementedError(
+                        "backend does not implement the temporary issue #2285 "
+                        "'set_state_tensor_mask' research API"
+                    )
+                if self._mask_full_refresh:
+                    result = set_state_mask(
+                        reset_mask,
+                        self._tensor_qpos,
+                        self._tensor_qvel,
+                        full_refresh=True,
+                    )
+                else:
+                    result = set_state_mask(
+                        reset_mask,
+                        self._tensor_qpos,
+                        self._tensor_qvel,
+                    )
+                self._last_set_state_timing_ms = {
+                    "dr_reset_set_state_ms": (time.perf_counter() - started) * 1000.0
+                }
+                if isinstance(result, dict):
+                    backend_timing = result.get("timing")
+                    if isinstance(backend_timing, dict):
+                        self._last_set_state_timing_ms.update(backend_timing)
+                return cast(dict | None, result)
+            except (
+                AttributeError,
+                NotImplementedError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                terms = ", ".join(sorted(self._requesting_terms))
+                raise NotImplementedError(
+                    "EventManager reset-state capability "
+                    "'SimBackend.set_state_tensor_mask' is unavailable for term(s) "
+                    f"[{terms}] on backend '{self._backend.backend_type}': {exc}"
                 ) from exc
         finally:
             self._finish()
@@ -2959,6 +3222,8 @@ class ResetStateTransaction:
             mask.fill(False)
         self._requesting_terms.clear()
         self._tensor_active = False
+        self._tensor_active_mask = None
+        self._mask_full_refresh = False
         self._tensor_has_writes = False
         self._tensor_owner_subset = False
         self._tensor_rows = None

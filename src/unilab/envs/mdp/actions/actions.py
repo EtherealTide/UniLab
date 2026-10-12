@@ -224,6 +224,10 @@ class BaseAction(ActionTerm):
         selector = self._reset_selector(env_ids)
         self._raw_actions[selector] = 0.0
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+        """Issue #2285 research-only mask-preserving raw-action reset."""
+        self._raw_actions.masked_fill_(reset_mask.reshape(-1, 1), 0.0)
+
     def _reset_selector(self, env_ids: torch.Tensor | slice) -> torch.Tensor | slice:
         if isinstance(env_ids, slice):
             return env_ids

@@ -53,6 +53,14 @@ class ResetOwner(ManagerTermBase):
         """Execute reset ownership after the reset transaction commits."""
         raise NotImplementedError(type(self).__name__)
 
+    def reset_transaction_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        """Execute the issue #2285 research-only fixed-shape reset transaction."""
+        raise NotImplementedError(type(self).__name__)
+
+    def reset_committed_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        """Execute issue #2285 research ownership after a mask reset commits."""
+        raise NotImplementedError(type(self).__name__)
+
 
 class ResetOwnerManager:
     """Construct and expose the sole configured reset owner.
@@ -108,6 +116,18 @@ class ResetOwnerManager:
             extras.update(term.reset_committed(env_ids))
         return extras
 
+    def reset_transaction_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        extras: dict[str, float] = {}
+        for term in self._terms.values():
+            extras.update(term.reset_transaction_mask(reset_mask))
+        return extras
+
+    def reset_committed_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        extras: dict[str, float] = {}
+        for term in self._terms.values():
+            extras.update(term.reset_committed_mask(reset_mask))
+        return extras
+
     def __str__(self) -> str:
         if not self._terms:
             return "<ResetOwnerManager> (inactive)"
@@ -138,6 +158,14 @@ class NullResetOwnerManager:
 
     def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         del env_ids
+        return {}
+
+    def reset_transaction_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        del reset_mask
+        return {}
+
+    def reset_committed_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        del reset_mask
         return {}
 
     def __str__(self) -> str:

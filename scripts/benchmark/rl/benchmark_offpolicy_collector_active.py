@@ -37,7 +37,8 @@ import re
 import subprocess
 import sys
 import time
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from importlib.util import find_spec
@@ -386,6 +387,10 @@ class CollectorResult:
     backend_runtime_diagnostics: dict[str, dict[str, bool | str | None]] = field(
         default_factory=dict
     )
+    # Issue #2285 profiler-only evidence. Throughput from such a run is not
+    # eligible for decision evidence.
+    profile_only: bool = False
+    torch_profile_counts: dict[str, Any] | None = None
 
 
 def _stats(samples_ms: list[float]) -> TimingStats:
@@ -539,6 +544,68 @@ def _backend_runtime_diagnostics(env: Any) -> dict[str, dict[str, bool | str | N
             "disable_reason": diagnostic.disable_reason,
         }
         for name, diagnostic in diagnostics().items()
+    }
+
+
+def _summarize_torch_profile(events: Any, profiled_steps: int, *, variant: str) -> dict[str, Any]:
+    """Classify Kineto events for issue #2285 without using profile throughput."""
+    launch_names = {"cudaLaunchKernel", "cuLaunchKernel", "cuLaunchKernelEx"}
+    sync_names = {
+        "cudaDeviceSynchronize",
+        "cudaStreamSynchronize",
+        "cudaEventSynchronize",
+    }
+    d2h_names = {
+        "Memcpy DtoH (Device -> Pageable)",
+        "Memcpy DtoH (Device -> Pinned)",
+    }
+    counts = Counter()
+    d2h_bytes = 0
+    for event in events:
+        name = getattr(event, "name", "")
+        counts[name] += 1
+        if name in d2h_names:
+            d2h_bytes += int(getattr(event, "device_time_total", 0) + 0)
+    aten_nonzero = counts.get("aten::nonzero", 0)
+    launch_count = sum(counts[name] for name in launch_names)
+    d2h_count = sum(counts[name] for name in d2h_names)
+    sync_count = sum(counts[name] for name in sync_names)
+    eligible = aten_nonzero == 0 and d2h_count == 0 and sync_count == 0
+    reasons = []
+    if variant == "A":
+        reasons.append("dynamic_reset_rows")
+    if aten_nonzero:
+        reasons.append("aten::nonzero")
+    if sync_count:
+        reasons.append("host_synchronization")
+    if d2h_count:
+        reasons.append("d2h")
+    return {
+        "schema_version": 1,
+        "profiled_steps": profiled_steps,
+        "variant": variant,
+        "cuda": {
+            "launch_count": launch_count,
+            "launch_count_per_step": launch_count / max(profiled_steps, 1),
+            "memcpy_d2h_count": d2h_count,
+            "memcpy_d2h_count_per_step": d2h_count / max(profiled_steps, 1),
+            "host_synchronization_count": sync_count,
+            "host_synchronization_count_per_step": sync_count / max(profiled_steps, 1),
+        },
+        "torch": {
+            "aten_nonzero_count": aten_nonzero,
+            "aten_nonzero_count_per_step": aten_nonzero / max(profiled_steps, 1),
+            "aten_item_count": counts.get("aten::item", 0),
+            "aten_local_scalar_dense_count": counts.get("aten::local_scalar_dense", 0),
+            "aten_cpu_count": counts.get("aten::cpu", 0),
+        },
+        "graph_eligibility": {
+            "collector_status": "candidate" if eligible and variant != "A" else "ineligible",
+            "reasons": []
+            if eligible and variant != "A"
+            else ["dynamic_reset_rows", "aten::nonzero", "host_synchronization", "d2h"],
+            "scope": "diagnostic_candidate_not_capture_replay",
+        },
     }
 
 
@@ -738,6 +805,10 @@ def _run_active_window_case(
     measure_steps: int,
     profile_numpy_random: bool = False,
     tail_steps: int = DEFAULT_TAIL_STEPS,
+    torch_profile: str = "none",
+    torch_profile_dir: Path | None = None,
+    torch_profile_warmup_steps: int = 3,
+    torch_profile_steps: int = 40,
 ) -> CollectorResult:
     from uni_rl.ipc.replay_buffer import ReplayBuffer
     from uni_rl.utils.observations import split_obs_dict
@@ -793,11 +864,37 @@ def _run_active_window_case(
                 "profile-numpy-random no longer binds environment RNG; Manager "
                 "training randomness is Torch-owned"
             )
+    profiler_context = nullcontext()
+    profile_events = None
+    profiler = None
+    profile_exporter = None
+    profile_offset = None
+    if torch_profile == "trace":
+        if torch_profile_dir is None:
+            raise ValueError("--torch-profile-dir is required with --torch-profile trace")
+        if torch_profile_steps <= 0 or torch_profile_warmup_steps < 0:
+            raise ValueError("torch profile steps/warmup must be nonnegative with >0 steps")
+        if torch_profile_steps + torch_profile_warmup_steps > measure_steps:
+            raise ValueError("torch profile window exceeds measured steps")
+        profile_offset = warmup_steps + torch_profile_warmup_steps
     try:
         for step_idx in range(total_steps):
             record = step_idx >= warmup_steps
             if record and cpu_probe_start is None:
                 cpu_probe_start = _read_cpu_times()  # begin measured-window CPU sampling
+            if (
+                profile_offset is not None
+                and step_idx == profile_offset - torch_profile_warmup_steps
+            ):
+                torch.cuda.synchronize()
+                profiler = torch.profiler.profile(
+                    activities=[
+                        torch.profiler.ProfilerActivity.CPU,
+                        torch.profiler.ProfilerActivity.CUDA,
+                    ]
+                )
+                profiler_context = profiler
+                profiler_context.__enter__()
 
             phase_start_ns = time.perf_counter_ns()
             if random_profiler is not None and record:
@@ -912,7 +1009,21 @@ def _run_active_window_case(
                 for key, value in env_step_timing_values.items():
                     if value is not None:
                         env_step_timing_samples.setdefault(key, []).append(value)
+            if (
+                profiler is not None
+                and step_idx + 1
+                == profile_offset + torch_profile_steps - torch_profile_warmup_steps - 1
+            ):
+                torch.cuda.synchronize()
+                profiler_context.__exit__(None, None, None)
+                profile_events = profiler.events()
+                profile_exporter = profiler
+                profiler = None
+                profiler_context = nullcontext()
     finally:
+        if profiler is not None:
+            profiler_context.__exit__(None, None, None)
+            profile_events = profiler.events()
         if random_profiler is not None:
             random_profiler.uninstall()
 
@@ -944,6 +1055,20 @@ def _run_active_window_case(
     env_step_timing_stats = {
         key: _stats(values) for key, values in env_step_timing_samples.items() if values
     }
+    torch_profile_counts = None
+    if torch_profile == "trace":
+        if profile_events is None:
+            raise RuntimeError("torch profiler did not finish")
+        torch_profile_counts = _summarize_torch_profile(
+            profile_events, torch_profile_steps, variant=case.variant
+        )
+        if torch_profile_dir is not None:
+            torch_profile_dir.mkdir(parents=True, exist_ok=True)
+            trace_path = torch_profile_dir / "trace.json.gz"
+            if profile_exporter is None:
+                raise RuntimeError("torch profiler was not retained for trace export")
+            profile_exporter.export_chrome_trace(str(trace_path))
+            torch_profile_counts["trace_path"] = str(trace_path)
     return CollectorResult(
         case=case,
         warmup_steps=int(warmup_steps),
@@ -966,6 +1091,8 @@ def _run_active_window_case(
             _stats(numpy_random_call_samples) if numpy_random_call_samples else None
         ),
         backend_runtime_diagnostics=backend_runtime_diagnostics,
+        profile_only=torch_profile == "trace",
+        torch_profile_counts=torch_profile_counts,
     )
 
 
@@ -980,6 +1107,10 @@ def _build_and_run_case(
     extra_overrides: list[str],
     variant: str = "default",
     profile_numpy_random: bool = False,
+    torch_profile: str = "none",
+    torch_profile_dir: Path | None = None,
+    torch_profile_warmup_steps: int = 3,
+    torch_profile_steps: int = 40,
 ) -> CollectorResult:
     from unilab.base.config_adapter import BackendAdapter
     from unilab.training import ensure_registries
@@ -1032,6 +1163,10 @@ def _build_and_run_case(
             measure_steps=measure_steps,
             profile_numpy_random=profile_numpy_random,
             tail_steps=tail_steps,
+            torch_profile=torch_profile,
+            torch_profile_dir=torch_profile_dir,
+            torch_profile_warmup_steps=torch_profile_warmup_steps,
+            torch_profile_steps=torch_profile_steps,
         )
     finally:
         if env is not None:
@@ -2022,6 +2157,28 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Additional Hydra override. Can be passed more than once.",
     )
     parser.add_argument(
+        "--torch-profile",
+        choices=("none", "trace"),
+        default="none",
+        help="Profile a small measured window. Profiled throughput is diagnostic-only.",
+    )
+    parser.add_argument(
+        "--torch-profile-dir",
+        type=Path,
+        default=None,
+        help="Output directory for issue #2285 profiler evidence.",
+    )
+    parser.add_argument(
+        "--torch-profile-warmup-steps",
+        type=int,
+        default=3,
+    )
+    parser.add_argument(
+        "--torch-profile-steps",
+        type=int,
+        default=40,
+    )
+    parser.add_argument(
         "--profile-numpy-random",
         action="store_true",
         help=(
@@ -2114,6 +2271,14 @@ def main() -> int:
                             extra_overrides=[*args.override, *variant_extra_overrides],
                             variant=variant,
                             profile_numpy_random=bool(args.profile_numpy_random),
+                            torch_profile=args.torch_profile,
+                            torch_profile_dir=(
+                                args.torch_profile_dir / variant
+                                if args.torch_profile_dir is not None
+                                else None
+                            ),
+                            torch_profile_warmup_steps=args.torch_profile_warmup_steps,
+                            torch_profile_steps=args.torch_profile_steps,
                         )
                     ]
                     results.extend(case_results)
@@ -2150,6 +2315,9 @@ def main() -> int:
             "variant_override": args.variant_override,
             "repeat_variant_blocks": args.repeat_variant_blocks,
             "profile_numpy_random": args.profile_numpy_random,
+            "torch_profile": args.torch_profile,
+            "torch_profile_steps": args.torch_profile_steps,
+            "torch_profile_warmup_steps": args.torch_profile_warmup_steps,
         },
         "results": [_result_to_dict(result) for result in results],
         "errors": errors,

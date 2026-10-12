@@ -2311,6 +2311,76 @@ def reset_root_state_uniform_tensor(
 setattr(reset_root_state_uniform_tensor, "uses_tensor_rows", True)
 
 
+def reset_root_state_uniform_tensor_mask(
+    env: ManagerBasedRlEnv,
+    reset_mask: torch.Tensor,
+    pose_range: dict[str, tuple[float, float]],
+    velocity_range: dict[str, tuple[float, float]] | None = None,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+    """Issue #2285 research-only full-width root reset."""
+    if env.torch_rng is None:
+        raise NotImplementedError(
+            "reset_root_state_uniform_tensor_mask requires env.torch_rng on a CUDA "
+            "Manager tensor runtime"
+        )
+    if reset_mask.device != torch.device(env.device):
+        raise ValueError("reset_root_state_uniform_tensor_mask rows must live on env.device")
+    asset = cast("Entity", env.scene[asset_cfg.name])
+    device = torch.device(env.device)
+    asset.data.default_root_state_torch(device)
+    num_envs = env.num_envs
+    bounds_key = (
+        (asset_cfg.name, tuple(sorted(pose_range.items())), tuple(sorted(velocity_range.items())))
+        if velocity_range is not None
+        else (asset_cfg.name, tuple(sorted(pose_range.items())), None)
+    )
+    pose_bounds_tensor = getattr(env, "_tensor_reset_pose_bounds", None)
+    velocity_bounds_tensor = getattr(env, "_tensor_reset_velocity_bounds", None)
+    if pose_bounds_tensor is None or getattr(env, "_tensor_reset_bounds_key", None) != bounds_key:
+        new_pose_bounds = _tensor_se3_bounds(pose_range).to(device=device)
+        new_velocity_bounds = _tensor_se3_bounds(velocity_range).to(device=device)
+        env._tensor_reset_pose_bounds = new_pose_bounds
+        env._tensor_reset_velocity_bounds = new_velocity_bounds
+        env._tensor_reset_bounds_key = bounds_key
+        pose_bounds_tensor = new_pose_bounds
+        velocity_bounds_tensor = new_velocity_bounds
+    reset_unit = torch.rand(
+        (num_envs, 2 * len(_SE3_KEYS)),
+        dtype=torch.float32,
+        device=device,
+        generator=env.torch_rng.generator,
+    )
+    bounds = torch.cat((pose_bounds_tensor, velocity_bounds_tensor), dim=0)
+    deltas = torch.addcmul(
+        bounds[None, :, 0],
+        reset_unit,
+        bounds[None, :, 1] - bounds[None, :, 0],
+    )
+    pose_delta, velocity_delta = torch.split(deltas, len(_SE3_KEYS), dim=1)
+    default_tensor = asset.data.default_root_state_torch(device)
+    origins = env.scene.env_origins_torch(device)
+    root_state = torch.empty_like(default_tensor)
+    _bind_tensor_root_reset()(default_tensor, origins, pose_delta, velocity_delta, root_state)
+    asset.write_root_state_tensor_to_sim_mask(root_state, reset_mask=reset_mask)
+
+
+setattr(reset_root_state_uniform_tensor_mask, "reset_mask", reset_root_state_uniform_tensor_mask)
+setattr(reset_root_state_uniform_tensor_mask, "uses_tensor_rows", True)
+
+
+def reset_scene_to_default_tensor_mask(
+    env: ManagerBasedRlEnv,
+    reset_mask: torch.Tensor,
+) -> None:
+    """Mask-preserving no-op hook for the canonical MJWarp reset scene term."""
+    del env, reset_mask
+
+
+setattr(reset_scene_to_default_tensor_mask, "reset_mask", reset_scene_to_default_tensor_mask)
+setattr(reset_scene_to_default_tensor_mask, "uses_tensor_rows", True)
+
+
 def reset_scene_to_default_tensor(env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> None:
     """Initialize canonical scalar reset defaults for selected device rows.
 

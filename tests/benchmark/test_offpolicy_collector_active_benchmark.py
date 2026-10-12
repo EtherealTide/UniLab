@@ -490,6 +490,10 @@ def test_variant_blocks_alternate_labels_without_extending_measurement(monkeypat
         extra_overrides,
         variant,
         profile_numpy_random,
+        torch_profile,
+        torch_profile_dir,
+        torch_profile_warmup_steps,
+        torch_profile_steps,
     ):
         order.append(variant)
         result = _make_result(

@@ -29,6 +29,19 @@ def _sampling_dispatch_kernel(
     current_clip_end_frames.index_copy_(0, rows, frame_clip_ends.index_select(0, frames))
 
 
+def _sampling_dispatch_mask_kernel(
+    reset_mask: torch.Tensor,
+    frames: torch.Tensor,
+    frame_clip_ends: torch.Tensor,
+    current_frames: torch.Tensor,
+    current_clip_end_frames: torch.Tensor,
+) -> None:
+    selected = torch.where(reset_mask, frames, current_frames)
+    clip_ends = frame_clip_ends.index_select(0, frames)
+    current_frames.copy_(selected)
+    current_clip_end_frames.copy_(torch.where(reset_mask, clip_ends, current_clip_end_frames))
+
+
 @dataclass
 class TensorMotionSamplerDiagnostics:
     """Count observed compatibility paths that would defeat tensor-only resets.
@@ -182,6 +195,59 @@ class TensorMotionSampler:
         elif self.mode == "mixed":
             self._publish_mixed_metrics()
         self.last_reset_dispatch_ms = (time.perf_counter() - dispatch_started) * 1000.0
+        return frames
+
+    def sample_frames_mask(
+        self, reset_mask: torch.Tensor, torch_rng: torch.Generator | None
+    ) -> torch.Tensor:
+        """Issue #2285 research-only full-width frame sampling."""
+        started = time.perf_counter()
+        if (
+            reset_mask.ndim != 1
+            or reset_mask.shape[0] != self.num_envs
+            or reset_mask.dtype != torch.bool
+            or reset_mask.device != self.device
+        ):
+            raise ValueError("TensorMotionSampler reset mask has an invalid shape/device")
+        if torch_rng is None:
+            raise NotImplementedError("TensorMotionSampler requires the Manager Torch generator")
+        self.diagnostics.record_reset_dispatch()
+        frames: torch.Tensor
+        probabilities: torch.Tensor | None = None
+        if self.mode == "adaptive":
+            probabilities = self._adaptive_probabilities()
+            bins = torch.multinomial(
+                probabilities, self.num_envs, replacement=True, generator=torch_rng
+            )
+            offsets = torch.rand(self.num_envs, device=self.device, generator=torch_rng)
+            frames = (
+                (bins.to(dtype=torch.float32) + offsets) / self.bin_count * (self.num_frames - 1)
+            ).to(dtype=torch.int32)
+        else:
+            use_start = torch.rand(self.num_envs, device=self.device, generator=torch_rng) < (
+                self.start_ratio
+            )
+            uniform_frames = torch.randint(
+                0,
+                self.num_frames,
+                (self.num_envs,),
+                device=self.device,
+                generator=torch_rng,
+                dtype=torch.int32,
+            )
+            frames = torch.where(use_start, torch.zeros_like(uniform_frames), uniform_frames)
+        _sampling_dispatch_mask_kernel(
+            reset_mask,
+            frames,
+            self._frame_clip_ends,
+            self.current_frames,
+            self.current_clip_end_frames,
+        )
+        if probabilities is not None:
+            self._publish_sampling_metrics(probabilities)
+        elif self.mode == "mixed":
+            self._publish_mixed_metrics()
+        self.last_reset_dispatch_ms = (time.perf_counter() - started) * 1000.0
         return frames
 
     def update_failure_stats(self, terminated: torch.Tensor) -> None:

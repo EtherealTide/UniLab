@@ -111,11 +111,36 @@ class CurriculumManager(ManagerBase):
             term_cfg.func.reset(env_ids=env_ids)
         return extras
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        """Clear state through the issue #2285 fixed-width mask."""
+        for term_name, term_cfg in zip(self._term_names, self._term_cfgs, strict=False):
+            reset_mask_impl = getattr(term_cfg.func, "reset_mask", None)
+            if not callable(reset_mask_impl):
+                raise NotImplementedError(
+                    f"CurriculumManager term '{term_name}' does not define the issue "
+                    "#2285 mask-preserving reset boundary"
+                )
+            reset_mask_impl(reset_mask)
+        return {}
+
     def compute(self, env_ids: torch.Tensor | slice | None = None) -> None:
         if env_ids is None:
             env_ids = slice(None)
         for name, term_cfg in zip(self._term_names, self._term_cfgs, strict=False):
             state = term_cfg.func(self._env, env_ids, **term_cfg.params)
+            self._validate_state(name, state)
+            self._curriculum_state[name] = state
+
+    def compute_mask(self, reset_mask: torch.Tensor) -> None:
+        """Issue #2285 research-only fixed-shape curriculum compute."""
+        for name, term_cfg in zip(self._term_names, self._term_cfgs, strict=False):
+            callable_mask = getattr(term_cfg.func, "__call_mask__", None)
+            if not callable(callable_mask):
+                raise NotImplementedError(
+                    f"CurriculumManager term '{name}' does not define the issue #2285 "
+                    "mask-preserving compute boundary"
+                )
+            state = callable_mask(self._env, reset_mask, **term_cfg.params)
             self._validate_state(name, state)
             self._curriculum_state[name] = state
 
@@ -165,3 +190,10 @@ class NullCurriculumManager:
 
     def compute(self, env_ids: torch.Tensor | None = None) -> None:
         pass
+
+    def compute_mask(self, reset_mask: torch.Tensor) -> None:
+        del reset_mask
+
+    def reset_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        del reset_mask
+        return {}

@@ -257,6 +257,9 @@ class feet_air_time(_FootContactTerm):
         rows = _reset_rows(env_ids, self._air_time.device)
         self._air_time[rows] = 0.0
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+        self._air_time.masked_fill_(reset_mask.reshape(-1, 1), 0.0)
+
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
         contact = self._contact_feet(env)
@@ -330,6 +333,11 @@ class feet_swing_height(_FootContactTerm):
         rows = _reset_rows(env_ids, self._peak_heights.device)
         self._peak_heights[rows] = 0.0
         self._was_in_air[rows] = False
+
+    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+        expanded = reset_mask.reshape(-1, 1)
+        self._peak_heights.masked_fill_(expanded, 0.0)
+        self._was_in_air.masked_fill_(expanded, False)
 
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
@@ -581,6 +589,9 @@ class foot_air_time(_FootContactTerm):
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         rows = _reset_rows(env_ids, self._air_time.device)
         self._air_time[rows] = 0.0
+
+    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+        self._air_time.masked_fill_(reset_mask.reshape(-1, 1), 0.0)
 
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params

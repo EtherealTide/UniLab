@@ -169,6 +169,10 @@ class _NamedSensorObservation(ManagerTermBase):
     def tensor_sensor_names(self) -> tuple[str, ...]:
         return self._tensor_sensor_names
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> None:
+        """Issue #2285 mask boundary for stateless sensor observations."""
+        del reset_mask
+
 
 class builtin_sensor(_NamedSensorObservation):
     """Read one existing backend sensor through a cached NumPy view."""

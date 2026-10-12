@@ -2734,6 +2734,24 @@ class Entity:
             term_name=f"{self.name}.write_root_state_tensor_to_sim",
         )
 
+    def write_root_state_tensor_to_sim_mask(
+        self,
+        root_state: torch.Tensor,
+        reset_mask: torch.Tensor,
+    ) -> None:
+        """Stage issue #2285's full-width root state with a bool mask."""
+        if self._physical_entity is not None:
+            raise NotImplementedError(
+                "mapped entity tensor root-state reset requires a public entity transaction"
+            )
+        reset_state, layout = self._require_root_state_write()
+        reset_state.write_root_state_tensor_mask(
+            reset_mask,
+            layout,
+            root_state,
+            term_name=f"{self.name}.write_root_state_tensor_to_sim_mask",
+        )
+
     def write_joint_state_tensor_to_sim(
         self,
         position: torch.Tensor,
@@ -2804,6 +2822,35 @@ class Entity:
             position,
             velocity,
             term_name=f"{self.name}.write_motion_state_tensor_to_sim",
+        )
+
+    def write_motion_state_tensor_to_sim_mask(
+        self,
+        *,
+        root_state: torch.Tensor,
+        position: torch.Tensor,
+        velocity: torch.Tensor,
+        reset_mask: torch.Tensor,
+    ) -> None:
+        """Stage issue #2285's full-width motion state with a bool mask."""
+        reset_state, layout = self._require_root_state_write()
+        if self._joint_names is None:
+            raise self._capability_error(
+                "tensor reset motion-state write",
+                "joint_names were not declared in EntityCfg",
+            )
+        self._materialize_reset_joint_indices()
+        assert self._reset_joint_qpos_ids is not None
+        assert self._reset_joint_qvel_ids is not None
+        reset_state.write_motion_state_tensor_mask(
+            reset_mask,
+            layout,
+            self._reset_joint_qpos_ids,
+            self._reset_joint_qvel_ids,
+            root_state,
+            position,
+            velocity,
+            term_name=f"{self.name}.write_motion_state_tensor_to_sim_mask",
         )
 
     @property

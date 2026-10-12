@@ -40,6 +40,7 @@ htmlcov/
 
 # Project specific
 logs/
+third_party/
 runs/
 run_config.json
 run_summary.json

@@ -337,6 +337,30 @@ def test_penalty_curriculum_repeated_construction_never_mutates_source_cfg():
         assert weight == pytest.approx(-0.0625)
 
 
+def test_penalty_curriculum_mask_weights_by_selected_episode_count():
+    env = _curriculum_env({"pose": -0.5}, num_envs=2048)
+    term = G1PenaltyCurriculum(
+        RewardTermCfg(
+            func=G1PenaltyCurriculum,
+            weight=1.0,
+            params={"initial_scale": 0.5, "min_scale": 0.0, "max_scale": 1.0},
+        ),
+        cast(Any, env),
+    )
+    env.episode_length_buf[:] = 500
+    env.reset_buf.zero_()
+    env.reset_buf[7] = True
+    mask = torch.zeros(2048, dtype=torch.bool)
+    mask[7] = True
+
+    term.__call_mask__(cast(Any, env), mask)
+
+    assert term._tracker.average.item() == pytest.approx(500.0)
+    # A single selected episode must receive the same moving-average weight
+    # as the selected-row lifecycle, not the full-batch carrier width.
+    assert term._tracker.average.item() != 0.0
+
+
 def test_penalty_curriculum_shrinks_scale_below_initial_when_min_allows():
     env = _curriculum_env({"pose": -0.5})
     term = G1PenaltyCurriculum(
@@ -389,6 +413,55 @@ def test_velocity_command_dead_zone_zeroes_small_planar_commands():
     assert bool(torch.all((planar_norm == 0.0) | (planar_norm > 0.2)))
     assert bool(torch.any(planar_norm == 0.0))
     assert term.command.dtype == torch.float32
+
+
+def test_velocity_command_mask_reset_preserves_unselected_rows():
+    env = SimpleNamespace(
+        num_envs=8,
+        rng=np.random.default_rng(0),
+        torch_rng=TorchManagerRng.seeded(0),
+        step_dt=0.02,
+        scene={
+            "robot": SimpleNamespace(
+                data=SimpleNamespace(
+                    root_link_lin_vel_b=np.zeros((8, 3)),
+                    root_link_ang_vel_b=np.zeros((8, 3)),
+                    heading_w=np.zeros(8),
+                )
+            )
+        },
+    )
+    cfg = G1VelocityCommandCfg(
+        entity_name="robot",
+        resampling_time_range=(20.0, 20.0),
+        ranges=G1VelocityCommandCfg.Ranges(
+            lin_vel_x=(-0.15, 0.15),
+            lin_vel_y=(-0.15, 0.15),
+            ang_vel_z=(0.0, 0.0),
+        ),
+    )
+    term = cfg.build(cast(Any, env))
+    term.command[:] = torch.linspace(-1.0, 1.0, 8, dtype=torch.float32).reshape(-1, 1).repeat(1, 3)
+    term.command_counter[:] = torch.arange(8, dtype=torch.int64)
+    term.metrics["error_vel_xy"][:] = torch.arange(8, dtype=torch.float32)
+    mask = torch.tensor([False, True, False, True, False, True, False, True])
+
+    term.reset_mask(mask)
+
+    torch.testing.assert_close(
+        term.command[~mask],
+        torch.linspace(-1.0, 1.0, 8, dtype=torch.float32).reshape(-1, 1).repeat(1, 3)[~mask],
+    )
+    torch.testing.assert_close(
+        term.command_counter[~mask], torch.arange(8, dtype=torch.int64)[~mask]
+    )
+    torch.testing.assert_close(
+        term.metrics["error_vel_xy"][~mask], torch.arange(8, dtype=torch.float32)[~mask]
+    )
+    assert bool((term.command_counter[mask] == 0).all())
+    assert bool((term.metrics["error_vel_xy"][mask] == 0).all())
+    planar_norm = torch.linalg.vector_norm(term.command[mask, :2], dim=1)
+    assert bool(torch.all((planar_norm == 0.0) | (planar_norm > 0.2)))
 
 
 def test_velocity_command_fails_closed_on_heading_command():

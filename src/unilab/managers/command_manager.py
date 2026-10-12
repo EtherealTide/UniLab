@@ -379,6 +379,40 @@ class CommandManager(ManagerBase):
         extras, _commands = self.reset_command_state(env_ids, publish_metrics=True)
         return extras
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        """Issue #2285 research-only full-width command reset.
+
+        Every term must provide a mask-preserving owner implementation; a row
+        fallback would invalidate the fixed-shape experiment. This method is
+        not a production Manager API.
+        """
+        self._validate_reset_mask(reset_mask)
+        for name, term in self._terms.items():
+            reset_mask_impl = getattr(term, "reset_mask", None)
+            if not callable(reset_mask_impl):
+                raise NotImplementedError(
+                    f"CommandManager term '{name}' does not define the issue #2285 "
+                    "mask-preserving reset boundary"
+                )
+            reset_mask_impl(reset_mask)
+        self._last_term_reset_timing_ms.clear()
+        for name, term in self._terms.items():
+            self._last_term_reset_timing_ms.update(term.last_reset_timing_ms)
+        return {}
+
+    def _validate_reset_mask(self, reset_mask: torch.Tensor) -> None:
+        if (
+            not isinstance(reset_mask, torch.Tensor)
+            or reset_mask.ndim != 1
+            or reset_mask.shape[0] != self.num_envs
+            or reset_mask.dtype != torch.bool
+            or reset_mask.device != self._device
+        ):
+            raise ValueError(
+                f"CommandManager research reset mask must have shape {(self.num_envs,)}, "
+                f"bool dtype, and device {self._device}"
+            )
+
     def reset_command_state(
         self,
         env_ids: torch.Tensor | slice | None,
@@ -453,10 +487,46 @@ class CommandManager(ManagerBase):
         step_timing["update_state_command_validation_ms"] = validation_ms * 1000.0
         self.last_step_timing_ms = step_timing
 
+    def compute_mask(self, dt: float | torch.Tensor, reset_mask: torch.Tensor) -> None:
+        """Issue #2285 research-only fixed-shape command refresh."""
+        step_timing: dict[str, float] = {}
+        for name, term in self._terms.items():
+            callable_mask = getattr(term, "_update_command_mask", None)
+            if not callable(callable_mask):
+                raise NotImplementedError(
+                    f"CommandManager term '{name}' does not define the issue #2285 "
+                    "mask-preserving compute boundary"
+                )
+            term_timing = getattr(term, "last_step_timing_ms", None)
+            if term_timing is not None:
+                term_timing.clear()
+            started = time.perf_counter()
+            callable_mask(reset_mask)
+            step_timing.update(getattr(term, "last_step_timing_ms", {}))
+            step_timing["update_state_command_term_dispatch_ms"] = (
+                time.perf_counter() - started
+            ) * 1000.0
+        self.last_step_timing_ms = step_timing
+
     def post_compute(self) -> None:
         self.last_post_compute_timing_ms.clear()
         for term in self._terms.values():
             term.post_compute()
+            self.last_post_compute_timing_ms.update(
+                getattr(term, "last_post_compute_timing_ms", {})
+            )
+
+    def post_compute_mask(self) -> None:
+        """Issue #2285 research-only fixed-shape command post-compute."""
+        self.last_post_compute_timing_ms.clear()
+        for name, term in self._terms.items():
+            callable_mask = getattr(term, "post_compute_mask", None)
+            if not callable(callable_mask):
+                raise NotImplementedError(
+                    f"CommandManager term '{name}' does not define the issue #2285 "
+                    "mask-preserving post-compute boundary"
+                )
+            callable_mask()
             self.last_post_compute_timing_ms.update(
                 getattr(term, "last_post_compute_timing_ms", {})
             )
@@ -548,13 +618,23 @@ class NullCommandManager:
     def reset(self, env_ids: torch.Tensor | None = None) -> dict[str, float]:
         return {}
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        del reset_mask
+        return {}
+
     def reset_diagnostics(self) -> dict[str, float]:
         return {}
 
     def compute(self, dt: float | torch.Tensor, env_ids: torch.Tensor | None = None) -> None:
         pass
 
+    def compute_mask(self, dt: float | torch.Tensor, reset_mask: torch.Tensor) -> None:
+        del dt, reset_mask
+
     def post_compute(self) -> None:
+        pass
+
+    def post_compute_mask(self) -> None:
         pass
 
     def bind_read_phase(self) -> None:

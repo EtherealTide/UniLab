@@ -104,6 +104,34 @@ class TerminationManager(ManagerBase):
             term_cfg.func.reset(env_ids=env_ids)
         return extras
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> dict[str, int]:
+        """Publish episodic counts and clear terms through a fixed-width mask."""
+        if (
+            reset_mask.ndim != 1
+            or reset_mask.shape[0] != self.num_envs
+            or reset_mask.dtype != torch.bool
+            or reset_mask.device != self._device
+        ):
+            raise ValueError(
+                f"TerminationManager research reset mask must have shape "
+                f"{(self.num_envs,)}, bool dtype, and device {self._device}"
+            )
+        extras: dict[str, int] = {}
+        keys = list(self._term_dones)
+        counts = [self._term_dones[key].masked_select(reset_mask).sum() for key in keys]
+        host_counts = torch.stack(counts).detach().cpu().tolist() if counts else []
+        for key, count in zip(keys, host_counts, strict=True):
+            extras["Episode_Termination/" + key] = int(count)
+        for term_cfg in self._class_term_cfgs:
+            reset_mask_impl = getattr(term_cfg.func, "reset_mask", None)
+            if not callable(reset_mask_impl):
+                raise NotImplementedError(
+                    "TerminationManager stateful term does not define the issue #2285 "
+                    "mask-preserving reset boundary"
+                )
+            reset_mask_impl(reset_mask)
+        return extras
+
     def compute(self) -> torch.Tensor:
         timing = getattr(self, "last_step_timing_ms", None)
         if timing is None:

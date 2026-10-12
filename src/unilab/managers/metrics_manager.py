@@ -170,6 +170,50 @@ class MetricsManager(ManagerBase):
         for term_cfg in self._class_term_cfgs:
             term_cfg.func.reset(env_ids=env_ids)
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        """Publish episode summaries and clear state through a fixed-width mask."""
+        self._validate_reset_mask(reset_mask)
+        extras: dict[str, float] = {}
+        counts = self._step_count.masked_select(reset_mask).to(torch.float32)
+        safe_counts = torch.clamp(counts, min=1.0)
+        for idx, key in enumerate(self._episode_sums):
+            reduce = self._term_cfgs[idx].reduce
+            if reduce == "max":
+                values = self._episode_max[key].masked_select(reset_mask)
+                extras["Episode_Metrics/" + key] = self._log_mean(values)
+            elif reduce == "last":
+                extras["Episode_Metrics/" + key] = self._log_mean(
+                    self._step_values[reset_mask, idx]
+                )
+            elif reduce == "sum":
+                extras["Episode_Metrics/" + key] = self._log_mean(
+                    self._episode_sums[key].masked_select(reset_mask)
+                )
+            else:
+                values = self._episode_sums[key].masked_select(reset_mask) / safe_counts
+                extras["Episode_Metrics/" + key] = self._log_mean(values)
+        self.clear_episode_state_mask(reset_mask)
+        return extras
+
+    def clear_episode_state_mask(self, reset_mask: torch.Tensor) -> None:
+        """Clear selected episode accumulators using a fixed-width bool mask."""
+        self._validate_reset_mask(reset_mask)
+        for key in self._episode_sums:
+            self._episode_sums[key].masked_fill_(reset_mask, 0.0)
+            if key in self._episode_max:
+                self._episode_max[key].masked_fill_(reset_mask, float("-inf"))
+        self._step_count.masked_fill_(reset_mask, 0)
+        for buf in self._substep_accum:
+            buf.masked_fill_(reset_mask, 0.0)
+        for term_cfg in self._class_term_cfgs:
+            reset_mask_impl = getattr(term_cfg.func, "reset_mask", None)
+            if not callable(reset_mask_impl):
+                raise NotImplementedError(
+                    "MetricsManager stateful term does not define the issue #2285 "
+                    "mask-preserving reset boundary"
+                )
+            reset_mask_impl(reset_mask)
+
     def compute_substep(self) -> None:
         """Accumulate per-substep metric values inside the decimation loop.
 
@@ -282,6 +326,18 @@ class MetricsManager(ManagerBase):
             return 0.0
         return float(values.mean().item())
 
+    def _validate_reset_mask(self, reset_mask: torch.Tensor) -> None:
+        if (
+            reset_mask.ndim != 1
+            or reset_mask.shape[0] != self.num_envs
+            or reset_mask.dtype != torch.bool
+            or reset_mask.device != self._device
+        ):
+            raise ValueError(
+                f"MetricsManager research reset mask must have shape {(self.num_envs,)}, "
+                f"bool dtype, and device {self._device}"
+            )
+
 
 class NullMetricsManager:
     """Placeholder for absent metrics manager that safely no-ops all operations."""
@@ -301,6 +357,13 @@ class NullMetricsManager:
 
     def reset(self, env_ids: torch.Tensor | None = None) -> dict[str, float]:
         return {}
+
+    def reset_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        del reset_mask
+        return {}
+
+    def clear_episode_state_mask(self, reset_mask: torch.Tensor) -> None:
+        del reset_mask
 
     def compute_substep(self) -> None:
         pass

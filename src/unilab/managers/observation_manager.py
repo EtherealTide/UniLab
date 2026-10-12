@@ -315,6 +315,54 @@ class ObservationManager(ManagerBase):
                 mod.reset(env_ids=rows)
         return {}
 
+    def reset_mask(self, reset_mask: torch.Tensor) -> dict[str, float]:
+        """Issue #2285 research-only fixed-shape observation state reset."""
+        self._validate_reset_mask(reset_mask)
+        self._obs_buffer = None
+        for group_cfg in self._group_obs_class_term_cfgs.values():
+            for term_cfg in group_cfg:
+                reset_mask_impl = getattr(term_cfg.func, "reset_mask", None)
+                if not callable(reset_mask_impl):
+                    raise NotImplementedError(
+                        f"ObservationManager term '{term_cfg.func}' does not define "
+                        "the issue #2285 mask-preserving reset boundary"
+                    )
+                reset_mask_impl(reset_mask)
+        for group_name in self._group_obs_term_names:
+            for term_name in self._group_obs_term_names[group_name]:
+                delay = self._group_obs_term_delay_buffer[group_name].get(term_name)
+                if delay is not None:
+                    raise NotImplementedError(
+                        "the issue #2285 mask reset does not yet support delay buffers"
+                    )
+                history = self._group_obs_term_history_buffer[group_name].get(term_name)
+                if history is not None:
+                    raise NotImplementedError(
+                        "the issue #2285 mask reset does not yet support history buffers"
+                    )
+        for group_mods in self._group_obs_class_instances.values():
+            for mod in group_mods.values():
+                reset_mask_impl = getattr(mod, "reset_mask", None)
+                if not callable(reset_mask_impl):
+                    raise NotImplementedError(
+                        f"ObservationManager term '{type(mod).__name__}' does not define "
+                        "the issue #2285 mask-preserving reset boundary"
+                    )
+                reset_mask_impl(reset_mask)
+        return {}
+
+    def _validate_reset_mask(self, reset_mask: torch.Tensor) -> None:
+        if (
+            reset_mask.ndim != 1
+            or reset_mask.shape[0] != self.num_envs
+            or reset_mask.dtype != torch.bool
+            or reset_mask.device != self._device
+        ):
+            raise ValueError(
+                f"ObservationManager research reset mask must have shape {(self.num_envs,)}, "
+                f"bool dtype, and device {self._device}"
+            )
+
     def _check_and_handle_nans(
         self,
         tensor: torch.Tensor,

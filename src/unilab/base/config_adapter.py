@@ -44,8 +44,46 @@ class BackendAdapter:
 
         env_cfg_override = extract_reward_config(self.cfg, target_field=reward_target)
         env_cfg_override.update(env_overrides)
+        self._apply_issue2285_reset_fixture(env_cfg_override)
 
         return env_cfg_override
+
+    def _apply_issue2285_reset_fixture(self, env_cfg_override: dict[str, Any]) -> None:
+        """Route the temporary issue #2285 research reset event functions.
+
+        The adapter deliberately keeps the production owner YAML unchanged. If
+        the benchmark selects a fixed-width reset carrier, canonical tensor
+        reset event declarations are redirected to their mask-preserving peers
+        before registry materialization.
+        """
+        reset_row_flow = str(
+            OmegaConf.select(self.cfg, "env.reset_row_flow", default="dynamic_rows")
+        )
+        if reset_row_flow == "dynamic_rows":
+            return
+        if reset_row_flow not in ("mask_only", "mask_full_refresh"):
+            raise ValueError(
+                "env.reset_row_flow must be 'dynamic_rows', 'mask_only', or "
+                f"'mask_full_refresh'; got {reset_row_flow!r}"
+            )
+        events = env_cfg_override.setdefault("events", {})
+        if not isinstance(events, dict):
+            raise TypeError("env.events must be a mapping for the issue #2285 fixture")
+        replacements = {
+            "unilab.envs.mdp.reset_scene_to_default_tensor": (
+                "unilab.envs.mdp.events.reset_scene_to_default_tensor_mask"
+            ),
+            "unilab.envs.mdp.reset_root_state_uniform_tensor": (
+                "unilab.envs.mdp.events.reset_root_state_uniform_tensor_mask"
+            ),
+        }
+        for term_name, term in events.items():
+            if not isinstance(term, dict):
+                continue
+            current = term.get("func")
+            replacement = replacements.get(current) if isinstance(current, str) else None
+            if replacement is not None:
+                term["func"] = replacement
 
     def build_play_env_cfg_override(self) -> dict[str, Any]:
         """Build play-mode overrides from an optional backend-agnostic play profile."""
