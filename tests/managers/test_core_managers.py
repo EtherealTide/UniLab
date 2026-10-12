@@ -337,6 +337,24 @@ def test_reward_nonfinite_is_an_error(fake_env: FakeEnv, bad: float) -> None:
         manager.compute(0.01)
 
 
+def test_deferred_reward_validation_fails_closed_at_boundary(fake_env: FakeEnv) -> None:
+    def reward(env: FakeEnv) -> torch.Tensor:
+        value = torch.ones(env.num_envs, dtype=torch.float32)
+        value[1] = torch.nan
+        return value
+
+    manager = RewardManager({"bad_reward": RewardTermCfg(func=reward, weight=1.0)}, fake_env)
+    manager.set_deferred_validation_boundaries(True)
+    assert manager.deferred_validation_boundaries is True
+
+    result = manager.compute(0.01)
+
+    assert torch.isnan(result[1])
+    assert manager.finite_valid.item() is False
+    with pytest.raises(ValueError, match="non-finite reward"):
+        manager.publish_validation_verdict()
+
+
 def test_reward_compute_publishes_phase_attribution(fake_env: FakeEnv) -> None:
     def ones(env: FakeEnv) -> torch.Tensor:
         return torch.ones(env.num_envs, dtype=torch.float32)
