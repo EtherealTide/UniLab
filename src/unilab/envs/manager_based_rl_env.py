@@ -1510,6 +1510,16 @@ class ManagerBasedRlEnv(TorchEnv):
             owner_failures.append("persistent done output carriers are not graph-ready")
         if self.torch_rng.device != self.device:
             owner_failures.append("Torch RNG device does not match the graph carrier")
+        if "interval" in self.event_manager.available_modes:
+            owner_failures.append("interval events have no fixed-width graph boundary")
+        if self.metrics_manager.active_terms:
+            owner_failures.append("metrics reset publication has no graph boundary")
+        if self.curriculum_manager.active_terms:
+            owner_failures.append("curriculum reset publication has no graph boundary")
+        if self.recorder_manager.active_terms:
+            owner_failures.append("recorder lifecycle publication has no graph boundary")
+        if not self._autoreset:
+            owner_failures.append("manual reset guard has no graph boundary")
         if owner_failures:
             return {
                 "requested": True,

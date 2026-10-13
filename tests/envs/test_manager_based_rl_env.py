@@ -1338,7 +1338,7 @@ def test_deferred_validation_boundaries_fail_closed_without_backend_capability()
 
 
 def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
-    env, _backend = _make_env()
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
 
     env.init_state()
     env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
@@ -1403,7 +1403,7 @@ def test_env_graph_candidate_preflight_rejects_cpu_carrier() -> None:
 
 
 def test_env_graph_candidate_preflight_requires_terminal_carrier() -> None:
-    env, _backend = _make_env()
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
 
     result = env.preflight_graph_candidate(requested=True)
 
@@ -3925,3 +3925,67 @@ def test_autoreset_mask_widths_match_termination_masks() -> None:
 
 def _selective_failure(env: _TestEnv) -> torch.Tensor:
     return env.action_manager.action[:, 0] > 0.8
+
+
+@pytest.mark.parametrize(
+    ("manager_name", "expected_reason"),
+    [
+        ("events", "interval events have no fixed-width graph boundary"),
+        ("metrics", "metrics reset publication has no graph boundary"),
+        ("curriculum", "curriculum reset publication has no graph boundary"),
+        ("recorders", "recorder lifecycle publication has no graph boundary"),
+    ],
+)
+def test_graph_preflight_rejects_unresolved_semantic_owners(
+    manager_name: str,
+    expected_reason: str,
+) -> None:
+    cfg = _make_cfg(include_optional_managers=False)
+    if manager_name == "events":
+        cfg.events = {
+            "push": EventTermCfg(
+                func=_mutate_joint_state_step_event,
+                mode="interval",
+                interval_range_s=(0.1, 0.1),
+            )
+        }
+    elif manager_name == "metrics":
+        cfg.metrics = {"progress": MetricsTermCfg(func=_metric)}
+    elif manager_name == "curriculum":
+        cfg.curriculum = {"difficulty": CurriculumTermCfg(func=_curriculum)}
+    else:
+        cfg.recorders = {"trace": RecorderTermCfg(func=_Recorder)}
+
+    env, _backend = _make_env(cfg)
+    env.init_state()
+    env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+    if torch.cuda.is_available():
+        object.__setattr__(env, "_device", torch.device("cuda", index=torch.cuda.current_device()))
+        env._final_observation_scratch = {
+            name: value.to(device=env.device)
+            for name, value in env._final_observation_scratch.items()
+        }
+        env._public_obs = {
+            name: value.to(device=env.device) for name, value in env._public_obs.items()
+        }
+        env._public_reward = env._public_reward.to(device=env.device)
+        env._public_terminated = env._public_terminated.to(device=env.device)
+        env._public_truncated = env._public_truncated.to(device=env.device)
+
+    result = env.preflight_graph_candidate(requested=True)
+
+    assert result["supported"] is False
+    assert expected_reason in result["disable_reason"]
+    env.close()
+
+
+def test_graph_preflight_rejects_manual_reset_mode() -> None:
+    cfg = _make_cfg(include_optional_managers=False, auto_reset=False)
+    env, _backend = _make_env(cfg)
+    env.init_state()
+
+    result = env.preflight_graph_candidate(requested=True)
+
+    assert result["supported"] is False
+    assert "manual reset guard has no graph boundary" in result["disable_reason"]
+    env.close()
