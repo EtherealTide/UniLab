@@ -89,6 +89,9 @@ class _FakeBackend:
         self.sensors: dict[str, torch.Tensor] = {}
         self.set_state_calls: list[tuple[Any, Any, Any]] = []
         self.graph_completions: list[Any] = []
+        self.fail_next_step_tensor = False
+        self.graph_invalidations: list[str] = []
+        self.graph_fallback_count = 0
         self.qpos = torch.zeros((num_envs, 4), dtype=torch.float32)
         self.qvel = torch.zeros((num_envs, 3), dtype=torch.float32)
 
@@ -222,6 +225,8 @@ class _FakeBackend:
     def get_graph_lifecycle(self):
         from unisim import GraphLifecycleState
 
+        if getattr(self, "lifecycle_state", None) is not None:
+            return self.lifecycle_state
         return GraphLifecycleState.READY
 
     def get_graph_lifecycle_snapshot(self):
@@ -231,8 +236,34 @@ class _FakeBackend:
             contract_version=1,
             state=self.get_graph_lifecycle(),
             capture_id="test-capture",
-            replay_count=2,
-            fallback_count=0,
+            replay_count=len(self.graph_completions) or 2,
+            fallback_count=self.graph_fallback_count,
+        )
+
+    def invalidate_graph(self, reason):
+        from unisim import GraphLifecycleSnapshot, GraphLifecycleState
+
+        if reason not in {
+            "model",
+            "data",
+            "view",
+            "capacity",
+            "policy_io",
+            "stream_event",
+            "capture_failed",
+        }:
+            raise ValueError(f"unsupported graph invalidation reason {reason!r}")
+        self.graph_invalidations.append(reason)
+        self.graph_fallback_count += 1
+        self.lifecycle_state = GraphLifecycleState.INVALIDATED
+        self.graph_disable_reason = f"graph invalidated: {reason}"
+        return GraphLifecycleSnapshot(
+            contract_version=1,
+            state=self.lifecycle_state,
+            capture_id=None,
+            replay_count=len(self.graph_completions),
+            fallback_count=self.graph_fallback_count,
+            disable_reason=self.graph_disable_reason,
         )
 
     def preflight_graph_candidate(self, request):
@@ -283,7 +314,7 @@ class _FakeBackend:
                     for name, value in full_width.items()
                 }
             )
-        return {"timing": {}, "graph_completion": self._graph_completion("mask_reset")}
+        return {"timing": {}, "graph_completion": self.record_graph_completion("mask_reset")}
 
     def get_public_state_widths(self):
         from unisim.backend.base import PublicStateWidths
@@ -307,9 +338,12 @@ class _FakeBackend:
             ) from exc
 
     def step_tensor(self, ctrl: torch.Tensor, nsteps: int = 1) -> None:
+        if self.fail_next_step_tensor:
+            self.fail_next_step_tensor = False
+            raise RuntimeError("simulated graph replay failed before publication")
         self.tensor_controls.append(ctrl.detach().clone())
         self.step(ctrl.detach().cpu().numpy(), nsteps)
-        return {"timing": {}, "graph_completion": self._graph_completion("step")}
+        return {"timing": {}, "graph_completion": self.record_graph_completion("step")}
 
     def _graph_completion(self, operation: str):
         from unisim import GraphCompletionToken, GraphLifecycleState
@@ -322,6 +356,11 @@ class _FakeBackend:
             stream_id=self.torch_stream_id or 0,
             capture_id="test-capture",
         )
+
+    def record_graph_completion(self, operation: str):
+        completion = self._graph_completion(operation)
+        self.graph_completions.append(completion)
+        return completion
 
     def step(self, ctrl: np.ndarray, nsteps: int = 1) -> None:
         assert self.materialize_calls == 1
@@ -1494,6 +1533,52 @@ def test_env_graph_lifecycle_manifest_is_public_cold_path_evidence() -> None:
         "fallback_count": 0,
         "disable_reason": None,
     }
+    env.close()
+
+
+def test_failed_graph_replay_publishes_no_transition_and_rolls_back_rng() -> None:
+    env, backend = _make_env()
+    env.reset()
+    completed = env.step(torch.zeros((2, 1), dtype=torch.float32))
+    before_snapshot = env.snapshot_graph_rng_state()
+    before_transition = {
+        "obs": {name: value.clone() for name, value in completed.obs.items()},
+        "reward": completed.reward.clone(),
+        "terminated": completed.terminated.clone(),
+        "truncated": completed.truncated.clone(),
+        "steps": completed.info["steps"].clone(),
+    }
+    published_before_failure = len(backend.graph_completions)
+    backend.fail_next_step_tensor = True
+
+    with pytest.raises(RuntimeError, match="simulated graph replay failed"):
+        env.step(torch.ones((2, 1), dtype=torch.float32))
+
+    assert "graph_completion" not in env._state.info
+    assert len(backend.tensor_controls) == 1
+    assert len(backend.graph_completions) == published_before_failure
+    assert env.step_counter == 1
+    torch.testing.assert_close(env._state.info["steps"], before_transition["steps"])
+    torch.testing.assert_close(env._state.obs["obs"], before_transition["obs"]["obs"])
+    torch.testing.assert_close(env._state.reward, before_transition["reward"])
+    torch.testing.assert_close(env._state.terminated, before_transition["terminated"])
+    torch.testing.assert_close(env._state.truncated, before_transition["truncated"])
+
+    failed_rng = env.graph_rng_state
+    env.rollback_graph_rng_state(before_snapshot)
+    rolled_back = env.graph_rng_state
+
+    assert failed_rng["draw_version"] >= before_snapshot[2]
+    assert rolled_back["state_version"] >= before_snapshot[1]
+    assert rolled_back["draw_version"] >= before_snapshot[2]
+    torch.testing.assert_close(rolled_back["state"], before_snapshot[0])
+
+    invalidated = backend.invalidate_graph("capture_failed")
+    assert backend.graph_invalidations == ["capture_failed"]
+    assert invalidated.state.value == "invalidated"
+    assert invalidated.capture_id is None
+    assert invalidated.fallback_count == 1
+    assert invalidated.disable_reason == "graph invalidated: capture_failed"
     env.close()
 
 

@@ -234,14 +234,24 @@ class TorchEnv(ABEnv):
         apply_action_ms = (time.perf_counter() - phase) * 1000.0
         apply_action_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
 
-        self._state.truncated.fill_(False)
-        self._clear_step_final_observation()
-
         phase = time.perf_counter()
         phase_cpu = _cpu_time()
-        backend_result = self._backend.step_tensor(ctrl, self._cfg.sim_substeps)
+        try:
+            backend_result = self._backend.step_tensor(ctrl, self._cfg.sim_substeps)
+        except BaseException:
+            # Do not expose the previous transition's completion receipt as if
+            # this failed replay had published a new transition.
+            self._state.info.pop("graph_completion", None)
+            raise
         step_core_ms = (time.perf_counter() - phase) * 1000.0
         step_core_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
+
+        # Transition publication starts only after the backend completion
+        # boundary succeeds. A failed replay therefore leaves the previous
+        # public final observation and truncation carrier untouched for RNG
+        # rollback and explicit eager fallback.
+        self._state.truncated.fill_(False)
+        self._clear_step_final_observation()
 
         phase = time.perf_counter()
         phase_cpu = _cpu_time()
