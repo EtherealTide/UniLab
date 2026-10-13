@@ -1198,6 +1198,9 @@ class ManagerBasedRlEnv(TorchEnv):
             )
         state = super().step(actions)
         self._publish_reward_components(state)
+        reset_completion = self.last_reset_completion
+        if reset_completion is not None:
+            state.info["graph_reset_completion"] = reset_completion
         if not self._autoreset:
             self._manual_reset_pending.logical_or_(state.terminated | state.truncated)
         self.recorder_manager.record_post_step()
@@ -1553,6 +1556,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 "state_version": self.torch_rng.state_version,
                 "draw_version": self.torch_rng.draw_version,
             },
+            "graph_lifecycle": str(self._backend.get_graph_lifecycle().value),
         }
 
     def set_deferred_validation_boundaries(self, enabled: bool) -> None:
@@ -1777,6 +1781,11 @@ class ManagerBasedRlEnv(TorchEnv):
         timing.update(self._reset_state.last_set_state_timing_ms)
         timing.update(self._last_reset_manager_timing_ms)
         return timing
+
+    @property
+    def last_reset_completion(self) -> Any | None:
+        """Return the latest public reset completion receipt, if negotiated."""
+        return self._reset_state.last_set_state_completion
 
     def _map_observations(
         self,

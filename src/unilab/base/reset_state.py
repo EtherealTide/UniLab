@@ -1827,6 +1827,11 @@ class ResetStateTransaction:
             if isinstance(backend_timing, dict):
                 self._last_set_state_timing_ms.update(backend_timing)
 
+    @property
+    def last_set_state_completion(self) -> Any | None:
+        """Return the public receipt from the most recent backend reset commit."""
+        return self._last_set_state_timing_ms.get("graph_completion")
+
     def _require_packed_transaction(self) -> TorchPackedResetComposer:
         """Return the declared packed composer or fail closed."""
         transaction = self._packed_reset_transaction

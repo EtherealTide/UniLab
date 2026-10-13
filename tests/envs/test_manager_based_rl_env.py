@@ -218,6 +218,11 @@ class _FakeBackend:
     def publish_torch_fused_validation(self) -> None:
         return None
 
+    def get_graph_lifecycle(self):
+        from unisim import GraphLifecycleState
+
+        return GraphLifecycleState.READY
+
     def preflight_graph_candidate(self, request):
         from dataclasses import replace
 
@@ -1389,6 +1394,7 @@ def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
             "state_version": env.torch_rng.state_version,
             "draw_version": env.torch_rng.draw_version,
         },
+        "graph_lifecycle": "ready",
     }
     assert unrequested == {
         "requested": False,

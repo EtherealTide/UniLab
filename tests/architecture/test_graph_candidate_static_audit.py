@@ -88,7 +88,7 @@ OUT_OF_CAPTURE_VIOLATIONS: frozenset[tuple[str, int, str]] = frozenset(
         ),
         (
             "src/unilab/envs/manager_based_rl_env.py",
-            1361,
+            1364,
             "torch.empty((self.num_envs, self.obs_groups_spec[name]), dtype=self._dtype, device=self.device)",
         ),
         (

@@ -298,6 +298,9 @@ class TorchEnv(ABEnv):
         if isinstance(backend_result, dict):
             for key, value in backend_result.get("timing", {}).items():
                 timing[f"backend_{key}"] = value
+            completion = backend_result.get("graph_completion")
+            if completion is not None:
+                self._state.info["graph_completion"] = completion
         return self._state
 
     def _validate_action(self, actions: torch.Tensor) -> None:
