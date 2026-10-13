@@ -4139,7 +4139,7 @@ def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
 
     for deferred in (False, True):
         for width_index, reset_mask in enumerate(reset_masks):
-            env, _backend = _make_env(_make_cfg())
+            env, _backend = _make_env(_make_cfg(metrics={"progress": MetricsTermCfg(func=_metric)}))
             if deferred:
                 env.set_deferred_validation_boundaries(True)
             env.reset()
@@ -4172,6 +4172,11 @@ def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
                     else None
                 ),
                 "curriculum": env.curriculum_manager.reset(reset_mask),
+                "metric_step_count": env.metrics_manager._step_count.clone(),
+                "metric_step_values": env.metrics_manager._step_values.clone(),
+                "metric_episode_sums": {
+                    name: value.clone() for name, value in env.metrics_manager._episode_sums.items()
+                },
             }
             key = (deferred, width_index)
             if key in references:
@@ -4206,3 +4211,10 @@ def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
             for name in eager["final_obs"]:
                 torch.testing.assert_close(eager["final_obs"][name], deferred["final_obs"][name])
         assert eager["curriculum"] == deferred["curriculum"]
+        torch.testing.assert_close(eager["metric_step_count"], deferred["metric_step_count"])
+        torch.testing.assert_close(eager["metric_step_values"], deferred["metric_step_values"])
+        for name in eager["metric_episode_sums"]:
+            torch.testing.assert_close(
+                eager["metric_episode_sums"][name],
+                deferred["metric_episode_sums"][name],
+            )
