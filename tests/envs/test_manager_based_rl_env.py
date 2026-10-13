@@ -1392,6 +1392,7 @@ def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
         "supported": False,
         "disable_reason": "graph candidate was not requested",
         "backend_stream_contract": "test",
+        "torch_stream_id": None,
     }
     env.close()
 

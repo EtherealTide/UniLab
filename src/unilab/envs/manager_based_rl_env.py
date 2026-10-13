@@ -1457,6 +1457,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 "supported": False,
                 "disable_reason": verdict.disable_reason,
                 "backend_stream_contract": verdict.backend_stream_contract,
+                "torch_stream_id": verdict.torch_stream_id,
             }
         if verdict.supported is not True:
             return {
@@ -1464,6 +1465,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 "supported": False,
                 "disable_reason": verdict.disable_reason,
                 "backend_stream_contract": verdict.backend_stream_contract,
+                "torch_stream_id": verdict.torch_stream_id,
             }
         action_shape = self.action_space.shape
         owner_failures: list[str] = []
@@ -1526,6 +1528,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 "supported": False,
                 "disable_reason": "; ".join(owner_failures),
                 "backend_stream_contract": verdict.backend_stream_contract,
+                "torch_stream_id": verdict.torch_stream_id,
             }
         return {
             "requested": True,
