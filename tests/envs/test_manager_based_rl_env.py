@@ -4125,3 +4125,63 @@ def test_deferred_validation_switch_propagates_to_backend_fused_boundary() -> No
 
     assert calls == [True]
     env.close()
+
+
+def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
+    """Step outputs match across eager/deferred modes for all mask widths."""
+    actions = torch.tensor([[0.25], [0.75]], dtype=torch.float32)
+    reset_masks = (
+        torch.zeros(2, dtype=torch.bool),
+        torch.tensor([False, True], dtype=torch.bool),
+        torch.ones(2, dtype=torch.bool),
+    )
+    references: dict[tuple[bool, int], dict[str, Any]] = {}
+
+    for deferred in (False, True):
+        for width_index, reset_mask in enumerate(reset_masks):
+            env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+            if deferred:
+                env.set_deferred_validation_boundaries(True)
+            env.reset()
+            env.step(actions)
+            before_rng = env.graph_rng_state
+            state = env.step(actions)
+            env.reset(reset_mask)
+            after_reset, _reset_info = env.reset(reset_mask)
+            after_state = env.step(torch.zeros_like(actions))
+            snapshot = {
+                "obs": {name: value.clone() for name, value in state.obs.items()},
+                "reward": state.reward.clone(),
+                "terminated": state.terminated.clone(),
+                "truncated": state.truncated.clone(),
+                "steps": state.info["steps"].clone(),
+                "reset_obs": {name: value.clone() for name, value in after_reset.items()},
+                "after_obs": {name: value.clone() for name, value in after_state.obs.items()},
+                "after_reward": after_state.reward.clone(),
+                "after_done": (after_state.terminated | after_state.truncated).clone(),
+                "rng_before": before_rng["state"].clone(),
+                "rng_after": env.graph_rng_state["state"].clone(),
+            }
+            key = (deferred, width_index)
+            if key in references:
+                continue
+            references[key] = snapshot
+            env.close()
+
+    for width_index in range(len(reset_masks)):
+        eager = references[(False, width_index)]
+        deferred = references[(True, width_index)]
+        for name in eager["obs"]:
+            torch.testing.assert_close(eager["obs"][name], deferred["obs"][name])
+        torch.testing.assert_close(eager["reward"], deferred["reward"])
+        torch.testing.assert_close(eager["terminated"], deferred["terminated"])
+        torch.testing.assert_close(eager["truncated"], deferred["truncated"])
+        torch.testing.assert_close(eager["steps"], deferred["steps"])
+        for name in eager["reset_obs"]:
+            torch.testing.assert_close(eager["reset_obs"][name], deferred["reset_obs"][name])
+        for name in eager["after_obs"]:
+            torch.testing.assert_close(eager["after_obs"][name], deferred["after_obs"][name])
+        torch.testing.assert_close(eager["after_reward"], deferred["after_reward"])
+        torch.testing.assert_close(eager["after_done"], deferred["after_done"])
+        torch.testing.assert_close(eager["rng_before"], deferred["rng_before"])
+        torch.testing.assert_close(eager["rng_after"], deferred["rng_after"])
