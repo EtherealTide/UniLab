@@ -197,12 +197,27 @@ def test_deferred_validation_profiling_requires_public_env_boundary() -> None:
 
 def test_deferred_validation_profiling_uses_public_env_boundary() -> None:
     calls: list[bool] = []
-    env = SimpleNamespace(set_deferred_validation_boundaries=calls.append)
+    env = SimpleNamespace(
+        set_deferred_validation_boundaries=calls.append,
+        deferred_validation_boundaries=True,
+    )
 
     bench._enable_deferred_validation_boundaries(env, True)
     bench._enable_deferred_validation_boundaries(env, False)
 
     assert calls == [True, False]
+
+
+def test_eager_default_does_not_invoke_env_boundary_again() -> None:
+    calls: list[bool] = []
+    env = SimpleNamespace(
+        set_deferred_validation_boundaries=calls.append,
+        deferred_validation_boundaries=False,
+    )
+
+    bench._enable_deferred_validation_boundaries(env, False)
+
+    assert calls == []
 
 
 def test_hardware_table_includes_cpu_and_memory_details() -> None:

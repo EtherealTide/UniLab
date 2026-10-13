@@ -551,6 +551,8 @@ def _enable_deferred_validation_boundaries(env: Any, enabled: bool) -> None:
         if enabled:
             raise TypeError("deferred validation profiling requires the public TorchEnv boundary")
         return
+    if not enabled and not getattr(env, "deferred_validation_boundaries", False):
+        return
     setter(enabled)
 
 
