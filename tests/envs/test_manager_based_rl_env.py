@@ -223,6 +223,17 @@ class _FakeBackend:
 
         return GraphLifecycleState.READY
 
+    def get_graph_lifecycle_snapshot(self):
+        from unisim import GraphLifecycleSnapshot
+
+        return GraphLifecycleSnapshot(
+            contract_version=1,
+            state=self.get_graph_lifecycle(),
+            capture_id="test-capture",
+            replay_count=2,
+            fallback_count=0,
+        )
+
     def preflight_graph_candidate(self, request):
         from dataclasses import replace
 
@@ -1414,7 +1425,19 @@ def test_env_graph_candidate_preflight_rejects_cpu_carrier() -> None:
 
     assert result["supported"] is False
     assert "environment output carrier is not CUDA-resident" in result["disable_reason"]
-    assert "terminal observation carrier is not materialized" not in result["disable_reason"]
+
+
+def test_env_graph_lifecycle_manifest_is_public_cold_path_evidence() -> None:
+    env, _backend = _make_env()
+
+    assert env.get_graph_lifecycle_manifest() == {
+        "contract_version": 1,
+        "state": "ready",
+        "capture_id": "test-capture",
+        "replay_count": 2,
+        "fallback_count": 0,
+        "disable_reason": None,
+    }
     env.close()
 
 

@@ -882,6 +882,7 @@ def _run_active_window_case(
                 critic=critic,
                 next_critic=next_critic,
                 terminal_next_critic=terminal_critic,
+                completion=state.info.get("graph_completion"),
             )
             ingress = replay_buffer.take_published_ingress()
             if ingress is None:

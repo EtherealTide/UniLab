@@ -1559,6 +1559,18 @@ class ManagerBasedRlEnv(TorchEnv):
             "graph_lifecycle": str(self._backend.get_graph_lifecycle().value),
         }
 
+    def get_graph_lifecycle_manifest(self) -> dict[str, Any]:
+        """Serialize public backend graph lifecycle evidence on a cold path."""
+        snapshot = self._backend.get_graph_lifecycle_snapshot()
+        return {
+            "contract_version": snapshot.contract_version,
+            "state": snapshot.state.value,
+            "capture_id": snapshot.capture_id,
+            "replay_count": snapshot.replay_count,
+            "fallback_count": snapshot.fallback_count,
+            "disable_reason": snapshot.disable_reason,
+        }
+
     def set_deferred_validation_boundaries(self, enabled: bool) -> None:
         """Propagate graph-candidate deferred validation to all owners."""
         if not isinstance(enabled, bool):
