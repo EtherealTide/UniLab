@@ -352,6 +352,28 @@ def test_deferred_validation_flags_fail_closed_at_completion() -> None:
     assert env._validation_flags()["action_finite"].item() is False
 
 
+def test_public_output_finite_verdict_reuses_persistent_carrier() -> None:
+    env = _StubTorchEnv()
+    env.init_state()
+    verdict = env._validation_flags()["state_finite"]
+
+    env.step(_actions(env))
+
+    assert verdict.data_ptr() == env._validation_flags()["state_finite"].data_ptr()
+    assert bool(verdict)
+
+    original_update = env.update_state
+
+    def bad_update(state: TorchEnvState) -> TorchEnvState:
+        result = original_update(state)
+        return result.replace(reward=torch.full_like(result.reward, torch.nan))
+
+    env.update_state = bad_update  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="reward contains NaN or Inf"):
+        env.step(_actions(env))
+    assert bool(env._validation_flags()["state_finite"]) is False
+
+
 def test_invalid_backend_control_fails_closed() -> None:
     class _BadControlEnv(_StubTorchEnv):
         def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:

@@ -371,20 +371,17 @@ class TorchEnv(ABEnv):
         steps = state.info.get("steps")
         self._validate_vector(steps, "info['steps']", torch.int64)
         self._validate_final_observation(state.final_observation)
-        # Different observation groups and reward are validated as one finite
-        # reduction on CPU/GPU owners alike. On a low-clock CUDA host this
-        # avoids separate stream synchronizations per public output carrier.
+        # Aggregate all public floating outputs into one persistent verdict.
+        # Structural checks above own dtype/shape/device validation; this path
+        # neither allocates a temporary concatenation nor synchronizes in
+        # deferred-validation mode.
         for value in state.obs.values():
             self._require_floating_float(value)
         self._require_floating_float(state.reward)
-        valid = torch.isfinite(
-            torch.cat(
-                tuple(value.reshape(value.shape[0], -1) for value in state.obs.values())
-                + (state.reward.reshape(state.reward.shape[0], -1),),
-                dim=1,
-            )
-        ).all()
-        self._state_finite_valid.copy_(valid)
+        valid = self._state_finite_valid
+        valid.fill_(True)
+        for value in (state.reward, *state.obs.values()):
+            torch.logical_and(valid, torch.isfinite(value).all(), out=valid)
         if self._defer_validation_at_boundaries:
             return
         if not bool(valid):
@@ -576,13 +573,10 @@ class TorchEnv(ABEnv):
             if value.device != self.device:
                 raise ValueError(f"TorchEnv mask reset obs[{name!r}] device must be {self.device}")
             self._require_floating_float(value)
-        valid = torch.isfinite(
-            torch.cat(
-                tuple(value.reshape(value.shape[0], -1) for value in obs.values()),
-                dim=1,
-            )
-        ).all()
-        self._reset_obs_finite_valid.copy_(valid)
+        valid = self._reset_obs_finite_valid
+        valid.fill_(True)
+        for value in obs.values():
+            torch.logical_and(valid, torch.isfinite(value).all(), out=valid)
         if self._defer_validation_at_boundaries:
             return
         if not bool(valid):
