@@ -1425,6 +1425,8 @@ def test_env_graph_candidate_preflight_rejects_cpu_carrier() -> None:
 
     assert result["supported"] is False
     assert "environment output carrier is not CUDA-resident" in result["disable_reason"]
+    assert "terminal observation carrier is not materialized" not in result["disable_reason"]
+    env.close()
 
 
 def test_env_graph_lifecycle_manifest_is_public_cold_path_evidence() -> None:
