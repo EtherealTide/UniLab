@@ -1385,9 +1385,8 @@ class MotionJointPositionAction(JointPositionAction):
         self._apply_affine(self._previous_raw_actions, self._processed_actions)
 
     def validate_actions(self) -> None:
-        """Validate the current latency-adjusted raw input."""
-        if not bool(torch.isfinite(self._raw_actions).all()):
-            raise ValueError(f"{type(self).__name__} received NaN or Inf actions")
+        """Publish the current latency-adjusted raw-input finite verdict."""
+        self.publish_validation_verdict()
 
     def reset(self, reset_mask: torch.Tensor) -> None:
         super().reset(reset_mask)

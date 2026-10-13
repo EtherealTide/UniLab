@@ -199,15 +199,13 @@ class BaseAction(ActionTerm):
             raise ValueError(
                 f"{type(self).__name__} expected device {self._device}, got {actions.device}"
             )
-        if not bool(torch.isfinite(actions).all()):
-            raise ValueError(f"{type(self).__name__} received NaN or Inf actions")
+        self._action_finite_valid.copy_(torch.isfinite(actions).all())
         self._raw_actions.copy_(actions)
         self._apply_affine(self._raw_actions, self._processed_actions)
 
     def validate_actions(self) -> None:
-        """Validate the manager-owned raw action, not its affine projection."""
-        if not bool(torch.isfinite(self._raw_actions).all()):
-            raise ValueError(f"{type(self).__name__} received NaN or Inf actions")
+        """Publish the manager-owned raw-action finite verdict."""
+        self.publish_validation_verdict()
 
     def _apply_affine(self, source: torch.Tensor, destination: torch.Tensor) -> None:
         destination.copy_(source)

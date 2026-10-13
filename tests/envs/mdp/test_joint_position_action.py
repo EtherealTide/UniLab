@@ -245,8 +245,9 @@ def test_non_finite_and_wrong_shape_actions_fail_before_control_write() -> None:
     action, control, _ = _action()
     with pytest.raises(ValueError, match="expected action shape"):
         action.process_actions(torch.zeros((2, 1), dtype=torch.float32))
+    action.process_actions(torch.full((2, 2), torch.nan, dtype=torch.float32))
     with pytest.raises(ValueError, match="NaN or Inf"):
-        action.process_actions(torch.full((2, 2), torch.nan, dtype=torch.float32))
+        action.publish_validation_verdict()
     np.testing.assert_array_equal(control, 0.0)
 
 

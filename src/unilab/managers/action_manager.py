@@ -68,6 +68,34 @@ class ActionTerm(ManagerTermBase):
         self.cfg = cfg
         super().__init__(env)
         self._entity = self._env.scene[self.cfg.entity_name]
+        self._action_finite_valid = torch.ones(
+            (), dtype=torch.bool, device=getattr(env, "device", torch.device("cpu"))
+        )
+        self._deferred_validation_boundaries = False
+
+    @property
+    def action_finite_valid(self) -> torch.Tensor:
+        """Latest aggregate action-slice finite verdict."""
+        return self._action_finite_valid
+
+    @property
+    def deferred_validation_boundaries(self) -> bool:
+        """Whether action finite verdict publication may defer."""
+        return self._deferred_validation_boundaries
+
+    def set_deferred_validation_boundaries(self, enabled: bool) -> None:
+        """Opt in to completion-boundary action verdict publication."""
+        if not isinstance(enabled, bool):
+            raise TypeError(
+                f"deferred action validation boundaries must be bool, got {type(enabled)}"
+            )
+        self._deferred_validation_boundaries = enabled
+
+    def publish_validation_verdict(self) -> None:
+        """Fail closed on the latest action-slice finite verdict."""
+        if bool(self._action_finite_valid):
+            return
+        raise ValueError(f"{type(self).__name__} received NaN or Inf actions")
 
     @property
     @abc.abstractmethod
@@ -172,6 +200,10 @@ class ActionManager(ManagerBase):
                 f"deferred action validation boundaries must be bool, got {type(enabled)}"
             )
         self._deferred_validation_boundaries = enabled
+        for term in self._terms.values():
+            setter = getattr(term, "set_deferred_validation_boundaries", None)
+            if callable(setter):
+                setter(enabled)
 
     def publish_validation_verdict(self) -> None:
         """Fail closed on the latest action-finite verdict."""
@@ -286,6 +318,12 @@ class ActionManager(ManagerBase):
                 validator = getattr(term, "validate_actions", None)
                 if callable(validator):
                     validator()
+                if self._deferred_validation_boundaries:
+                    torch.logical_and(
+                        self._action_finite_valid,
+                        term.action_finite_valid,
+                        out=self._action_finite_valid,
+                    )
             except (TypeError, ValueError, NotImplementedError) as exc:
                 raise type(exc)(f"ActionManager term '{name}': {exc}") from exc
             idx += term.action_dim
