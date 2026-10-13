@@ -267,6 +267,25 @@ def test_env_step_breakdown_table_keeps_subparts_separate() -> None:
     assert "0.000000" in table
 
 
+def test_result_records_replay_ingress_ordering_evidence() -> None:
+    result = _make_result(include_env_step_breakdown=True)
+    result.replay_ingress_diagnostics = {
+        "published_sequence": 4,
+        "release_sequence": 4,
+        "dropped_batches": 0,
+        "occupancy": 0,
+    }
+
+    payload = bench._result_to_dict(result)
+
+    assert payload["replay_ingress_diagnostics"] == {
+        "published_sequence": 4,
+        "release_sequence": 4,
+        "dropped_batches": 0,
+        "occupancy": 0,
+    }
+
+
 def test_cpu_util_pct_uses_system_time_delta() -> None:
     assert bench._cpu_util_pct((20.0, 100.0), (50.0, 200.0)) == pytest.approx(30.0)
 

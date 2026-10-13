@@ -388,6 +388,8 @@ class CollectorResult:
     )
     # Public TorchEnv validation-boundary mode selected before the active window.
     deferred_validation_boundaries: bool = False
+    # Public bounded-ingress ordering evidence collected after the active window.
+    replay_ingress_diagnostics: dict[str, int | float] = field(default_factory=dict)
 
 
 def _stats(samples_ms: list[float]) -> TimingStats:
@@ -952,6 +954,7 @@ def _run_active_window_case(
         for key, stat in phase_stats.items()
     }
 
+    replay_ingress_diagnostics = replay_buffer.ingress_diagnostics()
     del replay_buffer
     _cleanup()
     physics_stats = _stats(aux_samples["physics_ms"]) if aux_samples["physics_ms"] else None
@@ -984,6 +987,7 @@ def _run_active_window_case(
         ),
         backend_runtime_diagnostics=backend_runtime_diagnostics,
         deferred_validation_boundaries=deferred_validation_boundaries,
+        replay_ingress_diagnostics=replay_ingress_diagnostics,
     )
 
 
