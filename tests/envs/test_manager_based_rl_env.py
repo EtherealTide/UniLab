@@ -1356,6 +1356,24 @@ def test_step_publishes_backend_graph_completion_for_transition_consumers() -> N
     env.close()
 
 
+def test_graph_rng_snapshot_and_rollback_is_version_bounded() -> None:
+    env, _ = _make_env()
+    env.reset()
+    before = env.snapshot_graph_rng_state()
+    env.torch_rng.random((3,))
+    after = env.graph_rng_state
+
+    env.rollback_graph_rng_state(before)
+    rolled_back = env.graph_rng_state
+
+    assert after["draw_version"] > before[2]
+    assert rolled_back["draw_version"] > after["draw_version"]
+    torch.testing.assert_close(rolled_back["state"], before[0])
+    with pytest.raises(ValueError, match="backward"):
+        env.rollback_graph_rng_state((before[0], before[1] + 10, before[2] + 10))
+    env.close()
+
+
 def test_step_publishes_backend_reset_completion_for_terminal_boundaries() -> None:
     env, backend = _make_env()
     env.reset()

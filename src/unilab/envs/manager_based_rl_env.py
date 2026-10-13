@@ -1443,6 +1443,24 @@ class ManagerBasedRlEnv(TorchEnv):
             "state": self.torch_rng.get_state(),
         }
 
+    def snapshot_graph_rng_state(self) -> tuple[torch.Tensor, int, int]:
+        """Capture the deterministic RNG state and versions for graph replay."""
+        return (
+            self.torch_rng.get_state().clone(),
+            self.torch_rng.state_version,
+            self.torch_rng.draw_version,
+        )
+
+    def rollback_graph_rng_state(self, snapshot: tuple[torch.Tensor, int, int]) -> None:
+        """Restore a failed graph boundary without silently advancing draws."""
+        state, state_version, draw_version = snapshot
+        if state.device.type != "cpu":
+            raise ValueError("graph RNG rollback state must be a CPU Torch tensor")
+        restored = self.graph_rng_state
+        if restored["state_version"] < state_version or restored["draw_version"] < draw_version:
+            raise ValueError("cannot roll graph RNG state backward")
+        self.torch_rng.set_state(state)
+
     def preflight_graph_candidate(self, requested: bool = True) -> dict[str, Any]:
         """Run the public backend preflight without mutating graph state."""
         request = (
