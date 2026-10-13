@@ -4139,7 +4139,7 @@ def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
 
     for deferred in (False, True):
         for width_index, reset_mask in enumerate(reset_masks):
-            env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+            env, _backend = _make_env(_make_cfg())
             if deferred:
                 env.set_deferred_validation_boundaries(True)
             env.reset()
@@ -4152,9 +4152,14 @@ def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
             snapshot = {
                 "obs": {name: value.clone() for name, value in state.obs.items()},
                 "reward": state.reward.clone(),
+                "reward_components": state.info.get("reward_components").clone(),
                 "terminated": state.terminated.clone(),
                 "truncated": state.truncated.clone(),
                 "steps": state.info["steps"].clone(),
+                "action": env.action_manager.action.clone(),
+                "command": env.command_manager.get_term("target").command.clone(),
+                "trace": list(env.trace),
+                "reward_means": env._reward_log_means.clone(),
                 "reset_obs": {name: value.clone() for name, value in after_reset.items()},
                 "after_obs": {name: value.clone() for name, value in after_state.obs.items()},
                 "after_reward": after_state.reward.clone(),
@@ -4174,9 +4179,14 @@ def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
         for name in eager["obs"]:
             torch.testing.assert_close(eager["obs"][name], deferred["obs"][name])
         torch.testing.assert_close(eager["reward"], deferred["reward"])
+        torch.testing.assert_close(eager["reward_components"], deferred["reward_components"])
         torch.testing.assert_close(eager["terminated"], deferred["terminated"])
         torch.testing.assert_close(eager["truncated"], deferred["truncated"])
         torch.testing.assert_close(eager["steps"], deferred["steps"])
+        torch.testing.assert_close(eager["action"], deferred["action"])
+        torch.testing.assert_close(eager["command"], deferred["command"])
+        assert eager["trace"] == deferred["trace"]
+        torch.testing.assert_close(eager["reward_means"], deferred["reward_means"])
         for name in eager["reset_obs"]:
             torch.testing.assert_close(eager["reset_obs"][name], deferred["reset_obs"][name])
         for name in eager["after_obs"]:
