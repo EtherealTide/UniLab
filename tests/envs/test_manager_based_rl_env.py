@@ -1454,27 +1454,29 @@ def test_deferred_validation_boundaries_fail_closed_without_backend_capability()
 
 
 def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
+    pytest.importorskip(
+        "torch.cuda",
+        reason="public graph-candidate preflight requires a CUDA-resident output carrier",
+    )
+    if not torch.cuda.is_available():
+        pytest.skip("public graph-candidate preflight requires an available CUDA device")
     env, _backend = _make_env(_make_cfg(include_optional_managers=False), torch_stream_id=17)
 
     env.init_state()
     env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
-    if torch.cuda.is_available():
-        object.__setattr__(env, "_device", torch.device("cuda", index=torch.cuda.current_device()))
-        env._final_observation_scratch = {
-            name: value.to(device=env.device)
-            for name, value in env._final_observation_scratch.items()
-        }
-        env._public_obs = {
-            name: value.to(device=env.device) for name, value in env._public_obs.items()
-        }
-        env._public_reward = env._public_reward.to(device=env.device)
-        env._public_terminated = env._public_terminated.to(device=env.device)
-        env._public_truncated = env._public_truncated.to(device=env.device)
-        env._torch_rng_owner = TorchManagerRng(
-            device=env.device, generator=torch.Generator(device=env.device)
-        ).manual_seed(7)
-        env.torch_rng = env._torch_rng_owner
-        env._torch_generator = env._torch_rng_owner.generator
+    object.__setattr__(env, "_device", torch.device("cuda", index=torch.cuda.current_device()))
+    env._final_observation_scratch = {
+        name: value.to(device=env.device) for name, value in env._final_observation_scratch.items()
+    }
+    env._public_obs = {name: value.to(device=env.device) for name, value in env._public_obs.items()}
+    env._public_reward = env._public_reward.to(device=env.device)
+    env._public_terminated = env._public_terminated.to(device=env.device)
+    env._public_truncated = env._public_truncated.to(device=env.device)
+    env._torch_rng_owner = TorchManagerRng(
+        device=env.device, generator=torch.Generator(device=env.device)
+    ).manual_seed(7)
+    env.torch_rng = env._torch_rng_owner
+    env._torch_generator = env._torch_rng_owner.generator
     supported = env.preflight_graph_candidate(requested=True)
     unrequested = env.preflight_graph_candidate(requested=False)
 
@@ -1640,21 +1642,19 @@ def test_graph_rng_state_snapshot_is_versioned_and_restoreable() -> None:
 
 
 def test_graph_preflight_rejects_mismatched_rng_device() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("mismatched graph RNG device coverage requires moving carriers to CUDA")
     env, _backend = _make_env()
     env.init_state()
     env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
-    if torch.cuda.is_available():
-        object.__setattr__(env, "_device", torch.device("cuda", index=torch.cuda.current_device()))
-        env._final_observation_scratch = {
-            name: value.to(device=env.device)
-            for name, value in env._final_observation_scratch.items()
-        }
-        env._public_obs = {
-            name: value.to(device=env.device) for name, value in env._public_obs.items()
-        }
-        env._public_reward = env._public_reward.to(device=env.device)
-        env._public_terminated = env._public_terminated.to(device=env.device)
-        env._public_truncated = env._public_truncated.to(device=env.device)
+    object.__setattr__(env, "_device", torch.device("cuda", index=torch.cuda.current_device()))
+    env._final_observation_scratch = {
+        name: value.to(device=env.device) for name, value in env._final_observation_scratch.items()
+    }
+    env._public_obs = {name: value.to(device=env.device) for name, value in env._public_obs.items()}
+    env._public_reward = env._public_reward.to(device=env.device)
+    env._public_terminated = env._public_terminated.to(device=env.device)
+    env._public_truncated = env._public_truncated.to(device=env.device)
 
     result = env.preflight_graph_candidate(requested=True)
 
