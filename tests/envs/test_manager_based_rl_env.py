@@ -3996,3 +3996,20 @@ def test_graph_preflight_rejects_manual_reset_mode() -> None:
     assert result["supported"] is False
     assert "manual reset guard has no graph boundary" in result["disable_reason"]
     env.close()
+
+
+def test_reward_log_publication_is_interval_boundary_only() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env.reset()
+    env.step(torch.tensor([[0.25], [0.75]], dtype=torch.float32))
+
+    assert env._reward_log_names == ("track",)
+    assert isinstance(env._reward_log_means, torch.Tensor)
+    assert env._reward_log_means.shape == (1,)
+    assert "reward/track" not in env.state.info["log"]
+
+    published = env.publish_reward_log()
+
+    assert published["reward/track"] == pytest.approx(0.5)
+    assert "reward/track" not in env.state.info["log"]
+    env.close()
