@@ -1570,6 +1570,9 @@ class ManagerBasedRlEnv(TorchEnv):
                 "deferred validation boundaries require the backend "
                 "deferred_fused_validation tensor capability"
             )
+        setter = getattr(self._backend, "set_defer_torch_fused_validation", None)
+        if callable(setter):
+            setter(enabled)
         diagnostics = self._backend.get_tensor_runtime_diagnostics()
         diagnostic = diagnostics.get("deferred_fused_validation")
         if diagnostic is None or not diagnostic.enabled:
@@ -1577,9 +1580,6 @@ class ManagerBasedRlEnv(TorchEnv):
                 "deferred validation boundaries require a backend declaring the "
                 "deferred_fused_validation runtime optimization"
             )
-        setter = getattr(self._backend, "set_defer_torch_fused_validation", None)
-        if callable(setter):
-            setter(enabled)
 
     def publish_validation_verdicts(self) -> None:
         """Publish env, reward, and fused reset verdicts at one boundary."""

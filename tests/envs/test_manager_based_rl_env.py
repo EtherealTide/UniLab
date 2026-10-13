@@ -4127,6 +4127,25 @@ def test_deferred_validation_switch_propagates_to_backend_fused_boundary() -> No
     env.close()
 
 
+def test_deferred_validation_switch_activates_backend_before_preflight() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    calls: list[bool] = []
+    diagnostics = env._backend.get_tensor_runtime_diagnostics
+
+    def record_and_report(enabled: bool) -> None:
+        calls.append(enabled)
+        # Enabling must make the runtime diagnostic observable before preflight.
+        if enabled:
+            assert diagnostics()["deferred_fused_validation"].enabled is True
+
+    env._backend.set_defer_torch_fused_validation = record_and_report  # type: ignore[method-assign]
+    env.set_deferred_validation_boundaries(True)
+    env.set_deferred_validation_boundaries(False)
+
+    assert calls == [True, False]
+    env.close()
+
+
 def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
     """Step outputs match across eager/deferred modes for all mask widths."""
     actions = torch.tensor([[0.25], [0.75]], dtype=torch.float32)
