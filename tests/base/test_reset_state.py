@@ -588,6 +588,29 @@ def test_owner_tensor_subset_without_actual_rows_does_not_commit() -> None:
     assert not transaction.last_commit_had_writes
 
 
+def test_owner_tensor_subset_empty_motion_write_does_not_commit() -> None:
+    backend = _TensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+
+    with transaction.scoped_device_owner_tensor(torch.ones(4, dtype=torch.bool)):
+        transaction.write_motion_state_tensor(
+            torch.zeros(4, dtype=torch.bool),
+            BackendRootStateLayout(tuple(range(7)), tuple(range(6))),
+            np.array([7], dtype=np.int32),
+            np.array([6], dtype=np.int32),
+            torch.tensor((0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)).repeat(
+                4, 1
+            ),
+            torch.zeros((4, 1)),
+            torch.zeros((4, 1)),
+            term_name="empty_motion_owner",
+        )
+
+    assert backend.tensor_reset_calls == []
+    assert not transaction.last_commit_had_writes
+
+
 def test_owner_tensor_subset_default_reset_commits_only_requested_rows() -> None:
     backend = _TensorResetBackend()
     transaction = _transaction(backend)

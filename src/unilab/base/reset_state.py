@@ -1513,6 +1513,13 @@ class ResetStateTransaction:
             layout, term_name=term_name
         )
         transaction = self._require_packed_transaction()
+        if self._tensor_owner_subset:
+            # An owner-subset motion write publishes only its requested rows.
+            # With no requested rows it remains a full-width dispatch side
+            # effect (RNG/packet/carrier work) and must not claim a backend
+            # state commit.
+            self._mask_count.copy_(effective_mask.sum())
+            return
         transaction.write_state_mask(
             effective_mask,
             qpos_columns=root_qpos_columns,
