@@ -315,15 +315,16 @@ class ActionManager(ManagerBase):
             term_actions = action[:, idx : idx + term.action_dim]
             try:
                 term.process_actions(term_actions)
-                validator = getattr(term, "validate_actions", None)
-                if callable(validator):
-                    validator()
                 if self._deferred_validation_boundaries:
                     torch.logical_and(
                         self._action_finite_valid,
                         term.action_finite_valid,
                         out=self._action_finite_valid,
                     )
+                else:
+                    validator = getattr(term, "validate_actions", None)
+                    if callable(validator):
+                        validator()
             except (TypeError, ValueError, NotImplementedError) as exc:
                 raise type(exc)(f"ActionManager term '{name}': {exc}") from exc
             idx += term.action_dim

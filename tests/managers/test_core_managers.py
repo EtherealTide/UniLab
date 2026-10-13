@@ -166,6 +166,26 @@ class FailingActionCfg(DummyActionCfg):
         return FailingAction(self, env)
 
 
+class DeferredVerdictAction(DummyAction):
+    def __init__(self, cfg: DeferredVerdictActionCfg, env: FakeEnv):
+        super().__init__(cfg, env)
+        self.publish_calls = 0
+
+    def process_actions(self, actions: torch.Tensor) -> None:
+        self._action_finite_valid.copy_(torch.isfinite(actions).all())
+        self._raw.copy_(actions)
+
+    def validate_actions(self) -> None:
+        self.publish_calls += 1
+        self.publish_validation_verdict()
+
+
+@dataclass(kw_only=True)
+class DeferredVerdictActionCfg(DummyActionCfg):
+    def build(self, env: FakeEnv) -> DeferredVerdictAction:
+        return DeferredVerdictAction(self, env)
+
+
 def test_action_term_errors_include_manager_and_term_context(fake_env: FakeEnv) -> None:
     manager = ActionManager(
         {"broken": FailingActionCfg(entity_name="robot", dim=1)},
@@ -558,4 +578,27 @@ def test_deferred_action_validation_fails_closed_at_boundary(fake_env: FakeEnv) 
     assert accepted is None
     assert manager.action_finite_valid.item() is False
     with pytest.raises(ValueError, match="action containing NaN or Inf"):
+        manager.publish_validation_verdict()
+
+
+def test_deferred_action_term_pack_skips_eager_publication(fake_env: FakeEnv) -> None:
+    manager = ActionManager(
+        {
+            "first": DeferredVerdictActionCfg(entity_name="robot", dim=1),
+            "second": DeferredVerdictActionCfg(entity_name="robot", dim=1),
+        },
+        fake_env,
+    )
+    manager.set_deferred_validation_boundaries(True)
+
+    invalid = torch.ones((fake_env.num_envs, 2), dtype=torch.float32)
+    invalid[0, 0] = torch.nan
+    manager.process_action(invalid)
+
+    first = manager.get_term("first")
+    second = manager.get_term("second")
+    assert first.publish_calls == 0
+    assert second.publish_calls == 0
+    assert manager.action_finite_valid.item() is False
+    with pytest.raises(ValueError, match="ActionManager received an action containing NaN"):
         manager.publish_validation_verdict()
