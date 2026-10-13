@@ -4058,3 +4058,13 @@ def test_deferred_action_owner_publication_reports_manager_verdict() -> None:
     with pytest.raises(ValueError, match="ActionManager received an action containing NaN"):
         env.publish_validation_verdicts()
     env.close()
+
+
+def test_manager_validation_pack_uses_action_manager_verdict() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env.init_state()
+    env._action_finite_valid.fill_(True)
+    env.action_manager._action_finite_valid.fill_(False)
+
+    assert env._validation_flags()["action_finite"] is env.action_manager.action_finite_valid
+    env.close()

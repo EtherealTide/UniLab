@@ -1592,6 +1592,12 @@ class ManagerBasedRlEnv(TorchEnv):
         if self.reward_manager.step_reward_names:
             state.info["reward_components"] = self.reward_manager.step_rewards
 
+    def _validation_flags(self) -> dict[str, torch.Tensor]:
+        """Replace the base action verdict with the ActionManager aggregate."""
+        flags = super()._validation_flags()
+        flags["action_finite"] = self.action_manager.action_finite_valid
+        return flags
+
     def _refresh_tensor_reads_after_mutation(self) -> None:
         """Repack scene tensor reads after an in-phase simulation mutation."""
         read_plan = self.scene._tensor_read_plan
