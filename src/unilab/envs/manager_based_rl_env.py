@@ -1532,6 +1532,7 @@ class ManagerBasedRlEnv(TorchEnv):
             "supported": True,
             "disable_reason": None,
             "backend_stream_contract": verdict.backend_stream_contract,
+            "torch_stream_id": verdict.torch_stream_id,
             "carrier_layout": {
                 "num_envs": self.num_envs,
                 "device": str(self.device),

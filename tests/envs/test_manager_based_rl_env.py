@@ -71,12 +71,14 @@ class _FakeBackend:
         reject_pre_step: bool = False,
         reject_materialize: bool = False,
         packed_reset: bool = True,
+        torch_stream_id: int | None = None,
     ) -> None:
         self.num_envs = num_envs
         self.num_actuators = 1
         self.reject_pre_step = reject_pre_step
         self.reject_materialize = reject_materialize
         self.packed_reset = packed_reset
+        self.torch_stream_id = torch_stream_id
         self.pre_step_control = None
         self.applied_controls: list[np.ndarray] = []
         self.tensor_controls: list[torch.Tensor] = []
@@ -225,6 +227,7 @@ class _FakeBackend:
                 backend_stream_contract="test",
                 supported=True,
                 disable_reason=None,
+                torch_stream_id=self.torch_stream_id,
             )
         return replace(
             request,
@@ -1244,11 +1247,13 @@ def _make_env(
     num_envs: int = 2,
     reject_pre_step: bool = False,
     reject_materialize: bool = False,
+    torch_stream_id: int | None = None,
 ) -> tuple[_TestEnv, _FakeBackend]:
     backend = _FakeBackend(
         num_envs,
         reject_pre_step=reject_pre_step,
         reject_materialize=reject_materialize,
+        torch_stream_id=torch_stream_id,
     )
     env = _TestEnv(
         cfg or _make_cfg(),
@@ -1338,7 +1343,7 @@ def test_deferred_validation_boundaries_fail_closed_without_backend_capability()
 
 
 def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
-    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False), torch_stream_id=17)
 
     env.init_state()
     env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
@@ -1367,6 +1372,7 @@ def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
         "supported": True,
         "disable_reason": None,
         "backend_stream_contract": "test",
+        "torch_stream_id": 17,
         "carrier_layout": {
             "num_envs": 2,
             "device": str(env.device),
