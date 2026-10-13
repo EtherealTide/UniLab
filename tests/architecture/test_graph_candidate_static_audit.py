@@ -168,11 +168,15 @@ def find_violations() -> list[Violation]:
                     continue
                 name = _call_name(child)
                 expression = _source(child)
+                # Calls that write into an explicitly supplied output carrier
+                # do not allocate a result even when the operation name also
+                # has an allocating overload.
+                has_output_carrier = any(keyword.arg == "out" for keyword in child.keywords)
                 if name in FORBIDDEN_DIRECT_CALLS:
                     kind = "dynamic-or-host-call"
                 elif name in FORBIDDEN_ATTRIBUTE_CALLS:
                     kind = "host-transfer"
-                elif name in FORBIDDEN_ALLOCATION_CALLS:
+                elif name in FORBIDDEN_ALLOCATION_CALLS and not has_output_carrier:
                     kind = "capture-time-allocation"
                 elif name == "clone":
                     kind = "temporary-allocation"
@@ -193,23 +197,10 @@ def find_violations() -> list[Violation]:
     return violations
 
 
-def test_graph_candidate_static_audit_has_only_declared_remaining_blockers() -> None:
+def test_graph_candidate_static_audit_is_zero() -> None:
     violations = find_violations()
     actual = {(str(item.path), item.line, item.kind, item.expression) for item in violations}
-    expected = {
-        (
-            "src/unilab/managers/observation_manager.py",
-            559,
-            "temporary-allocation",
-            "cast('torch.Tensor', obs).clone()",
-        ),
-        (
-            "src/unilab/managers/observation_manager.py",
-            632,
-            "capture-time-allocation",
-            "torch.cat(tensors, dim=self._group_obs_concatenate_dim[group_name])",
-        ),
-    }
+    expected: set[tuple[str, int, str, str]] = set()
     assert actual == expected, (
         "Graph candidate static audit changed:\n"
         f"unexpected={sorted(actual - expected)}\n"
@@ -226,4 +217,3 @@ def test_static_audit_scope_remains_explicit_and_nonempty() -> None:
 
 def test_static_audit_out_of_capture_classifications_are_explicit() -> None:
     assert OUT_OF_CAPTURE_VIOLATIONS
-    assert find_violations(), "remaining candidate blockers must not disappear silently"

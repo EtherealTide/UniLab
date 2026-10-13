@@ -173,6 +173,10 @@ class ObservationManager(ManagerBase):
         super().__init__(env=env)
 
         self._group_obs_dim: dict[str, tuple[int, ...] | list[tuple[int, ...]]] = dict()
+        self._group_output_carriers: dict[str, list[torch.Tensor]] = dict()
+        self._group_output_generation: dict[str, int] = dict()
+        self._group_term_transform_carriers: dict[tuple[str, str], list[torch.Tensor]] = dict()
+        self._group_term_transform_generation: dict[tuple[str, str], int] = dict()
 
         for group_name, group_term_dims in self._group_obs_term_dim.items():
             if self._group_obs_concatenate[group_name]:
@@ -181,6 +185,14 @@ class ObservationManager(ManagerBase):
                     concatenate_dim=self._group_obs_concatenate_dim[group_name],
                 )
                 self._group_obs_dim[group_name] = term_dims
+                self._group_output_carriers[group_name] = [
+                    torch.empty(
+                        (self.num_envs, *term_dims),
+                        dtype=torch.float32,
+                        device=self._device,
+                    )
+                    for _ in range(2)
+                ]
             else:
                 self._group_obs_dim[group_name] = group_term_dims
 
@@ -555,8 +567,19 @@ class ObservationManager(ManagerBase):
             ):
                 # Concatenation and temporal buffers already copy their inputs.
                 # Only take a defensive copy when this pipeline may mutate the
-                # term or expose it directly to callers.
-                obs = cast("torch.Tensor", obs).clone()
+                # term or expose it directly to callers. The transform carrier
+                # rotates between two persistent allocations so callers retain
+                # the previous result while no copy occurs on every step.
+                group_carriers = self._group_term_transform_carriers.setdefault(
+                    (group_name, term_name), []
+                )
+                if not group_carriers:
+                    group_carriers.extend(torch.empty_like(tensor) for _ in range(2))
+                generation = self._group_term_transform_generation.get((group_name, term_name), 0)
+                transform = group_carriers[generation % len(group_carriers)]
+                self._group_term_transform_generation[(group_name, term_name)] = generation + 1
+                transform.copy_(tensor)
+                obs = transform
             if term_cfg.clip:
                 tensor_obs_value = cast("torch.Tensor", obs)
                 torch.clamp(
@@ -629,9 +652,14 @@ class ObservationManager(ManagerBase):
                 # preserve its exact dtype/device without a defensive copy.
                 result = tensors[0]
             else:
-                result = torch.cat(
+                generation = self._group_output_generation.get(group_name, 0)
+                carriers = self._group_output_carriers[group_name]
+                result = carriers[generation % len(carriers)]
+                self._group_output_generation[group_name] = generation + 1
+                torch.cat(
                     tensors,
                     dim=self._group_obs_concatenate_dim[group_name],
+                    out=result,
                 )
             if defer_error_nan_check:
                 finite = torch.isfinite(result)
