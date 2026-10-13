@@ -386,6 +386,8 @@ class CollectorResult:
     backend_runtime_diagnostics: dict[str, dict[str, bool | str | None]] = field(
         default_factory=dict
     )
+    # Public TorchEnv validation-boundary mode selected before the active window.
+    deferred_validation_boundaries: bool = False
 
 
 def _stats(samples_ms: list[float]) -> TimingStats:
@@ -540,6 +542,16 @@ def _backend_runtime_diagnostics(env: Any) -> dict[str, dict[str, bool | str | N
         }
         for name, diagnostic in diagnostics().items()
     }
+
+
+def _enable_deferred_validation_boundaries(env: Any, enabled: bool) -> None:
+    """Select the public env validation boundary without backend duplication."""
+    setter = getattr(env, "set_deferred_validation_boundaries", None)
+    if not callable(setter):
+        if enabled:
+            raise TypeError("deferred validation profiling requires the public TorchEnv boundary")
+        return
+    setter(enabled)
 
 
 def _runtime_sim_backend(sim: str) -> str:
@@ -738,6 +750,7 @@ def _run_active_window_case(
     measure_steps: int,
     profile_numpy_random: bool = False,
     tail_steps: int = DEFAULT_TAIL_STEPS,
+    deferred_validation_boundaries: bool = False,
 ) -> CollectorResult:
     from uni_rl.ipc.replay_buffer import ReplayBuffer
     from uni_rl.utils.observations import split_obs_dict
@@ -753,6 +766,7 @@ def _run_active_window_case(
     )
 
     env_device = env.device
+    _enable_deferred_validation_boundaries(env, deferred_validation_boundaries)
     backend_runtime_diagnostics = _backend_runtime_diagnostics(env)
     actions = torch.zeros((case.num_envs, case.action_dim), dtype=torch.float32, device=env_device)
     state = env.step(actions)
@@ -966,6 +980,7 @@ def _run_active_window_case(
             _stats(numpy_random_call_samples) if numpy_random_call_samples else None
         ),
         backend_runtime_diagnostics=backend_runtime_diagnostics,
+        deferred_validation_boundaries=deferred_validation_boundaries,
     )
 
 
@@ -980,6 +995,7 @@ def _build_and_run_case(
     extra_overrides: list[str],
     variant: str = "default",
     profile_numpy_random: bool = False,
+    deferred_validation_boundaries: bool = False,
 ) -> CollectorResult:
     from unilab.base.config_adapter import BackendAdapter
     from unilab.training import ensure_registries
@@ -1032,6 +1048,7 @@ def _build_and_run_case(
             measure_steps=measure_steps,
             profile_numpy_random=profile_numpy_random,
             tail_steps=tail_steps,
+            deferred_validation_boundaries=deferred_validation_boundaries,
         )
     finally:
         if env is not None:
@@ -2030,6 +2047,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--deferred-validation-boundaries",
+        action="store_true",
+        help=(
+            "Enable the public TorchEnv completion-boundary validation mode used "
+            "for graph-candidate profiling. Structural checks remain eager."
+        ),
+    )
+    parser.add_argument(
         "--variants",
         default=None,
         help=(
@@ -2114,6 +2139,9 @@ def main() -> int:
                             extra_overrides=[*args.override, *variant_extra_overrides],
                             variant=variant,
                             profile_numpy_random=bool(args.profile_numpy_random),
+                            deferred_validation_boundaries=bool(
+                                args.deferred_validation_boundaries
+                            ),
                         )
                     ]
                     results.extend(case_results)
@@ -2150,6 +2178,7 @@ def main() -> int:
             "variant_override": args.variant_override,
             "repeat_variant_blocks": args.repeat_variant_blocks,
             "profile_numpy_random": args.profile_numpy_random,
+            "deferred_validation_boundaries": args.deferred_validation_boundaries,
         },
         "results": [_result_to_dict(result) for result in results],
         "errors": errors,

@@ -174,6 +174,37 @@ def test_parse_args_accepts_backend_and_all_backend_modes() -> None:
     assert all_args.all_backends
 
 
+def test_parse_args_defaults_to_eager_validation_boundaries() -> None:
+    args = bench.parse_args([])
+
+    assert args.deferred_validation_boundaries is False
+
+
+def test_parse_args_accepts_deferred_validation_boundaries() -> None:
+    args = bench.parse_args(["--deferred-validation-boundaries"])
+
+    assert args.deferred_validation_boundaries is True
+
+
+def test_deferred_validation_profiling_requires_public_env_boundary() -> None:
+    env = SimpleNamespace()
+
+    bench._enable_deferred_validation_boundaries(env, False)
+
+    with pytest.raises(TypeError, match="public TorchEnv boundary"):
+        bench._enable_deferred_validation_boundaries(env, True)
+
+
+def test_deferred_validation_profiling_uses_public_env_boundary() -> None:
+    calls: list[bool] = []
+    env = SimpleNamespace(set_deferred_validation_boundaries=calls.append)
+
+    bench._enable_deferred_validation_boundaries(env, True)
+    bench._enable_deferred_validation_boundaries(env, False)
+
+    assert calls == [True, False]
+
+
 def test_hardware_table_includes_cpu_and_memory_details() -> None:
     table = bench._format_hardware_table(
         {
@@ -490,6 +521,7 @@ def test_variant_blocks_alternate_labels_without_extending_measurement(monkeypat
         extra_overrides,
         variant,
         profile_numpy_random,
+        deferred_validation_boundaries,
     ):
         order.append(variant)
         result = _make_result(
