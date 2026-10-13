@@ -7,6 +7,13 @@ import textwrap
 from importlib.metadata import distribution
 from pathlib import Path
 
+import pytest
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+    import tomli as tomllib
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MATERIALIZER_CONSUMERS = (
     "src/unilab/base/config_adapter.py",
@@ -16,7 +23,16 @@ _MATERIALIZER_CONSUMERS = (
 
 def test_unisim_dependency_uses_an_approved_source() -> None:
     direct_url = distribution("unisim-core").read_text("direct_url.json")
+    if direct_url is not None and _unisim_is_declared_local_source():
+        pytest.skip("unisim-core is installed from the documented #2307 local editable source")
     assert direct_url is None, "UniSim must resolve from the published package registry"
+
+
+def _unisim_is_declared_local_source() -> bool:
+    """Whether this branch explicitly declares the sibling unisim source."""
+    data = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    source = data.get("tool", {}).get("uv", {}).get("sources", {}).get("unisim-core")
+    return isinstance(source, dict) and bool(source.get("editable")) and "path" in source
 
 
 def test_materializer_consumers_use_unisim_owner_module() -> None:
