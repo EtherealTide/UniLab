@@ -4166,6 +4166,12 @@ def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
                 "after_done": (after_state.terminated | after_state.truncated).clone(),
                 "rng_before": before_rng["state"].clone(),
                 "rng_after": env.graph_rng_state["state"].clone(),
+                "final_obs": (
+                    {name: value.clone() for name, value in after_state.final_observation.items()}
+                    if after_state.final_observation is not None
+                    else None
+                ),
+                "curriculum": env.curriculum_manager.reset(reset_mask),
             }
             key = (deferred, width_index)
             if key in references:
@@ -4195,3 +4201,8 @@ def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
         torch.testing.assert_close(eager["after_done"], deferred["after_done"])
         torch.testing.assert_close(eager["rng_before"], deferred["rng_before"])
         torch.testing.assert_close(eager["rng_after"], deferred["rng_after"])
+        assert (eager["final_obs"] is None) == (deferred["final_obs"] is None)
+        if eager["final_obs"] is not None and deferred["final_obs"] is not None:
+            for name in eager["final_obs"]:
+                torch.testing.assert_close(eager["final_obs"][name], deferred["final_obs"][name])
+        assert eager["curriculum"] == deferred["curriculum"]
