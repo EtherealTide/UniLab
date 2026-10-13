@@ -590,6 +590,7 @@ class MotionCommand(CommandTerm):
         )
         self._command = torch.empty((self.num_envs, num_joints * 2), device=self._device)
         self._body_pos_w = torch.empty((self.num_envs, num_bodies, 3), device=self._device)
+        self._body_pos_packet_scratch = torch.empty_like(self._body_pos_w)
         self.body_pos_relative_w = torch.empty_like(self._body_pos_w)
         self.body_quat_relative_w = torch.empty((self.num_envs, num_bodies, 4), device=self._device)
         self.motion_anchor_pos_b = torch.empty((self.num_envs, 3), device=self._device)
@@ -1261,15 +1262,23 @@ class MotionCommand(CommandTerm):
             out=cast(torch.Tensor, scratch.body_quat_w),
         )
         self._motion_data, self._motion_packet_scratch = scratch, self._motion_data
-        self._body_pos_w.copy_(
-            torch.where(
-                reset_mask[:, None, None],
-                packet[:, vel_end:body_end].view(self.num_envs, num_bodies, 3)
-                + self._env_origins[:, None, :],
-                self._body_pos_w,
-            )
+        torch.add(
+            packet[:, vel_end:body_end].view(self.num_envs, num_bodies, 3),
+            self._env_origins[:, None, :],
+            out=self._body_pos_packet_scratch,
         )
-        self._command.copy_(torch.where(reset_mask[:, None], packet[:, :vel_end], self._command))
+        torch.where(
+            reset_mask[:, None, None],
+            self._body_pos_packet_scratch,
+            self._body_pos_w,
+            out=self._body_pos_w,
+        )
+        torch.where(
+            reset_mask[:, None],
+            packet[:, :vel_end],
+            self._command,
+            out=self._command,
+        )
 
     def _refresh_relative_state_torch(self) -> None:
         _bind_compiled_motion_relative_state()(

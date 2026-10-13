@@ -1015,6 +1015,7 @@ def test_motion_packet_ingest_swaps_two_persistent_carriers() -> None:
         body_ang_vel_w=torch.empty_like(command._motion_data.body_ang_vel_w),
     )
     command._body_pos_w = torch.full((3, 2, 3), -1.0)
+    command._body_pos_packet_scratch = torch.empty_like(command._body_pos_w)
     command._command = torch.full((3, 4), -2.0)
     command._env_origins = torch.zeros((3, 3))
     command._env = SimpleNamespace(num_envs=3)
@@ -1045,5 +1046,6 @@ def test_motion_packet_ingest_swaps_two_persistent_carriers() -> None:
     assert command._motion_data.body_ang_vel_w[1].eq(11.0).all()
     assert command._body_pos_w[1].eq(8.0).all()
     assert command._body_pos_w[[0, 2]].eq(-1.0).all()
+    assert command._body_pos_packet_scratch[1].eq(8.0).all()
     assert command._command[1].eq(7.0).all()
     assert command._command[[0, 2]].eq(-2.0).all()
