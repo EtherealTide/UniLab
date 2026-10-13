@@ -4177,6 +4177,11 @@ def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
                 "metric_episode_sums": {
                     name: value.clone() for name, value in env.metrics_manager._episode_sums.items()
                 },
+                "backend_state": (
+                    _backend.qpos.clone(),
+                    _backend.qvel.clone(),
+                ),
+                "backend_reset_rows": [entry[0].clone() for entry in _backend.set_state_calls],
             }
             key = (deferred, width_index)
             if key in references:
@@ -4218,3 +4223,8 @@ def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
                 eager["metric_episode_sums"][name],
                 deferred["metric_episode_sums"][name],
             )
+        torch.testing.assert_close(eager["backend_state"][0], deferred["backend_state"][0])
+        torch.testing.assert_close(eager["backend_state"][1], deferred["backend_state"][1])
+        assert len(eager["backend_reset_rows"]) == len(deferred["backend_reset_rows"])
+        for left, right in zip(eager["backend_reset_rows"], deferred["backend_reset_rows"]):
+            torch.testing.assert_close(left, right)
