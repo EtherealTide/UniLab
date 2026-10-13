@@ -174,6 +174,52 @@ def test_parse_args_accepts_backend_and_all_backend_modes() -> None:
     assert all_args.all_backends
 
 
+def test_parse_args_defaults_to_eager_validation_boundaries() -> None:
+    args = bench.parse_args([])
+
+    assert args.deferred_validation_boundaries is False
+
+
+def test_parse_args_accepts_deferred_validation_boundaries() -> None:
+    args = bench.parse_args(["--deferred-validation-boundaries"])
+
+    assert args.deferred_validation_boundaries is True
+
+
+def test_deferred_validation_profiling_requires_public_env_boundary() -> None:
+    env = SimpleNamespace()
+
+    bench._enable_deferred_validation_boundaries(env, False)
+
+    with pytest.raises(TypeError, match="public TorchEnv boundary"):
+        bench._enable_deferred_validation_boundaries(env, True)
+
+
+def test_deferred_validation_profiling_uses_public_env_boundary() -> None:
+    calls: list[bool] = []
+    env = SimpleNamespace(
+        set_deferred_validation_boundaries=calls.append,
+        deferred_validation_boundaries=True,
+    )
+
+    bench._enable_deferred_validation_boundaries(env, True)
+    bench._enable_deferred_validation_boundaries(env, False)
+
+    assert calls == [True, False]
+
+
+def test_eager_default_does_not_invoke_env_boundary_again() -> None:
+    calls: list[bool] = []
+    env = SimpleNamespace(
+        set_deferred_validation_boundaries=calls.append,
+        deferred_validation_boundaries=False,
+    )
+
+    bench._enable_deferred_validation_boundaries(env, False)
+
+    assert calls == []
+
+
 def test_hardware_table_includes_cpu_and_memory_details() -> None:
     table = bench._format_hardware_table(
         {
@@ -219,6 +265,25 @@ def test_env_step_breakdown_table_keeps_subparts_separate() -> None:
     assert "0.750 (75.0%, 15.0%)" in table
     assert "0.250 (25.0%, 5.0%)" in table
     assert "0.000000" in table
+
+
+def test_result_records_replay_ingress_ordering_evidence() -> None:
+    result = _make_result(include_env_step_breakdown=True)
+    result.replay_ingress_diagnostics = {
+        "published_sequence": 4,
+        "release_sequence": 4,
+        "dropped_batches": 0,
+        "occupancy": 0,
+    }
+
+    payload = bench._result_to_dict(result)
+
+    assert payload["replay_ingress_diagnostics"] == {
+        "published_sequence": 4,
+        "release_sequence": 4,
+        "dropped_batches": 0,
+        "occupancy": 0,
+    }
 
 
 def test_cpu_util_pct_uses_system_time_delta() -> None:
@@ -490,6 +555,7 @@ def test_variant_blocks_alternate_labels_without_extending_measurement(monkeypat
         extra_overrides,
         variant,
         profile_numpy_random,
+        deferred_validation_boundaries,
     ):
         order.append(variant)
         result = _make_result(

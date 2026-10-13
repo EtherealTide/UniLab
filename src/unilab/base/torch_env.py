@@ -95,6 +95,11 @@ class TorchEnv(ABEnv):
         self._state: Optional[TorchEnvState] = None
         self._truncated_scratch = torch.zeros((num_envs,), dtype=torch.bool, device=self._device)
         self._final_observation_scratch: dict[str, torch.Tensor] | None = None
+        self._action_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
+        self._control_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
+        self._state_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
+        self._reset_obs_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
+        self._reset_done_count = torch.zeros((), dtype=torch.int64, device=self._device)
         self._tensor_runtime_bound = False
         self._last_initial_episode_steps: torch.Tensor | None = None
         self.step_counter = 0
@@ -103,6 +108,7 @@ class TorchEnv(ABEnv):
         self._autoreset_scattered_reset_obs = False
         self._rgb_array_renderer_ready = False
         self._nan_guard: "TensorNanGuard | None" = None
+        self._defer_validation_at_boundaries = False
 
     @property
     def device(self) -> torch.device:
@@ -208,6 +214,7 @@ class TorchEnv(ABEnv):
         cpu_started = _cpu_time()
         phase = time.perf_counter()
         self._validate_action_contract(actions)
+        self._record_action_finite(actions)
         action_validate_ms = (time.perf_counter() - phase) * 1000.0
         self._bind_tensor_runtime()
         if self._state is None:
@@ -227,14 +234,24 @@ class TorchEnv(ABEnv):
         apply_action_ms = (time.perf_counter() - phase) * 1000.0
         apply_action_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
 
-        self._state.truncated.fill_(False)
-        self._clear_step_final_observation()
-
         phase = time.perf_counter()
         phase_cpu = _cpu_time()
-        backend_result = self._backend.step_tensor(ctrl, self._cfg.sim_substeps)
+        try:
+            backend_result = self._backend.step_tensor(ctrl, self._cfg.sim_substeps)
+        except BaseException:
+            # Do not expose the previous transition's completion receipt as if
+            # this failed replay had published a new transition.
+            self._state.info.pop("graph_completion", None)
+            raise
         step_core_ms = (time.perf_counter() - phase) * 1000.0
         step_core_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
+
+        # Transition publication starts only after the backend completion
+        # boundary succeeds. A failed replay therefore leaves the previous
+        # public final observation and truncation carrier untouched for RNG
+        # rollback and explicit eager fallback.
+        self._state.truncated.fill_(False)
+        self._clear_step_final_observation()
 
         phase = time.perf_counter()
         phase_cpu = _cpu_time()
@@ -249,6 +266,8 @@ class TorchEnv(ABEnv):
                     nan_ids, self._resolve_nan_guard_model_file(), self.step_counter
                 )
         self._validate_state(self._state)
+        if self._defer_validation_at_boundaries:
+            self.publish_validation_verdicts()
         update_state_ms = (time.perf_counter() - phase) * 1000.0
         update_state_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
 
@@ -259,7 +278,7 @@ class TorchEnv(ABEnv):
 
         phase = time.perf_counter()
         phase_cpu = _cpu_time()
-        did_reset = self._autoreset and bool((self._state.terminated | self._state.truncated).any())
+        did_reset = self._autoreset
         if did_reset:
             self._reset_done_envs()
         reset_done_ms = (time.perf_counter() - phase) * 1000.0
@@ -289,11 +308,18 @@ class TorchEnv(ABEnv):
         if isinstance(backend_result, dict):
             for key, value in backend_result.get("timing", {}).items():
                 timing[f"backend_{key}"] = value
+            completion = backend_result.get("graph_completion")
+            if completion is not None:
+                self._state.info["graph_completion"] = completion
         return self._state
 
     def _validate_action(self, actions: torch.Tensor) -> None:
         self._validate_action_contract(actions)
-        if not bool(torch.isfinite(actions).all()):
+        self._record_action_finite(actions)
+        valid = self._action_finite_valid
+        if self._defer_validation_at_boundaries:
+            return
+        if not bool(valid):
             raise ValueError("TorchEnv action contains NaN or Inf")
 
     def _validate_action_contract(self, actions: torch.Tensor) -> None:
@@ -328,7 +354,11 @@ class TorchEnv(ABEnv):
             raise ValueError("TorchEnv control must be contiguous")
         if ctrl.device != self.device:
             raise ValueError(f"TorchEnv control device must be {self.device}, got {ctrl.device}")
-        if not bool(torch.isfinite(ctrl).all()):
+        valid = torch.isfinite(ctrl).all()
+        self._control_finite_valid.copy_(valid)
+        if self._defer_validation_at_boundaries:
+            return
+        if not bool(valid):
             raise ValueError("TorchEnv control contains NaN or Inf")
 
     def _validate_state(self, state: TorchEnvState) -> None:
@@ -353,21 +383,20 @@ class TorchEnv(ABEnv):
         steps = state.info.get("steps")
         self._validate_vector(steps, "info['steps']", torch.int64)
         self._validate_final_observation(state.final_observation)
-        # Different observation groups and reward are validated as one finite
-        # reduction on CPU/GPU owners alike. On a low-clock CUDA host this
-        # avoids separate stream synchronizations per public output carrier.
+        # Aggregate all public floating outputs into one persistent verdict.
+        # Structural checks above own dtype/shape/device validation; this path
+        # neither allocates a temporary concatenation nor synchronizes in
+        # deferred-validation mode.
         for value in state.obs.values():
             self._require_floating_float(value)
         self._require_floating_float(state.reward)
-        if not bool(
-            torch.isfinite(
-                torch.cat(
-                    tuple(value.reshape(value.shape[0], -1) for value in state.obs.values())
-                    + (state.reward.reshape(state.reward.shape[0], -1),),
-                    dim=1,
-                )
-            ).all()
-        ):
+        valid = self._state_finite_valid
+        valid.fill_(True)
+        for value in (state.reward, *state.obs.values()):
+            torch.logical_and(valid, torch.isfinite(value).all(), out=valid)
+        if self._defer_validation_at_boundaries:
+            return
+        if not bool(valid):
             for label, value in (
                 *((f"obs[{name!r}]", value) for name, value in state.obs.items()),
                 ("reward", state.reward),
@@ -380,6 +409,55 @@ class TorchEnv(ABEnv):
             raise TypeError(f"TorchEnvState {label} must be floating-point")
         if not bool(torch.isfinite(value).all()):
             raise ValueError(f"TorchEnvState {label} contains NaN or Inf")
+
+    def _record_action_finite(self, actions: torch.Tensor) -> None:
+        """Record the public action finite verdict on its persistent carrier."""
+        self._action_finite_valid.copy_(torch.isfinite(actions).all())
+
+    def _validation_flags(self) -> dict[str, torch.Tensor]:
+        """Return persistent device-resident verdicts for interval publication.
+
+        These flags are diagnostic carriers, not authorization to skip the
+        fail-closed checks above. They retain the latest aggregate result for a
+        completion boundary without allocating a new scalar per validation.
+        """
+        return {
+            "action_finite": self._action_finite_valid,
+            "control_finite": self._control_finite_valid,
+            "state_finite": self._state_finite_valid,
+            "reset_obs_finite": self._reset_obs_finite_valid,
+        }
+
+    def publish_validation_verdicts(self) -> None:
+        """Fail closed on persistent finite verdicts at a completion boundary."""
+        flags = self._validation_flags()
+        failed = [name for name, verdict in flags.items() if not bool(verdict)]
+        if failed:
+            labels = {
+                "action_finite": "TorchEnv action contains NaN or Inf",
+                "control_finite": "TorchEnv control contains NaN or Inf",
+                "state_finite": "TorchEnvState contains NaN or Inf",
+                "reset_obs_finite": "TorchEnv mask reset obs contains NaN or Inf",
+            }
+            messages = [labels[name] for name in failed if name in labels]
+            raise ValueError("; ".join(messages))
+
+    @property
+    def deferred_validation_boundaries(self) -> bool:
+        """Whether eager finite verdicts may defer to step/reset completion."""
+        return self._defer_validation_at_boundaries
+
+    def set_deferred_validation_boundaries(self, enabled: bool) -> None:
+        """Select completion-boundary publication for graph-candidate runs.
+
+        When enabled, eager structural checks remain synchronous, while finite
+        verdicts stay on their persistent device carriers until an explicit
+        completion boundary publishes them. This is an opt-in integration-only
+        contract and does not sanitize invalid values.
+        """
+        if not isinstance(enabled, bool):
+            raise TypeError(f"deferred validation boundaries must be bool, got {type(enabled)}")
+        self._defer_validation_at_boundaries = enabled
 
     def _require_floating_float(self, value: torch.Tensor) -> None:
         if not value.is_floating_point():
@@ -432,19 +510,17 @@ class TorchEnv(ABEnv):
     def _reset_done_envs(self) -> None:
         """Run the fixed-shape mask-driven autoreset lifecycle.
 
-        The remaining scalar ``any()`` gate is a correctness/telemetry boundary,
-        not reset-row discovery; no reset env-id row carrier is materialized.
+        The empty-mask path is fixed-width. Backends and managers own the mask
+        semantics; no reset env-id row carrier is materialized.
         """
         assert self._state is not None
         reset_total_started = time.perf_counter()
         detail_timing = {key: 0.0 for key in RESET_DONE_DETAIL_TIMING_KEYS}
         done = self._state.terminated | self._state.truncated
-        if not bool(done.any()):
-            self._clear_reset_done_detail_timing(self._state.info.setdefault("timing", {}))
-            return
+        self._reset_done_count.copy_(done.sum())
 
         terminal_started = time.perf_counter()
-        detail_timing["reset_done_count"] = float(done.sum().item())
+        detail_timing["reset_done_count"] = float(self._reset_done_count)
         self._state.info["steps"].masked_fill_(done, 0)
         final_observation = self._ensure_final_observation_scratch()
         for name, values in self._state.obs.items():
@@ -513,14 +589,13 @@ class TorchEnv(ABEnv):
             if value.device != self.device:
                 raise ValueError(f"TorchEnv mask reset obs[{name!r}] device must be {self.device}")
             self._require_floating_float(value)
-        if not bool(
-            torch.isfinite(
-                torch.cat(
-                    tuple(value.reshape(value.shape[0], -1) for value in obs.values()),
-                    dim=1,
-                )
-            ).all()
-        ):
+        valid = self._reset_obs_finite_valid
+        valid.fill_(True)
+        for value in obs.values():
+            torch.logical_and(valid, torch.isfinite(value).all(), out=valid)
+        if self._defer_validation_at_boundaries:
+            return
+        if not bool(valid):
             for name, value in obs.items():
                 if not bool(torch.isfinite(value).all()):
                     raise ValueError(f"TorchEnv mask reset obs[{name!r}] contains NaN or Inf")

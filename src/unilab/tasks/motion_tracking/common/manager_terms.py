@@ -580,8 +580,17 @@ class MotionCommand(CommandTerm):
             body_lin_vel_w=torch.empty((self.num_envs, num_bodies, 3), device=self._device),
             body_ang_vel_w=torch.empty((self.num_envs, num_bodies, 3), device=self._device),
         )
+        self._motion_packet_scratch = MotionData(
+            joint_pos=torch.empty_like(self._motion_data.joint_pos),
+            joint_vel=torch.empty_like(self._motion_data.joint_vel),
+            body_pos_w=torch.empty_like(self._motion_data.body_pos_w),
+            body_quat_w=torch.empty_like(self._motion_data.body_quat_w),
+            body_lin_vel_w=torch.empty_like(self._motion_data.body_lin_vel_w),
+            body_ang_vel_w=torch.empty_like(self._motion_data.body_ang_vel_w),
+        )
         self._command = torch.empty((self.num_envs, num_joints * 2), device=self._device)
         self._body_pos_w = torch.empty((self.num_envs, num_bodies, 3), device=self._device)
+        self._body_pos_packet_scratch = torch.empty_like(self._body_pos_w)
         self.body_pos_relative_w = torch.empty_like(self._body_pos_w)
         self.body_quat_relative_w = torch.empty((self.num_envs, num_bodies, 4), device=self._device)
         self.motion_anchor_pos_b = torch.empty((self.num_envs, 3), device=self._device)
@@ -617,6 +626,9 @@ class MotionCommand(CommandTerm):
         self._reset_root_state = torch.empty(
             (self.num_envs, 13), dtype=torch.float32, device=self._device
         )
+        self._reset_packet_velocity = torch.empty_like(self._reset_joint_values)
+        self._reset_joint_values_scratch = torch.empty_like(self._reset_joint_values)
+        self._reset_root_state_scratch = torch.empty_like(self._reset_root_state)
         self._bind_read_phase = False
         self._tensor_all_rows = torch.arange(self.num_envs, dtype=torch.int64, device=self._device)
         self._tensor_all_reset_mask = torch.ones(
@@ -955,10 +967,6 @@ class MotionCommand(CommandTerm):
 
     def _resample_command(self, reset_mask: torch.Tensor) -> None:
         """Full-width motion sampling and masked state publication."""
-        if not bool(reset_mask.any()):
-            # No selected rows: skip sampling entirely so reset diagnostics only
-            # count real sampler dispatches (issue #2285 lifecycle contract).
-            return
         sampler_started = time.perf_counter()
         frames = self.tensor_sampler.sample_frames(reset_mask, self._env.torch_rng.generator)
         packet = self._motion_packet(frames)
@@ -983,11 +991,12 @@ class MotionCommand(CommandTerm):
         )
         joint_start, joint_end = offsets["joint_pos"]
         vel_start, vel_end = offsets["joint_vel"]
-        joint_pos = self._reset_joint_values.clone()
-        root_state = self._reset_root_state.clone()
+        self._reset_packet_velocity.copy_(packet[:, vel_start:vel_end])
+        joint_pos = self._reset_joint_values_scratch
+        root_state = self._reset_root_state_scratch
         _bind_compiled_motion_reset_values()(
             packet[:, joint_start:joint_end],
-            packet[:, vel_start:vel_end].contiguous(),
+            self._reset_packet_velocity,
             packet[:, offsets["body_pos_w"][0] : offsets["body_pos_w"][1]].view(
                 self.num_envs, *tails["body_pos_w"]
             ),
@@ -1011,7 +1020,7 @@ class MotionCommand(CommandTerm):
         self.robot.write_motion_state_tensor_to_sim(
             root_state=root_state,
             position=joint_pos,
-            velocity=packet[:, vel_start:vel_end].contiguous(),
+            velocity=self._reset_packet_velocity,
             reset_mask=reset_mask,
         )
         self._ingest_motion_packet_mask(reset_mask, packet)
@@ -1207,12 +1216,7 @@ class MotionCommand(CommandTerm):
 
     def _ingest_motion_packet_mask(self, reset_mask: torch.Tensor, packet: torch.Tensor) -> None:
         """Merge a full-width motion packet into only selected rows."""
-        joint_pos = cast(torch.Tensor, self._motion_data.joint_pos)
-        joint_vel = cast(torch.Tensor, self._motion_data.joint_vel)
-        body_pos = cast(torch.Tensor, self._motion_data.body_pos_w)
-        body_quat = cast(torch.Tensor, self._motion_data.body_quat_w)
-        body_lin_vel = cast(torch.Tensor, self._motion_data.body_lin_vel_w)
-        body_ang_vel = cast(torch.Tensor, self._motion_data.body_ang_vel_w)
+        scratch = self._motion_packet_scratch
         num_bodies = len(self.cfg.body_names)
         num_joints = self.motion.num_joints
         joint_end = num_joints
@@ -1221,41 +1225,60 @@ class MotionCommand(CommandTerm):
         quat_end = body_end + num_bodies * 4
         lin_end = quat_end + num_bodies * 3
         ang_end = lin_end + num_bodies * 3
-        self._motion_data.joint_pos = torch.where(
-            reset_mask[:, None], packet[:, :joint_end], joint_pos
+        torch.where(
+            reset_mask[:, None],
+            packet[:, :joint_end],
+            cast(torch.Tensor, self._motion_data.joint_pos),
+            out=cast(torch.Tensor, scratch.joint_pos),
         )
-        self._motion_data.joint_vel = torch.where(
-            reset_mask[:, None], packet[:, joint_end:vel_end], joint_vel
+        torch.where(
+            reset_mask[:, None],
+            packet[:, joint_end:vel_end],
+            cast(torch.Tensor, self._motion_data.joint_vel),
+            out=cast(torch.Tensor, scratch.joint_vel),
         )
-        self._motion_data.body_pos_w = torch.where(
-            reset_mask[:, None, None],
-            packet[:, vel_end:body_end].view(self.num_envs, num_bodies, 3),
-            body_pos,
-        )
-        self._motion_data.body_quat_w = torch.where(
-            reset_mask[:, None, None],
-            packet[:, body_end:quat_end].view(self.num_envs, num_bodies, 4),
-            body_quat,
-        )
-        self._motion_data.body_lin_vel_w = torch.where(
+        torch.where(
             reset_mask[:, None, None],
             packet[:, quat_end:lin_end].view(self.num_envs, num_bodies, 3),
-            body_lin_vel,
+            cast(torch.Tensor, self._motion_data.body_lin_vel_w),
+            out=cast(torch.Tensor, scratch.body_lin_vel_w),
         )
-        self._motion_data.body_ang_vel_w = torch.where(
+        torch.where(
             reset_mask[:, None, None],
             packet[:, lin_end:ang_end].view(self.num_envs, num_bodies, 3),
-            body_ang_vel,
+            cast(torch.Tensor, self._motion_data.body_ang_vel_w),
+            out=cast(torch.Tensor, scratch.body_ang_vel_w),
         )
-        self._body_pos_w.copy_(
-            torch.where(
-                reset_mask[:, None, None],
-                packet[:, vel_end:body_end].view(self.num_envs, num_bodies, 3)
-                + self._env_origins[:, None, :],
-                self._body_pos_w,
-            )
+        torch.where(
+            reset_mask[:, None, None],
+            packet[:, vel_end:body_end].view(self.num_envs, num_bodies, 3),
+            cast(torch.Tensor, self._motion_data.body_pos_w),
+            out=cast(torch.Tensor, scratch.body_pos_w),
         )
-        self._command.copy_(torch.where(reset_mask[:, None], packet[:, :vel_end], self._command))
+        torch.where(
+            reset_mask[:, None, None],
+            packet[:, body_end:quat_end].view(self.num_envs, num_bodies, 4),
+            cast(torch.Tensor, self._motion_data.body_quat_w),
+            out=cast(torch.Tensor, scratch.body_quat_w),
+        )
+        self._motion_data, self._motion_packet_scratch = scratch, self._motion_data
+        torch.add(
+            packet[:, vel_end:body_end].view(self.num_envs, num_bodies, 3),
+            self._env_origins[:, None, :],
+            out=self._body_pos_packet_scratch,
+        )
+        torch.where(
+            reset_mask[:, None, None],
+            self._body_pos_packet_scratch,
+            self._body_pos_w,
+            out=self._body_pos_w,
+        )
+        torch.where(
+            reset_mask[:, None],
+            packet[:, :vel_end],
+            self._command,
+            out=self._command,
+        )
 
     def _refresh_relative_state_torch(self) -> None:
         _bind_compiled_motion_relative_state()(
@@ -1362,9 +1385,8 @@ class MotionJointPositionAction(JointPositionAction):
         self._apply_affine(self._previous_raw_actions, self._processed_actions)
 
     def validate_actions(self) -> None:
-        """Validate the current latency-adjusted raw input."""
-        if not bool(torch.isfinite(self._raw_actions).all()):
-            raise ValueError(f"{type(self).__name__} received NaN or Inf actions")
+        """Publish the current latency-adjusted raw-input finite verdict."""
+        self.publish_validation_verdict()
 
     def reset(self, reset_mask: torch.Tensor) -> None:
         super().reset(reset_mask)

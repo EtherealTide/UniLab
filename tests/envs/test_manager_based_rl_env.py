@@ -19,6 +19,7 @@ from unisim.backend.base import (
     TensorIOSpec,
     TensorLifecycleCapabilities,
     TensorProcessTopology,
+    TensorRuntimeDiagnostic,
     TrackedBodyStateViews,
 )
 from unisim.dr.types import DomainRandomizationCapabilities
@@ -70,12 +71,14 @@ class _FakeBackend:
         reject_pre_step: bool = False,
         reject_materialize: bool = False,
         packed_reset: bool = True,
+        torch_stream_id: int | None = None,
     ) -> None:
         self.num_envs = num_envs
         self.num_actuators = 1
         self.reject_pre_step = reject_pre_step
         self.reject_materialize = reject_materialize
         self.packed_reset = packed_reset
+        self.torch_stream_id = torch_stream_id
         self.pre_step_control = None
         self.applied_controls: list[np.ndarray] = []
         self.tensor_controls: list[torch.Tensor] = []
@@ -85,6 +88,10 @@ class _FakeBackend:
         self.lifecycle: list[str] = []
         self.sensors: dict[str, torch.Tensor] = {}
         self.set_state_calls: list[tuple[Any, Any, Any]] = []
+        self.graph_completions: list[Any] = []
+        self.fail_next_step_tensor = False
+        self.graph_invalidations: list[str] = []
+        self.graph_fallback_count = 0
         self.qpos = torch.zeros((num_envs, 4), dtype=torch.float32)
         self.qvel = torch.zeros((num_envs, 3), dtype=torch.float32)
 
@@ -192,6 +199,7 @@ class _FakeBackend:
             data_plane=(
                 TensorDataPlane.DIRECT if self.packed_reset else TensorDataPlane.HOST_BRIDGE
             ),
+            deferred_fused_validation=self.packed_reset,
             stream_event_ownership="test",
             torch_devices=("cpu",),
             reset_randomization=True,
@@ -202,6 +210,80 @@ class _FakeBackend:
 
         return TorchPackedResetComposer(self, device=device)
 
+    def get_tensor_runtime_diagnostics(self):
+        return {
+            "deferred_fused_validation": TensorRuntimeDiagnostic(
+                requested=True,
+                enabled=True,
+                disable_reason=None,
+            )
+        }
+
+    def publish_torch_fused_validation(self) -> None:
+        return None
+
+    def get_graph_lifecycle(self):
+        from unisim import GraphLifecycleState
+
+        if getattr(self, "lifecycle_state", None) is not None:
+            return self.lifecycle_state
+        return GraphLifecycleState.READY
+
+    def get_graph_lifecycle_snapshot(self):
+        from unisim import GraphLifecycleSnapshot
+
+        return GraphLifecycleSnapshot(
+            contract_version=1,
+            state=self.get_graph_lifecycle(),
+            capture_id="test-capture",
+            replay_count=len(self.graph_completions) or 2,
+            fallback_count=self.graph_fallback_count,
+        )
+
+    def invalidate_graph(self, reason):
+        from unisim import GraphLifecycleSnapshot, GraphLifecycleState
+
+        if reason not in {
+            "model",
+            "data",
+            "view",
+            "capacity",
+            "policy_io",
+            "stream_event",
+            "capture_failed",
+        }:
+            raise ValueError(f"unsupported graph invalidation reason {reason!r}")
+        self.graph_invalidations.append(reason)
+        self.graph_fallback_count += 1
+        self.lifecycle_state = GraphLifecycleState.INVALIDATED
+        self.graph_disable_reason = f"graph invalidated: {reason}"
+        return GraphLifecycleSnapshot(
+            contract_version=1,
+            state=self.lifecycle_state,
+            capture_id=None,
+            replay_count=len(self.graph_completions),
+            fallback_count=self.graph_fallback_count,
+            disable_reason=self.graph_disable_reason,
+        )
+
+    def preflight_graph_candidate(self, request):
+        from dataclasses import replace
+
+        if request.requested:
+            return replace(
+                request,
+                backend_stream_contract="test",
+                supported=True,
+                disable_reason=None,
+                torch_stream_id=self.torch_stream_id,
+            )
+        return replace(
+            request,
+            backend_stream_contract="test",
+            supported=False,
+            disable_reason="graph candidate was not requested",
+        )
+
     def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> None:
         self.set_state_calls.append(
             (
@@ -210,6 +292,29 @@ class _FakeBackend:
                 qvel.detach().clone(),
             )
         )
+
+    def set_state_tensor_mask(self, reset_mask, qpos, qvel, randomization=None, **_kwargs):
+        rows = torch.nonzero(reset_mask, as_tuple=False).flatten()
+        self.set_state_tensor(
+            rows, qpos.index_select(0, rows), qvel.index_select(0, rows), randomization
+        )
+        if randomization is not None:
+            full_width = {
+                name: value for name, value in vars(randomization).items() if value is not None
+            }
+            self.randomization_calls[-1] = type(randomization)(
+                **{
+                    name: (
+                        torch.where(
+                            reset_mask.reshape((-1,) + (1,) * (value.ndim - 1)),
+                            value,
+                            value,
+                        ).index_select(0, rows)
+                    )
+                    for name, value in full_width.items()
+                }
+            )
+        return {"timing": {}, "graph_completion": self.record_graph_completion("mask_reset")}
 
     def get_public_state_widths(self):
         from unisim.backend.base import PublicStateWidths
@@ -233,8 +338,29 @@ class _FakeBackend:
             ) from exc
 
     def step_tensor(self, ctrl: torch.Tensor, nsteps: int = 1) -> None:
+        if self.fail_next_step_tensor:
+            self.fail_next_step_tensor = False
+            raise RuntimeError("simulated graph replay failed before publication")
         self.tensor_controls.append(ctrl.detach().clone())
         self.step(ctrl.detach().cpu().numpy(), nsteps)
+        return {"timing": {}, "graph_completion": self.record_graph_completion("step")}
+
+    def _graph_completion(self, operation: str):
+        from unisim import GraphCompletionToken, GraphLifecycleState
+
+        return GraphCompletionToken(
+            contract_version=1,
+            lifecycle_state=GraphLifecycleState.READY,
+            operation=operation,
+            sequence=len(self.set_state_calls) + len(self.tensor_controls),
+            stream_id=self.torch_stream_id or 0,
+            capture_id="test-capture",
+        )
+
+    def record_graph_completion(self, operation: str):
+        completion = self._graph_completion(operation)
+        self.graph_completions.append(completion)
+        return completion
 
     def step(self, ctrl: np.ndarray, nsteps: int = 1) -> None:
         assert self.materialize_calls == 1
@@ -762,6 +888,7 @@ class _Command(CommandTerm):
     def __init__(self, cfg: _CommandCfg, env) -> None:
         super().__init__(cfg, env)
         self._command = torch.zeros((self.num_envs, 1), dtype=torch.float32)
+        self.reset_masks: list[torch.Tensor] = []
 
     @property
     def command(self) -> torch.Tensor:
@@ -773,6 +900,7 @@ class _Command(CommandTerm):
     def _resample_command(self, reset_mask: torch.Tensor) -> None:
         rng = self._env.torch_rng
         assert rng is not None
+        self.reset_masks.append(reset_mask.clone())
         samples = rng.uniform(0.0, 1.0, self._command.shape, dtype=torch.float32)
         self._command.copy_(torch.where(reset_mask[:, None], samples, self._command))
 
@@ -1189,11 +1317,13 @@ def _make_env(
     num_envs: int = 2,
     reject_pre_step: bool = False,
     reject_materialize: bool = False,
+    torch_stream_id: int | None = None,
 ) -> tuple[_TestEnv, _FakeBackend]:
     backend = _FakeBackend(
         num_envs,
         reject_pre_step=reject_pre_step,
         reject_materialize=reject_materialize,
+        torch_stream_id=torch_stream_id,
     )
     env = _TestEnv(
         cfg or _make_cfg(),
@@ -1238,6 +1368,314 @@ def test_training_progress_restore_survives_next_step_and_rejects_invalid_state(
         with pytest.raises(ValueError):
             env.import_training_state(invalid)
         assert env.step_counter == env.common_step_counter == 701
+    env.close()
+
+
+def test_step_publishes_fixed_width_reward_components_for_tensor_collectors() -> None:
+    env, _backend = _make_env()
+    env.reset()
+    state = env.step(torch.tensor([[0.25], [0.75]], dtype=torch.float32))
+
+    assert env.algo_capabilities.reward_component_names == ("track",)
+    assert "reward_components" in state.info
+    assert "reward/track" not in state.info["log"]
+    torch.testing.assert_close(
+        state.info["reward_components"],
+        torch.tensor([[0.25], [0.75]], dtype=torch.float32),
+    )
+    env.close()
+
+
+def test_step_publishes_backend_graph_completion_for_transition_consumers() -> None:
+    env, _backend = _make_env()
+    env.reset()
+    state = env.step(torch.tensor([[0.25], [0.75]], dtype=torch.float32))
+
+    assert state.info["graph_completion"].operation == "step"
+    env.close()
+
+
+def test_graph_rng_snapshot_and_rollback_is_version_bounded() -> None:
+    env, _ = _make_env()
+    env.reset()
+    before = env.snapshot_graph_rng_state()
+    env.torch_rng.random((3,))
+    after = env.graph_rng_state
+
+    env.rollback_graph_rng_state(before)
+    rolled_back = env.graph_rng_state
+
+    assert after["draw_version"] > before[2]
+    assert rolled_back["draw_version"] > after["draw_version"]
+    torch.testing.assert_close(rolled_back["state"], before[0])
+    with pytest.raises(ValueError, match="backward"):
+        env.rollback_graph_rng_state((before[0], before[1] + 10, before[2] + 10))
+    env.close()
+
+
+def test_step_publishes_backend_reset_completion_for_terminal_boundaries() -> None:
+    env, backend = _make_env()
+    env.reset()
+
+    completion = backend.set_state_tensor_mask(
+        torch.tensor([False, True]), backend.qpos, backend.qvel
+    )["graph_completion"]
+    assert completion.operation == "mask_reset"
+    assert env.last_reset_completion is None
+    env.close()
+
+
+def test_deferred_validation_boundaries_propagate_to_owner_verdicts() -> None:
+    env, _backend = _make_env()
+    env.set_deferred_validation_boundaries(True)
+
+    assert env.deferred_validation_boundaries is True
+    assert env.action_manager.deferred_validation_boundaries is True
+    assert env.reward_manager.deferred_validation_boundaries is True
+    assert env._reset_state.deferred_payload_validation is True
+    assert env._reset_state.deferred_mask_validation is True
+
+    env.reward_manager._finite_valid.fill_(False)
+    env.action_manager._action_finite_valid.fill_(True)
+    with pytest.raises(ValueError, match="RewardManager returned a non-finite reward"):
+        env.publish_validation_verdicts()
+    env.close()
+
+
+def test_deferred_validation_boundaries_fail_closed_without_backend_capability() -> None:
+    env, _backend = _make_env()
+    env._backend.packed_reset = False
+    env._backend.get_tensor_runtime_diagnostics = lambda: {}
+
+    with pytest.raises(NotImplementedError, match="deferred_fused_validation tensor capability"):
+        env.set_deferred_validation_boundaries(True)
+    assert env.deferred_validation_boundaries is True
+    env.close()
+
+
+def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
+    pytest.importorskip(
+        "torch.cuda",
+        reason="public graph-candidate preflight requires a CUDA-resident output carrier",
+    )
+    if not torch.cuda.is_available():
+        pytest.skip("public graph-candidate preflight requires an available CUDA device")
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False), torch_stream_id=17)
+
+    env.init_state()
+    env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+    object.__setattr__(env, "_device", torch.device("cuda", index=torch.cuda.current_device()))
+    env._final_observation_scratch = {
+        name: value.to(device=env.device) for name, value in env._final_observation_scratch.items()
+    }
+    env._public_obs = {name: value.to(device=env.device) for name, value in env._public_obs.items()}
+    env._public_reward = env._public_reward.to(device=env.device)
+    env._public_terminated = env._public_terminated.to(device=env.device)
+    env._public_truncated = env._public_truncated.to(device=env.device)
+    env._torch_rng_owner = TorchManagerRng(
+        device=env.device, generator=torch.Generator(device=env.device)
+    ).manual_seed(7)
+    env.torch_rng = env._torch_rng_owner
+    env._torch_generator = env._torch_rng_owner.generator
+    supported = env.preflight_graph_candidate(requested=True)
+    unrequested = env.preflight_graph_candidate(requested=False)
+
+    assert supported == {
+        "requested": True,
+        "supported": True,
+        "disable_reason": None,
+        "backend_stream_contract": "test",
+        "torch_stream_id": 17,
+        "carrier_layout": {
+            "num_envs": 2,
+            "device": str(env.device),
+            "action_dim": 1,
+            "observation_groups": {"obs": 2, "critic": 1},
+            "reward_components": 1,
+            "terminal_observation_groups": ["critic", "obs"],
+            "persistent_output_carriers": True,
+        },
+        "rng_state": {
+            "device": str(env.device),
+            "state_version": env.torch_rng.state_version,
+            "draw_version": env.torch_rng.draw_version,
+        },
+        "graph_lifecycle": "ready",
+    }
+    assert unrequested == {
+        "requested": False,
+        "supported": False,
+        "disable_reason": "graph candidate was not requested",
+        "backend_stream_contract": "test",
+        "torch_stream_id": None,
+    }
+    env.close()
+
+
+def test_env_graph_candidate_preflight_rejects_cpu_carrier() -> None:
+    env, _backend = _make_env()
+    env.init_state()
+
+    result = env.preflight_graph_candidate(requested=True)
+
+    assert result["supported"] is False
+    assert "environment output carrier is not CUDA-resident" in result["disable_reason"]
+    assert "terminal observation carrier is not materialized" not in result["disable_reason"]
+    env.close()
+
+
+def test_env_graph_lifecycle_manifest_is_public_cold_path_evidence() -> None:
+    env, _backend = _make_env()
+
+    assert env.get_graph_lifecycle_manifest() == {
+        "contract_version": 1,
+        "state": "ready",
+        "capture_id": "test-capture",
+        "replay_count": 2,
+        "fallback_count": 0,
+        "disable_reason": None,
+    }
+    env.close()
+
+
+def test_failed_graph_replay_publishes_no_transition_and_rolls_back_rng() -> None:
+    env, backend = _make_env()
+    env.reset()
+    completed = env.step(torch.zeros((2, 1), dtype=torch.float32))
+    before_snapshot = env.snapshot_graph_rng_state()
+    before_transition = {
+        "obs": {name: value.clone() for name, value in completed.obs.items()},
+        "reward": completed.reward.clone(),
+        "terminated": completed.terminated.clone(),
+        "truncated": completed.truncated.clone(),
+        "steps": completed.info["steps"].clone(),
+    }
+    published_before_failure = len(backend.graph_completions)
+    backend.fail_next_step_tensor = True
+
+    with pytest.raises(RuntimeError, match="simulated graph replay failed"):
+        env.step(torch.ones((2, 1), dtype=torch.float32))
+
+    assert "graph_completion" not in env._state.info
+    assert len(backend.tensor_controls) == 1
+    assert len(backend.graph_completions) == published_before_failure
+    assert env.step_counter == 1
+    torch.testing.assert_close(env._state.info["steps"], before_transition["steps"])
+    torch.testing.assert_close(env._state.obs["obs"], before_transition["obs"]["obs"])
+    torch.testing.assert_close(env._state.reward, before_transition["reward"])
+    torch.testing.assert_close(env._state.terminated, before_transition["terminated"])
+    torch.testing.assert_close(env._state.truncated, before_transition["truncated"])
+
+    failed_rng = env.graph_rng_state
+    env.rollback_graph_rng_state(before_snapshot)
+    rolled_back = env.graph_rng_state
+
+    assert failed_rng["draw_version"] >= before_snapshot[2]
+    assert rolled_back["state_version"] >= before_snapshot[1]
+    assert rolled_back["draw_version"] >= before_snapshot[2]
+    torch.testing.assert_close(rolled_back["state"], before_snapshot[0])
+
+    invalidated = backend.invalidate_graph("capture_failed")
+    assert backend.graph_invalidations == ["capture_failed"]
+    assert invalidated.state.value == "invalidated"
+    assert invalidated.capture_id is None
+    assert invalidated.fallback_count == 1
+    assert invalidated.disable_reason == "graph invalidated: capture_failed"
+    env.close()
+
+
+def test_env_graph_candidate_preflight_requires_terminal_carrier() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+
+    result = env.preflight_graph_candidate(requested=True)
+
+    assert result["supported"] is False
+    assert result["disable_reason"] == (
+        "environment output carrier is not CUDA-resident; "
+        "terminal observation carrier is not materialized; "
+        "persistent observation output carrier is not graph-ready"
+    )
+    env.close()
+
+
+def test_step_reuses_persistent_public_output_carriers() -> None:
+    env, _backend = _make_env()
+    env.init_state()
+    first = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+    obs_ptrs = {name: value.data_ptr() for name, value in first.obs.items()}
+    reward_ptr = first.reward.data_ptr()
+    terminated_ptr = first.terminated.data_ptr()
+    truncated_ptr = first.truncated.data_ptr()
+
+    second = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+
+    assert {name: value.data_ptr() for name, value in second.obs.items()} == obs_ptrs
+    assert second.reward.data_ptr() == reward_ptr
+    assert second.terminated.data_ptr() == terminated_ptr
+    assert second.truncated.data_ptr() == truncated_ptr
+    assert second.obs is env._public_obs
+    env.close()
+
+
+def test_graph_rng_state_snapshot_is_versioned_and_restoreable() -> None:
+    env, _backend = _make_env()
+    env.init_state()
+    before = env.graph_rng_state
+
+    env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+    after_draw = env.graph_rng_state
+    consumed_state = env.torch_rng.get_state()
+
+    assert after_draw["state_version"] == before["state_version"]
+    assert after_draw["draw_version"] > before["draw_version"]
+    assert torch.equal(after_draw["state"], before["state"]) is False
+
+    env.torch_rng.set_state(consumed_state)
+    env.torch_rng.set_state(before["state"])
+    restored = env.graph_rng_state
+    assert restored["state_version"] == before["state_version"] + 2
+    assert restored["draw_version"] == after_draw["draw_version"] + 2
+    first_after_restore = env.torch_rng.random(1)
+    env.torch_rng.set_state(restored["state"])
+    torch.testing.assert_close(env.torch_rng.random(1), first_after_restore)
+    env.close()
+
+
+def test_graph_preflight_rejects_mismatched_rng_device() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("mismatched graph RNG device coverage requires moving carriers to CUDA")
+    env, _backend = _make_env()
+    env.init_state()
+    env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+    object.__setattr__(env, "_device", torch.device("cuda", index=torch.cuda.current_device()))
+    env._final_observation_scratch = {
+        name: value.to(device=env.device) for name, value in env._final_observation_scratch.items()
+    }
+    env._public_obs = {name: value.to(device=env.device) for name, value in env._public_obs.items()}
+    env._public_reward = env._public_reward.to(device=env.device)
+    env._public_terminated = env._public_terminated.to(device=env.device)
+    env._public_truncated = env._public_truncated.to(device=env.device)
+
+    result = env.preflight_graph_candidate(requested=True)
+
+    assert result["supported"] is False
+    assert "Torch RNG device does not match the graph carrier" in result["disable_reason"]
+    env.close()
+
+
+def test_no_done_step_still_invokes_fixed_width_pre_reset_recorder() -> None:
+    cfg = _make_cfg(auto_reset=True)
+    cfg.max_episode_seconds = 10.0
+    cfg.terminations["time_out"] = None
+    cfg.recorders = {"trace": RecorderTermCfg(func=_Recorder)}
+    env, _backend = _make_env(cfg)
+    env.init_state()
+    env._has_transition = True
+    obs, _info = env.reset(torch.zeros(2, dtype=torch.bool))
+
+    assert obs["obs"].shape == (2, 2)
+    assert env.reset_buf.tolist() == [False, False]
+    assert ("pre_reset", [False, False]) in env.trace
     env.close()
 
 
@@ -2264,14 +2702,15 @@ def test_update_state_reuses_backend_state_once_and_refreshes_after_physics() ->
 
     before = backend.dof_pos_calls
     state = env.step(torch.zeros((2, 1), dtype=torch.float32))
-    assert backend.dof_pos_calls == before + 1
+    # The empty-mask autoreset also runs the fixed-width post-reset read.
+    assert backend.dof_pos_calls == before + 2
     torch.testing.assert_close(state.reward, torch.ones(2))
     torch.testing.assert_close(state.obs["obs"], torch.ones((2, 1)))
     torch.testing.assert_close(state.obs["critic"], torch.ones((2, 1)))
 
     before = backend.dof_pos_calls
     state = env.step(torch.zeros((2, 1), dtype=torch.float32))
-    assert backend.dof_pos_calls == before + 1
+    assert backend.dof_pos_calls == before + 2
     torch.testing.assert_close(state.reward, torch.full((2,), 2.0))
     torch.testing.assert_close(state.obs["obs"], torch.full((2, 1), 2.0))
 
@@ -2290,7 +2729,7 @@ def test_update_state_invalidates_cache_after_command_set_state() -> None:
     # Physics advances the pre-command state to 1.75. The command then commits
     # 0.75 through set_state, so post-command observations must not reuse the
     # termination/reward snapshot.
-    assert backend.dof_pos_calls == before + 2
+    assert backend.dof_pos_calls == before + 3
     torch.testing.assert_close(state.reward, torch.full((2,), 1.75))
     torch.testing.assert_close(state.obs["obs"], torch.full((2, 1), 0.75))
     torch.testing.assert_close(state.obs["critic"], torch.full((2, 1), 0.75))
@@ -2307,7 +2746,7 @@ def test_update_state_invalidates_cache_after_runtime_event() -> None:
     before = backend.dof_pos_calls
     state = env.step(torch.zeros((2, 1), dtype=torch.float32))
 
-    assert backend.dof_pos_calls == before + 2
+    assert backend.dof_pos_calls == before + 3
     torch.testing.assert_close(state.reward, torch.ones(2))
     torch.testing.assert_close(state.obs["obs"], torch.full((2, 1), 11.0))
     torch.testing.assert_close(state.obs["critic"], torch.full((2, 1), 11.0))
@@ -3483,6 +3922,30 @@ def test_manager_publication_rejects_numpy_results() -> None:
     assert published.data_ptr() != values.data_ptr()
 
 
+def test_step_uses_persistent_all_reset_mask_without_aliasing_reset_flags() -> None:
+    env = object.__new__(ManagerBasedRlEnv)
+    object.__setattr__(env, "_device", torch.device("cpu"))
+    env._all_env_reset_mask = torch.ones(3, dtype=torch.bool)
+    env.reset_terminated = torch.tensor((True, False, True))
+    env.reset_time_outs = torch.tensor((False, True, False))
+    env._public_terminated = torch.zeros_like(env.reset_terminated)
+    env._public_truncated = torch.zeros_like(env.reset_time_outs)
+
+    terminated = env._manager_tensor(env.reset_terminated, dtype=torch.bool)
+    truncated = env._manager_tensor(env.reset_time_outs, dtype=torch.bool)
+    if terminated is env.reset_terminated:
+        terminated = env._public_terminated
+        terminated.copy_(env.reset_terminated)
+    if truncated is env.reset_time_outs:
+        truncated = env._public_truncated
+        truncated.copy_(env.reset_time_outs)
+
+    assert terminated.data_ptr() != env.reset_terminated.data_ptr()
+    assert truncated.data_ptr() != env.reset_time_outs.data_ptr()
+    torch.testing.assert_close(terminated, env.reset_terminated)
+    torch.testing.assert_close(truncated, env.reset_time_outs)
+
+
 class _RecordingResetOwner(ResetOwner):
     def __init__(self, cfg: ResetOwnerCfg, env) -> None:
         super().__init__(cfg, env)
@@ -3576,3 +4039,381 @@ def test_mask_reset_publishes_cleared_action_observation() -> None:
         torch.testing.assert_close(reset_obs["obs"][1, 1], torch.tensor(0.0))
     finally:
         env.close()
+
+
+def test_autoreset_empty_partial_and_full_masks_share_one_fixed_width_lifecycle() -> None:
+    """All autoreset widths enter the same reset and command lifecycle."""
+    cfg = _make_cfg()
+    cfg.terminations = {
+        "selective": TerminationTermCfg(
+            func=lambda env: torch.full((env.num_envs,), env.step_counter == 1, dtype=torch.bool),
+        ),
+        "time_out": None,
+    }
+    cfg.max_episode_seconds = 10.0
+    env, _backend = _make_env(cfg)
+    env.init_state()
+    command = env.command_manager.get_term("target")
+    assert isinstance(command, _Command)
+    command.reset_masks.clear()
+    recorder_traces_before = len(env.trace)
+
+    first = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+    second = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+    third = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+
+    observed = [mask.tolist() for mask in command.reset_masks]
+    assert observed[:3] == [[False, False]] * 3
+    assert observed[3:]
+    assert first.final_observation is None
+    assert second.final_observation is None
+    assert third.final_observation is not None
+    trace = env.trace[recorder_traces_before:]
+    assert trace.count(("pre_reset", [False, False])) == 2
+    assert trace.count(("post_reset", [False, False])) == 2
+    assert ("pre_reset", [True, True]) in trace
+    assert ("post_reset", [True, True]) in trace
+    assert trace.count("post_step") == 3
+    env.close()
+
+
+def test_autoreset_mask_widths_match_termination_masks() -> None:
+    cfg = _make_cfg()
+    cfg.terminations = {"selective": TerminationTermCfg(func=_selective_failure)}
+    env, _backend = _make_env(cfg)
+    env.init_state()
+    command = env.command_manager.get_term("target")
+    assert isinstance(command, _Command)
+    command.reset_masks.clear()
+
+    for step in range(3):
+        actions = torch.tensor(
+            [[0.9 if (step + row) % 3 == 0 else 0.0] for row in range(2)],
+            dtype=torch.float32,
+            device=env.device,
+        )
+        env.step(actions)
+
+    observed = [mask.tolist() for mask in command.reset_masks]
+    assert observed[:4] == [
+        [False, False],
+        [True, False],
+        [True, False],
+        [False, False],
+    ]
+    assert observed[4:]
+    env.close()
+
+
+def _selective_failure(env: _TestEnv) -> torch.Tensor:
+    return env.action_manager.action[:, 0] > 0.8
+
+
+@pytest.mark.parametrize(
+    ("manager_name", "expected_reason"),
+    [
+        ("events", "interval events have no fixed-width graph boundary"),
+        ("metrics", "metrics reset publication has no graph boundary"),
+        ("curriculum", "curriculum reset publication has no graph boundary"),
+        ("recorders", "recorder lifecycle publication has no graph boundary"),
+    ],
+)
+def test_graph_preflight_rejects_unresolved_semantic_owners(
+    manager_name: str,
+    expected_reason: str,
+) -> None:
+    cfg = _make_cfg(include_optional_managers=False)
+    if manager_name == "events":
+        cfg.events = {
+            "push": EventTermCfg(
+                func=_mutate_joint_state_step_event,
+                mode="interval",
+                interval_range_s=(0.1, 0.1),
+            )
+        }
+    elif manager_name == "metrics":
+        cfg.metrics = {"progress": MetricsTermCfg(func=_metric)}
+    elif manager_name == "curriculum":
+        cfg.curriculum = {"difficulty": CurriculumTermCfg(func=_curriculum)}
+    else:
+        cfg.recorders = {"trace": RecorderTermCfg(func=_Recorder)}
+
+    env, _backend = _make_env(cfg)
+    env.init_state()
+    env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+    if torch.cuda.is_available():
+        object.__setattr__(env, "_device", torch.device("cuda", index=torch.cuda.current_device()))
+        env._final_observation_scratch = {
+            name: value.to(device=env.device)
+            for name, value in env._final_observation_scratch.items()
+        }
+        env._public_obs = {
+            name: value.to(device=env.device) for name, value in env._public_obs.items()
+        }
+        env._public_reward = env._public_reward.to(device=env.device)
+        env._public_terminated = env._public_terminated.to(device=env.device)
+        env._public_truncated = env._public_truncated.to(device=env.device)
+
+    result = env.preflight_graph_candidate(requested=True)
+
+    assert result["supported"] is False
+    assert expected_reason in result["disable_reason"]
+    env.close()
+
+
+def test_graph_preflight_rejects_manual_reset_mode() -> None:
+    cfg = _make_cfg(include_optional_managers=False, auto_reset=False)
+    env, _backend = _make_env(cfg)
+    env.init_state()
+
+    result = env.preflight_graph_candidate(requested=True)
+
+    assert result["supported"] is False
+    assert "manual reset guard has no graph boundary" in result["disable_reason"]
+    env.close()
+
+
+def test_reward_log_publication_is_interval_boundary_only() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env.reset()
+    env.step(torch.tensor([[0.25], [0.75]], dtype=torch.float32))
+
+    assert env._reward_log_names == ("track",)
+    assert isinstance(env._reward_log_means, torch.Tensor)
+    assert env._reward_log_means.shape == (1,)
+    assert "reward/track" not in env.state.info["log"]
+
+    published = env.publish_reward_log()
+
+    assert published["reward/track"] == pytest.approx(0.5)
+    assert "reward/track" not in env.state.info["log"]
+    env.close()
+
+
+def test_unified_validation_pack_publishes_all_owner_verdicts_once() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env.set_deferred_validation_boundaries(True)
+    env.init_state()
+    flags = env._validation_flags()
+    pointers = {name: value.data_ptr() for name, value in flags.items()}
+    reward_pointer = env.reward_manager.finite_valid.data_ptr()
+
+    state = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+
+    assert {name: value.data_ptr() for name, value in env._validation_flags().items()} == pointers
+    assert env.reward_manager.finite_valid.data_ptr() == reward_pointer
+    assert all(bool(value) for value in env._validation_flags().values())
+    assert bool(env.reward_manager.finite_valid)
+    assert state.info["reward_components"] is env.reward_manager.step_rewards
+    env.close()
+
+
+def test_unified_validation_pack_fails_closed_on_invalid_state() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env.set_deferred_validation_boundaries(True)
+    env.init_state()
+    env._validation_flags()["state_finite"].fill_(False)
+
+    with pytest.raises(ValueError, match="TorchEnvState contains NaN or Inf"):
+        env.publish_validation_verdicts()
+    env.close()
+
+
+def test_deferred_action_owner_publication_reports_manager_verdict() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env.set_deferred_validation_boundaries(True)
+    env.init_state()
+    env.action_manager._action_finite_valid.fill_(False)
+
+    with pytest.raises(ValueError, match="ActionManager received an action containing NaN"):
+        env.publish_validation_verdicts()
+    env.close()
+
+
+def test_manager_validation_pack_uses_action_manager_verdict() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env.init_state()
+    env._action_finite_valid.fill_(True)
+    env.action_manager._action_finite_valid.fill_(False)
+
+    assert env._validation_flags()["action_finite"] is env.action_manager.action_finite_valid
+    env.close()
+
+
+def test_manager_action_verdict_is_recorded_once_by_owner() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env.init_state()
+    original_record = env.action_manager.record_public_action_finite
+    calls: list[torch.Tensor] = []
+
+    def record(actions: torch.Tensor) -> None:
+        calls.append(actions)
+        original_record(actions)
+
+    env.action_manager.record_public_action_finite = record  # type: ignore[method-assign]
+    actions = torch.zeros((2, 1), dtype=torch.float32, device=env.device)
+    env.step(actions)
+
+    assert len(calls) == 1
+    assert calls[0] is actions
+    assert env._action_finite_valid.item() is True
+    assert env.action_manager.action_finite_valid.item() is True
+    env.close()
+
+
+def test_manager_public_action_verdict_reuses_owner_record() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env.set_deferred_validation_boundaries(True)
+    env.init_state()
+    calls: list[torch.Tensor] = []
+    original_process = env.action_manager.process_action
+
+    def record_calls(actions: torch.Tensor, *, reuse_recorded_verdict: bool = False) -> None:
+        calls.append(actions)
+        original_process(actions, reuse_recorded_verdict=reuse_recorded_verdict)
+
+    env.action_manager.process_action = record_calls  # type: ignore[method-assign]
+    actions = torch.zeros((2, 1), dtype=torch.float32, device=env.device)
+    env._action_finite_valid.fill_(False)
+    env.step(actions)
+
+    assert len(calls) == 1
+    assert calls[0] is actions
+    assert env.action_manager.action_finite_valid.item() is True
+    env.close()
+
+
+def test_deferred_validation_switch_propagates_to_backend_fused_boundary() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    calls: list[bool] = []
+
+    def record(enabled: bool) -> None:
+        calls.append(enabled)
+
+    env._backend.set_defer_torch_fused_validation = record  # type: ignore[method-assign]
+    env.set_deferred_validation_boundaries(True)
+
+    assert calls == [True]
+    env.close()
+
+
+def test_deferred_validation_switch_activates_backend_before_preflight() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    calls: list[bool] = []
+    diagnostics = env._backend.get_tensor_runtime_diagnostics
+
+    def record_and_report(enabled: bool) -> None:
+        calls.append(enabled)
+        # Enabling must make the runtime diagnostic observable before preflight.
+        if enabled:
+            assert diagnostics()["deferred_fused_validation"].enabled is True
+
+    env._backend.set_defer_torch_fused_validation = record_and_report  # type: ignore[method-assign]
+    env.set_deferred_validation_boundaries(True)
+    env.set_deferred_validation_boundaries(False)
+
+    assert calls == [True, False]
+    env.close()
+
+
+def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
+    """Step outputs match across eager/deferred modes for all mask widths."""
+    actions = torch.tensor([[0.25], [0.75]], dtype=torch.float32)
+    reset_masks = (
+        torch.zeros(2, dtype=torch.bool),
+        torch.tensor([False, True], dtype=torch.bool),
+        torch.ones(2, dtype=torch.bool),
+    )
+    references: dict[tuple[bool, int], dict[str, Any]] = {}
+
+    for deferred in (False, True):
+        for width_index, reset_mask in enumerate(reset_masks):
+            env, _backend = _make_env(_make_cfg(metrics={"progress": MetricsTermCfg(func=_metric)}))
+            if deferred:
+                env.set_deferred_validation_boundaries(True)
+            env.reset()
+            env.step(actions)
+            before_rng = env.graph_rng_state
+            state = env.step(actions)
+            env.reset(reset_mask)
+            after_reset, _reset_info = env.reset(reset_mask)
+            after_state = env.step(torch.zeros_like(actions))
+            snapshot = {
+                "obs": {name: value.clone() for name, value in state.obs.items()},
+                "reward": state.reward.clone(),
+                "reward_components": state.info.get("reward_components").clone(),
+                "terminated": state.terminated.clone(),
+                "truncated": state.truncated.clone(),
+                "steps": state.info["steps"].clone(),
+                "action": env.action_manager.action.clone(),
+                "command": env.command_manager.get_term("target").command.clone(),
+                "trace": list(env.trace),
+                "reward_means": env._reward_log_means.clone(),
+                "reset_obs": {name: value.clone() for name, value in after_reset.items()},
+                "after_obs": {name: value.clone() for name, value in after_state.obs.items()},
+                "after_reward": after_state.reward.clone(),
+                "after_done": (after_state.terminated | after_state.truncated).clone(),
+                "rng_before": before_rng["state"].clone(),
+                "rng_after": env.graph_rng_state["state"].clone(),
+                "final_obs": (
+                    {name: value.clone() for name, value in after_state.final_observation.items()}
+                    if after_state.final_observation is not None
+                    else None
+                ),
+                "curriculum": env.curriculum_manager.reset(reset_mask),
+                "metric_step_count": env.metrics_manager._step_count.clone(),
+                "metric_step_values": env.metrics_manager._step_values.clone(),
+                "metric_episode_sums": {
+                    name: value.clone() for name, value in env.metrics_manager._episode_sums.items()
+                },
+                "backend_state": (
+                    _backend.qpos.clone(),
+                    _backend.qvel.clone(),
+                ),
+                "backend_reset_rows": [entry[0].clone() for entry in _backend.set_state_calls],
+            }
+            key = (deferred, width_index)
+            if key in references:
+                continue
+            references[key] = snapshot
+            env.close()
+
+    for width_index in range(len(reset_masks)):
+        eager = references[(False, width_index)]
+        deferred = references[(True, width_index)]
+        for name in eager["obs"]:
+            torch.testing.assert_close(eager["obs"][name], deferred["obs"][name])
+        torch.testing.assert_close(eager["reward"], deferred["reward"])
+        torch.testing.assert_close(eager["reward_components"], deferred["reward_components"])
+        torch.testing.assert_close(eager["terminated"], deferred["terminated"])
+        torch.testing.assert_close(eager["truncated"], deferred["truncated"])
+        torch.testing.assert_close(eager["steps"], deferred["steps"])
+        torch.testing.assert_close(eager["action"], deferred["action"])
+        torch.testing.assert_close(eager["command"], deferred["command"])
+        assert eager["trace"] == deferred["trace"]
+        torch.testing.assert_close(eager["reward_means"], deferred["reward_means"])
+        for name in eager["reset_obs"]:
+            torch.testing.assert_close(eager["reset_obs"][name], deferred["reset_obs"][name])
+        for name in eager["after_obs"]:
+            torch.testing.assert_close(eager["after_obs"][name], deferred["after_obs"][name])
+        torch.testing.assert_close(eager["after_reward"], deferred["after_reward"])
+        torch.testing.assert_close(eager["after_done"], deferred["after_done"])
+        torch.testing.assert_close(eager["rng_before"], deferred["rng_before"])
+        torch.testing.assert_close(eager["rng_after"], deferred["rng_after"])
+        assert (eager["final_obs"] is None) == (deferred["final_obs"] is None)
+        if eager["final_obs"] is not None and deferred["final_obs"] is not None:
+            for name in eager["final_obs"]:
+                torch.testing.assert_close(eager["final_obs"][name], deferred["final_obs"][name])
+        assert eager["curriculum"] == deferred["curriculum"]
+        torch.testing.assert_close(eager["metric_step_count"], deferred["metric_step_count"])
+        torch.testing.assert_close(eager["metric_step_values"], deferred["metric_step_values"])
+        for name in eager["metric_episode_sums"]:
+            torch.testing.assert_close(
+                eager["metric_episode_sums"][name],
+                deferred["metric_episode_sums"][name],
+            )
+        torch.testing.assert_close(eager["backend_state"][0], deferred["backend_state"][0])
+        torch.testing.assert_close(eager["backend_state"][1], deferred["backend_state"][1])
+        assert len(eager["backend_reset_rows"]) == len(deferred["backend_reset_rows"])
+        for left, right in zip(eager["backend_reset_rows"], deferred["backend_reset_rows"]):
+            torch.testing.assert_close(left, right)

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -244,6 +244,130 @@ def test_g1_walk_flat_owner_one_step(
     assert torch.isfinite(state.obs["obs"]).all()
     assert torch.isfinite(state.obs["critic"]).all()
     assert torch.isfinite(state.reward).all()
+
+
+def test_g1_walk_flat_owner_eager_capture_warmup_and_replay_share_semantics() -> None:
+    """The full Manager trajectory is invariant across MJWarp execution modes."""
+    from unisim import GraphLifecycleState
+
+    _require_cuda_mjwarp()
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(
+        config_dir=str(REPO_ROOT / "src" / "unilab" / "conf" / "ppo"),
+        version_base="1.3",
+    ):
+        cfg = compose("config", overrides=["task=g1_walk_flat/mjwarp"])
+    env_cfg_override = BackendAdapter(
+        cfg,
+        root_dir=REPO_ROOT,
+        algo_name="ppo",
+    ).build_task_env_cfg_override()
+    registry.ensure_registries()
+
+    references: dict[str, list[dict[str, object]]] = {}
+    common_seed = 20261013
+    controls = (0.1, -0.2, 0.3)
+    masks = (
+        torch.zeros(2, dtype=torch.bool),
+        torch.tensor([False, True], dtype=torch.bool),
+        torch.ones(2, dtype=torch.bool),
+    )
+
+    for mode in ("eager", "capture-warmup", "graph-replay"):
+        env = registry.make(
+            str(cfg.training.task_name),
+            sim_backend=str(cfg.training.sim_backend),
+            env_cfg_override=env_cfg_override,
+            num_envs=2,
+        )
+        env.seed(common_seed)
+        try:
+            env.init_state()
+            env.seed(common_seed)
+            if mode == "eager":
+                env.backend.invalidate_graph("capture_failed")
+            else:
+                assert env.backend.get_graph_lifecycle() is GraphLifecycleState.READY
+
+            action_dim = int(env.action_space.shape[-1])
+            action = torch.zeros((2, action_dim), dtype=torch.float32, device=env.device)
+            # This first public step is capture warmup for the graph backend;
+            # forcing eager makes it the same semantic warmup boundary.
+            env.step(action)
+            if mode != "eager":
+                snapshot = env.get_graph_lifecycle_manifest()
+                assert snapshot["state"] == GraphLifecycleState.READY.value
+                assert snapshot["capture_id"] is not None
+                assert snapshot["replay_count"] >= 1
+
+            trace: list[dict[str, object]] = []
+            for control_value, reset_mask in zip(controls, masks, strict=True):
+                action.fill_(control_value)
+                state = env.step(action)
+                reset_mask = reset_mask.to(device=env.device)
+                reset_obs, _reset_info = env.reset(reset_mask=reset_mask)
+                after_reset = env.step(torch.zeros_like(action))
+                completion = after_reset.info.get("graph_completion")
+                if mode == "eager":
+                    assert completion is None
+                else:
+                    assert completion is not None
+                    assert completion.operation == "step"
+                    assert completion.capture_id is not None
+                trace.append(
+                    {
+                        "obs": {name: value.clone() for name, value in state.obs.items()},
+                        "reward": state.reward.clone(),
+                        "terminated": state.terminated.clone(),
+                        "truncated": state.truncated.clone(),
+                        "steps": state.info["steps"].clone(),
+                        "reset_obs": {name: value.clone() for name, value in reset_obs.items()},
+                        "after_obs": {
+                            name: value.clone() for name, value in after_reset.obs.items()
+                        },
+                        "after_reward": after_reset.reward.clone(),
+                        "rng_state": env.graph_rng_state["state"].clone(),
+                        "manifest": dict(env.get_graph_lifecycle_manifest()),
+                    }
+                )
+            references[mode] = trace
+        finally:
+            env.close()
+
+    eager = references["eager"]
+    for graph_mode in ("capture-warmup", "graph-replay"):
+        candidate = references[graph_mode]
+        for expected, actual in zip(eager, candidate, strict=True):
+            expected_row = cast(dict[str, object], expected)
+            actual_row = cast(dict[str, object], actual)
+            expected_obs = cast(dict[str, torch.Tensor], expected_row["obs"])
+            actual_obs = cast(dict[str, torch.Tensor], actual_row["obs"])
+            for name in expected_obs:
+                torch.testing.assert_close(expected_obs[name], actual_obs[name], atol=5e-5, rtol=0)
+            for field in ("reward", "terminated", "truncated", "steps"):
+                torch.testing.assert_close(
+                    cast(torch.Tensor, expected_row[field]), cast(torch.Tensor, actual_row[field])
+                )
+            for field in ("reset_obs", "after_obs"):
+                expected_group = cast(dict[str, torch.Tensor], expected_row[field])
+                actual_group = cast(dict[str, torch.Tensor], actual_row[field])
+                for name in expected_group:
+                    torch.testing.assert_close(
+                        expected_group[name], actual_group[name], atol=5e-5, rtol=0
+                    )
+            torch.testing.assert_close(
+                cast(torch.Tensor, expected_row["after_reward"]),
+                cast(torch.Tensor, actual_row["after_reward"]),
+            )
+            torch.testing.assert_close(
+                cast(torch.Tensor, expected_row["rng_state"]),
+                cast(torch.Tensor, actual_row["rng_state"]),
+            )
+            actual_manifest = cast(dict[str, object], actual_row["manifest"])
+            assert actual_manifest["state"] == GraphLifecycleState.READY.value
+            assert actual_manifest["capture_id"] is not None
+            assert actual_manifest["fallback_count"] == 0
+            assert actual_manifest["replay_count"] >= 3
 
 
 def test_body_state_matches_mujoco_backend() -> None:

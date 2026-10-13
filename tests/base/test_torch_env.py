@@ -209,15 +209,28 @@ def test_unsupported_backend_tensor_runtime_fails_closed() -> None:
         env.init_state()
 
 
-def test_step_without_done_does_not_create_final_observation() -> None:
+def test_step_without_done_runs_fixed_width_reset_and_publishes_terminal_carrier() -> None:
     env = _StubTorchEnv(terminate=False)
     env.init_state()
     env.reset_masks.clear()
     state = env.step(_actions(env))
 
-    assert env.reset_masks == []
-    assert state.final_observation is None
+    assert [mask.tolist() for mask in env.reset_masks] == [[False, False, False]]
+    assert state.final_observation is not None
+    torch.testing.assert_close(state.final_observation["obs"], torch.ones((3, 3)))
     assert state.info["timing"]["reset_done_count"] == 0.0
+
+
+def test_reset_done_count_remains_device_resident_before_timing_publication() -> None:
+    env = _StubTorchEnv(terminate=False)
+    env.init_state()
+
+    env.step(_actions(env))
+
+    assert isinstance(env._reset_done_count, torch.Tensor)
+    assert env._reset_done_count.dtype is torch.int64
+    assert env._reset_done_count.device == env.device
+    torch.testing.assert_close(env._reset_done_count, torch.zeros((), dtype=torch.int64))
 
 
 def test_partial_autoreset_preserves_non_done_rows() -> None:
@@ -289,7 +302,10 @@ def test_timeout_computes_truncation_and_mask_reset() -> None:
 
     assert not bool(first.truncated.any())
     assert bool(second.truncated.any())
-    assert [mask.tolist() for mask in env.reset_masks] == [[True, True, True]]
+    assert [mask.tolist() for mask in env.reset_masks] == [
+        [False, False, False],
+        [True, True, True],
+    ]
 
 
 def test_numpy_actions_and_wrong_device_fail_closed() -> None:
@@ -322,6 +338,40 @@ def test_nonfinite_reward_fails_closed_without_sanitization() -> None:
     env.update_state = bad_update  # type: ignore[method-assign]
     with pytest.raises(ValueError, match="reward contains NaN or Inf"):
         env.step(_actions(env))
+
+
+def test_deferred_validation_flags_fail_closed_at_completion() -> None:
+    env = _StubTorchEnv()
+    env.init_state()
+    env.set_deferred_validation_boundaries(True)
+    assert env.deferred_validation_boundaries is True
+
+    with pytest.raises(ValueError, match="action contains NaN or Inf"):
+        env.step(torch.full((env.num_envs, 4), torch.nan))
+
+    assert env._validation_flags()["action_finite"].item() is False
+
+
+def test_public_output_finite_verdict_reuses_persistent_carrier() -> None:
+    env = _StubTorchEnv()
+    env.init_state()
+    verdict = env._validation_flags()["state_finite"]
+
+    env.step(_actions(env))
+
+    assert verdict.data_ptr() == env._validation_flags()["state_finite"].data_ptr()
+    assert bool(verdict)
+
+    original_update = env.update_state
+
+    def bad_update(state: TorchEnvState) -> TorchEnvState:
+        result = original_update(state)
+        return result.replace(reward=torch.full_like(result.reward, torch.nan))
+
+    env.update_state = bad_update  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="reward contains NaN or Inf"):
+        env.step(_actions(env))
+    assert bool(env._validation_flags()["state_finite"]) is False
 
 
 def test_invalid_backend_control_fails_closed() -> None:

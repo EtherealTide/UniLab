@@ -458,6 +458,8 @@ def test_lifecycle_counter_recorder_is_task_independent(fake_env: FakeEnv) -> No
     mask = torch.tensor([True, False, False, True], dtype=torch.bool)
 
     manager.record_pre_reset(mask)
+    empty = torch.zeros(fake_env.num_envs, dtype=torch.bool)
+    manager.record_pre_reset(empty)
     manager.record_post_reset(mask)
     manager.record_post_step()
 

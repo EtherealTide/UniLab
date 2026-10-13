@@ -17,6 +17,7 @@ from unilab.base.rotation import (
 )
 from unilab.managers import RewardTermCfg, TerminationTermCfg
 from unilab.tasks.motion_tracking.common import manager_terms as mt
+from unilab.tasks.motion_tracking.common.motion_loader import MotionData
 from unilab.tasks.motion_tracking.common.motion_math import (
     _adaptive_failure_alpha,
     _adaptive_failure_counts,
@@ -661,6 +662,103 @@ def test_tensor_command_full_refresh_gathers_advanced_frames() -> None:
     )
 
 
+def test_tensor_command_empty_mask_resample_has_no_host_branch() -> None:
+    command = mt.MotionCommand.__new__(mt.MotionCommand)
+    command._device = torch.device("cpu")
+    command.last_reset_timing_ms = {}
+    command.tensor_sampler = mt.TensorMotionSampler(
+        mode="adaptive",
+        num_envs=3,
+        num_frames=11,
+        clip_offsets=torch.tensor([0], dtype=torch.int64),
+        clip_end_frames=torch.tensor([100], dtype=torch.int32),
+        bin_count=1,
+        adaptive_lambda=0.8,
+        adaptive_kernel_size=1,
+        adaptive_uniform_ratio=0.1,
+        adaptive_alpha=0.001,
+        start_ratio=0.0,
+        initial_frames=torch.tensor([4, 0, 9], dtype=torch.int32),
+        initial_clip_end_frames=torch.tensor([100, 100, 100], dtype=torch.int32),
+        device=torch.device("cpu"),
+    )
+    command.tensor_sampler.current_frames.copy_(torch.tensor([4, 0, 9], dtype=torch.int32))
+
+    def _uniform(lower: object, upper: object, size: object, *, dtype: object = None):
+        low = torch.as_tensor(lower, dtype=torch.float32)
+        high = torch.as_tensor(upper, dtype=torch.float32)
+        midpoint = (low + high) / 2
+        target = tuple(size)
+        if midpoint.ndim == 1 and len(target) == 2 and midpoint.numel() == target[-1]:
+            midpoint = midpoint.expand(target)
+        while midpoint.ndim < len(tuple(size)):
+            midpoint = midpoint.unsqueeze(0)
+        return midpoint.expand(target).contiguous().to(dtype=dtype or torch.float32)
+
+    def _packet(frames: torch.Tensor) -> torch.Tensor:
+        return torch.zeros((3, 17))
+
+    command._motion_packet = _packet
+    command._cached_motion_feature_shapes = lambda: (
+        {
+            "joint_pos": (2,),
+            "joint_vel": (2,),
+            "body_pos_w": (1, 3),
+            "body_quat_w": (1, 4),
+            "body_lin_vel_w": (1, 3),
+            "body_ang_vel_w": (1, 3),
+        },
+        {
+            "joint_pos": (0, 2),
+            "joint_vel": (2, 4),
+            "body_pos_w": (4, 7),
+            "body_quat_w": (7, 11),
+            "body_lin_vel_w": (11, 14),
+            "body_ang_vel_w": (14, 17),
+        },
+    )
+    command._reset_packet_velocity = torch.zeros((3, 2))
+    command._reset_joint_values = torch.zeros((3, 2))
+    command._reset_joint_values_scratch = torch.zeros((3, 2))
+    command._reset_root_state_scratch = torch.zeros((3, 13))
+    command._motion_data = MotionData(
+        joint_pos=torch.zeros((3, 2)),
+        joint_vel=torch.zeros((3, 2)),
+        body_pos_w=torch.zeros((3, 1, 3)),
+        body_quat_w=torch.tensor((0.0, 1.0, 0.0, 0.0)).repeat(3, 1, 1),
+        body_lin_vel_w=torch.zeros((3, 1, 3)),
+        body_ang_vel_w=torch.zeros((3, 1, 3)),
+    )
+    command._pose_range_torch = torch.tensor(((-1.0, 1.0),) * 6)
+    command._velocity_range_torch = torch.tensor(((-1.0, 1.0),) * 6)
+    command._joint_position_range_torch = torch.tensor(((-0.1, 0.1),) * 2)
+    command._env_origins = torch.zeros((3, 3))
+    command._soft_joint_limits = torch.tensor(((-1.0, 1.0), (-1.0, 1.0)), dtype=torch.float32)
+    command._env = SimpleNamespace(
+        num_envs=3,
+        torch_rng=SimpleNamespace(
+            generator=torch.Generator(),
+            uniform=_uniform,
+        ),
+    )
+    command.robot = SimpleNamespace(
+        write_motion_state_tensor_to_sim=lambda **values: writes.append(values)
+    )
+    command._ingest_motion_packet_mask = lambda reset_mask, packet: ingested.append(
+        (reset_mask, packet)
+    )
+    writes: list[dict[str, object]] = []
+    ingested: list[tuple[torch.Tensor, torch.Tensor]] = []
+
+    command._resample_command(torch.zeros(3, dtype=torch.bool))
+
+    assert command.tensor_sampler.diagnostics.reset_dispatches == 1
+    assert len(writes) == 1
+    assert not writes[0]["reset_mask"].any()
+    assert len(ingested) == 1
+    assert not ingested[0][0].any()
+
+
 def test_tensor_command_syncs_sampler_mirrors_at_full_width() -> None:
     command = mt.MotionCommand.__new__(mt.MotionCommand)
     command._device = torch.device("cpu")
@@ -782,6 +880,21 @@ def test_motion_feature_layout_is_cached_without_recomputing_shapes() -> None:
     }
 
 
+def test_motion_reset_carriers_are_persistent_and_not_copied_per_reset() -> None:
+    command = mt.MotionCommand.__new__(mt.MotionCommand)
+    command._reset_joint_values = torch.zeros((3, 2))
+    command._reset_root_state = torch.zeros((3, 13))
+    command._reset_packet_velocity = torch.empty_like(command._reset_joint_values)
+    command._reset_joint_values_scratch = torch.empty_like(command._reset_joint_values)
+    command._reset_root_state_scratch = torch.empty_like(command._reset_root_state)
+
+    assert command._reset_packet_velocity.data_ptr() != command._reset_joint_values.data_ptr()
+    assert command._reset_joint_values_scratch.data_ptr() != (
+        command._reset_joint_values.data_ptr()
+    )
+    assert command._reset_root_state_scratch.data_ptr() != (command._reset_root_state.data_ptr())
+
+
 def test_motion_reset_values_kernel_matches_eager_and_reuses_scratch() -> None:
     rng = np.random.default_rng(1811)
     count, num_joints, num_bodies = 39, 29, 14
@@ -878,3 +991,61 @@ def test_motion_reset_values_kernel_matches_eager_and_reuses_scratch() -> None:
         torch.testing.assert_close(
             root_scratch[:count], torch.from_numpy(expected_root), rtol=2e-6, atol=2e-6
         )
+
+
+def test_motion_packet_ingest_swaps_two_persistent_carriers() -> None:
+    command = mt.MotionCommand.__new__(mt.MotionCommand)
+    command._num_envs = 3
+    command.motion = SimpleNamespace(num_joints=2)
+    command.cfg = SimpleNamespace(body_names=("pelvis", "torso"))
+    command._motion_data = MotionData(
+        joint_pos=torch.zeros((3, 2)),
+        joint_vel=torch.ones((3, 2)),
+        body_pos_w=torch.full((3, 2, 3), 1.0),
+        body_quat_w=torch.tensor((1.0, 0.0, 0.0, 0.0)).repeat(3, 2, 1),
+        body_lin_vel_w=torch.full((3, 2, 3), 2.0),
+        body_ang_vel_w=torch.full((3, 2, 3), 3.0),
+    )
+    command._motion_packet_scratch = MotionData(
+        joint_pos=torch.empty_like(command._motion_data.joint_pos),
+        joint_vel=torch.empty_like(command._motion_data.joint_vel),
+        body_pos_w=torch.empty_like(command._motion_data.body_pos_w),
+        body_quat_w=torch.empty_like(command._motion_data.body_quat_w),
+        body_lin_vel_w=torch.empty_like(command._motion_data.body_lin_vel_w),
+        body_ang_vel_w=torch.empty_like(command._motion_data.body_ang_vel_w),
+    )
+    command._body_pos_w = torch.full((3, 2, 3), -1.0)
+    command._body_pos_packet_scratch = torch.empty_like(command._body_pos_w)
+    command._command = torch.full((3, 4), -2.0)
+    command._env_origins = torch.zeros((3, 3))
+    command._env = SimpleNamespace(num_envs=3)
+
+    num_joints = command.motion.num_joints
+    packet = torch.zeros((3, 32), dtype=torch.float32)
+    packet[:, : num_joints * 2] = 7.0
+    packet[:, num_joints * 2 : num_joints * 2 + 6] = 8.0
+    packet[:, num_joints * 2 + 6 : num_joints * 2 + 14] = 9.0
+    packet[:, num_joints * 2 + 14 : num_joints * 2 + 20] = 10.0
+    packet[:, num_joints * 2 + 20 : num_joints * 2 + 26] = 11.0
+    packet[:, num_joints * 2 + 26 :] = 12.0
+    first_data = command._motion_data
+    first_scratch = command._motion_packet_scratch
+    mask = torch.tensor([False, True, False])
+
+    command._ingest_motion_packet_mask(mask, packet)
+
+    assert command._motion_data is first_scratch
+    assert command._motion_packet_scratch is first_data
+    assert command._motion_data.joint_pos.data_ptr() == first_scratch.joint_pos.data_ptr()
+    assert command._motion_data.joint_pos[1].eq(7.0).all()
+    assert command._motion_data.joint_pos[[0, 2]].eq(0.0).all()
+    assert command._motion_data.body_pos_w[1].eq(8.0).all()
+    assert command._motion_data.body_pos_w[[0, 2]].eq(1.0).all()
+    assert command._motion_data.body_quat_w[1].eq(9.0).all()
+    assert command._motion_data.body_lin_vel_w[1].eq(10.0).all()
+    assert command._motion_data.body_ang_vel_w[1].eq(11.0).all()
+    assert command._body_pos_w[1].eq(8.0).all()
+    assert command._body_pos_w[[0, 2]].eq(-1.0).all()
+    assert command._body_pos_packet_scratch[1].eq(8.0).all()
+    assert command._command[1].eq(7.0).all()
+    assert command._command[[0, 2]].eq(-2.0).all()

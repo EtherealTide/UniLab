@@ -458,6 +458,32 @@ class _Backend:
         )
         self.randomization_calls.append(randomization)
 
+    def set_state_tensor_mask(
+        self,
+        reset_mask: torch.Tensor,
+        qpos: torch.Tensor,
+        qvel: torch.Tensor,
+        randomization=None,
+        **_kwargs,
+    ) -> None:
+        """Apply the public full-width mask contract through selected rows."""
+        rows = torch.nonzero(reset_mask, as_tuple=False).flatten()
+        selected_randomization = randomization
+        if randomization is not None:
+            selected_randomization = type(randomization)(
+                **{
+                    name: value.index_select(0, rows)
+                    for name, value in vars(randomization).items()
+                    if value is not None and value.shape[:1] == reset_mask.shape
+                }
+            )
+        return self.set_state_tensor(
+            rows,
+            qpos.index_select(0, rows),
+            qvel.index_select(0, rows),
+            selected_randomization,
+        )
+
 
 def _transaction_env(
     *,

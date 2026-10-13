@@ -12,6 +12,7 @@ import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, cast
 
 import gymnasium as gym
@@ -19,6 +20,7 @@ import torch
 from unisim.backend.base import (
     DebugOverlayGetter,
     DebugPrimitive,
+    GraphCandidatePreflight,
     SimBackend,
     TensorDataPlane,
     TensorExecution,
@@ -378,7 +380,11 @@ class ManagerBasedRlEnv(TorchEnv):
         self.reset_buf = torch.zeros(num_envs, dtype=torch.bool, device=self.device)
         self.reset_terminated = torch.zeros_like(self.reset_buf)
         self.reset_time_outs = torch.zeros_like(self.reset_buf)
+        self._public_terminated = torch.zeros_like(self.reset_buf)
+        self._public_truncated = torch.zeros_like(self.reset_buf)
         self.reward_buf = torch.zeros(num_envs, dtype=self._dtype, device=self.device)
+        self._public_reward = torch.zeros_like(self.reward_buf)
+        self._public_obs: dict[str, torch.Tensor] = {}
         self.obs_buf: dict[str, torch.Tensor] = {}
         self.extras: dict[str, Any] = {"log": {}}
         self._command_dt = torch.full(
@@ -386,6 +392,7 @@ class ManagerBasedRlEnv(TorchEnv):
         )
         self._manual_reset_pending = torch.zeros_like(self.reset_buf)
         self._all_env_rows = torch.arange(num_envs, dtype=torch.int64, device=self.device)
+        self._all_env_reset_mask = torch.ones_like(self.reset_buf)
         self._has_transition = False
 
         self._load_managers()
@@ -1190,7 +1197,10 @@ class ManagerBasedRlEnv(TorchEnv):
                 "when auto_reset=False"
             )
         state = super().step(actions)
-        state.info["log"].update(self.publish_reward_log())
+        self._publish_reward_components(state)
+        reset_completion = self.last_reset_completion
+        if reset_completion is not None:
+            state.info["graph_reset_completion"] = reset_completion
         if not self._autoreset:
             self._manual_reset_pending.logical_or_(state.terminated | state.truncated)
         self.recorder_manager.record_post_step()
@@ -1205,7 +1215,7 @@ class ManagerBasedRlEnv(TorchEnv):
             # process control from the previous state boundary, then refresh
             # state once after physics.
             read_plan.refresh()
-        self.action_manager.process_action(actions)
+        self.action_manager.process_public_action(actions)
         self._sim_step_counter += self._cfg.sim_substeps
         self.action_manager.apply_action()
         return self._control_to_backend_boundary()
@@ -1303,9 +1313,7 @@ class ManagerBasedRlEnv(TorchEnv):
         step_read_plan = self.scene._tensor_read_plan
         del step_read_plan
         self._reset_state.declare_packed_reset_device(self.device)
-        step_reset_context = self._reset_state.scoped_device_owner_tensor(
-            torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
-        )
+        step_reset_context = self._reset_state.scoped_device_owner_tensor(self._all_env_reset_mask)
         timing["update_state_command_preflight_ms"] = (
             time.perf_counter() - command_preflight_started
         ) * 1000.0
@@ -1346,13 +1354,35 @@ class ManagerBasedRlEnv(TorchEnv):
         phase_started = time.perf_counter()
 
         publish_started = time.perf_counter()
-        public_obs = {
-            name: self._manager_tensor(values, dtype=self._dtype)
-            for name, values in mapped_obs.items()
-        }
+        if set(self._public_obs) != set(mapped_obs) or any(
+            self._public_obs[name].shape != value.shape
+            or self._public_obs[name].dtype != self._dtype
+            or self._public_obs[name].device != self.device
+            for name, value in mapped_obs.items()
+        ):
+            self._public_obs = {
+                name: torch.empty(
+                    (self.num_envs, self.obs_groups_spec[name]),
+                    dtype=self._dtype,
+                    device=self.device,
+                )
+                for name in mapped_obs
+            }
+        for name, values in mapped_obs.items():
+            self._public_obs[name].copy_(self._manager_tensor(values, dtype=self._dtype))
+        public_obs = self._public_obs
         public_reward = self._manager_tensor(self.reward_buf, dtype=self._dtype)
-        public_terminated = self._manager_tensor(self.reset_terminated, dtype=torch.bool).clone()
-        public_truncated = self._manager_tensor(self.reset_time_outs, dtype=torch.bool).clone()
+        if public_reward is self.reward_buf:
+            public_reward = self._public_reward
+            public_reward.copy_(self.reward_buf)
+        public_terminated = self._manager_tensor(self.reset_terminated, dtype=torch.bool)
+        public_truncated = self._manager_tensor(self.reset_time_outs, dtype=torch.bool)
+        if public_terminated is self.reset_terminated:
+            public_terminated = self._public_terminated
+            public_terminated.copy_(self.reset_terminated)
+        if public_truncated is self.reset_time_outs:
+            public_truncated = self._public_truncated
+            public_truncated.copy_(self.reset_time_outs)
         timing["update_state_publication_ms"] = (time.perf_counter() - publish_started) * 1000.0
 
         replace_started = time.perf_counter()
@@ -1398,6 +1428,217 @@ class ManagerBasedRlEnv(TorchEnv):
             for name, mean in zip(self._reward_log_names, means, strict=True)
         }
 
+    @property
+    def algo_capabilities(self) -> Any:
+        """Expose cold-path reward component metadata to algorithm owners."""
+        return SimpleNamespace(reward_component_names=self.reward_manager.step_reward_names)
+
+    @property
+    def graph_rng_state(self) -> dict[str, Any]:
+        """Return the versioned graph-candidate RNG state snapshot."""
+        return {
+            "device": str(self.torch_rng.device),
+            "state_version": self.torch_rng.state_version,
+            "draw_version": self.torch_rng.draw_version,
+            "state": self.torch_rng.get_state(),
+        }
+
+    def snapshot_graph_rng_state(self) -> tuple[torch.Tensor, int, int]:
+        """Capture the deterministic RNG state and versions for graph replay."""
+        return (
+            self.torch_rng.get_state().clone(),
+            self.torch_rng.state_version,
+            self.torch_rng.draw_version,
+        )
+
+    def rollback_graph_rng_state(self, snapshot: tuple[torch.Tensor, int, int]) -> None:
+        """Restore a failed graph boundary without silently advancing draws."""
+        state, state_version, draw_version = snapshot
+        if state.device.type != "cpu":
+            raise ValueError("graph RNG rollback state must be a CPU Torch tensor")
+        restored = self.graph_rng_state
+        if restored["state_version"] < state_version or restored["draw_version"] < draw_version:
+            raise ValueError("cannot roll graph RNG state backward")
+        self.torch_rng.set_state(state)
+
+    def preflight_graph_candidate(self, requested: bool = True) -> dict[str, Any]:
+        """Run the public backend preflight without mutating graph state."""
+        request = (
+            GraphCandidatePreflight(requested=True)
+            if requested
+            else GraphCandidatePreflight(
+                requested=False,
+                supported=False,
+                disable_reason="graph candidate was not requested",
+            )
+        )
+        verdict = self._backend.preflight_graph_candidate(request)
+        if not requested:
+            return {
+                "requested": False,
+                "supported": False,
+                "disable_reason": verdict.disable_reason,
+                "backend_stream_contract": verdict.backend_stream_contract,
+                "torch_stream_id": verdict.torch_stream_id,
+            }
+        if verdict.supported is not True:
+            return {
+                "requested": True,
+                "supported": False,
+                "disable_reason": verdict.disable_reason,
+                "backend_stream_contract": verdict.backend_stream_contract,
+                "torch_stream_id": verdict.torch_stream_id,
+            }
+        action_shape = self.action_space.shape
+        owner_failures: list[str] = []
+        if action_shape is None:
+            owner_failures.append("action dimension is not fixed")
+        if self.device.type != "cuda":
+            owner_failures.append("environment output carrier is not CUDA-resident")
+        if self._reset_state.scene_layout is not None:
+            owner_failures.append("mapped entity reset layout has no K=1 graph carrier")
+        if not self.reward_manager.step_reward_names:
+            owner_failures.append("reward component layout is empty")
+        final_observation_carrier = self._final_observation_scratch
+        if final_observation_carrier is None:
+            owner_failures.append("terminal observation carrier is not materialized")
+        else:
+            expected_groups = set(self.obs_groups_spec)
+            if set(final_observation_carrier) != expected_groups:
+                owner_failures.append("terminal observation carrier groups do not match outputs")
+            elif any(
+                value.device != self.device
+                or value.shape != (self.num_envs, self.obs_groups_spec[name])
+                for name, value in final_observation_carrier.items()
+            ):
+                owner_failures.append("terminal observation carrier layout does not match outputs")
+        if set(self._public_obs) != set(self.obs_groups_spec) or any(
+            value.device != self.device
+            or value.shape != (self.num_envs, self.obs_groups_spec[name])
+            or value.dtype != self._dtype
+            for name, value in self._public_obs.items()
+        ):
+            owner_failures.append("persistent observation output carrier is not graph-ready")
+        if (
+            self._public_reward.shape != (self.num_envs,)
+            or self._public_reward.dtype != self._dtype
+            or self._public_reward.device != self.device
+        ):
+            owner_failures.append("persistent reward output carrier is not graph-ready")
+        if any(
+            value.shape != (self.num_envs,)
+            or value.dtype != torch.bool
+            or value.device != self.device
+            for value in (self._public_terminated, self._public_truncated)
+        ):
+            owner_failures.append("persistent done output carriers are not graph-ready")
+        if self.torch_rng.device != self.device:
+            owner_failures.append("Torch RNG device does not match the graph carrier")
+        if "interval" in self.event_manager.available_modes:
+            owner_failures.append("interval events have no fixed-width graph boundary")
+        if self.metrics_manager.active_terms:
+            owner_failures.append("metrics reset publication has no graph boundary")
+        if self.curriculum_manager.active_terms:
+            owner_failures.append("curriculum reset publication has no graph boundary")
+        if self.recorder_manager.active_terms:
+            owner_failures.append("recorder lifecycle publication has no graph boundary")
+        if not self._autoreset:
+            owner_failures.append("manual reset guard has no graph boundary")
+        if owner_failures:
+            return {
+                "requested": True,
+                "supported": False,
+                "disable_reason": "; ".join(owner_failures),
+                "backend_stream_contract": verdict.backend_stream_contract,
+                "torch_stream_id": verdict.torch_stream_id,
+            }
+        return {
+            "requested": True,
+            "supported": True,
+            "disable_reason": None,
+            "backend_stream_contract": verdict.backend_stream_contract,
+            "torch_stream_id": verdict.torch_stream_id,
+            "carrier_layout": {
+                "num_envs": self.num_envs,
+                "device": str(self.device),
+                "action_dim": int(action_shape[0]) if action_shape is not None else None,
+                "observation_groups": {
+                    name: int(dim) for name, dim in self.obs_groups_spec.items()
+                },
+                "reward_components": len(self.reward_manager.step_reward_names),
+                "terminal_observation_groups": sorted(self.obs_groups_spec),
+                "persistent_output_carriers": True,
+            },
+            "rng_state": {
+                "device": str(self.torch_rng.device),
+                "state_version": self.torch_rng.state_version,
+                "draw_version": self.torch_rng.draw_version,
+            },
+            "graph_lifecycle": str(self._backend.get_graph_lifecycle().value),
+        }
+
+    def get_graph_lifecycle_manifest(self) -> dict[str, Any]:
+        """Serialize public backend graph lifecycle evidence on a cold path."""
+        snapshot = self._backend.get_graph_lifecycle_snapshot()
+        return {
+            "contract_version": snapshot.contract_version,
+            "state": snapshot.state.value,
+            "capture_id": snapshot.capture_id,
+            "replay_count": snapshot.replay_count,
+            "fallback_count": snapshot.fallback_count,
+            "disable_reason": snapshot.disable_reason,
+        }
+
+    def set_deferred_validation_boundaries(self, enabled: bool) -> None:
+        """Propagate graph-candidate deferred validation to all owners."""
+        if not isinstance(enabled, bool):
+            raise TypeError(f"deferred validation boundaries must be bool, got {type(enabled)}")
+        super().set_deferred_validation_boundaries(enabled)
+        self.action_manager.set_deferred_validation_boundaries(enabled)
+        self.reward_manager.set_deferred_validation_boundaries(enabled)
+        self._reset_state.set_deferred_payload_validation(enabled)
+        self._reset_state.set_deferred_mask_validation(enabled)
+        capabilities = self._backend.get_tensor_capabilities()
+        if not capabilities.deferred_fused_validation:
+            raise NotImplementedError(
+                "deferred validation boundaries require the backend "
+                "deferred_fused_validation tensor capability"
+            )
+        setter = getattr(self._backend, "set_defer_torch_fused_validation", None)
+        if callable(setter):
+            setter(enabled)
+        diagnostics = self._backend.get_tensor_runtime_diagnostics()
+        diagnostic = diagnostics.get("deferred_fused_validation")
+        if diagnostic is None or not diagnostic.enabled:
+            raise NotImplementedError(
+                "deferred validation boundaries require a backend declaring the "
+                "deferred_fused_validation runtime optimization"
+            )
+
+    def publish_validation_verdicts(self) -> None:
+        """Publish env, reward, and fused reset verdicts at one boundary."""
+        self.action_manager.publish_validation_verdict()
+        self.reward_manager.publish_validation_verdict()
+        self._reset_state.publish_payload_validation_verdicts(term_name="reset_state")
+        self._reset_state.publish_mask_validation_verdicts()
+        self._backend.publish_torch_fused_validation()
+        super().publish_validation_verdicts()
+
+    def _publish_reward_components(self, state: TorchEnvState) -> None:
+        """Publish fixed-width reward components for tensor-native consumers."""
+        if self.reward_manager.step_reward_names:
+            state.info["reward_components"] = self.reward_manager.step_rewards
+
+    def _validation_flags(self) -> dict[str, torch.Tensor]:
+        """Replace the base action verdict with the ActionManager aggregate."""
+        flags = super()._validation_flags()
+        flags["action_finite"] = self.action_manager.action_finite_valid
+        return flags
+
+    def _record_action_finite(self, actions: torch.Tensor) -> None:
+        """Let the action owner record the public finite verdict."""
+        self.action_manager.record_public_action_finite(actions)
+
     def _refresh_tensor_reads_after_mutation(self) -> None:
         """Repack scene tensor reads after an in-phase simulation mutation."""
         read_plan = self.scene._tensor_read_plan
@@ -1420,11 +1661,7 @@ class ManagerBasedRlEnv(TorchEnv):
             state = self.init_state()
             return state.obs, {"log": state.info.get("log", {})}
         if reset_mask is None:
-            reset_mask = torch.ones(
-                self.num_envs,
-                dtype=torch.bool,
-                device=self.device,
-            )
+            reset_mask = self._all_env_reset_mask
         if seed is not None:
             self.seed(seed)
         if (
@@ -1440,7 +1677,7 @@ class ManagerBasedRlEnv(TorchEnv):
             raise RuntimeError("ManagerBasedRlEnv requires init_state before mask reset")
         reset_timing: dict[str, float] = {}
         read_plan = self.scene._tensor_read_plan
-        if self._has_transition and bool(reset_mask.any()):
+        if self._has_transition:
             self.recorder_manager.record_pre_reset(reset_mask)
         # Match the selected-row lifecycle: curriculum consumes the terminal
         # episode state before reset clears the public counters.
@@ -1574,6 +1811,11 @@ class ManagerBasedRlEnv(TorchEnv):
         timing.update(self._reset_state.last_set_state_timing_ms)
         timing.update(self._last_reset_manager_timing_ms)
         return timing
+
+    @property
+    def last_reset_completion(self) -> Any | None:
+        """Return the latest public reset completion receipt, if negotiated."""
+        return self._reset_state.last_set_state_completion
 
     def _map_observations(
         self,

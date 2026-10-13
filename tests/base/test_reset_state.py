@@ -158,6 +158,24 @@ class _TensorResetBackend(_Backend):
         self.tensor_reset_calls.append((rows.clone(), qpos.clone(), qvel.clone(), randomization))
         return {"ok": True}
 
+    def set_state_tensor_mask(self, reset_mask, qpos, qvel, randomization=None, **_kwargs):
+        rows = torch.nonzero(reset_mask, as_tuple=False).flatten()
+        selected_randomization = randomization
+        if randomization is not None and any(
+            value is not None and value.shape[:1] == reset_mask.shape
+            for value in vars(randomization).values()
+        ):
+            selected_randomization = type(randomization)(
+                **{
+                    name: value.index_select(0, rows)
+                    for name, value in vars(randomization).items()
+                    if value is not None and value.shape[:1] == reset_mask.shape
+                }
+            )
+        return self.set_state_tensor(
+            rows, qpos.index_select(0, rows), qvel.index_select(0, rows), selected_randomization
+        )
+
     def get_public_state_widths(self):
         return PublicStateWidths(len(self.qpos), len(self.qvel))
 
@@ -203,13 +221,25 @@ class _RecordingPackedTensorResetBackend(_PackedTensorResetBackend):
     def begin_packed_reset(self, *, device=None):
         composer = super().begin_packed_reset(device=device)
         write_state = composer.write_state
+        write_state_mask = composer.write_state_mask
 
         def record_state_write(rows, *, qpos_values=None, qvel_values=None, **kwargs):
             if qpos_values is not None and qvel_values is not None:
                 self.state_write_payloads.append((qpos_values, qvel_values))
             return write_state(rows, qpos_values=qpos_values, qvel_values=qvel_values, **kwargs)
 
+        def record_state_write_mask(mask, *, qpos_values=None, qvel_values=None, **kwargs):
+            if qpos_values is not None and qvel_values is not None:
+                rows = torch.nonzero(mask, as_tuple=False).flatten()
+                self.state_write_payloads.append(
+                    (qpos_values.index_select(0, rows), qvel_values.index_select(0, rows))
+                )
+            return write_state_mask(
+                mask, qpos_values=qpos_values, qvel_values=qvel_values, **kwargs
+            )
+
         composer.write_state = record_state_write
+        composer.write_state_mask = record_state_write_mask
         return composer
 
 
@@ -558,6 +588,29 @@ def test_owner_tensor_subset_without_actual_rows_does_not_commit() -> None:
     assert not transaction.last_commit_had_writes
 
 
+def test_owner_tensor_subset_empty_motion_write_does_not_commit() -> None:
+    backend = _TensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+
+    with transaction.scoped_device_owner_tensor(torch.ones(4, dtype=torch.bool)):
+        transaction.write_motion_state_tensor(
+            torch.zeros(4, dtype=torch.bool),
+            BackendRootStateLayout(tuple(range(7)), tuple(range(6))),
+            np.array([7], dtype=np.int32),
+            np.array([6], dtype=np.int32),
+            torch.tensor((0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)).repeat(
+                4, 1
+            ),
+            torch.zeros((4, 1)),
+            torch.zeros((4, 1)),
+            term_name="empty_motion_owner",
+        )
+
+    assert backend.tensor_reset_calls == []
+    assert not transaction.last_commit_had_writes
+
+
 def test_owner_tensor_subset_default_reset_commits_only_requested_rows() -> None:
     backend = _TensorResetBackend()
     transaction = _transaction(backend)
@@ -748,6 +801,94 @@ def test_packed_root_state_rejects_invalid_payloads(root_state, error, match: st
     assert backend.tensor_reset_calls == []
 
 
+def test_deferred_reset_payload_validation_fails_closed_at_boundary() -> None:
+    backend = _RecordingPackedTensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    transaction.set_deferred_payload_validation(True)
+    assert transaction.deferred_payload_validation is True
+    reset_mask = torch.tensor([False, True, False, True])
+    layout = BackendRootStateLayout(tuple(range(7)), tuple(range(6)))
+    root_state = torch.zeros((4, 13), dtype=torch.float32)
+    root_state[:, 3] = 0.5
+
+    with transaction.scoped_device_event_tensor(reset_mask):
+        transaction.write_root_state_tensor(
+            reset_mask, layout, root_state, term_name="deferred_invalid_root"
+        )
+        assert transaction.tensor_root_payload_valid.item() is False
+        with pytest.raises(ValueError, match="non-unit quaternion"):
+            transaction.publish_payload_validation_verdicts(term_name="deferred_invalid_root")
+
+
+def test_deferred_mask_validation_rejects_outside_rows_at_boundary() -> None:
+    backend = _RecordingPackedTensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    transaction.set_deferred_mask_validation(True)
+    assert transaction.deferred_mask_validation is True
+    active_mask = torch.tensor([False, True, True, False])
+    owner_mask = torch.tensor([False, True, False, True])
+    root_state = torch.zeros((4, 13), dtype=torch.float32)
+    root_state[:, 3] = 1.0
+
+    with transaction.scoped_device_owner_tensor(active_mask):
+        transaction.write_root_state_tensor(
+            owner_mask,
+            BackendRootStateLayout(tuple(range(7)), tuple(range(6))),
+            root_state,
+            term_name="outside_owner_reset",
+        )
+        assert transaction._mask_outside_rows.item() is True
+        with pytest.raises(ValueError, match="outside the active mask"):
+            transaction.publish_mask_validation_verdicts()
+
+
+def test_deferred_mask_validation_skips_completed_no_write_owner_scope() -> None:
+    transaction = _transaction(_TensorResetBackend())
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    transaction.set_deferred_mask_validation(True)
+
+    with transaction.scoped_device_owner_tensor(torch.ones(4, dtype=torch.bool)):
+        pass
+        transaction.publish_mask_validation_verdicts()
+
+    assert not transaction.last_commit_had_writes
+
+
+def test_deferred_mask_validation_commits_nonempty_owner_subset() -> None:
+    backend = _TensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    transaction.set_deferred_mask_validation(True)
+    active_mask = torch.tensor([False, True, True, False])
+    owner_mask = torch.tensor([False, True, False, False])
+
+    with transaction.scoped_device_owner_tensor(active_mask):
+        transaction.write_joint_state_mask(
+            owner_mask,
+            np.array([7], dtype=np.int32),
+            np.array([6], dtype=np.int32),
+            torch.tensor([[0.0], [0.7], [0.0], [0.0]]),
+            torch.tensor([[0.0], [1.7], [0.0], [0.0]]),
+            term_name="deferred_owner",
+        )
+        transaction.publish_mask_validation_verdicts()
+
+    committed_rows, qpos, _qvel, _randomization = backend.tensor_reset_calls[0]
+    torch.testing.assert_close(committed_rows, torch.tensor([1]))
+    assert qpos[0, 7] == 0.7
+
+
+def test_deferred_mask_validation_cannot_change_during_active_transaction() -> None:
+    transaction = _transaction(_TensorResetBackend())
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+
+    with transaction.scoped_device_owner_tensor(torch.ones(4, dtype=torch.bool)):
+        with pytest.raises(RuntimeError, match="during an active reset"):
+            transaction.set_deferred_mask_validation(True)
+
+
 def test_packed_reset_rejects_invalid_mask_layout() -> None:
     backend = _RecordingPackedTensorResetBackend()
     transaction = _transaction(backend)
@@ -758,6 +899,19 @@ def test_packed_reset_rejects_invalid_mask_layout() -> None:
 
     assert backend.state_write_payloads == []
     assert backend.tensor_reset_calls == []
+
+
+def test_tensor_transaction_reuses_mask_count_carrier() -> None:
+    backend = _TensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+
+    with transaction.scoped_device_event_tensor(torch.tensor([False, True, False, True])):
+        pass
+
+    assert isinstance(transaction._mask_count, torch.Tensor)
+    assert transaction._mask_count.dtype is torch.int64
+    assert transaction._mask_count.item() == 0
 
 
 def test_packed_motion_root_state_payloads_remain_contiguous() -> None:

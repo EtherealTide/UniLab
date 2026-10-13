@@ -17,15 +17,15 @@ class LifecycleCounterRecorder(RecorderTerm):
 
     def __init__(self, cfg: RecorderTermCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
-        self.pre_reset_count = 0
-        self.post_reset_count = 0
+        self.pre_reset_count = torch.zeros((), dtype=torch.int64)
+        self.post_reset_count = torch.zeros((), dtype=torch.int64)
         self.post_step_count = 0
 
     def record_pre_reset(self, reset_mask: torch.Tensor) -> None:
-        self.pre_reset_count += int(reset_mask.sum().item())
+        self.pre_reset_count += reset_mask.sum()
 
     def record_post_reset(self, reset_mask: torch.Tensor) -> None:
-        self.post_reset_count += int(reset_mask.sum().item())
+        self.post_reset_count += reset_mask.sum()
 
     def record_post_step(self) -> None:
         self.post_step_count += 1
