@@ -85,8 +85,6 @@ url = "https://download.pytorch.org/whl/rocm7.2"
 explicit = true
 
 [tool.uv.sources]
-unisim-core = { path = "../unisim", editable = true }
-unilab-rl = { path = "../unilab_rl", editable = true }
 torch = [
     { index = "pytorch-rocm72", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
 ]
