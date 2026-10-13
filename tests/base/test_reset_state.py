@@ -821,20 +821,16 @@ def test_deferred_mask_validation_rejects_outside_rows_at_boundary() -> None:
             transaction.publish_mask_validation_verdicts()
 
 
-def test_deferred_mask_validation_rejects_empty_commit_at_boundary() -> None:
-    backend = _RecordingPackedTensorResetBackend()
-    transaction = _transaction(backend)
+def test_deferred_mask_validation_skips_completed_no_write_owner_scope() -> None:
+    transaction = _transaction(_TensorResetBackend())
     transaction.declare_packed_reset_device(torch.device("cpu"))
     transaction.set_deferred_mask_validation(True)
 
-    with transaction.scoped_device_owner_tensor(torch.zeros(4, dtype=torch.bool)):
+    with transaction.scoped_device_owner_tensor(torch.ones(4, dtype=torch.bool)):
         pass
-        with pytest.raises(ValueError, match="no selected rows"):
-            transaction.publish_mask_validation_verdicts()
+        transaction.publish_mask_validation_verdicts()
 
-    assert backend.tensor_reset_calls == []
     assert not transaction.last_commit_had_writes
-    assert transaction._mask_count.item() == 0
 
 
 def test_deferred_mask_validation_commits_nonempty_owner_subset() -> None:

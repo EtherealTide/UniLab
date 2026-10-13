@@ -4013,3 +4013,32 @@ def test_reward_log_publication_is_interval_boundary_only() -> None:
     assert published["reward/track"] == pytest.approx(0.5)
     assert "reward/track" not in env.state.info["log"]
     env.close()
+
+
+def test_unified_validation_pack_publishes_all_owner_verdicts_once() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env.set_deferred_validation_boundaries(True)
+    env.init_state()
+    flags = env._validation_flags()
+    pointers = {name: value.data_ptr() for name, value in flags.items()}
+    reward_pointer = env.reward_manager.finite_valid.data_ptr()
+
+    state = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+
+    assert {name: value.data_ptr() for name, value in env._validation_flags().items()} == pointers
+    assert env.reward_manager.finite_valid.data_ptr() == reward_pointer
+    assert all(bool(value) for value in env._validation_flags().values())
+    assert bool(env.reward_manager.finite_valid)
+    assert state.info["reward_components"] is env.reward_manager.step_rewards
+    env.close()
+
+
+def test_unified_validation_pack_fails_closed_on_invalid_state() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env.set_deferred_validation_boundaries(True)
+    env.init_state()
+    env._validation_flags()["state_finite"].fill_(False)
+
+    with pytest.raises(ValueError, match="TorchEnvState contains NaN or Inf"):
+        env.publish_validation_verdicts()
+    env.close()

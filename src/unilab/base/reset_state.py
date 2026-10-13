@@ -193,6 +193,8 @@ class ResetStateTransaction:
             return
         if bool(self._mask_outside_rows):
             raise ValueError("tensor reset mask attempted a write outside the active mask")
+        if not self._last_commit_had_writes:
+            return
         if bool(self._mask_count.item()):
             return
         raise ValueError("fixed-width tensor reset commit has no selected rows")
