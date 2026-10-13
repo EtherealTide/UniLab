@@ -1436,6 +1436,7 @@ class ManagerBasedRlEnv(TorchEnv):
         return {
             "device": str(self.torch_rng.device),
             "state_version": self.torch_rng.state_version,
+            "draw_version": self.torch_rng.draw_version,
             "state": self.torch_rng.get_state(),
         }
 
@@ -1550,6 +1551,7 @@ class ManagerBasedRlEnv(TorchEnv):
             "rng_state": {
                 "device": str(self.torch_rng.device),
                 "state_version": self.torch_rng.state_version,
+                "draw_version": self.torch_rng.draw_version,
             },
         }
 

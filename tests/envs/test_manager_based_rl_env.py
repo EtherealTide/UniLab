@@ -1385,6 +1385,7 @@ def test_env_graph_candidate_preflight_reports_public_verdict() -> None:
         "rng_state": {
             "device": str(env.device),
             "state_version": env.torch_rng.state_version,
+            "draw_version": env.torch_rng.draw_version,
         },
     }
     assert unrequested == {
@@ -1452,12 +1453,14 @@ def test_graph_rng_state_snapshot_is_versioned_and_restoreable() -> None:
     consumed_state = env.torch_rng.get_state()
 
     assert after_draw["state_version"] == before["state_version"]
+    assert after_draw["draw_version"] > before["draw_version"]
     assert torch.equal(after_draw["state"], before["state"]) is False
 
     env.torch_rng.set_state(consumed_state)
     env.torch_rng.set_state(before["state"])
     restored = env.graph_rng_state
     assert restored["state_version"] == before["state_version"] + 2
+    assert restored["draw_version"] == after_draw["draw_version"] + 2
     first_after_restore = env.torch_rng.random(1)
     env.torch_rng.set_state(restored["state"])
     torch.testing.assert_close(env.torch_rng.random(1), first_after_restore)

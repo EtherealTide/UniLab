@@ -103,6 +103,31 @@ def test_torch_rng_state_version_tracks_seed_and_restore_only() -> None:
     assert rng.state_version == initial_version + 2
 
 
+def test_torch_rng_draw_version_tracks_every_stream_transition() -> None:
+    rng = TorchManagerRng.seeded(7)
+    version = rng.draw_version
+
+    rng.random(4)
+    assert rng.draw_version == version + 1
+    rng.uniform(0.0, 1.0, (4,))
+    assert rng.draw_version == version + 2
+    rng.standard_normal(4)
+    assert rng.draw_version == version + 3
+    rng.normal(0.0, 1.0, (4,))
+    assert rng.draw_version == version + 4
+    rng.integers(0, 2, (4,))
+    assert rng.draw_version == version + 5
+    rng.choice(2, 4, p=torch.tensor((0.5, 0.5)))
+    assert rng.draw_version == version + 6
+
+    state = rng.get_state()
+    rng.set_state(state)
+    assert rng.draw_version == version + 7
+
+    rng.manual_seed(9)
+    assert rng.draw_version == version + 8
+
+
 def test_numpy_manager_stream_stays_independent() -> None:
     # Contract guard: adding the Torch adapter must not alter generic Manager RNG.
     TorchManagerRng.seeded(11).random((2,))
