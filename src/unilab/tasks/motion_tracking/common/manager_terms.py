@@ -580,6 +580,14 @@ class MotionCommand(CommandTerm):
             body_lin_vel_w=torch.empty((self.num_envs, num_bodies, 3), device=self._device),
             body_ang_vel_w=torch.empty((self.num_envs, num_bodies, 3), device=self._device),
         )
+        self._motion_packet_scratch = MotionData(
+            joint_pos=torch.empty_like(self._motion_data.joint_pos),
+            joint_vel=torch.empty_like(self._motion_data.joint_vel),
+            body_pos_w=torch.empty_like(self._motion_data.body_pos_w),
+            body_quat_w=torch.empty_like(self._motion_data.body_quat_w),
+            body_lin_vel_w=torch.empty_like(self._motion_data.body_lin_vel_w),
+            body_ang_vel_w=torch.empty_like(self._motion_data.body_ang_vel_w),
+        )
         self._command = torch.empty((self.num_envs, num_joints * 2), device=self._device)
         self._body_pos_w = torch.empty((self.num_envs, num_bodies, 3), device=self._device)
         self.body_pos_relative_w = torch.empty_like(self._body_pos_w)
@@ -1207,12 +1215,7 @@ class MotionCommand(CommandTerm):
 
     def _ingest_motion_packet_mask(self, reset_mask: torch.Tensor, packet: torch.Tensor) -> None:
         """Merge a full-width motion packet into only selected rows."""
-        joint_pos = cast(torch.Tensor, self._motion_data.joint_pos)
-        joint_vel = cast(torch.Tensor, self._motion_data.joint_vel)
-        body_pos = cast(torch.Tensor, self._motion_data.body_pos_w)
-        body_quat = cast(torch.Tensor, self._motion_data.body_quat_w)
-        body_lin_vel = cast(torch.Tensor, self._motion_data.body_lin_vel_w)
-        body_ang_vel = cast(torch.Tensor, self._motion_data.body_ang_vel_w)
+        scratch = self._motion_packet_scratch
         num_bodies = len(self.cfg.body_names)
         num_joints = self.motion.num_joints
         joint_end = num_joints
@@ -1221,32 +1224,43 @@ class MotionCommand(CommandTerm):
         quat_end = body_end + num_bodies * 4
         lin_end = quat_end + num_bodies * 3
         ang_end = lin_end + num_bodies * 3
-        self._motion_data.joint_pos = torch.where(
-            reset_mask[:, None], packet[:, :joint_end], joint_pos
+        torch.where(
+            reset_mask[:, None],
+            packet[:, :joint_end],
+            cast(torch.Tensor, self._motion_data.joint_pos),
+            out=cast(torch.Tensor, scratch.joint_pos),
         )
-        self._motion_data.joint_vel = torch.where(
-            reset_mask[:, None], packet[:, joint_end:vel_end], joint_vel
+        torch.where(
+            reset_mask[:, None],
+            packet[:, joint_end:vel_end],
+            cast(torch.Tensor, self._motion_data.joint_vel),
+            out=cast(torch.Tensor, scratch.joint_vel),
         )
-        self._motion_data.body_pos_w = torch.where(
-            reset_mask[:, None, None],
-            packet[:, vel_end:body_end].view(self.num_envs, num_bodies, 3),
-            body_pos,
-        )
-        self._motion_data.body_quat_w = torch.where(
-            reset_mask[:, None, None],
-            packet[:, body_end:quat_end].view(self.num_envs, num_bodies, 4),
-            body_quat,
-        )
-        self._motion_data.body_lin_vel_w = torch.where(
+        torch.where(
             reset_mask[:, None, None],
             packet[:, quat_end:lin_end].view(self.num_envs, num_bodies, 3),
-            body_lin_vel,
+            cast(torch.Tensor, self._motion_data.body_lin_vel_w),
+            out=cast(torch.Tensor, scratch.body_lin_vel_w),
         )
-        self._motion_data.body_ang_vel_w = torch.where(
+        torch.where(
             reset_mask[:, None, None],
             packet[:, lin_end:ang_end].view(self.num_envs, num_bodies, 3),
-            body_ang_vel,
+            cast(torch.Tensor, self._motion_data.body_ang_vel_w),
+            out=cast(torch.Tensor, scratch.body_ang_vel_w),
         )
+        torch.where(
+            reset_mask[:, None, None],
+            packet[:, vel_end:body_end].view(self.num_envs, num_bodies, 3),
+            cast(torch.Tensor, self._motion_data.body_pos_w),
+            out=cast(torch.Tensor, scratch.body_pos_w),
+        )
+        torch.where(
+            reset_mask[:, None, None],
+            packet[:, body_end:quat_end].view(self.num_envs, num_bodies, 4),
+            cast(torch.Tensor, self._motion_data.body_quat_w),
+            out=cast(torch.Tensor, scratch.body_quat_w),
+        )
+        self._motion_data, self._motion_packet_scratch = scratch, self._motion_data
         self._body_pos_w.copy_(
             torch.where(
                 reset_mask[:, None, None],

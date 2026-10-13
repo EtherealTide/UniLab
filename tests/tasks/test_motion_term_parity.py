@@ -991,3 +991,59 @@ def test_motion_reset_values_kernel_matches_eager_and_reuses_scratch() -> None:
         torch.testing.assert_close(
             root_scratch[:count], torch.from_numpy(expected_root), rtol=2e-6, atol=2e-6
         )
+
+
+def test_motion_packet_ingest_swaps_two_persistent_carriers() -> None:
+    command = mt.MotionCommand.__new__(mt.MotionCommand)
+    command._num_envs = 3
+    command.motion = SimpleNamespace(num_joints=2)
+    command.cfg = SimpleNamespace(body_names=("pelvis", "torso"))
+    command._motion_data = MotionData(
+        joint_pos=torch.zeros((3, 2)),
+        joint_vel=torch.ones((3, 2)),
+        body_pos_w=torch.full((3, 2, 3), 1.0),
+        body_quat_w=torch.tensor((1.0, 0.0, 0.0, 0.0)).repeat(3, 2, 1),
+        body_lin_vel_w=torch.full((3, 2, 3), 2.0),
+        body_ang_vel_w=torch.full((3, 2, 3), 3.0),
+    )
+    command._motion_packet_scratch = MotionData(
+        joint_pos=torch.empty_like(command._motion_data.joint_pos),
+        joint_vel=torch.empty_like(command._motion_data.joint_vel),
+        body_pos_w=torch.empty_like(command._motion_data.body_pos_w),
+        body_quat_w=torch.empty_like(command._motion_data.body_quat_w),
+        body_lin_vel_w=torch.empty_like(command._motion_data.body_lin_vel_w),
+        body_ang_vel_w=torch.empty_like(command._motion_data.body_ang_vel_w),
+    )
+    command._body_pos_w = torch.full((3, 2, 3), -1.0)
+    command._command = torch.full((3, 4), -2.0)
+    command._env_origins = torch.zeros((3, 3))
+    command._env = SimpleNamespace(num_envs=3)
+
+    num_joints = command.motion.num_joints
+    packet = torch.zeros((3, 32), dtype=torch.float32)
+    packet[:, : num_joints * 2] = 7.0
+    packet[:, num_joints * 2 : num_joints * 2 + 6] = 8.0
+    packet[:, num_joints * 2 + 6 : num_joints * 2 + 14] = 9.0
+    packet[:, num_joints * 2 + 14 : num_joints * 2 + 20] = 10.0
+    packet[:, num_joints * 2 + 20 : num_joints * 2 + 26] = 11.0
+    packet[:, num_joints * 2 + 26 :] = 12.0
+    first_data = command._motion_data
+    first_scratch = command._motion_packet_scratch
+    mask = torch.tensor([False, True, False])
+
+    command._ingest_motion_packet_mask(mask, packet)
+
+    assert command._motion_data is first_scratch
+    assert command._motion_packet_scratch is first_data
+    assert command._motion_data.joint_pos.data_ptr() == first_scratch.joint_pos.data_ptr()
+    assert command._motion_data.joint_pos[1].eq(7.0).all()
+    assert command._motion_data.joint_pos[[0, 2]].eq(0.0).all()
+    assert command._motion_data.body_pos_w[1].eq(8.0).all()
+    assert command._motion_data.body_pos_w[[0, 2]].eq(1.0).all()
+    assert command._motion_data.body_quat_w[1].eq(9.0).all()
+    assert command._motion_data.body_lin_vel_w[1].eq(10.0).all()
+    assert command._motion_data.body_ang_vel_w[1].eq(11.0).all()
+    assert command._body_pos_w[1].eq(8.0).all()
+    assert command._body_pos_w[[0, 2]].eq(-1.0).all()
+    assert command._command[1].eq(7.0).all()
+    assert command._command[[0, 2]].eq(-2.0).all()
