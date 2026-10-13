@@ -4111,3 +4111,17 @@ def test_manager_public_action_verdict_reuses_owner_record() -> None:
     assert calls[0] is actions
     assert env.action_manager.action_finite_valid.item() is True
     env.close()
+
+
+def test_deferred_validation_switch_propagates_to_backend_fused_boundary() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    calls: list[bool] = []
+
+    def record(enabled: bool) -> None:
+        calls.append(enabled)
+
+    env._backend.set_defer_torch_fused_validation = record  # type: ignore[method-assign]
+    env.set_deferred_validation_boundaries(True)
+
+    assert calls == [True]
+    env.close()
