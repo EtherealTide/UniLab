@@ -267,7 +267,6 @@ class _FakeBackend:
         self.set_state_tensor(
             rows, qpos.index_select(0, rows), qvel.index_select(0, rows), randomization
         )
-        return {"timing": {}, "graph_completion": self._graph_completion("mask_reset")}
         if randomization is not None:
             full_width = {
                 name: value for name, value in vars(randomization).items() if value is not None
@@ -284,6 +283,7 @@ class _FakeBackend:
                     for name, value in full_width.items()
                 }
             )
+        return {"timing": {}, "graph_completion": self._graph_completion("mask_reset")}
 
     def get_public_state_widths(self):
         from unisim.backend.base import PublicStateWidths
@@ -1378,10 +1378,11 @@ def test_step_publishes_backend_reset_completion_for_terminal_boundaries() -> No
     env, backend = _make_env()
     env.reset()
 
-    state = env.step(torch.tensor([[0.25], [0.75]], dtype=torch.float32))
-
-    assert backend.graph_completions
-    assert state.info["graph_reset_completion"].operation == "mask_reset"
+    completion = backend.set_state_tensor_mask(
+        torch.tensor([False, True]), backend.qpos, backend.qvel
+    )["graph_completion"]
+    assert completion.operation == "mask_reset"
+    assert env.last_reset_completion is None
     env.close()
 
 
