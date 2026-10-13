@@ -88,6 +88,7 @@ class _FakeBackend:
         self.lifecycle: list[str] = []
         self.sensors: dict[str, torch.Tensor] = {}
         self.set_state_calls: list[tuple[Any, Any, Any]] = []
+        self.graph_completions: list[Any] = []
         self.qpos = torch.zeros((num_envs, 4), dtype=torch.float32)
         self.qvel = torch.zeros((num_envs, 3), dtype=torch.float32)
 
@@ -266,6 +267,7 @@ class _FakeBackend:
         self.set_state_tensor(
             rows, qpos.index_select(0, rows), qvel.index_select(0, rows), randomization
         )
+        return {"timing": {}, "graph_completion": self._graph_completion("mask_reset")}
         if randomization is not None:
             full_width = {
                 name: value for name, value in vars(randomization).items() if value is not None
@@ -307,6 +309,19 @@ class _FakeBackend:
     def step_tensor(self, ctrl: torch.Tensor, nsteps: int = 1) -> None:
         self.tensor_controls.append(ctrl.detach().clone())
         self.step(ctrl.detach().cpu().numpy(), nsteps)
+        return {"timing": {}, "graph_completion": self._graph_completion("step")}
+
+    def _graph_completion(self, operation: str):
+        from unisim import GraphCompletionToken, GraphLifecycleState
+
+        return GraphCompletionToken(
+            contract_version=1,
+            lifecycle_state=GraphLifecycleState.READY,
+            operation=operation,
+            sequence=len(self.set_state_calls) + len(self.tensor_controls),
+            stream_id=self.torch_stream_id or 0,
+            capture_id="test-capture",
+        )
 
     def step(self, ctrl: np.ndarray, nsteps: int = 1) -> None:
         assert self.materialize_calls == 1
@@ -1329,6 +1344,26 @@ def test_step_publishes_fixed_width_reward_components_for_tensor_collectors() ->
         state.info["reward_components"],
         torch.tensor([[0.25], [0.75]], dtype=torch.float32),
     )
+    env.close()
+
+
+def test_step_publishes_backend_graph_completion_for_transition_consumers() -> None:
+    env, _backend = _make_env()
+    env.reset()
+    state = env.step(torch.tensor([[0.25], [0.75]], dtype=torch.float32))
+
+    assert state.info["graph_completion"].operation == "step"
+    env.close()
+
+
+def test_step_publishes_backend_reset_completion_for_terminal_boundaries() -> None:
+    env, backend = _make_env()
+    env.reset()
+
+    state = env.step(torch.tensor([[0.25], [0.75]], dtype=torch.float32))
+
+    assert backend.graph_completions
+    assert state.info["graph_reset_completion"].operation == "mask_reset"
     env.close()
 
 
