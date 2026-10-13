@@ -1560,6 +1560,7 @@ class ManagerBasedRlEnv(TorchEnv):
         if not isinstance(enabled, bool):
             raise TypeError(f"deferred validation boundaries must be bool, got {type(enabled)}")
         super().set_deferred_validation_boundaries(enabled)
+        self.action_manager.set_deferred_validation_boundaries(enabled)
         self.reward_manager.set_deferred_validation_boundaries(enabled)
         self._reset_state.set_deferred_payload_validation(enabled)
         self._reset_state.set_deferred_mask_validation(enabled)
@@ -1579,6 +1580,7 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def publish_validation_verdicts(self) -> None:
         """Publish env, reward, and fused reset verdicts at one boundary."""
+        self.action_manager.publish_validation_verdict()
         self.reward_manager.publish_validation_verdict()
         self._reset_state.publish_payload_validation_verdicts(term_name="reset_state")
         self._reset_state.publish_mask_validation_verdicts()

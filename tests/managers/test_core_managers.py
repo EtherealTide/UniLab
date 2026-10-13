@@ -543,3 +543,19 @@ def test_scene_entity_selector_resolution(fake_env: FakeEnv) -> None:
     inconsistent = SceneEntityCfg(name="robot", joint_names="hip", joint_ids=[1])
     with pytest.raises(ValueError, match="Inconsistent joint"):
         inconsistent.resolve(fake_env.scene)
+
+
+def test_deferred_action_validation_fails_closed_at_boundary(fake_env: FakeEnv) -> None:
+    manager = ActionManager({"a": DummyActionCfg(entity_name="robot", dim=2)}, fake_env)
+    manager.set_deferred_validation_boundaries(True)
+    assert manager.deferred_validation_boundaries is True
+
+    invalid = torch.ones((fake_env.num_envs, 2), dtype=torch.float32)
+    invalid[1] = torch.nan
+
+    accepted = manager.process_action(invalid)
+
+    assert accepted is None
+    assert manager.action_finite_valid.item() is False
+    with pytest.raises(ValueError, match="action containing NaN or Inf"):
+        manager.publish_validation_verdict()

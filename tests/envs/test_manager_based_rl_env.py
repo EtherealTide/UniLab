@@ -1321,11 +1321,13 @@ def test_deferred_validation_boundaries_propagate_to_owner_verdicts() -> None:
     env.set_deferred_validation_boundaries(True)
 
     assert env.deferred_validation_boundaries is True
+    assert env.action_manager.deferred_validation_boundaries is True
     assert env.reward_manager.deferred_validation_boundaries is True
     assert env._reset_state.deferred_payload_validation is True
     assert env._reset_state.deferred_mask_validation is True
 
     env.reward_manager._finite_valid.fill_(False)
+    env.action_manager._action_finite_valid.fill_(True)
     with pytest.raises(ValueError, match="RewardManager returned a non-finite reward"):
         env.publish_validation_verdicts()
     env.close()
