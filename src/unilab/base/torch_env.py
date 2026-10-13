@@ -505,9 +505,6 @@ class TorchEnv(ABEnv):
         detail_timing = {key: 0.0 for key in RESET_DONE_DETAIL_TIMING_KEYS}
         done = self._state.terminated | self._state.truncated
         self._reset_done_count.copy_(done.sum())
-        if self._reset_done_count == 0:
-            self._clear_reset_done_detail_timing(self._state.info.setdefault("timing", {}))
-            return
 
         terminal_started = time.perf_counter()
         detail_timing["reset_done_count"] = float(self._reset_done_count)

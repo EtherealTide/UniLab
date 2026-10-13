@@ -2518,14 +2518,15 @@ def test_update_state_reuses_backend_state_once_and_refreshes_after_physics() ->
 
     before = backend.dof_pos_calls
     state = env.step(torch.zeros((2, 1), dtype=torch.float32))
-    assert backend.dof_pos_calls == before + 1
+    # The empty-mask autoreset also runs the fixed-width post-reset read.
+    assert backend.dof_pos_calls == before + 2
     torch.testing.assert_close(state.reward, torch.ones(2))
     torch.testing.assert_close(state.obs["obs"], torch.ones((2, 1)))
     torch.testing.assert_close(state.obs["critic"], torch.ones((2, 1)))
 
     before = backend.dof_pos_calls
     state = env.step(torch.zeros((2, 1), dtype=torch.float32))
-    assert backend.dof_pos_calls == before + 1
+    assert backend.dof_pos_calls == before + 2
     torch.testing.assert_close(state.reward, torch.full((2,), 2.0))
     torch.testing.assert_close(state.obs["obs"], torch.full((2, 1), 2.0))
 
@@ -2544,7 +2545,7 @@ def test_update_state_invalidates_cache_after_command_set_state() -> None:
     # Physics advances the pre-command state to 1.75. The command then commits
     # 0.75 through set_state, so post-command observations must not reuse the
     # termination/reward snapshot.
-    assert backend.dof_pos_calls == before + 2
+    assert backend.dof_pos_calls == before + 3
     torch.testing.assert_close(state.reward, torch.full((2,), 1.75))
     torch.testing.assert_close(state.obs["obs"], torch.full((2, 1), 0.75))
     torch.testing.assert_close(state.obs["critic"], torch.full((2, 1), 0.75))
@@ -2561,7 +2562,7 @@ def test_update_state_invalidates_cache_after_runtime_event() -> None:
     before = backend.dof_pos_calls
     state = env.step(torch.zeros((2, 1), dtype=torch.float32))
 
-    assert backend.dof_pos_calls == before + 2
+    assert backend.dof_pos_calls == before + 3
     torch.testing.assert_close(state.reward, torch.ones(2))
     torch.testing.assert_close(state.obs["obs"], torch.full((2, 1), 11.0))
     torch.testing.assert_close(state.obs["critic"], torch.full((2, 1), 11.0))

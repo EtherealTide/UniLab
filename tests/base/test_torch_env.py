@@ -209,14 +209,15 @@ def test_unsupported_backend_tensor_runtime_fails_closed() -> None:
         env.init_state()
 
 
-def test_step_without_done_does_not_create_final_observation() -> None:
+def test_step_without_done_runs_fixed_width_reset_and_publishes_terminal_carrier() -> None:
     env = _StubTorchEnv(terminate=False)
     env.init_state()
     env.reset_masks.clear()
     state = env.step(_actions(env))
 
-    assert env.reset_masks == []
-    assert state.final_observation is None
+    assert [mask.tolist() for mask in env.reset_masks] == [[False, False, False]]
+    assert state.final_observation is not None
+    torch.testing.assert_close(state.final_observation["obs"], torch.ones((3, 3)))
     assert state.info["timing"]["reset_done_count"] == 0.0
 
 
@@ -301,7 +302,10 @@ def test_timeout_computes_truncation_and_mask_reset() -> None:
 
     assert not bool(first.truncated.any())
     assert bool(second.truncated.any())
-    assert [mask.tolist() for mask in env.reset_masks] == [[True, True, True]]
+    assert [mask.tolist() for mask in env.reset_masks] == [
+        [False, False, False],
+        [True, True, True],
+    ]
 
 
 def test_numpy_actions_and_wrong_device_fail_closed() -> None:
