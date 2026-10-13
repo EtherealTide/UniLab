@@ -815,6 +815,7 @@ class _Command(CommandTerm):
     def __init__(self, cfg: _CommandCfg, env) -> None:
         super().__init__(cfg, env)
         self._command = torch.zeros((self.num_envs, 1), dtype=torch.float32)
+        self.reset_masks: list[torch.Tensor] = []
 
     @property
     def command(self) -> torch.Tensor:
@@ -826,6 +827,7 @@ class _Command(CommandTerm):
     def _resample_command(self, reset_mask: torch.Tensor) -> None:
         rng = self._env.torch_rng
         assert rng is not None
+        self.reset_masks.append(reset_mask.clone())
         samples = rng.uniform(0.0, 1.0, self._command.shape, dtype=torch.float32)
         self._command.copy_(torch.where(reset_mask[:, None], samples, self._command))
 
@@ -3855,3 +3857,71 @@ def test_mask_reset_publishes_cleared_action_observation() -> None:
         torch.testing.assert_close(reset_obs["obs"][1, 1], torch.tensor(0.0))
     finally:
         env.close()
+
+
+def test_autoreset_empty_partial_and_full_masks_share_one_fixed_width_lifecycle() -> None:
+    """All autoreset widths enter the same reset and command lifecycle."""
+    cfg = _make_cfg()
+    cfg.terminations = {
+        "selective": TerminationTermCfg(
+            func=lambda env: torch.full((env.num_envs,), env.step_counter == 1, dtype=torch.bool),
+        ),
+        "time_out": None,
+    }
+    cfg.max_episode_seconds = 10.0
+    env, _backend = _make_env(cfg)
+    env.init_state()
+    command = env.command_manager.get_term("target")
+    assert isinstance(command, _Command)
+    command.reset_masks.clear()
+    recorder_traces_before = len(env.trace)
+
+    first = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+    second = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+    third = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+
+    observed = [mask.tolist() for mask in command.reset_masks]
+    assert observed[:3] == [[False, False]] * 3
+    assert observed[3:]
+    assert first.final_observation is None
+    assert second.final_observation is None
+    assert third.final_observation is not None
+    trace = env.trace[recorder_traces_before:]
+    assert trace.count(("pre_reset", [False, False])) == 2
+    assert trace.count(("post_reset", [False, False])) == 2
+    assert ("pre_reset", [True, True]) in trace
+    assert ("post_reset", [True, True]) in trace
+    assert trace.count("post_step") == 3
+    env.close()
+
+
+def test_autoreset_mask_widths_match_termination_masks() -> None:
+    cfg = _make_cfg()
+    cfg.terminations = {"selective": TerminationTermCfg(func=_selective_failure)}
+    env, _backend = _make_env(cfg)
+    env.init_state()
+    command = env.command_manager.get_term("target")
+    assert isinstance(command, _Command)
+    command.reset_masks.clear()
+
+    for step in range(3):
+        actions = torch.tensor(
+            [[0.9 if (step + row) % 3 == 0 else 0.0] for row in range(2)],
+            dtype=torch.float32,
+            device=env.device,
+        )
+        env.step(actions)
+
+    observed = [mask.tolist() for mask in command.reset_masks]
+    assert observed[:4] == [
+        [False, False],
+        [True, False],
+        [True, False],
+        [False, False],
+    ]
+    assert observed[4:]
+    env.close()
+
+
+def _selective_failure(env: _TestEnv) -> torch.Tensor:
+    return env.action_manager.action[:, 0] > 0.8
