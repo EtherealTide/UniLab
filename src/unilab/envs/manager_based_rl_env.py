@@ -1212,7 +1212,7 @@ class ManagerBasedRlEnv(TorchEnv):
             # process control from the previous state boundary, then refresh
             # state once after physics.
             read_plan.refresh()
-        self.action_manager.process_action(actions)
+        self.action_manager.process_public_action(actions)
         self._sim_step_counter += self._cfg.sim_substeps
         self.action_manager.apply_action()
         return self._control_to_backend_boundary()

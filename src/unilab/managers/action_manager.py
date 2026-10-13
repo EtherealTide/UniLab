@@ -215,6 +215,10 @@ class ActionManager(ManagerBase):
         """Record the public full-width action verdict without publication."""
         self._action_finite_valid.copy_(torch.isfinite(action).all())
 
+    def process_public_action(self, action: torch.Tensor) -> None:
+        """Process an action whose full-width verdict was already recorded."""
+        self.process_action(action, reuse_recorded_verdict=True)
+
     @property
     def active_terms(self) -> list[str]:
         return self._term_names
@@ -279,7 +283,7 @@ class ActionManager(ManagerBase):
                 f"bool dtype, and device {self._device}"
             )
 
-    def process_action(self, action: torch.Tensor) -> None:
+    def process_action(self, action: torch.Tensor, *, reuse_recorded_verdict: bool = False) -> None:
         """Store the raw policy output and route slices to each action term.
 
         Called once per policy step. The raw action tensor is saved into the
@@ -303,8 +307,11 @@ class ActionManager(ManagerBase):
             raise ValueError(
                 f"ActionManager action device must be {self._device}, received {action.device}"
             )
-        valid = torch.isfinite(action).all()
-        self._action_finite_valid.copy_(valid)
+        if reuse_recorded_verdict:
+            valid = self._action_finite_valid
+        else:
+            valid = torch.isfinite(action).all()
+            self._action_finite_valid.copy_(valid)
         if self._deferred_validation_boundaries:
             return
         if not bool(valid):

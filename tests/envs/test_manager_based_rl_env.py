@@ -4089,3 +4089,25 @@ def test_manager_action_verdict_is_recorded_once_by_owner() -> None:
     assert env._action_finite_valid.item() is True
     assert env.action_manager.action_finite_valid.item() is True
     env.close()
+
+
+def test_manager_public_action_verdict_reuses_owner_record() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env.set_deferred_validation_boundaries(True)
+    env.init_state()
+    calls: list[torch.Tensor] = []
+    original_process = env.action_manager.process_action
+
+    def record_calls(actions: torch.Tensor, *, reuse_recorded_verdict: bool = False) -> None:
+        calls.append(actions)
+        original_process(actions, reuse_recorded_verdict=reuse_recorded_verdict)
+
+    env.action_manager.process_action = record_calls  # type: ignore[method-assign]
+    actions = torch.zeros((2, 1), dtype=torch.float32, device=env.device)
+    env._action_finite_valid.fill_(False)
+    env.step(actions)
+
+    assert len(calls) == 1
+    assert calls[0] is actions
+    assert env.action_manager.action_finite_valid.item() is True
+    env.close()
