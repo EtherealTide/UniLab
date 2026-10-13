@@ -4047,3 +4047,14 @@ def test_unified_validation_pack_fails_closed_on_invalid_state() -> None:
     with pytest.raises(ValueError, match="TorchEnvState contains NaN or Inf"):
         env.publish_validation_verdicts()
     env.close()
+
+
+def test_deferred_action_owner_publication_reports_manager_verdict() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env.set_deferred_validation_boundaries(True)
+    env.init_state()
+    env.action_manager._action_finite_valid.fill_(False)
+
+    with pytest.raises(ValueError, match="ActionManager received an action containing NaN"):
+        env.publish_validation_verdicts()
+    env.close()
