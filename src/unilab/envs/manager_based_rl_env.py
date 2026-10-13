@@ -1598,6 +1598,10 @@ class ManagerBasedRlEnv(TorchEnv):
         flags["action_finite"] = self.action_manager.action_finite_valid
         return flags
 
+    def _record_action_finite(self, actions: torch.Tensor) -> None:
+        """Let the action owner record the public finite verdict."""
+        self.action_manager.record_public_action_finite(actions)
+
     def _refresh_tensor_reads_after_mutation(self) -> None:
         """Repack scene tensor reads after an in-phase simulation mutation."""
         read_plan = self.scene._tensor_read_plan

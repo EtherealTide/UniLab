@@ -211,6 +211,10 @@ class ActionManager(ManagerBase):
             return
         raise ValueError("ActionManager received an action containing NaN or Inf.")
 
+    def record_public_action_finite(self, action: torch.Tensor) -> None:
+        """Record the public full-width action verdict without publication."""
+        self._action_finite_valid.copy_(torch.isfinite(action).all())
+
     @property
     def active_terms(self) -> list[str]:
         return self._term_names

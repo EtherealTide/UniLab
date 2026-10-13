@@ -4068,3 +4068,24 @@ def test_manager_validation_pack_uses_action_manager_verdict() -> None:
 
     assert env._validation_flags()["action_finite"] is env.action_manager.action_finite_valid
     env.close()
+
+
+def test_manager_action_verdict_is_recorded_once_by_owner() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env.init_state()
+    original_record = env.action_manager.record_public_action_finite
+    calls: list[torch.Tensor] = []
+
+    def record(actions: torch.Tensor) -> None:
+        calls.append(actions)
+        original_record(actions)
+
+    env.action_manager.record_public_action_finite = record  # type: ignore[method-assign]
+    actions = torch.zeros((2, 1), dtype=torch.float32, device=env.device)
+    env.step(actions)
+
+    assert len(calls) == 1
+    assert calls[0] is actions
+    assert env._action_finite_valid.item() is True
+    assert env.action_manager.action_finite_valid.item() is True
+    env.close()

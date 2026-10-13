@@ -214,8 +214,7 @@ class TorchEnv(ABEnv):
         cpu_started = _cpu_time()
         phase = time.perf_counter()
         self._validate_action_contract(actions)
-        action_valid = torch.isfinite(actions).all()
-        self._action_finite_valid.copy_(action_valid)
+        self._record_action_finite(actions)
         action_validate_ms = (time.perf_counter() - phase) * 1000.0
         self._bind_tensor_runtime()
         if self._state is None:
@@ -303,8 +302,8 @@ class TorchEnv(ABEnv):
 
     def _validate_action(self, actions: torch.Tensor) -> None:
         self._validate_action_contract(actions)
-        valid = torch.isfinite(actions).all()
-        self._action_finite_valid.copy_(valid)
+        self._record_action_finite(actions)
+        valid = self._action_finite_valid
         if self._defer_validation_at_boundaries:
             return
         if not bool(valid):
@@ -397,6 +396,10 @@ class TorchEnv(ABEnv):
             raise TypeError(f"TorchEnvState {label} must be floating-point")
         if not bool(torch.isfinite(value).all()):
             raise ValueError(f"TorchEnvState {label} contains NaN or Inf")
+
+    def _record_action_finite(self, actions: torch.Tensor) -> None:
+        """Record the public action finite verdict on its persistent carrier."""
+        self._action_finite_valid.copy_(torch.isfinite(actions).all())
 
     def _validation_flags(self) -> dict[str, torch.Tensor]:
         """Return persistent device-resident verdicts for interval publication.
