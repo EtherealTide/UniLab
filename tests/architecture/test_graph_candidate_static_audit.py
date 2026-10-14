@@ -100,12 +100,12 @@ OUT_OF_CAPTURE_VIOLATIONS: frozenset[tuple[str, int, str]] = frozenset(
         ),
         (
             "src/unilab/managers/observation_manager.py",
-            607,
+            622,
             "cast(torch.Tensor, obs).clone()",
         ),
         (
             "src/unilab/managers/observation_manager.py",
-            680,
+            695,
             "torch.cat(tensors, dim=self._group_obs_concatenate_dim[group_name])",
         ),
         (

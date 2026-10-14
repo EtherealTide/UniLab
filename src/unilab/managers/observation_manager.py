@@ -177,6 +177,8 @@ class ObservationManager(ManagerBase):
         self._group_term_noise_generation: dict[tuple[str, str], int] = dict()
         self._deferred_validation_boundaries = False
         self._group_finite_valid: dict[str, torch.Tensor] = {}
+        self._group_finite_scratch: dict[str, torch.Tensor] = {}
+        self._group_finite_value_scratch: dict[str, torch.Tensor] = {}
 
         for group_name, group_term_dims in self._group_obs_term_dim.items():
             if self._group_obs_concatenate[group_name]:
@@ -190,8 +192,21 @@ class ObservationManager(ManagerBase):
 
         self._obs_buffer: dict[str, torch.Tensor | dict[str, torch.Tensor]] | None = None
         for group_name, group_dim in self._group_obs_dim.items():
-            group_tail = group_dim[1:]
-            verdict_shape = (self.num_envs, *(size for size in group_tail if isinstance(size, int)))
+            # Deferred finite verdicts are row-owned: every non-batch dimension
+            # is reduced exactly once. Keep the full-width boolean mask resident
+            # too because isfinite has no out= overload.
+            verdict_shape = (self.num_envs,)
+            if self._group_obs_concatenate[group_name]:
+                self._group_finite_value_scratch[group_name] = torch.empty(
+                    (self.num_envs, *group_dim),
+                    dtype=torch.float32,
+                    device=self._device,
+                )
+            self._group_finite_scratch[group_name] = torch.empty(
+                (self.num_envs, *group_dim),
+                dtype=torch.bool,
+                device=self._device,
+            ) if self._group_obs_concatenate[group_name] else None
             self._group_finite_valid[group_name] = torch.ones(
                 verdict_shape, dtype=torch.bool, device=self._device
             )
@@ -682,7 +697,10 @@ class ObservationManager(ManagerBase):
                     dim=self._group_obs_concatenate_dim[group_name],
                 )
             if defer_error_nan_check:
-                finite = torch.isfinite(result)
+                finite_value = self._group_finite_value_scratch[group_name]
+                torch.sub(result, result, out=finite_value)
+                finite = self._group_finite_scratch[group_name]
+                torch.eq(finite_value, 0.0, out=finite)
                 verdict = self._group_finite_valid[group_name]
                 torch.all(finite, dim=tuple(range(1, finite.ndim)), out=verdict)
                 if self._deferred_validation_boundaries:
