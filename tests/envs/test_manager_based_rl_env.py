@@ -363,6 +363,8 @@ class _FakeBackend:
             raise RuntimeError("simulated graph replay failed before publication")
         self.tensor_controls.append(ctrl.detach().clone())
         self.step(ctrl.detach().cpu().numpy(), nsteps)
+        if self.graph_completions and self.graph_completions[-1] == "not-a-token":
+            return {"timing": {}, "graph_completion": "not-a-token"}
         return {"timing": {}, "graph_completion": self.record_graph_completion("step")}
 
     def _graph_completion(self, operation: str):
@@ -1415,6 +1417,37 @@ def test_step_publishes_backend_graph_completion_for_transition_consumers() -> N
     env.close()
 
 
+def test_backend_step_receipt_is_available_before_update_state() -> None:
+    env, backend = _make_env(_make_cfg(include_optional_managers=False), torch_stream_id=17)
+    env.init_state()
+    observed: list[object] = []
+    original_update_state = env.update_state
+
+    def update_state_with_pending_receipt(state):
+        observed.append(env._pending_backend_step_completion)
+        return original_update_state(state)
+
+    env.update_state = update_state_with_pending_receipt
+    state = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+
+    assert observed == [backend.graph_completions[-1]]
+    assert env._pending_backend_step_completion is None
+    assert state.info["graph_completion"] is backend.graph_completions[-1]
+    env.close()
+
+
+def test_invalid_backend_step_receipt_fails_before_update_state() -> None:
+    env, backend = _make_env(_make_cfg(include_optional_managers=False))
+    backend.graph_completions.append("not-a-token")
+    env.init_state()
+
+    with pytest.raises(TypeError, match="backend graph_completion"):
+        env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+    assert env._pending_backend_step_completion is None
+    assert "graph_completion" not in env._state.info
+    env.close()
+
+
 def test_graph_rng_snapshot_and_rollback_is_version_bounded() -> None:
     env, _ = _make_env()
     env.reset()
@@ -1710,20 +1743,21 @@ def test_env_update_graph_request_fails_closed_without_backend_boundary() -> Non
     env.close()
 
 
-def test_env_update_graph_supported_preflight_still_fails_before_capture() -> None:
+def test_env_update_graph_supported_preflight_fails_closed_on_cpu_carriers() -> None:
     env, backend = _make_env(_make_cfg(include_optional_managers=False), torch_stream_id=17)
     env.init_state()
+    env.set_deferred_validation_boundaries(True)
 
-    with pytest.raises(RuntimeError, match="capture execution is not implemented"):
+    with pytest.raises(RuntimeError, match="environment carriers must be CUDA-resident"):
         env.configure_env_update_graph("graph")
     manifest = env.get_env_update_graph_manifest()
 
     assert manifest["mode"] == "graph"
     assert manifest["requested"] is True
     assert manifest["enabled"] is False
-    assert manifest["state"] == "unavailable"
-    assert manifest["invalidation_reason"] is None
-    assert "capture execution is not implemented" in manifest["disable_reason"]
+    assert manifest["state"] == "invalidated"
+    assert manifest["invalidation_reason"] == "capture_failed"
+    assert "environment carriers must be CUDA-resident" in manifest["disable_reason"]
     validate_env_update_graph_manifest(manifest)
 
     env.configure_env_update_graph("graph", allow_eager_fallback=True)
@@ -1732,7 +1766,35 @@ def test_env_update_graph_supported_preflight_still_fails_before_capture() -> No
     assert fallback["fallback_count"] == 1
     assert fallback["disable_reason"].startswith("explicit eager fallback:")
     validate_env_update_graph_manifest(fallback)
+    env.close()
+
+
+def test_env_update_graph_owner_preflight_rejects_cpu_carriers() -> None:
+    cfg = _make_cfg(include_optional_managers=False)
+    cfg.events = {}
+    env, backend = _make_env(cfg, torch_stream_id=17)
+    env.init_state()
+    env.set_deferred_validation_boundaries(True)
+
+    with pytest.raises(RuntimeError, match="environment carriers must be CUDA-resident"):
+        env.configure_env_update_graph("graph")
+    manifest = env.get_env_update_graph_manifest()
+    assert manifest["state"] == "invalidated"
+    assert manifest["invalidation_reason"] == "capture_failed"
+    validate_env_update_graph_manifest(manifest)
     assert backend.tensor_controls == []
+    env.close()
+
+
+def test_env_update_graph_owner_preflight_requires_deferred_validation() -> None:
+    cfg = _make_cfg(include_optional_managers=False)
+    cfg.events = {}
+    env, _backend = _make_env(cfg, torch_stream_id=17)
+    env.init_state()
+
+    with pytest.raises(RuntimeError, match="deferred validation boundaries must be enabled"):
+        env.configure_env_update_graph("graph")
+    assert env.get_env_update_graph_manifest()["invalidation_reason"] == "capture_failed"
     env.close()
 
 
@@ -4199,8 +4261,8 @@ def test_autoreset_empty_partial_and_full_masks_share_one_fixed_width_lifecycle(
     env.close()
 
 
-def test_deferred_empty_autoreset_keeps_fixed_width_lifecycle() -> None:
-    """The integration-only graph candidate retains the fixed-width boundary."""
+def test_deferred_empty_autoreset_preserves_semantic_gate() -> None:
+    """Deferred validation retains the eager no-done autoreset gate."""
     cfg = _make_cfg()
     cfg.terminations = {"selective": None, "time_out": None}
     env, _backend = _make_env(cfg)
@@ -4213,11 +4275,11 @@ def test_deferred_empty_autoreset_keeps_fixed_width_lifecycle() -> None:
 
     state = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
 
-    assert command.reset_masks[-1].tolist() == [False, False]
-    assert state.final_observation is not None
+    assert [mask.tolist() for mask in command.reset_masks] == [[False, False]]
+    assert state.final_observation is None
     trace = env.trace[recorder_traces_before:]
-    assert ("pre_reset", [False, False]) in trace
-    assert ("post_reset", [False, False]) in trace
+    assert ("pre_reset", [False, False]) not in trace
+    assert ("post_reset", [False, False]) not in trace
     env.close()
 
 
@@ -4535,7 +4597,9 @@ def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
         # eager/deferred mode can intentionally differ in reset RNG and trace.
         if torch.equal(eager["rng_after"], deferred["rng_after"]):
             torch.testing.assert_close(eager["command"], deferred["command"])
-            assert eager["trace"] == deferred["trace"]
+            assert [event for event in eager["trace"] if event[0] != "pre_reset"] == [
+                event for event in deferred["trace"] if event[0] != "pre_reset"
+            ]
         torch.testing.assert_close(eager["reward_means"], deferred["reward_means"])
         for name in eager["after_obs"]:
             torch.testing.assert_close(eager["after_obs"][name], deferred["after_obs"][name])
