@@ -1513,10 +1513,17 @@ class ManagerBasedRlEnv(TorchEnv):
                 self._select_explicit_env_update_eager_fallback()
                 return
             raise RuntimeError(self._env_update_graph_disable_reason)
+        if self._state is None:
+            self._env_update_graph_state = "unavailable"
+            self._env_update_graph_disable_reason = "env update graph capture requires an initialized state"
+            if allow_eager_fallback:
+                self._select_explicit_env_update_eager_fallback()
+                return
+            raise RuntimeError(self._env_update_graph_disable_reason)
         try:
             capture_id, layout = self._env_update_graph_runtime.capture(
                 owner_verdict,
-                lambda: self._run_env_update_graph_body(self._state.info["steps"]),
+                lambda: self._run_env_update_graph_body(self._state.info["steps"]),  # type: ignore[union-attr]
                 current_layout=self.get_env_update_carrier_layout(),
             )
             if layout != self.get_env_update_carrier_layout():
@@ -1530,7 +1537,7 @@ class ManagerBasedRlEnv(TorchEnv):
         self._env_update_graph_capture_id = capture_id
         self._env_update_graph_state = "ready"
         self._env_update_graph_enabled = True
-        self._env_update_graph_disable_reason = None
+        self._env_update_graph_disable_reason = ""
         self._env_update_graph_runtime.layout = layout
         # The runtime's acceptance replay already produced real evidence;
         # publish that first replay rather than requiring a later step.

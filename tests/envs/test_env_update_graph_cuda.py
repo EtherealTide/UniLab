@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import torch
@@ -37,7 +37,7 @@ def _materialize_env() -> Any:
     with initialize_config_dir(config_dir=str(CONF_DIR / "ppo"), version_base="1.3"):
         hydra_cfg = compose("config", overrides=["task=g1_walk_flat/mjwarp"])
     override = BackendAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
-    env_cfg = registry.materialize_env_config("G1WalkFlat")
+    env_cfg = cast(Any, registry.materialize_env_config("G1WalkFlat"))
     apply_cfg_overrides(env_cfg, override)
     env_cfg.validate()
     assert env_cfg.scene is not None

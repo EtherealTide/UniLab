@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import torch
 from unisim import GraphCompletionToken, GraphLifecycleState
 
-from unilab.base.env_update_graph import validate_env_update_graph_manifest
 from tests.envs.test_manager_based_rl_env import _make_cfg, _make_env
+from unilab.base.env_update_graph import validate_env_update_graph_manifest
 
 
 class FakeEnvUpdateGraphRuntime:
@@ -58,10 +58,15 @@ def _make_graph_env():
     return env, backend
 
 
+def _state_steps(env: Any) -> torch.Tensor:
+    assert env._state is not None
+    return env._state.info["steps"]
+
+
 def test_env_update_runtime_rejects_cpu_before_capture() -> None:
     env, _backend = _make_graph_env()
     runtime = FakeEnvUpdateGraphRuntime()
-    env._env_update_graph_runtime = runtime
+    env._env_update_graph_runtime = cast(Any, runtime)
 
     with pytest.raises(RuntimeError, match="environment carriers must be CUDA-resident"):
         env.configure_env_update_graph("graph")
@@ -83,9 +88,9 @@ def test_env_update_graph_requires_runtime_before_capture() -> None:
 def test_env_update_runtime_requires_backend_receipt_for_replay() -> None:
     env, _backend = _make_graph_env()
     runtime = FakeEnvUpdateGraphRuntime()
-    env._env_update_graph_runtime = runtime
+    env._env_update_graph_runtime = cast(Any, runtime)
     with pytest.raises(RuntimeError, match="requires the backend step receipt"):
-        env._replay_env_update_graph_body(env._state.info["steps"])
+        env._replay_env_update_graph_body(_state_steps(env))
     env.close()
 
 
@@ -116,12 +121,12 @@ def test_env_update_runtime_rejects_stale_or_wrong_stream_receipt() -> None:
         lifecycle_state=GraphLifecycleState.READY,
         operation="mask_reset",
         sequence=1,
-        stream_id=env._env_update_graph_runtime.stream_id,
+        stream_id=env._env_update_graph_runtime.stream_id or 0,
         capture_id="backend-capture",
     )
     env._env_update_graph_backend_receipt = stale
     with pytest.raises(RuntimeError, match="receipt is not READY"):
-        env._replay_env_update_graph_body(env._state.info["steps"])
+        env._replay_env_update_graph_body(_state_steps(env))
 
     wrong_stream = GraphCompletionToken(
         contract_version=1,
@@ -133,8 +138,8 @@ def test_env_update_runtime_rejects_stale_or_wrong_stream_receipt() -> None:
     )
     env._env_update_graph_backend_receipt = wrong_stream
     with pytest.raises(RuntimeError, match="stream does not match"):
-        env._replay_env_update_graph_body(env._state.info["steps"])
-    assert env._env_update_graph_runtime.replay_calls == 0
+        env._replay_env_update_graph_body(_state_steps(env))
+    assert cast(Any, env._env_update_graph_runtime).replay_calls == 0
     env.close()
 
 
@@ -142,10 +147,11 @@ def test_env_update_runtime_rejects_carrier_layout_drift() -> None:
     env, _backend = _make_graph_env()
     _force_graph_ready(env)
     runtime = env._env_update_graph_runtime
+    assert runtime.layout is not None
     runtime.layout = {**runtime.layout, "device": "cuda:99"}
 
     with pytest.raises(RuntimeError, match="carrier layout changed"):
-        env._replay_env_update_graph_body(env._state.info["steps"])
+        env._replay_env_update_graph_body(_state_steps(env))
     manifest = env.get_env_update_graph_manifest()
     assert manifest["enabled"] is False
     assert manifest["state"] == "invalidated"
@@ -158,11 +164,12 @@ def test_env_update_runtime_replay_failure_preserves_transition_boundary() -> No
     env, backend = _make_graph_env()
     _force_graph_ready(env)
     runtime = env._env_update_graph_runtime
-    runtime.fail_replay = True
+    cast(Any, runtime).fail_replay = True
     actions = torch.zeros((env.num_envs, 1), dtype=torch.float32, device=env.device)
 
     with pytest.raises(RuntimeError, match="simulated replay failure"):
         env.step(actions)
+    assert env._state is not None
     assert "graph_completion" not in env._state.info
     assert env._env_update_graph_replay_count == 0
     assert env._pending_backend_step_completion is None

@@ -38,12 +38,12 @@ OUTSIDE_UPDATE_GRAPH_VIOLATIONS: frozenset[tuple[str, int, str]] = frozenset(
     {
         (
             "src/unilab/envs/manager_based_rl_env.py",
-            2268,
+            2274,
             "eager_terminated.clone()",
         ),
         (
             "src/unilab/envs/manager_based_rl_env.py",
-            2270,
+            2276,
             "eager_truncated.clone()",
         ),
     }
