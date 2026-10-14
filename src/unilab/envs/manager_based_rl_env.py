@@ -1515,7 +1515,9 @@ class ManagerBasedRlEnv(TorchEnv):
             raise RuntimeError(self._env_update_graph_disable_reason)
         if self._state is None:
             self._env_update_graph_state = "unavailable"
-            self._env_update_graph_disable_reason = "env update graph capture requires an initialized state"
+            self._env_update_graph_disable_reason = (
+                "env update graph capture requires an initialized state"
+            )
             if allow_eager_fallback:
                 self._select_explicit_env_update_eager_fallback()
                 return
