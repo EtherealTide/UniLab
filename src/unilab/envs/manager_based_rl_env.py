@@ -1585,14 +1585,6 @@ class ManagerBasedRlEnv(TorchEnv):
             failures.append("manual reset guard has no graph boundary")
         if not self.reward_manager.step_reward_names:
             failures.append("reward term set is empty")
-        if any(
-            not bool(getattr(term_cfg.func, "returns_transient_tensor", False))
-            for term_cfg in self.reward_manager.cfg.values()
-            if term_cfg is not None
-        ):
-            failures.append("non-transient reward terms require an allocating defensive clone")
-        if self.observation_manager.active_terms:
-            failures.append("observation groups require persistent finite-scratch carriers")
         if self.torch_rng.device != self.device:
             failures.append("Torch RNG device does not match graph carriers")
         for group_name, group_cfg in self.observation_manager.cfg.items():

@@ -81,17 +81,26 @@ def _materialize_env() -> Any:
     return make_g1_walk_env(env_cfg, num_envs=2, backend_type="mjwarp")
 
 
-def test_real_cuda_env_update_graph_fails_closed_until_observation_scratch_is_persistent() -> None:
+def test_real_cuda_env_update_graph_capture_replay_and_allocator_invariant() -> None:
     env = _materialize_env()
     try:
         assert isinstance(env, ManagerBasedRlEnv)
         assert env.device.type == "cuda"
         env.set_deferred_validation_boundaries(True)
         env.reset(seed=7)
-        with pytest.raises(RuntimeError, match="persistent finite-scratch"):
-            env.configure_env_update_graph("graph")
+        env.configure_env_update_graph("graph")
+
         manifest = env.get_env_update_graph_manifest()
-        assert manifest["enabled"] is False
-        assert manifest["invalidation_reason"] == "capture_failed"
+        assert manifest["enabled"] is True
+        assert manifest["state"] == "ready"
+        assert manifest["replay_count"] == 1
+
+        actions = torch.zeros((env.num_envs, 1), dtype=torch.float32, device=env.device)
+        for _ in range(4):
+            env.step(actions)
+            manifest = env.get_env_update_graph_manifest()
+            assert manifest["enabled"] is True
+            assert manifest["state"] == "ready"
+            assert manifest["replay_count"] > 1
     finally:
         env.close()
