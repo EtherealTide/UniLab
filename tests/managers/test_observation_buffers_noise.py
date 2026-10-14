@@ -323,6 +323,34 @@ def test_observation_groups_pipeline_order_and_history(fake_env: FakeEnv) -> Non
     assert manager.get_active_iterable_terms(0)[0][0] == "policy-state"
 
 
+def test_concatenated_observations_rotate_persistent_output_carriers(
+    fake_env: FakeEnv,
+) -> None:
+    manager = ObservationManager(
+        {
+            "policy": ObservationGroupCfg(
+                terms={
+                    "left": ObservationTermCfg(func=lambda env: env.obs),
+                    "right": ObservationTermCfg(
+                        func=lambda env: torch.ones((env.num_envs, 1), dtype=torch.float32)
+                    ),
+                }
+            )
+        },
+        fake_env,
+    )
+    addresses = [carrier.data_ptr() for carrier in manager._group_output_carriers["policy"]]
+
+    first = manager.compute(update_history=True)["policy"]
+    second = manager.compute(update_history=True)["policy"]
+
+    assert first.data_ptr() == addresses[0]
+    assert second.data_ptr() == addresses[1]
+    torch.testing.assert_close(
+        second, torch.cat((fake_env.obs, torch.ones_like(fake_env.obs[:, :1])), dim=1)
+    )
+
+
 def test_non_temporal_tensor_terms_stay_on_device_for_clip_scale_concat(
     fake_env: FakeEnv,
 ) -> None:

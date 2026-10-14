@@ -179,6 +179,8 @@ class ObservationManager(ManagerBase):
         self._group_finite_valid: dict[str, torch.Tensor] = {}
         self._group_finite_scratch: dict[str, torch.Tensor] = {}
         self._group_finite_value_scratch: dict[str, torch.Tensor] = {}
+        self._group_output_carriers: dict[str, list[torch.Tensor]] = {}
+        self._group_output_generation: dict[str, int] = {}
 
         for group_name, group_term_dims in self._group_obs_term_dim.items():
             if self._group_obs_concatenate[group_name]:
@@ -202,6 +204,14 @@ class ObservationManager(ManagerBase):
                     dtype=torch.float32,
                     device=self._device,
                 )
+                self._group_output_carriers[group_name] = [
+                    torch.empty(
+                        (self.num_envs, *group_dim),
+                        dtype=torch.float32,
+                        device=self._device,
+                    )
+                    for _ in range(2)
+                ]
             self._group_finite_scratch[group_name] = torch.empty(
                 (self.num_envs, *group_dim),
                 dtype=torch.bool,
@@ -692,9 +702,14 @@ class ObservationManager(ManagerBase):
                 # preserve its exact dtype/device without a defensive copy.
                 result = tensors[0]
             else:
-                result = torch.cat(
+                generation = self._group_output_generation.get(group_name, 0)
+                carriers = self._group_output_carriers[group_name]
+                result = carriers[generation % len(carriers)]
+                self._group_output_generation[group_name] = generation + 1
+                torch.cat(
                     tensors,
                     dim=self._group_obs_concatenate_dim[group_name],
+                    out=result,
                 )
             if defer_error_nan_check:
                 finite_value = self._group_finite_value_scratch[group_name]
