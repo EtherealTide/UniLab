@@ -1856,16 +1856,13 @@ class ManagerBasedRlEnv(TorchEnv):
         """
         self._advance_episode_steps(steps)
         self._compute_termination_and_reset_flags()
-        command_reset_context = (
-            self._prepare_command_update() if self.command_manager.active_terms else None
-        )
         self.reward_buf = self._compute_rewards()
         self._reward_log_names = self.reward_manager.step_reward_names
         self._reward_log_means = self.reward_manager.step_reward_means
         self._command_dt.fill_(self.step_dt)
         self._command_dt.masked_fill_(self.reset_buf, 0.0)
         if self.command_manager.active_terms:
-            with command_reset_context:
+            with self._prepare_command_update():
                 self._compute_commands()
             self._post_compute_commands()
         manager_obs = self._compute_observations()
