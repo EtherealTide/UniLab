@@ -94,17 +94,28 @@ OUT_OF_CAPTURE_VIOLATIONS: frozenset[tuple[str, int, str]] = frozenset(
         ),
         (
             "src/unilab/envs/manager_based_rl_env.py",
+<<<<<<< HEAD
             1794,
             "eager_truncated.clone()",
         ),
         (
+            "src/unilab/managers/observation_manager.py",
+            607,
+            "cast(torch.Tensor, obs).clone()",
+        ),
+        (
+            "src/unilab/managers/observation_manager.py",
+            680,
+            "torch.cat(tensors, dim=self._group_obs_concatenate_dim[group_name])",
+        ),
+        (
             "src/unilab/managers/reward_manager.py",
-            240,
+            258,
             "torch.nonzero(~finite[:, term_idx])",
         ),
         (
             "src/unilab/managers/reward_manager.py",
-            243,
+            261,
             "invalid_rows.tolist()",
         ),
     }
