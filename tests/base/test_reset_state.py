@@ -722,6 +722,8 @@ def test_packed_transaction_commits_state_through_public_composer() -> None:
     transaction = _transaction(backend)
     transaction.declare_packed_reset_device(torch.device("cpu"))
     reset_mask = torch.tensor([False, True, False, True])
+    root_state = torch.zeros((4, 13), dtype=torch.float32)
+    root_state[:, 3] = 1.0
 
     with transaction.scoped_device_event_tensor(reset_mask):
         transaction.write_joint_state_mask(
@@ -854,6 +856,32 @@ def test_deferred_mask_validation_skips_completed_no_write_owner_scope() -> None
         transaction.publish_mask_validation_verdicts()
 
     assert not transaction.last_commit_had_writes
+
+
+def test_deferred_mask_validation_does_not_republish_completed_commit() -> None:
+    backend = _TensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    transaction.set_deferred_mask_validation(True)
+    reset_mask = torch.tensor([False, True, False, True])
+    root_state = torch.zeros((4, 13), dtype=torch.float32)
+    root_state[:, 3] = 1.0
+
+    with transaction.scoped_device_owner_tensor(torch.ones(4, dtype=torch.bool)):
+        transaction.write_root_state_tensor(
+            reset_mask,
+            BackendRootStateLayout(tuple(range(7)), tuple(range(6))),
+            root_state,
+            term_name="first_commit",
+        )
+    assert transaction.last_commit_had_writes
+    transaction.publish_mask_validation_verdicts()
+
+    transaction._mask_count.zero_()
+    transaction._completed_tensor_has_writes = False
+    transaction.publish_mask_validation_verdicts()
+
+    assert len(backend.tensor_reset_calls) == 1
 
 
 def test_deferred_mask_validation_clears_previous_commit_verdict_on_tensor_begin() -> None:
