@@ -300,9 +300,7 @@ class TorchEnv(ABEnv):
         phase_cpu = _cpu_time()
         # Preserve the semantic autoreset gate in both modes: an empty done
         # mask must not consume reset RNG or publish a terminal carrier.
-        did_reset = self._autoreset and bool(
-            (self._state.terminated | self._state.truncated).any()
-        )
+        did_reset = self._autoreset and bool((self._state.terminated | self._state.truncated).any())
         if did_reset:
             self._reset_done_envs()
         reset_done_ms = (time.perf_counter() - phase) * 1000.0
