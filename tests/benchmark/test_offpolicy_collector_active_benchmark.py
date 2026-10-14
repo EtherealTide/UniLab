@@ -208,6 +208,115 @@ def test_deferred_validation_profiling_uses_public_env_boundary() -> None:
     assert calls == [True, False]
 
 
+def test_env_update_mode_selects_deferred_boundary_and_fails_closed() -> None:
+    calls: list[object] = []
+
+    def configure(mode: str, *, allow_eager_fallback: bool = False):
+        calls.append((mode, allow_eager_fallback))
+        if mode == "graph":
+            raise RuntimeError("observation noise has no capture-safe contract")
+
+    env = SimpleNamespace(
+        deferred_validation_boundaries=False,
+        set_deferred_validation_boundaries=lambda enabled: calls.append(enabled),
+        configure_env_update_graph=configure,
+        get_env_update_graph_manifest=lambda: {"mode": "graph"},
+    )
+
+    with pytest.raises(RuntimeError, match="capture-safe contract"):
+        bench._configure_env_update_graph(env, "graph", deferred_validation_boundaries=False)
+
+    assert calls == [True, ("graph", False)]
+
+
+def test_env_update_mode_requires_ready_graph_evidence() -> None:
+    calls: list[object] = []
+    env = SimpleNamespace(
+        deferred_validation_boundaries=False,
+        set_deferred_validation_boundaries=calls.append,
+        configure_env_update_graph=lambda mode, *, allow_eager_fallback: calls.append(
+            (mode, allow_eager_fallback)
+        ),
+        get_env_update_graph_manifest=lambda: {
+            "mode": "graph",
+            "requested": True,
+            "enabled": False,
+            "state": "invalidated",
+            "replay_count": 0,
+            "disable_reason": "active curriculum has no graph boundary",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="active curriculum"):
+        bench._configure_env_update_graph(env, "graph", deferred_validation_boundaries=True)
+
+
+def test_env_update_mode_is_explicit_cli_selection() -> None:
+    args = bench.parse_args(["--env-update-mode", "graph"])
+
+    assert args.env_update_mode == "graph"
+
+
+def test_package_versions_record_missing_dependencies_without_hiding_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_version(name: str) -> str:
+        if name == "torch":
+            return "2.14.0+cu130"
+        raise bench.PackageNotFoundError(name)
+
+    monkeypatch.setattr(bench, "version", fake_version)
+
+    versions = bench._package_versions()
+
+    assert versions == {name: "not-installed" for name in bench.FIXATION_PACKAGE_NAMES} | {
+        "torch": "2.14.0+cu130"
+    }
+
+
+def test_runtime_fixation_records_owner_environment_and_gpu_receipts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_command(command):
+        arguments = " ".join(command)
+        if "--query-gpu=uuid" in arguments:
+            return "GPU-0123"
+        if "--query-gpu=driver_version" in arguments:
+            return "580.178.04"
+        return ""
+
+    monkeypatch.setattr(
+        bench,
+        "_package_versions",
+        lambda: {name: "test-version" for name in bench.FIXATION_PACKAGE_NAMES},
+    )
+    monkeypatch.setattr(
+        bench,
+        "_git_fixation",
+        lambda: {"branch": "test", "commit": "0123456", "dirty": False},
+    )
+    monkeypatch.setattr(bench, "_run_text_command", fake_command)
+
+    fixation = bench._runtime_fixation()
+
+    assert fixation["python_version"] == bench.platform.python_version()
+    assert fixation["host"] == bench.platform.node()
+    assert fixation["kernel"] == bench.platform.release()
+    assert fixation["cuda_visible_devices"] == bench.os.environ.get("CUDA_VISIBLE_DEVICES")
+    assert fixation["package_versions"] == {
+        name: "test-version" for name in bench.FIXATION_PACKAGE_NAMES
+    }
+    assert fixation["git"] == {"branch": "test", "commit": "0123456", "dirty": False}
+    assert fixation["torch_cuda"] == bench.torch.version.cuda
+    if bench.torch.cuda.is_available():
+        assert fixation["gpu_name"] == bench.torch.cuda.get_device_name(
+            bench.torch.cuda.current_device()
+        )
+        assert fixation["gpu_index"] == bench.torch.cuda.current_device()
+        assert fixation["gpu_uuid"] == "GPU-0123"
+        assert fixation["gpu_driver_version"] == "580.178.04"
+
+
 def test_eager_default_does_not_invoke_env_boundary_again() -> None:
     calls: list[bool] = []
     env = SimpleNamespace(
@@ -556,6 +665,7 @@ def test_variant_blocks_alternate_labels_without_extending_measurement(monkeypat
         variant,
         profile_numpy_random,
         deferred_validation_boundaries,
+        env_update_mode="disabled",
     ):
         order.append(variant)
         result = _make_result(

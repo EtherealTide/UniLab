@@ -23,6 +23,9 @@ Usage:
     uv run --extra genesis scripts/benchmark/rl/benchmark_offpolicy_collector_active.py \
         --cases flashsac/g1_motion_tracking/genesis
     uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --num-envs 1024 --measure-steps 100
+    # Gate UP #2351 modes; graph requests fail closed rather than falling back:
+    uv run --extra mjwarp scripts/benchmark/rl/benchmark_offpolicy_collector_active.py \
+        --cases flashsac/g1_motion_tracking/mjwarp --env-update-mode graph
 """
 
 from __future__ import annotations
@@ -34,12 +37,14 @@ import json
 import os
 import platform
 import re
+import shlex
 import subprocess
 import sys
 import time
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
 from pathlib import Path
 from statistics import mean, median, pstdev
@@ -49,7 +54,7 @@ import numpy as np
 import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
 if str(ROOT_DIR) not in sys.path:
@@ -77,6 +82,15 @@ BENCHMARK_BACKENDS = ("mujoco",)
 OPTIONAL_BACKENDS = ("mjwarp", "genesis")
 DEFAULT_COLLECTOR_CPU_THREADS = 8
 COLLECTOR_CPU_THREADS_ENV = "UNILAB_COLLECTOR_TORCH_THREADS"
+ENV_UPDATE_GRAPH_MODES = ("disabled", "eager", "graph")
+FIXATION_PACKAGE_NAMES = (
+    "unilab",
+    "unisim-core",
+    "unilab-rl",
+    "torch",
+    "mujoco-warp",
+    "warp-lang",
+)
 COLLECTOR_PHASES = (
     "env_step_ms",
     "replay_ms",
@@ -88,6 +102,7 @@ ENV_STEP_TIMING_KEYS = (
     "apply_action_ms",
     "step_core_ms",
     "update_state_ms",
+    "update_state_graph_replay_ms",
     "update_state_cpu_ms",
     "update_state_read_boundary_ms",
     "update_state_prelude_ms",
@@ -241,6 +256,7 @@ ENV_STEP_TIMING_CSV_FIELDS = (
     ("apply_action_ms", "apply_action_ms"),
     ("step_core_ms", "step_core_ms"),
     ("update_state_ms", "update_state_ms"),
+    ("update_state_graph_replay_ms", "update_state_graph_replay_ms"),
     ("reset_done_ms", "reset_done_ms"),
     ("env_step_internal_gap_ms", "env_step_internal_gap_ms"),
     ("reset_done_terminal_obs_ms", "reset_done_terminal_obs_ms"),
@@ -339,6 +355,18 @@ class CollectorCase:
     critic_dim: int
     action_dim: int
     env_steps_per_sync: int
+    # Exact environment shape and term-set fixation for Gate UP evidence.
+    seed: int = 0
+    env_seed: int | None = None
+    observation_groups: dict[str, list[str]] = field(default_factory=dict)
+    reward_terms: list[str] = field(default_factory=list)
+    command_terms: list[str] = field(default_factory=list)
+    termination_terms: list[str] = field(default_factory=list)
+    action_terms: list[str] = field(default_factory=list)
+    event_terms: dict[str, list[str]] = field(default_factory=dict)
+    curriculum_terms: list[str] = field(default_factory=list)
+    metric_terms: list[str] = field(default_factory=list)
+    recorder_terms: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -390,6 +418,13 @@ class CollectorResult:
     deferred_validation_boundaries: bool = False
     # Public bounded-ingress ordering evidence collected after the active window.
     replay_ingress_diagnostics: dict[str, int | float] = field(default_factory=dict)
+    # Explicit state-update execution mode and fail-closed lifecycle evidence.
+    env_update_mode: str = "disabled"
+    env_update_manifest_before: dict[str, Any] = field(default_factory=dict)
+    env_update_manifest_after: dict[str, Any] = field(default_factory=dict)
+    # Context-only actor forward time; actions used by the measured collector
+    # remain pre-generated and inference is outside the env-update graph.
+    policy_inference_context: TimingStats | None = None
 
 
 def _stats(samples_ms: list[float]) -> TimingStats:
@@ -558,6 +593,58 @@ def _enable_deferred_validation_boundaries(env: Any, enabled: bool) -> None:
     setter(enabled)
 
 
+def _env_update_graph_manifest(env: Any) -> dict[str, Any]:
+    getter = getattr(env, "get_env_update_graph_manifest", None)
+    if not callable(getter):
+        raise TypeError("env-update graph benchmarking requires the public manifest boundary")
+    manifest = getter()
+    if not isinstance(manifest, dict):
+        raise TypeError("env update graph manifest must be a dictionary")
+    return manifest
+
+
+def _configure_env_update_graph(
+    env: Any,
+    mode: str,
+    *,
+    deferred_validation_boundaries: bool,
+) -> dict[str, Any]:
+    """Select the distinct state-update mode explicitly and fail closed.
+
+    ``graph`` is never inferred from backend physics-graph state. The required
+    deferred boundary is enabled by this owner call rather than left implicit.
+    """
+    if mode not in ENV_UPDATE_GRAPH_MODES:
+        raise ValueError(f"unsupported env-update mode {mode!r}")
+    if mode == "graph":
+        _enable_deferred_validation_boundaries(env, True)
+    elif deferred_validation_boundaries:
+        _enable_deferred_validation_boundaries(env, True)
+    elif getattr(env, "deferred_validation_boundaries", False):
+        _enable_deferred_validation_boundaries(env, False)
+    if mode == "disabled" and not hasattr(env, "configure_env_update_graph"):
+        return {"mode": "disabled", "not_negotiated_reason": "default eager baseline"}
+    setter = getattr(env, "configure_env_update_graph", None)
+    if not callable(setter):
+        raise TypeError("env-update graph benchmarking requires the public owner mode boundary")
+    setter(mode, allow_eager_fallback=False)
+    manifest = _env_update_graph_manifest(env)
+    if manifest.get("mode") != mode:
+        raise RuntimeError(
+            f"env-update graph mode changed silently: requested {mode!r}, "
+            f"got {manifest.get('mode')!r}"
+        )
+    if mode == "graph" and not (
+        manifest.get("requested") is True
+        and manifest.get("enabled") is True
+        and manifest.get("state") == "ready"
+        and int(manifest.get("replay_count", 0)) > 0
+    ):
+        reason = manifest.get("disable_reason")
+        raise RuntimeError(f"env-update graph failed closed without eager fallback: {reason}")
+    return manifest
+
+
 def _runtime_sim_backend(sim: str) -> str:
     return sim
 
@@ -700,6 +787,7 @@ def _build_case(
     task: str,
     sim: str,
     variant: str,
+    env: Any,
     replay_capacity_steps: int,
     obs_dim: int,
     critic_dim: int,
@@ -707,6 +795,12 @@ def _build_case(
 ) -> CollectorCase:
     num_envs = int(cfg.algo.num_envs)
     capacity_steps = max(1, int(replay_capacity_steps))
+    events = cfg.env.events if hasattr(cfg.env, "events") else {}
+    event_terms = (
+        {str(mode): [str(name) for name in names] for mode, names in events.items()}
+        if isinstance(events, dict)
+        else {}
+    )
     return CollectorCase(
         algo=algo,
         task=task,
@@ -722,6 +816,24 @@ def _build_case(
         critic_dim=int(critic_dim),
         action_dim=int(action_dim),
         env_steps_per_sync=int(cfg.training.env_steps_per_sync),
+        seed=int(cfg.algo.seed),
+        env_seed=(
+            int(cfg.env.seed)
+            if OmegaConf.select(cfg, "env.seed", default=None) is not None
+            else None
+        ),
+        observation_groups={
+            str(group): [str(term) for term in terms]
+            for group, terms in env.observation_manager.active_terms.items()
+        },
+        reward_terms=[str(name) for name in env.reward_manager.active_terms],
+        command_terms=[str(name) for name in env.command_manager.active_terms],
+        termination_terms=[str(name) for name in env.termination_manager.active_terms],
+        action_terms=[str(name) for name in env.action_manager.active_terms],
+        event_terms=event_terms,
+        curriculum_terms=[str(name) for name in env.curriculum_manager.active_terms],
+        metric_terms=[str(name) for name in env.metrics_manager.active_terms],
+        recorder_terms=[str(name) for name in env.recorder_manager.active_terms],
     )
 
 
@@ -746,6 +858,64 @@ def _make_env(
     return env, int(obs_dim), int(critic_dim), action_dim
 
 
+def _build_context_actor(cfg: DictConfig, obs_dim: int, action_dim: int, device: torch.device):
+    """Build the owner actor shape without training or learner state."""
+    from uni_rl.algos.common.actor_factory import build_actor
+
+    if str(cfg.algo.algo) == "flashsac":
+        return build_actor(
+            "flashsac",
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            actor_hidden_dim=int(cfg.algo.actor_hidden_dim),
+            use_layer_norm=bool(cfg.algo.use_layer_norm),
+            device=device,
+            actor_num_blocks=int(cfg.algo.algo_params.actor_num_blocks),
+            actor_noise_zeta_mu=float(cfg.algo.algo_params.actor_noise_zeta_mu),
+            actor_noise_zeta_max=int(cfg.algo.algo_params.actor_noise_zeta_max),
+        )
+    return build_actor(
+        "sac",
+        obs_dim=obs_dim,
+        action_dim=action_dim,
+        actor_hidden_dim=int(cfg.algo.actor_hidden_dim),
+        use_layer_norm=bool(cfg.algo.use_layer_norm),
+        device=device,
+    )
+
+
+def _measure_policy_inference_context(
+    cfg: DictConfig,
+    *,
+    obs_dim: int,
+    action_dim: int,
+    device: torch.device,
+    warmup_steps: int,
+    measure_steps: int,
+) -> TimingStats:
+    """Measure an untrained actor forward for outside-graph context only."""
+    if warmup_steps < 0 or measure_steps <= 0:
+        raise ValueError("policy context requires non-negative warmup and positive measurements")
+    actor = _build_context_actor(cfg, obs_dim, action_dim, device)
+    observations = torch.zeros((1, obs_dim), dtype=torch.float32, device=device)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    samples: list[float] = []
+    total = warmup_steps + measure_steps
+    for index in range(total):
+        started = time.perf_counter_ns()
+        if str(cfg.algo.algo) == "flashsac":
+            actor(observations, training=False)
+        else:
+            actor(observations)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        elapsed_ms = (time.perf_counter_ns() - started) / 1.0e6
+        if index >= warmup_steps:
+            samples.append(elapsed_ms)
+    return _stats(samples)
+
+
 def _run_active_window_case(
     case: CollectorCase,
     *,
@@ -755,6 +925,8 @@ def _run_active_window_case(
     profile_numpy_random: bool = False,
     tail_steps: int = DEFAULT_TAIL_STEPS,
     deferred_validation_boundaries: bool = False,
+    env_update_mode: str = "disabled",
+    policy_inference_context: TimingStats | None = None,
 ) -> CollectorResult:
     from uni_rl.ipc.replay_buffer import ReplayBuffer
     from uni_rl.utils.observations import split_obs_dict
@@ -770,7 +942,11 @@ def _run_active_window_case(
     )
 
     env_device = env.device
-    _enable_deferred_validation_boundaries(env, deferred_validation_boundaries)
+    manifest_before = _configure_env_update_graph(
+        env,
+        env_update_mode,
+        deferred_validation_boundaries=deferred_validation_boundaries,
+    )
     backend_runtime_diagnostics = _backend_runtime_diagnostics(env)
     actions = torch.zeros((case.num_envs, case.action_dim), dtype=torch.float32, device=env_device)
     state = env.step(actions)
@@ -955,6 +1131,22 @@ def _run_active_window_case(
     }
 
     replay_ingress_diagnostics = replay_buffer.ingress_diagnostics()
+    manifest_after = _env_update_graph_manifest(env)
+    if env_update_mode == "graph":
+        replay_delta = int(manifest_after.get("replay_count", 0)) - int(
+            manifest_before.get("replay_count", 0)
+        )
+        if replay_delta != int(measure_steps):
+            raise RuntimeError(
+                f"env-update graph replay evidence mismatch: expected {measure_steps}, "
+                f"observed delta {replay_delta}"
+            )
+        if not (
+            manifest_after.get("enabled") is True
+            and manifest_after.get("state") == "ready"
+            and int(manifest_after.get("fallback_count", 0)) == 0
+        ):
+            raise RuntimeError("env-update graph left READY execution during measurement")
     del replay_buffer
     _cleanup()
     physics_stats = _stats(aux_samples["physics_ms"]) if aux_samples["physics_ms"] else None
@@ -988,6 +1180,10 @@ def _run_active_window_case(
         backend_runtime_diagnostics=backend_runtime_diagnostics,
         deferred_validation_boundaries=deferred_validation_boundaries,
         replay_ingress_diagnostics=replay_ingress_diagnostics,
+        env_update_mode=env_update_mode,
+        env_update_manifest_before=manifest_before,
+        env_update_manifest_after=manifest_after,
+        policy_inference_context=policy_inference_context,
     )
 
 
@@ -1003,6 +1199,7 @@ def _build_and_run_case(
     variant: str = "default",
     profile_numpy_random: bool = False,
     deferred_validation_boundaries: bool = False,
+    env_update_mode: str = "disabled",
 ) -> CollectorResult:
     from unilab.base.config_adapter import BackendAdapter
     from unilab.training import ensure_registries
@@ -1037,12 +1234,21 @@ def _build_and_run_case(
             cfg,
             env_cfg_override=env_cfg_override,
         )
+        policy_context = _measure_policy_inference_context(
+            cfg,
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            device=env.device,
+            warmup_steps=min(10, max(1, int(warmup_steps))),
+            measure_steps=max(10, int(measure_steps)),
+        )
         case = _build_case(
             cfg,
             algo=algo,
             task=task,
             sim=sim,
             variant=variant,
+            env=env,
             replay_capacity_steps=replay_capacity_steps,
             obs_dim=obs_dim,
             critic_dim=critic_dim,
@@ -1056,6 +1262,8 @@ def _build_and_run_case(
             profile_numpy_random=profile_numpy_random,
             tail_steps=tail_steps,
             deferred_validation_boundaries=deferred_validation_boundaries,
+            env_update_mode=env_update_mode,
+            policy_inference_context=policy_context,
         )
     finally:
         if env is not None:
@@ -1074,6 +1282,68 @@ def _result_to_dict(result: CollectorResult) -> dict[str, Any]:
     # physics_ms_per_vector_step / cpu_util_pct are handled by asdict (None /
     # nested dict / float), so no special-casing needed beyond what asdict does.
     return data
+
+
+def _package_versions() -> dict[str, str]:
+    values: dict[str, str] = {}
+    for name in FIXATION_PACKAGE_NAMES:
+        try:
+            values[name] = version(name)
+        except PackageNotFoundError:
+            values[name] = "not-installed"
+    return values
+
+
+def _git_fixation() -> dict[str, str | bool | None]:
+    def git(*arguments: str) -> str:
+        return _run_text_command(["git", "-C", str(ROOT_DIR), *arguments])
+
+    return {
+        "branch": git("branch", "--show-current") or None,
+        "commit": git("rev-parse", "HEAD") or None,
+        "dirty": bool(git("status", "--porcelain")),
+    }
+
+
+def _runtime_fixation() -> dict[str, Any]:
+    fixation: dict[str, Any] = {
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "host": platform.node(),
+        "kernel": platform.release(),
+        "package_versions": _package_versions(),
+        "git": _git_fixation(),
+        "torch_cuda": torch.version.cuda,
+        "torch_cudnn": torch.backends.cudnn.version()
+        if torch.backends.cudnn.is_available()
+        else None,
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+    }
+    if torch.cuda.is_available():
+        index = torch.cuda.current_device()
+        fixation.update(
+            {
+                "gpu_name": torch.cuda.get_device_name(index),
+                "gpu_index": index,
+                "gpu_uuid": _run_text_command(
+                    [
+                        "nvidia-smi",
+                        f"--id={int(index)}",
+                        "--query-gpu=uuid",
+                        "--format=csv,noheader",
+                    ]
+                ),
+                "gpu_driver_version": _run_text_command(
+                    [
+                        "nvidia-smi",
+                        f"--id={int(index)}",
+                        "--query-gpu=driver_version",
+                        "--format=csv,noheader",
+                    ]
+                ),
+            }
+        )
+    return fixation
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -1113,6 +1383,10 @@ def _write_csv(path: Path, results: list[CollectorResult]) -> None:
         "env_step_overhead_pct",
         *(f"{field_name[:-3]}_pct" for _, field_name in ENV_STEP_TIMING_CSV_FIELDS),
         "cpu_util_pct",
+        "env_update_mode",
+        "env_update_graph_replay_count",
+        "env_update_graph_fallback_count",
+        "policy_inference_context_ms",
     ]
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -1193,6 +1467,18 @@ def _write_csv(path: Path, results: list[CollectorResult]) -> None:
                 )
             row["cpu_util_pct"] = (
                 result.cpu_util_pct if result.cpu_util_pct == result.cpu_util_pct else ""
+            )
+            row["env_update_mode"] = result.env_update_mode
+            row["env_update_graph_replay_count"] = result.env_update_manifest_after.get(
+                "replay_count", ""
+            )
+            row["env_update_graph_fallback_count"] = result.env_update_manifest_after.get(
+                "fallback_count", ""
+            )
+            row["policy_inference_context_ms"] = (
+                result.policy_inference_context.mean_ms
+                if result.policy_inference_context is not None
+                else ""
             )
             writer.writerow(row)
 
@@ -1757,6 +2043,10 @@ def _format_env_step_timing_table(results: list[CollectorResult]) -> str:
         "Apply action ms (% env, % active)",
         "Backend step ms (% env, % active)",
         "Update state ms (% env, % active)",
+        "Graph replay ms (% env, % active)",
+        "Env update mode",
+        "Replays",
+        "Fallbacks",
         "Reset done ms (% env, % active)",
         "Internal gap ms (% env, % active)",
     )
@@ -1780,6 +2070,10 @@ def _format_env_step_timing_table(results: list[CollectorResult]) -> str:
                 _format_env_step_timing(result, "apply_action_ms"),
                 _format_env_step_timing(result, "step_core_ms"),
                 _format_env_step_timing(result, "update_state_ms"),
+                _format_env_step_timing(result, "update_state_graph_replay_ms"),
+                result.env_update_mode,
+                str(result.env_update_manifest_after.get("replay_count", "n/a")),
+                str(result.env_update_manifest_after.get("fallback_count", "n/a")),
                 _format_env_step_timing(result, "reset_done_ms"),
                 _format_env_step_timing(result, "env_step_internal_gap_ms"),
             )
@@ -2062,6 +2356,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--env-update-mode",
+        choices=ENV_UPDATE_GRAPH_MODES,
+        default="disabled",
+        help=(
+            "Select the distinct state-update execution mode explicitly. "
+            "graph requires READY capture/replay evidence and never falls back."
+        ),
+    )
+    parser.add_argument(
         "--variants",
         default=None,
         help=(
@@ -2149,6 +2452,7 @@ def main() -> int:
                             deferred_validation_boundaries=bool(
                                 args.deferred_validation_boundaries
                             ),
+                            env_update_mode=args.env_update_mode,
                         )
                     ]
                     results.extend(case_results)
@@ -2170,6 +2474,7 @@ def main() -> int:
             "terminal-contract handling, replay writes, and collector-side bookkeeping."
         ),
         "device": hardware_info,
+        "command": ("uv run " + shlex.join([str(Path(__file__).resolve()), *sys.argv[1:]])),
         "args": {
             "cases": args.cases,
             "algos": args.algos,
@@ -2186,7 +2491,9 @@ def main() -> int:
             "repeat_variant_blocks": args.repeat_variant_blocks,
             "profile_numpy_random": args.profile_numpy_random,
             "deferred_validation_boundaries": args.deferred_validation_boundaries,
+            "env_update_mode": args.env_update_mode,
         },
+        "fixation": _runtime_fixation(),
         "results": [_result_to_dict(result) for result in results],
         "errors": errors,
     }

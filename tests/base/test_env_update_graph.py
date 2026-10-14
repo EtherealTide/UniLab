@@ -48,6 +48,7 @@ def _manifest(**updates: object) -> dict[str, object]:
             "sequence": 0,
         },
         "rng_state": {"device": "cpu", "state_version": 1, "draw_version": 2},
+        "allocator_snapshots": [],
         "carrier_layout": {"num_envs": 2},
     }
     value.update(updates)
@@ -104,3 +105,16 @@ def test_enabled_update_graph_requires_real_replay_evidence() -> None:
             replay_count=1,
         )
     )
+
+
+def test_env_update_graph_manifest_fails_closed_on_malformed_allocator_evidence() -> None:
+    with pytest.raises(ValueError, match="allocator_snapshots must be a list"):
+        validate_env_update_graph_manifest(_manifest(allocator_snapshots={}))
+    with pytest.raises(ValueError, match="allocator snapshot must be a mapping"):
+        validate_env_update_graph_manifest(_manifest(allocator_snapshots=["post_capture"]))
+    with pytest.raises(ValueError, match="allocator snapshot requires a stage"):
+        validate_env_update_graph_manifest(_manifest(allocator_snapshots=[{"memory": 1}]))
+    with pytest.raises(ValueError, match="allocator snapshot\\[memory_bytes\\]"):
+        validate_env_update_graph_manifest(
+            _manifest(allocator_snapshots=[{"stage": "replay", "memory_bytes": -1}])
+        )

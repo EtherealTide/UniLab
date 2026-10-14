@@ -15,6 +15,7 @@ from unisim.backend.mjwarp.dependencies import load_mjwarp_dependencies
 from unilab.base import registry
 from unilab.base.config_adapter import BackendAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
+from unilab.base.env_update_graph import validate_env_update_graph_manifest
 from unilab.envs import ManagerBasedRlEnv
 
 pytestmark = pytest.mark.slow
@@ -102,6 +103,15 @@ def test_real_cuda_env_update_graph_capture_replay_and_allocator_invariant() -> 
         assert manifest["enabled"] is True
         assert manifest["state"] == "ready"
         assert manifest["replay_count"] == 1
+        validate_env_update_graph_manifest(manifest)
+        snapshot_stages = [snapshot["stage"] for snapshot in manifest["allocator_snapshots"]]
+        assert snapshot_stages == [
+            "after_empty_cache",
+            "pre_warmup",
+            "post_warmup",
+            "post_capture",
+            "first_replay",
+        ]
 
         actions = torch.zeros(
             (env.num_envs, env.action_manager.total_action_dim),
@@ -114,5 +124,7 @@ def test_real_cuda_env_update_graph_capture_replay_and_allocator_invariant() -> 
             assert manifest["enabled"] is True
             assert manifest["state"] == "ready"
             assert manifest["replay_count"] > 1
+            validate_env_update_graph_manifest(manifest)
+            assert manifest["allocator_snapshots"][-1]["stage"] == "replay"
     finally:
         env.close()
