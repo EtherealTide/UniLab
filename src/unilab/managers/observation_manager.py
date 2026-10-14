@@ -198,25 +198,28 @@ class ObservationManager(ManagerBase):
             # is reduced exactly once. Keep the full-width boolean mask resident
             # too because isfinite has no out= overload.
             verdict_shape = (self.num_envs,)
+            resolved_group_dim = cast("tuple[int, ...]", group_dim)
+            scratch_shape = (self.num_envs, *resolved_group_dim)
             if self._group_obs_concatenate[group_name]:
                 self._group_finite_value_scratch[group_name] = torch.empty(
-                    (self.num_envs, *group_dim),
+                    scratch_shape,
                     dtype=torch.float32,
                     device=self._device,
                 )
                 self._group_output_carriers[group_name] = [
                     torch.empty(
-                        (self.num_envs, *group_dim),
+                        scratch_shape,
                         dtype=torch.float32,
                         device=self._device,
                     )
                     for _ in range(2)
                 ]
-            self._group_finite_scratch[group_name] = torch.empty(
-                (self.num_envs, *group_dim),
-                dtype=torch.bool,
-                device=self._device,
-            ) if self._group_obs_concatenate[group_name] else None
+            if self._group_obs_concatenate[group_name]:
+                self._group_finite_scratch[group_name] = torch.empty(
+                    scratch_shape,
+                    dtype=torch.bool,
+                    device=self._device,
+                )
             self._group_finite_valid[group_name] = torch.ones(
                 verdict_shape, dtype=torch.bool, device=self._device
             )
