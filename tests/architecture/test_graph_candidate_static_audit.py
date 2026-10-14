@@ -32,6 +32,7 @@ AUDITED_FUNCTIONS: dict[Path, frozenset[str]] = {
             "apply_action",
             "update_state",
             "_update_state_in_read_phase",
+            "_run_env_update_graph_body",
             "_reset_done_envs",
             "reset",
             "_publish_reward_components",
@@ -89,12 +90,12 @@ OUT_OF_CAPTURE_VIOLATIONS: frozenset[tuple[str, int, str]] = frozenset(
         ),
         (
             "src/unilab/envs/manager_based_rl_env.py",
-            1865,
+            1889,
             "eager_terminated.clone()",
         ),
         (
             "src/unilab/envs/manager_based_rl_env.py",
-            1867,
+            1891,
             "eager_truncated.clone()",
         ),
         (

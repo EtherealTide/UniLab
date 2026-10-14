@@ -1501,6 +1501,30 @@ class ManagerBasedRlEnv(TorchEnv):
             ) / 1.0e6
         return replacement
 
+    def _run_env_update_graph_body(self, steps: torch.Tensor) -> None:
+        """Run only the capture-eligible Manager state-update operations.
+
+        Everything in this method is intended to be captured verbatim during a
+        CUDA graph. Python timing, semantic logs, host counters, runtime-event
+        repacking, state replacement, reset orchestration, and completion
+        publication remain outside the captured region and are owned by
+        :meth:`_update_state_in_read_phase` or the graph lifecycle.
+        """
+        self._advance_episode_steps(steps)
+        self._compute_termination_and_reset_flags()
+        self.reward_buf = self._compute_rewards()
+        self._reward_log_names = self.reward_manager.step_reward_names
+        self._reward_log_means = self.reward_manager.step_reward_means
+        step_reset_context = self._prepare_command_update()
+        with step_reset_context:
+            self._compute_commands()
+        self._post_compute_commands()
+        manager_obs = self._compute_observations()
+        mapped_obs = self._map_observations(manager_obs)
+        self.obs_buf = mapped_obs
+        self._has_transition = True
+        self._publish_step_outputs(mapped_obs)
+
     def _advance_episode_steps(self, steps: torch.Tensor) -> None:
         """Advance the fixed-width device episode-step carrier by one."""
         self.episode_length_buf.copy_(steps).add_(1)
