@@ -2,13 +2,13 @@
 
 语言: English
 
-- Status: Proposed / integration-only
-- Date: 2026-10-13; #2311 addendum 2026-10-14
+- Status: Rejected / no-go at M2 / historical pre-registration
+- Date: 2026-10-13; #2311 addendum 2026-10-14; closeout 2026-10-15
 - Owners: UniLab runtime, UniSim MJWarp backend, uni_rl off-policy collector
 - Roadmaps: #2307 (historical contract), #2311 (M0 boundary addendum)
-- Scope: integration-only; `dev/issue-2311-k1-collector-graph` until owners promote the result
+- Scope: historical pre-registration and integration evidence; no active runtime contract
 - Supersedes: None
-- Superseded by: None
+- Superseded by: [ADR-0238 State-update-only CUDA graph boundary](ADR-0238-state-update-only-cuda-graph-boundary.md)
 
 ## Context
 
@@ -17,6 +17,15 @@ The K=1 off-policy collector has a strict transition dependency:
 Phase A profiling on the canonical MJWarp / FlashSAC / G1 motion workload found addressable collector overhead of 19.54% in independent-context mode and 32.71% under MPS. The dominant blockers are manager update and episode reset dispatch, hot validation reductions, dynamic reset-row compaction, and reset-path temporary allocation. MJWarp already owns fixed-shape physics step/reset graphs, but that does not cover Manager-based observations, rewards, termination, events, commands, packed reset, or transition publication.
 
 This is not a production commitment, no release artifact is published, and promotion to `main` remains an owner decision outside #2307.
+
+The owner decision is now final: #2311 closed no-go at M2. Three successive
+owner-first prototypes showed that nested MJWarp graph replay is prohibited
+during caller capture and that the non-nested public path reaches transient
+MuJoCo-Warp allocation/free that invalidates the outer capture. This ADR is
+retained as historical pre-registration and audit evidence only. It is not an
+active execution plan, does not authorize `collector_graph` in UniLab, and makes
+no support or performance claim. The successor boundary is ADR-0238's
+state-update-only `env_update_graph`.
 
 Issue #2307 closed at Gate B no-go only because its Phase B boundary could not
 remove the then-private backend/replay completion barriers. Issue #2309 has
@@ -34,6 +43,11 @@ and mapped multi-entity reset layouts), plus policy inference and learner
 updates which must never enter this graph.
 
 ## Decision
+
+The decision recorded here was pre-registered for the #2311 integration branch
+and was rejected at M2 before promotion to `main`. The sections below preserve
+the exact historical boundary, inventory, mode, workload, and gates for audit;
+they must not be read as pending M1/M2 work.
 
 Define an integration-only public capture boundary negotiated through `SimBackend` capabilities. The candidate consumes one preallocated action input of shape `[num_envs, action_dim]` and produces fixed-shape observation, reward, terminated, truncated, terminal-observation, and transition-publication carriers. The candidate is exactly K=1; policy inference and learner updates are outside capture.
 
@@ -61,7 +75,7 @@ disabled and this preflight is evidence only.
 - Learner sampling and policy inference never access in-flight carriers.
 - Independent-context and MPS execution use the same ordering contract; MPS changes execution sharing, not semantics.
 
-### #2311 M0 fixed operation inventory
+### #2311 M0 fixed operation inventory (historical evidence)
 
 **Inside the K=1 graph-eligible publication boundary**
 
@@ -115,7 +129,7 @@ These classified eager-only paths are pinned outside capture by
 `tests/architecture/test_graph_candidate_static_audit.py`; they are not hidden
 violations of the graph candidate.
 
-### #2311 M0 fixed carrier layout
+### #2311 M0 fixed carrier layout (historical evidence)
 
 All addresses are fixed before preflight/capture and live on the selected CUDA
 device unless explicitly marked CPU:
@@ -143,7 +157,11 @@ The final semantic/performance parity consumer must add comparison-only clones
 outside capture; those copies are evidence carriers, not candidate inputs or
 outputs.
 
-### #2311 pre-registered gates
+### #2311 pre-registered gates (historical evidence)
+
+These gates were pre-registered before implementation. Gate S was never reached
+because real collector graph execution failed structurally at M2. Gate P was
+therefore never run, and no throughput number from this route may be cited.
 
 Gate S requires eager/graph equality over observations by group, rewards and all
 components, terminated/truncated, episode and reset counters, actions/commands,
@@ -168,7 +186,7 @@ K, semantic surface, or mode rule may change after results are observed.
 
 The lifecycle is: allocate persistent carriers, eager warmup, preflight, capture, replay, completion publication, invalidation, fallback/fail-closed. Graph state, contract version, disable reason, fallback count, replay ordering counters, and stream/RNG evidence enter the run manifest. Capture is invalidated on model/data/view/capacity/policy-I/O change, backend graph invalidation, or stream/event failure.
 
-Issue #2311 adds the owner-selected cold-path mode
+The historical integration branch proposed the owner-selected cold-path mode
 `collector_graph = disabled | eager | graph`. `graph` may be requested only after
 the public preflight verdict succeeds; unsupported/malformed states fail closed;
 runtime fallback is explicit, counted, reason-bearing, and never silently enables
@@ -176,7 +194,11 @@ another mode. Mode never changes inside a control step. `enabled=true` means the
 collector publication graph is active, not merely that MJWarp physics graphs
 exist.
 
-### #2311 workload fixation
+That public mode/API/manifest surface is intentionally abandoned. It did not
+reach UniLab `main`, must not be reintroduced through derivative branches, and
+must not be reused or reinterpreted by ADR-0238's `env_update_graph`.
+
+### #2311 workload fixation (historical evidence)
 
 The canonical frozen workload is FlashSAC / G1 motion tracking / MJWarp with:
 `N=2048`; action `[2048,29]`; observation groups actor/critic `[2048,160]` and
@@ -187,7 +209,9 @@ mapped multi-entity reset owners; `training.env_steps_per_sync=1`;
 `inference_slot_capacity=1`; FlashSAC `n_step=1`; replay capacity `512*2048`
 rows; ingress depth `2`; ingress slot rows `2048`.
 
-Benchmark commands are fixed as fresh-process, same-head null and MPS runs of:
+The benchmark commands below were fixed as fresh-process, same-head null and MPS
+runs for the abandoned branch. They are retained as historical evidence, not as
+runnable support or a pending benchmark plan:
 `uv run --no-sync train --algo flashsac --task g1_motion_tracking --sim mjwarp algo.seed=1 env.seed=1 training.collector_graph=<disabled|eager|graph> algo.max_iterations=300 training.no_play=true`
 plus the #2311-prescribed paired repeat/interleave orchestration. The Manager
 RNG has its own `env.seed`; `algo.seed` alone does not fix it. Every run records
@@ -221,10 +245,16 @@ K>1, pre-committed action sequences, stale/replay inference, and speculative tra
 
 ## Consequences
 
-- Graph-safe cleanup must land in owner modules before MVP; no backend-private probing is permitted.
-- The contract is testable independently of performance acceptance.
-- Integration branches may implement the bounded canonical workload only after Gate B static and semantic audits pass.
-- Successful Gate D support is integration-only until owners promote it; failing performance remains a valid no-go outcome.
+- The complete K=1 collector graph route is rejected. Its independently useful
+  eager carrier, public lifecycle, deferred-verdict, and correctness work is
+  preserved on `main`; collector graph execution itself remains unsupported.
+- `collector_graph` API, defaults, manifests, resolver behavior, and training
+  integration are not public contracts and must not be merged from the branch.
+- ADR-0238 owns the current graph boundary and keeps `env_update_graph`
+  semantically and nominally distinct from this abandoned route.
+- No graph-enabled support or performance claim follows from this historical
+  record. The structural M2 evidence and the absence of Gate S/Gate P runs are
+  the relevant outcomes.
 
 - Backend capability negotiation remains public through `unisim.backend.base.SimBackend`; backend-private probing is prohibited.
 - Manager-Based training semantics, reset masks, terminal observations, transition ordering, semantic logs, and episode statistics remain eager-equivalent.
@@ -238,7 +268,9 @@ K>1, pre-committed action sequences, stale/replay inference, and speculative tra
 
 - **Expand MJWarp physics graphs only:** rejected because Phase A shows Manager update/reset and publication overhead outside the existing physics graph.
 - **Capture the learner update cycle too:** rejected because policy/model updates require outside-graph ownership and would violate the bounded collector roadmap.
-- **No graph route:** remains a valid Phase B/C/D no-go if cleanup, contract, semantic, or performance gates fail.
+- **No complete collector graph route:** selected by the M2 structural no-go;
+  nested graph replay was prohibited and the public composition path encountered
+  capture-invalidating transient allocation/free.
 
 ## Evidence In Repo
 
@@ -260,3 +292,4 @@ K>1, pre-committed action sequences, stale/replay inference, and speculative tra
 - {doc}`ADR Index </adr/ADR-0000-index>`
 - {doc}`ADR-0012 Sole Tensor Manager And Scoped Backends </adr/ADR-0012-sole-tensor-manager-and-scoped-backends>`
 - {doc}`ADR-0013 CUDA MPS Single-Rank Execution Sharing </adr/ADR-0013-cuda-mps-single-rank-execution-sharing>`
+- {doc}`ADR-0238 State-Update-Only CUDA Graph Boundary </adr/ADR-0238-state-update-only-cuda-graph-boundary>`
