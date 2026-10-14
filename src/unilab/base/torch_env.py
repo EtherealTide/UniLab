@@ -298,14 +298,10 @@ class TorchEnv(ABEnv):
 
         phase = time.perf_counter()
         phase_cpu = _cpu_time()
-        # Eager execution preserves the semantic autoreset gate: an empty done
-        # mask must not consume Manager reset RNG or publish a terminal carrier.
-        # Graph-candidate integration opts into the fixed-width boundary and
-        # keeps that experimental lifecycle explicit rather than changing the
-        # production trajectory.
-        did_reset = self._autoreset and (
-            self._defer_validation_at_boundaries
-            or bool((self._state.terminated | self._state.truncated).any())
+        # Preserve the semantic autoreset gate in both modes: an empty done
+        # mask must not consume reset RNG or publish a terminal carrier.
+        did_reset = self._autoreset and bool(
+            (self._state.terminated | self._state.truncated).any()
         )
         if did_reset:
             self._reset_done_envs()

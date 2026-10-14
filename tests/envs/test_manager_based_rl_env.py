@@ -4261,8 +4261,8 @@ def test_autoreset_empty_partial_and_full_masks_share_one_fixed_width_lifecycle(
     env.close()
 
 
-def test_deferred_empty_autoreset_keeps_fixed_width_lifecycle() -> None:
-    """The integration-only graph candidate retains the fixed-width boundary."""
+def test_deferred_empty_autoreset_preserves_semantic_gate() -> None:
+    """Deferred validation retains the eager no-done autoreset gate."""
     cfg = _make_cfg()
     cfg.terminations = {"selective": None, "time_out": None}
     env, _backend = _make_env(cfg)
@@ -4275,11 +4275,11 @@ def test_deferred_empty_autoreset_keeps_fixed_width_lifecycle() -> None:
 
     state = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
 
-    assert command.reset_masks[-1].tolist() == [False, False]
-    assert state.final_observation is not None
+    assert [mask.tolist() for mask in command.reset_masks] == [[False, False]]
+    assert state.final_observation is None
     trace = env.trace[recorder_traces_before:]
-    assert ("pre_reset", [False, False]) in trace
-    assert ("post_reset", [False, False]) in trace
+    assert ("pre_reset", [False, False]) not in trace
+    assert ("post_reset", [False, False]) not in trace
     env.close()
 
 
@@ -4597,7 +4597,9 @@ def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
         # eager/deferred mode can intentionally differ in reset RNG and trace.
         if torch.equal(eager["rng_after"], deferred["rng_after"]):
             torch.testing.assert_close(eager["command"], deferred["command"])
-            assert eager["trace"] == deferred["trace"]
+            assert [event for event in eager["trace"] if event[0] != "pre_reset"] == [
+                event for event in deferred["trace"] if event[0] != "pre_reset"
+            ]
         torch.testing.assert_close(eager["reward_means"], deferred["reward_means"])
         for name in eager["after_obs"]:
             torch.testing.assert_close(eager["after_obs"][name], deferred["after_obs"][name])
