@@ -363,6 +363,8 @@ class _FakeBackend:
             raise RuntimeError("simulated graph replay failed before publication")
         self.tensor_controls.append(ctrl.detach().clone())
         self.step(ctrl.detach().cpu().numpy(), nsteps)
+        if self.graph_completions and self.graph_completions[-1] == "not-a-token":
+            return {"timing": {}, "graph_completion": "not-a-token"}
         return {"timing": {}, "graph_completion": self.record_graph_completion("step")}
 
     def _graph_completion(self, operation: str):
@@ -1412,6 +1414,37 @@ def test_step_publishes_backend_graph_completion_for_transition_consumers() -> N
     state = env.step(torch.tensor([[0.25], [0.75]], dtype=torch.float32))
 
     assert state.info["graph_completion"].operation == "step"
+    env.close()
+
+
+def test_backend_step_receipt_is_available_before_update_state() -> None:
+    env, backend = _make_env(_make_cfg(include_optional_managers=False), torch_stream_id=17)
+    env.init_state()
+    observed: list[object] = []
+    original_update_state = env.update_state
+
+    def update_state_with_pending_receipt(state):
+        observed.append(env._pending_backend_step_completion)
+        return original_update_state(state)
+
+    env.update_state = update_state_with_pending_receipt
+    state = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+
+    assert observed == [backend.graph_completions[-1]]
+    assert env._pending_backend_step_completion is None
+    assert state.info["graph_completion"] is backend.graph_completions[-1]
+    env.close()
+
+
+def test_invalid_backend_step_receipt_fails_before_update_state() -> None:
+    env, backend = _make_env(_make_cfg(include_optional_managers=False))
+    backend.graph_completions.append("not-a-token")
+    env.init_state()
+
+    with pytest.raises(TypeError, match="backend graph_completion"):
+        env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+    assert env._pending_backend_step_completion is None
+    assert "graph_completion" not in env._state.info
     env.close()
 
 
