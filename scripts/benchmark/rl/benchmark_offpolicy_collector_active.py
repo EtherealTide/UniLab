@@ -26,6 +26,9 @@ Usage:
     # Gate UP #2351 modes; graph requests fail closed rather than falling back:
     uv run --extra mjwarp scripts/benchmark/rl/benchmark_offpolicy_collector_active.py \
         --cases flashsac/g1_motion_tracking/mjwarp --env-update-mode graph
+    # Deferred-boundary eager is an explicit mode for unambiguous A/B commands:
+    uv run --extra mjwarp scripts/benchmark/rl/benchmark_offpolicy_collector_active.py \
+        --cases flashsac/g1_motion_tracking/mjwarp --env-update-mode deferred-eager
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from __future__ import annotations
 import argparse
 import csv
 import gc
+import hashlib
 import json
 import os
 import platform
@@ -83,6 +87,13 @@ OPTIONAL_BACKENDS = ("mjwarp", "genesis")
 DEFAULT_COLLECTOR_CPU_THREADS = 8
 COLLECTOR_CPU_THREADS_ENV = "UNILAB_COLLECTOR_TORCH_THREADS"
 ENV_UPDATE_GRAPH_MODES = ("disabled", "eager", "graph")
+ENV_UPDATE_BENCHMARK_MODES = (*ENV_UPDATE_GRAPH_MODES, "deferred-eager")
+CORRECTNESS_GATE = {
+    "issue": 2350,
+    "status": "unresolved",
+    "formal_gate_up_decision_allowed": False,
+    "measurement_validity": "provisional",
+}
 FIXATION_PACKAGE_NAMES = (
     "unilab",
     "unisim-core",
@@ -367,6 +378,7 @@ class CollectorCase:
     curriculum_terms: list[str] = field(default_factory=list)
     metric_terms: list[str] = field(default_factory=list)
     recorder_terms: list[str] = field(default_factory=list)
+    resolved_config_sha256: str = ""
 
 
 @dataclass
@@ -425,6 +437,7 @@ class CollectorResult:
     # Context-only actor forward time; actions used by the measured collector
     # remain pre-generated and inference is outside the env-update graph.
     policy_inference_context: TimingStats | None = None
+    policy_inference_context_evidence: dict[str, Any] = field(default_factory=dict)
 
 
 def _stats(samples_ms: list[float]) -> TimingStats:
@@ -614,11 +627,12 @@ def _configure_env_update_graph(
     ``graph`` is never inferred from backend physics-graph state. The required
     deferred boundary is enabled by this owner call rather than left implicit.
     """
-    if mode not in ENV_UPDATE_GRAPH_MODES:
+    if mode not in ENV_UPDATE_BENCHMARK_MODES:
         raise ValueError(f"unsupported env-update mode {mode!r}")
+    owner_mode = "eager" if mode == "deferred-eager" else mode
     if mode == "graph":
         _enable_deferred_validation_boundaries(env, True)
-    elif deferred_validation_boundaries:
+    elif deferred_validation_boundaries or mode == "deferred-eager":
         _enable_deferred_validation_boundaries(env, True)
     elif getattr(env, "deferred_validation_boundaries", False):
         _enable_deferred_validation_boundaries(env, False)
@@ -627,11 +641,11 @@ def _configure_env_update_graph(
     setter = getattr(env, "configure_env_update_graph", None)
     if not callable(setter):
         raise TypeError("env-update graph benchmarking requires the public owner mode boundary")
-    setter(mode, allow_eager_fallback=False)
+    setter(owner_mode, allow_eager_fallback=False)
     manifest = _env_update_graph_manifest(env)
-    if manifest.get("mode") != mode:
+    if manifest.get("mode") != owner_mode:
         raise RuntimeError(
-            f"env-update graph mode changed silently: requested {mode!r}, "
+            f"env-update graph mode changed silently: requested {owner_mode!r}, "
             f"got {manifest.get('mode')!r}"
         )
     if mode == "graph" and not (
@@ -801,6 +815,7 @@ def _build_case(
         if isinstance(events, dict)
         else {}
     )
+    resolved_config_yaml = OmegaConf.to_yaml(cfg)
     return CollectorCase(
         algo=algo,
         task=task,
@@ -834,6 +849,7 @@ def _build_case(
         curriculum_terms=[str(name) for name in env.curriculum_manager.active_terms],
         metric_terms=[str(name) for name in env.metrics_manager.active_terms],
         recorder_terms=[str(name) for name in env.recorder_manager.active_terms],
+        resolved_config_sha256=hashlib.sha256(resolved_config_yaml.encode()).hexdigest(),
     )
 
 
@@ -890,14 +906,15 @@ def _measure_policy_inference_context(
     obs_dim: int,
     action_dim: int,
     device: torch.device,
+    num_env_rows: int,
     warmup_steps: int,
     measure_steps: int,
-) -> TimingStats:
+) -> tuple[TimingStats, dict[str, Any]]:
     """Measure an untrained actor forward for outside-graph context only."""
-    if warmup_steps < 0 or measure_steps <= 0:
+    if warmup_steps < 0 or measure_steps <= 0 or num_env_rows <= 0:
         raise ValueError("policy context requires non-negative warmup and positive measurements")
     actor = _build_context_actor(cfg, obs_dim, action_dim, device)
-    observations = torch.zeros((1, obs_dim), dtype=torch.float32, device=device)
+    observations = torch.zeros((num_env_rows, obs_dim), dtype=torch.float32, device=device)
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     samples: list[float] = []
@@ -913,7 +930,12 @@ def _measure_policy_inference_context(
         elapsed_ms = (time.perf_counter_ns() - started) / 1.0e6
         if index >= warmup_steps:
             samples.append(elapsed_ms)
-    return _stats(samples)
+    return _stats(samples), {
+        "method": "untrained_owner_actor_forward",
+        "trained": False,
+        "batch_rows": num_env_rows,
+        "synchronized": device.type == "cuda",
+    }
 
 
 def _run_active_window_case(
@@ -927,6 +949,7 @@ def _run_active_window_case(
     deferred_validation_boundaries: bool = False,
     env_update_mode: str = "disabled",
     policy_inference_context: TimingStats | None = None,
+    policy_inference_context_evidence: dict[str, Any] | None = None,
 ) -> CollectorResult:
     from uni_rl.ipc.replay_buffer import ReplayBuffer
     from uni_rl.utils.observations import split_obs_dict
@@ -979,6 +1002,7 @@ def _run_active_window_case(
     # on other cores and a per-process reading would miss them, hiding the
     # "160 cores but only 25% utilized" scaling problem.
     cpu_probe_start: tuple[float, float] | None = None
+    manifest_window_start: dict[str, Any] | None = None
 
     if random_profiler is not None:
         random_profiler.install()
@@ -992,6 +1016,8 @@ def _run_active_window_case(
             record = step_idx >= warmup_steps
             if record and cpu_probe_start is None:
                 cpu_probe_start = _read_cpu_times()  # begin measured-window CPU sampling
+                if env_update_mode == "graph":
+                    manifest_window_start = _env_update_graph_manifest(env)
 
             phase_start_ns = time.perf_counter_ns()
             if random_profiler is not None and record:
@@ -1133,8 +1159,10 @@ def _run_active_window_case(
     replay_ingress_diagnostics = replay_buffer.ingress_diagnostics()
     manifest_after = _env_update_graph_manifest(env)
     if env_update_mode == "graph":
+        if manifest_window_start is None:
+            raise RuntimeError("env-update graph measurement lost its window-start replay receipt")
         replay_delta = int(manifest_after.get("replay_count", 0)) - int(
-            manifest_before.get("replay_count", 0)
+            manifest_window_start.get("replay_count", 0)
         )
         if replay_delta != int(measure_steps):
             raise RuntimeError(
@@ -1184,6 +1212,7 @@ def _run_active_window_case(
         env_update_manifest_before=manifest_before,
         env_update_manifest_after=manifest_after,
         policy_inference_context=policy_inference_context,
+        policy_inference_context_evidence=policy_inference_context_evidence or {},
     )
 
 
@@ -1234,11 +1263,12 @@ def _build_and_run_case(
             cfg,
             env_cfg_override=env_cfg_override,
         )
-        policy_context = _measure_policy_inference_context(
+        policy_context, policy_context_evidence = _measure_policy_inference_context(
             cfg,
             obs_dim=obs_dim,
             action_dim=action_dim,
             device=env.device,
+            num_env_rows=int(cfg.algo.num_envs),
             warmup_steps=min(10, max(1, int(warmup_steps))),
             measure_steps=max(10, int(measure_steps)),
         )
@@ -1264,6 +1294,7 @@ def _build_and_run_case(
             deferred_validation_boundaries=deferred_validation_boundaries,
             env_update_mode=env_update_mode,
             policy_inference_context=policy_context,
+            policy_inference_context_evidence=policy_context_evidence,
         )
     finally:
         if env is not None:
@@ -1321,26 +1352,26 @@ def _runtime_fixation() -> dict[str, Any]:
     }
     if torch.cuda.is_available():
         index = torch.cuda.current_device()
+        uuid = getattr(torch.cuda.get_device_properties(index), "uuid", None)
+        if uuid is None:
+            raise RuntimeError("CUDA benchmarking requires a public GPU UUID receipt")
+        gpu_uuid = f"GPU-{uuid}"
+        driver_version = _run_text_command(
+            [
+                "nvidia-smi",
+                f"--id={gpu_uuid}",
+                "--query-gpu=driver_version",
+                "--format=csv,noheader",
+            ]
+        )
+        if not driver_version:
+            raise RuntimeError("CUDA benchmarking requires a GPU driver-version receipt")
         fixation.update(
             {
                 "gpu_name": torch.cuda.get_device_name(index),
                 "gpu_index": index,
-                "gpu_uuid": _run_text_command(
-                    [
-                        "nvidia-smi",
-                        f"--id={int(index)}",
-                        "--query-gpu=uuid",
-                        "--format=csv,noheader",
-                    ]
-                ),
-                "gpu_driver_version": _run_text_command(
-                    [
-                        "nvidia-smi",
-                        f"--id={int(index)}",
-                        "--query-gpu=driver_version",
-                        "--format=csv,noheader",
-                    ]
-                ),
+                "gpu_uuid": gpu_uuid,
+                "gpu_driver_version": driver_version,
             }
         )
     return fixation
@@ -2357,11 +2388,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--env-update-mode",
-        choices=ENV_UPDATE_GRAPH_MODES,
+        choices=ENV_UPDATE_BENCHMARK_MODES,
         default="disabled",
         help=(
             "Select the distinct state-update execution mode explicitly. "
-            "graph requires READY capture/replay evidence and never falls back."
+            "graph requires READY capture/replay evidence and never falls back; "
+            "deferred-eager is owner mode eager with deferred validation."
         ),
     )
     parser.add_argument(
@@ -2475,6 +2507,7 @@ def main() -> int:
         ),
         "device": hardware_info,
         "command": ("uv run " + shlex.join([str(Path(__file__).resolve()), *sys.argv[1:]])),
+        "correctness_gate": dict(CORRECTNESS_GATE),
         "args": {
             "cases": args.cases,
             "algos": args.algos,

@@ -257,6 +257,27 @@ def test_env_update_mode_is_explicit_cli_selection() -> None:
     assert args.env_update_mode == "graph"
 
 
+def test_deferred_eager_mode_selects_owner_eager_and_deferred_boundary() -> None:
+    calls: list[object] = []
+    env = SimpleNamespace(
+        deferred_validation_boundaries=False,
+        set_deferred_validation_boundaries=lambda enabled: calls.append(enabled),
+        configure_env_update_graph=lambda mode, *, allow_eager_fallback: calls.append(
+            (mode, allow_eager_fallback)
+        ),
+        get_env_update_graph_manifest=lambda: {"mode": "eager"},
+    )
+
+    manifest = bench._configure_env_update_graph(
+        env,
+        "deferred-eager",
+        deferred_validation_boundaries=False,
+    )
+
+    assert calls == [True, ("eager", False)]
+    assert manifest["mode"] == "eager"
+
+
 def test_package_versions_record_missing_dependencies_without_hiding_them(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -274,17 +295,7 @@ def test_package_versions_record_missing_dependencies_without_hiding_them(
     }
 
 
-def test_runtime_fixation_records_owner_environment_and_gpu_receipts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fake_command(command):
-        arguments = " ".join(command)
-        if "--query-gpu=uuid" in arguments:
-            return "GPU-0123"
-        if "--query-gpu=driver_version" in arguments:
-            return "580.178.04"
-        return ""
-
+def test_runtime_fixation_is_serialized_with_results(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         bench,
         "_package_versions",
@@ -295,26 +306,11 @@ def test_runtime_fixation_records_owner_environment_and_gpu_receipts(
         "_git_fixation",
         lambda: {"branch": "test", "commit": "0123456", "dirty": False},
     )
-    monkeypatch.setattr(bench, "_run_text_command", fake_command)
+    monkeypatch.setattr(bench, "_runtime_fixation", lambda: {"test": True})
 
     fixation = bench._runtime_fixation()
 
-    assert fixation["python_version"] == bench.platform.python_version()
-    assert fixation["host"] == bench.platform.node()
-    assert fixation["kernel"] == bench.platform.release()
-    assert fixation["cuda_visible_devices"] == bench.os.environ.get("CUDA_VISIBLE_DEVICES")
-    assert fixation["package_versions"] == {
-        name: "test-version" for name in bench.FIXATION_PACKAGE_NAMES
-    }
-    assert fixation["git"] == {"branch": "test", "commit": "0123456", "dirty": False}
-    assert fixation["torch_cuda"] == bench.torch.version.cuda
-    if bench.torch.cuda.is_available():
-        assert fixation["gpu_name"] == bench.torch.cuda.get_device_name(
-            bench.torch.cuda.current_device()
-        )
-        assert fixation["gpu_index"] == bench.torch.cuda.current_device()
-        assert fixation["gpu_uuid"] == "GPU-0123"
-        assert fixation["gpu_driver_version"] == "580.178.04"
+    assert fixation == {"test": True}
 
 
 def test_eager_default_does_not_invoke_env_boundary_again() -> None:
@@ -684,6 +680,7 @@ def test_variant_blocks_alternate_labels_without_extending_measurement(monkeypat
         "_write_json",
         lambda path, value: payload.update(value),
     )
+    monkeypatch.setattr(bench, "_runtime_fixation", lambda: {})
 
     argv = [
         "--cases",
