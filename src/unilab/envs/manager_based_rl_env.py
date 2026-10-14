@@ -39,6 +39,7 @@ from unilab.base.config_overrides import (
 from unilab.base.cpu_runtime import apply_env_cpu_runtime
 from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadPlan, SceneTensorReadSpec
 from unilab.base.env_update_graph import (
+    ENV_UPDATE_GRAPH_INVALIDATION_REASONS,
     ENV_UPDATE_GRAPH_MANIFEST_VERSION,
     EnvUpdateGraphMode,
     resolve_env_update_graph_mode,
@@ -1312,14 +1313,36 @@ class ManagerBasedRlEnv(TorchEnv):
                 return
             raise RuntimeError(reason)
 
-        self._env_update_graph_state = "unavailable"
-        self._env_update_graph_disable_reason = (
-            "backend update preflight passed but env update capture execution is not implemented"
-        )
-        if allow_eager_fallback:
-            self._select_explicit_env_update_eager_fallback()
-            return
-        raise RuntimeError(self._env_update_graph_disable_reason)
+        if self._env_update_graph_runtime is None:
+            self._env_update_graph_state = "unavailable"
+            self._env_update_graph_disable_reason = (
+                "env update graph runtime is not installed on this environment"
+            )
+            if allow_eager_fallback:
+                self._select_explicit_env_update_eager_fallback()
+                return
+            raise RuntimeError(self._env_update_graph_disable_reason)
+        self._env_update_graph_state = "capturing"
+        try:
+            capture_id, layout = self._env_update_graph_runtime.capture(
+                backend_verdict,
+                lambda: self._run_env_update_graph_body(self._state.info["steps"]),
+                current_layout=self.get_env_update_carrier_layout(),
+            )
+            if layout != self.get_env_update_carrier_layout():
+                raise RuntimeError("env update carrier layout changed during capture")
+        except BaseException:
+            self._invalidate_env_update_graph("capture_failed")
+            if allow_eager_fallback:
+                self._select_explicit_env_update_eager_fallback()
+                return
+            raise
+        self._env_update_graph_capture_id = capture_id
+        self._env_update_graph_state = "ready"
+        self._env_update_graph_enabled = True
+        self._env_update_graph_disable_reason = None
+        self._env_update_graph_runtime.layout = layout
+        self._env_update_graph_replay_count = 0
 
     def _preflight_env_update_graph_owner(
         self, backend_verdict: EnvUpdateGraphPreflight
@@ -1405,6 +1428,7 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def get_env_update_graph_manifest(self) -> dict[str, Any]:
         """Serialize distinct state-update graph evidence on a cold path."""
+        receipt = self._env_update_graph_backend_receipt
         return {
             "contract_version": ENV_UPDATE_GRAPH_MANIFEST_VERSION,
             "mode": self._env_update_graph_mode.value,
@@ -1417,9 +1441,9 @@ class ManagerBasedRlEnv(TorchEnv):
             "fallback_count": self._env_update_graph_fallback_count,
             "replay_count": self._env_update_graph_replay_count,
             "backend_step_receipt": {
-                "operation": None,
-                "sequence": None,
-                "capture_id": None,
+                "operation": receipt.operation if receipt is not None else None,
+                "sequence": receipt.sequence if receipt is not None else None,
+                "capture_id": receipt.capture_id if receipt is not None else None,
             },
             "update_completion": {
                 "operation": "env_update",
@@ -1462,6 +1486,16 @@ class ManagerBasedRlEnv(TorchEnv):
                 read_plan.refresh()
             boundary_ms = (time.perf_counter() - boundary_started) * 1000.0
             timing["update_state_read_boundary_ms"] = boundary_ms
+            if self._env_update_graph_enabled:
+                self._env_update_graph_backend_receipt = self._pending_backend_step_completion
+                completion = self._replay_env_update_graph_body(state.info["steps"])
+                state.info["graph_completion"] = completion
+                return state.replace(
+                    obs=self._public_obs,
+                    reward=self._public_reward,
+                    terminated=self._public_terminated,
+                    truncated=self._public_truncated,
+                )
             return self._update_state_in_read_phase(state)
 
     def _update_state_in_read_phase(self, state: TorchEnvState) -> TorchEnvState:
@@ -1614,6 +1648,39 @@ class ManagerBasedRlEnv(TorchEnv):
         self.obs_buf = mapped_obs
         self._has_transition = True
         self._publish_step_outputs(mapped_obs)
+
+    def _replay_env_update_graph_body(self, steps: torch.Tensor) -> Any:
+        """Replay the captured update body on one ordered stream."""
+        if self._env_update_graph_runtime is None:
+            raise RuntimeError("env update graph runtime is not installed")
+        if self._env_update_graph_backend_receipt is None:
+            raise RuntimeError("env update graph replay requires the backend step receipt")
+        receipt = self._env_update_graph_backend_receipt
+        if receipt.operation != "step" or receipt.lifecycle_state is not GraphLifecycleState.READY:
+            raise RuntimeError("backend step receipt is not READY for env update replay")
+        if receipt.capture_id is None:
+            raise RuntimeError("backend step receipt has no capture identity")
+        if receipt.stream_id != self._env_update_graph_runtime.stream_id:
+            raise RuntimeError("backend step receipt stream does not match env update graph")
+        if self.get_env_update_carrier_layout() != self._env_update_graph_runtime.layout:
+            self._invalidate_env_update_graph("view")
+            raise RuntimeError("env update graph carrier layout changed before replay")
+        completion = self._env_update_graph_runtime.replay(
+            receipt,
+            lambda: self._run_env_update_graph_body(steps),
+        )
+        self._env_update_graph_replay_count += 1
+        return completion
+
+    def _invalidate_env_update_graph(self, reason: str) -> None:
+        """Disable a captured update graph and retain fail-closed evidence."""
+        if reason not in ENV_UPDATE_GRAPH_INVALIDATION_REASONS:
+            raise ValueError(f"unsupported env update graph invalidation reason {reason!r}")
+        self._env_update_graph_enabled = False
+        self._env_update_graph_state = "invalidated"
+        self._env_update_graph_invalidation_reason = reason
+        self._env_update_graph_disable_reason = f"env update graph invalidated: {reason}"
+        self._env_update_graph_replay_count = 0
 
     def _advance_episode_steps(self, steps: torch.Tensor) -> None:
         """Advance the fixed-width device episode-step carrier by one."""
