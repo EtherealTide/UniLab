@@ -285,6 +285,25 @@ class _FakeBackend:
             disable_reason="graph candidate was not requested",
         )
 
+    def preflight_env_update_graph(self, request):
+        from dataclasses import replace
+
+        if getattr(self, "reject_env_update_preflight", False):
+            return replace(
+                request,
+                backend_stream_contract="test",
+                supported=False,
+                disable_reason="test backend rejects update capture",
+            )
+        return replace(
+            request,
+            backend_stream_contract="test",
+            supported=True,
+            disable_reason=None,
+            torch_stream_id=self.torch_stream_id,
+            allocator_stats={"allocation.all.allocated": 3},
+        )
+
     def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> None:
         self.set_state_calls.append(
             (
@@ -1668,9 +1687,10 @@ def test_env_update_graph_defaults_disabled_and_negotiates_distinct_eager_mode()
 
 def test_env_update_graph_request_fails_closed_without_backend_boundary() -> None:
     env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env._backend.reject_env_update_preflight = True
     env.init_state()
 
-    with pytest.raises(RuntimeError, match="update-specific backend preflight"):
+    with pytest.raises(RuntimeError, match="test backend rejects update capture"):
         env.configure_env_update_graph("graph")
     failed = env.get_env_update_graph_manifest()
     assert failed["mode"] == "graph"
@@ -1687,6 +1707,32 @@ def test_env_update_graph_request_fails_closed_without_backend_boundary() -> Non
     assert fallback["fallback_count"] == 1
     assert fallback["disable_reason"].startswith("explicit eager fallback:")
     validate_env_update_graph_manifest(fallback)
+    env.close()
+
+
+def test_env_update_graph_supported_preflight_still_fails_before_capture() -> None:
+    env, backend = _make_env(_make_cfg(include_optional_managers=False), torch_stream_id=17)
+    env.init_state()
+
+    with pytest.raises(RuntimeError, match="capture execution is not implemented"):
+        env.configure_env_update_graph("graph")
+    manifest = env.get_env_update_graph_manifest()
+
+    assert manifest["mode"] == "graph"
+    assert manifest["requested"] is True
+    assert manifest["enabled"] is False
+    assert manifest["state"] == "unavailable"
+    assert manifest["invalidation_reason"] is None
+    assert "capture execution is not implemented" in manifest["disable_reason"]
+    validate_env_update_graph_manifest(manifest)
+
+    env.configure_env_update_graph("graph", allow_eager_fallback=True)
+    fallback = env.get_env_update_graph_manifest()
+    assert fallback["mode"] == "eager"
+    assert fallback["fallback_count"] == 1
+    assert fallback["disable_reason"].startswith("explicit eager fallback:")
+    validate_env_update_graph_manifest(fallback)
+    assert backend.tensor_controls == []
     env.close()
 
 
