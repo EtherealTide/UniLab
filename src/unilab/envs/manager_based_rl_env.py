@@ -20,6 +20,7 @@ import torch
 from unisim.backend.base import (
     DebugOverlayGetter,
     DebugPrimitive,
+    EnvUpdateGraphPreflight,
     GraphCandidatePreflight,
     SimBackend,
     TensorDataPlane,
@@ -1264,22 +1265,53 @@ class ManagerBasedRlEnv(TorchEnv):
             self._env_update_graph_disable_reason = "explicit eager env update execution"
             return
 
-        self._env_update_graph_state = "invalidated"
-        self._env_update_graph_invalidation_reason = "capture_failed"
+        try:
+            verdict = self._backend.preflight_env_update_graph(
+                EnvUpdateGraphPreflight(requested=True)
+            )
+        except BaseException:
+            self._env_update_graph_state = "invalidated"
+            self._env_update_graph_invalidation_reason = "capture_failed"
+            self._env_update_graph_disable_reason = (
+                "update-specific backend preflight failed closed"
+            )
+            if allow_eager_fallback:
+                self._select_explicit_env_update_eager_fallback()
+                return
+            raise
+        if verdict.supported is not True:
+            reason = (
+                verdict.disable_reason
+                if isinstance(verdict.disable_reason, str) and verdict.disable_reason.strip()
+                else "update-specific backend preflight rejected the boundary"
+            )
+            self._env_update_graph_state = "invalidated"
+            self._env_update_graph_invalidation_reason = "capture_failed"
+            self._env_update_graph_disable_reason = reason
+            if allow_eager_fallback:
+                self._select_explicit_env_update_eager_fallback()
+                return
+            raise RuntimeError(reason)
+
+        self._env_update_graph_state = "unavailable"
         self._env_update_graph_disable_reason = (
-            "update-specific backend preflight and env update capture execution are not implemented"
+            "backend update preflight passed but env update capture execution is not implemented"
         )
         if allow_eager_fallback:
-            self._env_update_graph_mode = EnvUpdateGraphMode.EAGER
-            self._env_update_graph_state = "eager"
-            self._env_update_graph_invalidation_reason = None
-            self._env_update_graph_requested = False
-            self._env_update_graph_disable_reason = (
-                f"explicit eager fallback: {self._env_update_graph_disable_reason}"
-            )
-            self._env_update_graph_fallback_count = 1
+            self._select_explicit_env_update_eager_fallback()
             return
         raise RuntimeError(self._env_update_graph_disable_reason)
+
+    def _select_explicit_env_update_eager_fallback(self) -> None:
+        """Select eager fallback while retaining the rejected graph evidence."""
+        self._env_update_graph_mode = EnvUpdateGraphMode.EAGER
+        self._env_update_graph_state = "eager"
+        self._env_update_graph_invalidation_reason = None
+        self._env_update_graph_requested = False
+        self._env_update_graph_disable_reason = (
+            f"explicit eager fallback: {self._env_update_graph_disable_reason}"
+        )
+        self._env_update_graph_fallback_count = 1
 
     def get_env_update_graph_manifest(self) -> dict[str, Any]:
         """Serialize distinct state-update graph evidence on a cold path."""
