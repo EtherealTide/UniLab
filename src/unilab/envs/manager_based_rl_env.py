@@ -10,6 +10,7 @@ import math
 import re
 import secrets
 import time
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -301,6 +302,195 @@ def _resolve_backend_entity_contract(
     return (primary_root or root_entities[0])[1], body_state_requested, selected_names
 
 
+class _EventEnvUpdateCompletionToken(GraphCompletionToken):
+    """Owner-local update receipt carrying its independent CUDA event."""
+
+    def __init__(self, token: GraphCompletionToken, event: Any) -> None:
+        object.__setattr__(self, "contract_version", token.contract_version)
+        object.__setattr__(self, "lifecycle_state", token.lifecycle_state)
+        object.__setattr__(self, "operation", token.operation)
+        object.__setattr__(self, "sequence", token.sequence)
+        object.__setattr__(self, "stream_id", token.stream_id)
+        object.__setattr__(self, "capture_id", token.capture_id)
+        self.event = event
+
+    def wait_before_read(self, stream: Any | None = None) -> None:
+        if stream is None:
+            self.event.synchronize()
+            return
+        self.event.wait(stream)
+
+    def ipc_handle(self) -> bytes:
+        raise NotImplementedError("UniLab env-update completion has no IPC transport")
+
+
+class EnvUpdateGraphRuntime:
+    """Owner-side CUDA capture/replay controller for the update-only body."""
+
+    ALLOCATION_COUNTERS: tuple[str, ...] = (
+        "allocation.all.allocated",
+        "allocation.all.freed",
+        "allocated_bytes.all.allocated",
+        "allocated_bytes.all.freed",
+        "segment.all.allocated",
+        "segment.all.freed",
+    )
+
+    def __init__(self, env: "ManagerBasedRlEnv", *, warmup_iterations: int = 3):
+        if warmup_iterations <= 0:
+            raise ValueError("warmup_iterations must be positive")
+        self.env = env
+        self.stream_id: int | None = None
+        self.layout: dict[str, Any] | None = None
+        self.capture_id: str | None = None
+        self.graph: Any = None
+        self._stream: Any = None
+        self._events: list[Any] | None = None
+        self._event_index = 0
+        self._warmup_iterations = warmup_iterations
+
+    def _memory_counters(self) -> dict[str, int]:
+        stats = torch.cuda.memory_stats(self.env.device)
+        return {key: int(stats[key]) for key in self.ALLOCATION_COUNTERS if key in stats}
+
+    @staticmethod
+    def _require_equal_counters(before: dict[str, int], after: dict[str, int]) -> None:
+        missing = sorted(set(before) - set(after))
+        if missing:
+            raise RuntimeError(f"CUDA allocator counters disappeared: {missing}")
+        changed = {key: (before[key], after[key]) for key in before if before[key] != after[key]}
+        if changed:
+            raise RuntimeError(f"CUDA allocator invariant changed: {changed}")
+
+    def _snapshot_semantic_state(self) -> dict[str, Any]:
+        return {
+            "episode_steps": self.env.episode_length_buf.detach().clone(),
+            "reward": self.env.reward_buf.detach().clone(),
+            "reward_components": self.env.reward_manager.step_rewards.detach().clone(),
+            "reset_buf": self.env.reset_buf.detach().clone(),
+            "reset_terminated": self.env.reset_terminated.detach().clone(),
+            "reset_time_outs": self.env.reset_time_outs.detach().clone(),
+            "public_obs": {
+                name: value.detach().clone() for name, value in self.env._public_obs.items()
+            },
+            "public_reward": self.env._public_reward.detach().clone(),
+            "public_terminated": self.env._public_terminated.detach().clone(),
+            "public_truncated": self.env._public_truncated.detach().clone(),
+            "commands": {
+                name: {
+                    "time_left": term.time_left.detach().clone(),
+                    "command_counter": term.command_counter.detach().clone(),
+                    "command": term.command.detach().clone()
+                    if isinstance(term.command, torch.Tensor)
+                    else None,
+                }
+                for name, term in self.env.command_manager._terms.items()
+            },
+            "rng": self.env.snapshot_graph_rng_state(),
+        }
+
+    def _restore_semantic_state(self, snapshot: dict[str, Any]) -> None:
+        self.env.episode_length_buf.copy_(snapshot["episode_steps"])
+        self.env.reward_buf.copy_(snapshot["reward"])
+        self.env.reward_manager.step_rewards.copy_(snapshot["reward_components"])
+        self.env.reset_buf.copy_(snapshot["reset_buf"])
+        self.env.reset_terminated.copy_(snapshot["reset_terminated"])
+        self.env.reset_time_outs.copy_(snapshot["reset_time_outs"])
+        for name, value in snapshot["public_obs"].items():
+            self.env._public_obs[name].copy_(value)
+        self.env._public_reward.copy_(snapshot["public_reward"])
+        self.env._public_terminated.copy_(snapshot["public_terminated"])
+        self.env._public_truncated.copy_(snapshot["public_truncated"])
+        for name, value in snapshot["commands"].items():
+            term = self.env.command_manager._terms[name]
+            term.time_left.copy_(value["time_left"])
+            term.command_counter.copy_(value["command_counter"])
+            if value["command"] is not None:
+                term.command.copy_(value["command"])
+        self.env.rollback_graph_rng_state(snapshot["rng"])
+
+    def capture(self, verdict, body, *, current_layout):
+        if self.env.device.type != "cuda" or not torch.cuda.is_available():
+            raise RuntimeError("env update graph capture requires a CUDA Torch carrier")
+        if verdict.torch_stream_id is None:
+            raise RuntimeError("env update graph capture requires an ordered backend stream")
+        self.stream_id = int(verdict.torch_stream_id)
+        if self.stream_id == 0:
+            # A default-stream id is valid ordered execution evidence but cannot
+            # own CUDA capture. Allocate a stable owner stream before warmup so
+            # every later backend dependency is enqueued onto this stream.
+            self._stream = torch.cuda.Stream(device=self.env.device)
+            self.stream_id = int(self._stream.cuda_stream)
+        else:
+            self._stream = torch.cuda.ExternalStream(self.stream_id, device=self.env.device)
+        self._events = [torch.cuda.Event(interprocess=False) for _ in range(8)]
+        # Materialize fixed-width command/reset staging before allocator proof;
+        # first transaction begin can lazily install persistent default state.
+        prewarm_context = self.env._prepare_command_update()
+        with prewarm_context:
+            pass
+        semantic_snapshot = self._snapshot_semantic_state()
+
+        with torch.cuda.stream(self._stream):
+            for _ in range(self._warmup_iterations):
+                body()
+            self._stream.synchronize()
+        self._restore_semantic_state(semantic_snapshot)
+        with torch.cuda.stream(self._stream):
+            self._stream.synchronize()
+
+        allocator_capture_before = self._memory_counters()
+        graph = torch.cuda.CUDAGraph()
+        try:
+            with torch.cuda.graph(graph, stream=self._stream):
+                body()
+        except BaseException:
+            self._restore_semantic_state(semantic_snapshot)
+            with torch.cuda.stream(self._stream):
+                self._stream.synchronize()
+            raise
+        allocator_capture_after = self._memory_counters()
+        self._require_equal_counters(allocator_capture_before, allocator_capture_after)
+
+        # Acceptance requires one real replay, not merely a completed capture.
+        self.graph = graph
+        self.capture_id = f"env-update-{uuid.uuid4()}"
+        self.layout = current_layout
+        graph.replay()
+        event = self._events[self._event_index]
+        self._event_index = (self._event_index + 1) % len(self._events)
+        event.record(self._stream)
+        event.synchronize()
+        allocator_replay_after = self._memory_counters()
+        self._require_equal_counters(allocator_capture_before, allocator_replay_after)
+        if self.env.get_env_update_carrier_layout() != current_layout:
+            raise RuntimeError("env update graph carrier layout changed during first replay")
+        return self.capture_id, current_layout
+
+    def replay(self, receipt, body):
+        del body
+        if self.graph is None or self.capture_id is None:
+            raise RuntimeError("env update graph is not captured")
+        receipt.wait_before_read(self._stream)
+        before = self._memory_counters()
+        self.graph.replay()
+        event = self._events[self._event_index]
+        self._event_index = (self._event_index + 1) % len(self._events)
+        event.record(self._stream)
+        event.synchronize()
+        after = self._memory_counters()
+        self._require_equal_counters(before, after)
+        token = GraphCompletionToken(
+            contract_version=1,
+            lifecycle_state=GraphLifecycleState.READY,
+            operation="env_update",
+            sequence=self.env._env_update_graph_replay_count + 1,
+            stream_id=self.stream_id or 0,
+            capture_id=self.capture_id,
+        )
+        return _EventEnvUpdateCompletionToken(token, event)
+
+
 class ManagerBasedRlEnv(TorchEnv):
     """Manager-Based runtime with a Torch public lifecycle.
 
@@ -413,7 +603,7 @@ class ManagerBasedRlEnv(TorchEnv):
         self._env_update_graph_fallback_count = 0
         self._env_update_graph_replay_count = 0
         self._env_update_graph_step_active = False
-        self._env_update_graph_runtime: Any = None
+        self._env_update_graph_runtime = EnvUpdateGraphRuntime(self)
         self._env_update_graph_backend_receipt: GraphCompletionToken | None = None
 
         self._load_managers()
@@ -1323,10 +1513,9 @@ class ManagerBasedRlEnv(TorchEnv):
                 self._select_explicit_env_update_eager_fallback()
                 return
             raise RuntimeError(self._env_update_graph_disable_reason)
-        self._env_update_graph_state = "capturing"
         try:
             capture_id, layout = self._env_update_graph_runtime.capture(
-                backend_verdict,
+                owner_verdict,
                 lambda: self._run_env_update_graph_body(self._state.info["steps"]),
                 current_layout=self.get_env_update_carrier_layout(),
             )
@@ -1343,7 +1532,9 @@ class ManagerBasedRlEnv(TorchEnv):
         self._env_update_graph_enabled = True
         self._env_update_graph_disable_reason = None
         self._env_update_graph_runtime.layout = layout
-        self._env_update_graph_replay_count = 0
+        # The runtime's acceptance replay already produced real evidence;
+        # publish that first replay rather than requiring a later step.
+        self._env_update_graph_replay_count = 1
 
     def _preflight_env_update_graph_owner(
         self, backend_verdict: EnvUpdateGraphPreflight
@@ -1383,6 +1574,16 @@ class ManagerBasedRlEnv(TorchEnv):
             failures.append("mapped entity reset layout has no graph carrier")
         if not self._autoreset:
             failures.append("manual reset guard has no graph boundary")
+        if not self.reward_manager.step_reward_names:
+            failures.append("reward term set is empty")
+        if any(
+            not bool(getattr(term_cfg.func, "returns_transient_tensor", False))
+            for term_cfg in self.reward_manager.cfg.values()
+            if term_cfg is not None
+        ):
+            failures.append("non-transient reward terms require an allocating defensive clone")
+        if self.observation_manager.active_terms:
+            failures.append("observation groups require persistent finite-scratch carriers")
         if self.torch_rng.device != self.device:
             failures.append("Torch RNG device does not match graph carriers")
         for group_name, group_cfg in self.observation_manager.cfg.items():
@@ -1403,7 +1604,7 @@ class ManagerBasedRlEnv(TorchEnv):
                     failures.append(
                         f"observation history buffer '{group_name}/{term_name}' has no graph contract"
                     )
-        if self.command_manager.active_terms and self._reset_state.last_commit_had_writes:
+        if self.command_manager.active_terms and self._reset_state._tensor_has_writes:
             failures.append("command commit requires a data-dependent mid-update read repack")
         if failures:
             return EnvUpdateGraphPreflight(
@@ -1648,14 +1849,24 @@ class ManagerBasedRlEnv(TorchEnv):
         self.reward_buf = self._compute_rewards()
         self._reward_log_names = self.reward_manager.step_reward_names
         self._reward_log_means = self.reward_manager.step_reward_means
-        step_reset_context = self._prepare_command_update()
-        with step_reset_context:
+        self._command_dt.fill_(self.step_dt)
+        self._command_dt.masked_fill_(self.reset_buf, 0.0)
+        if self.command_manager.active_terms:
             self._compute_commands()
-        self._post_compute_commands()
+            self._post_compute_commands()
         manager_obs = self._compute_observations()
         mapped_obs = self._map_observations(manager_obs)
         self.obs_buf = mapped_obs
         self._has_transition = True
+        # Persistent group carriers remove the allocating defensive clone from
+        # this graph-only publication boundary.
+        if self._defer_validation_at_boundaries:
+            for name, value in mapped_obs.items():
+                self._public_obs[name].copy_(value)
+            self._public_reward.copy_(self.reward_buf)
+            self._public_terminated.copy_(self.reset_terminated)
+            self._public_truncated.copy_(self.reset_time_outs)
+            return None
         self._publish_step_outputs(mapped_obs)
 
     def _replay_env_update_graph_body(self, steps: torch.Tensor) -> Any:
