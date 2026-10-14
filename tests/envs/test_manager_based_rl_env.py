@@ -4494,6 +4494,7 @@ def test_extracted_env_update_body_preserves_eager_owner_order() -> None:
     assert set(state.obs) == set(env.obs_groups_spec)
     env.close()
 
+
 def _method_name(name: str) -> str:
     return {
         "episode_steps": "_advance_episode_steps",

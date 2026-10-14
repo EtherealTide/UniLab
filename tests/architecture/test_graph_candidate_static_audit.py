@@ -89,12 +89,12 @@ OUT_OF_CAPTURE_VIOLATIONS: frozenset[tuple[str, int, str]] = frozenset(
         ),
         (
             "src/unilab/envs/manager_based_rl_env.py",
-            1642,
+            1683,
             "eager_terminated.clone()",
         ),
         (
             "src/unilab/envs/manager_based_rl_env.py",
-            1644,
+            1685,
             "eager_truncated.clone()",
         ),
         (
