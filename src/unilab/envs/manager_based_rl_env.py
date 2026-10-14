@@ -608,7 +608,7 @@ class ManagerBasedRlEnv(TorchEnv):
         self._env_update_graph_state = "unavailable"
         self._env_update_graph_capture_id: str | None = None
         self._env_update_graph_invalidation_reason: str | None = None
-        self._env_update_graph_disable_reason = "env update graph mode is disabled"
+        self._env_update_graph_disable_reason: str | None = "env update graph mode is disabled"
         self._env_update_graph_fallback_count = 0
         self._env_update_graph_replay_count = 0
         self._env_update_graph_step_active = False

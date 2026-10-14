@@ -80,12 +80,9 @@ def _move_carriers(env: Any, target: torch.device) -> None:
         truncated=env._state.truncated.to(device=target),
     )
     env._state.info["steps"] = env._state.info["steps"].to(device=target)
-    env._public_obs = {
-        name: value.to(device=target) for name, value in env._public_obs.items()
-    }
+    env._public_obs = {name: value.to(device=target) for name, value in env._public_obs.items()}
     env._final_observation_scratch = {
-        name: value.to(device=target)
-        for name, value in env._final_observation_scratch.items()
+        name: value.to(device=target) for name, value in env._final_observation_scratch.items()
     }
     # Seed 7 matches every mode before construction; graph configuration's
     # acceptance replay consumes one additional CUDA generator draw in this fake
@@ -136,9 +133,7 @@ def _move_carriers(env: Any, target: torch.device) -> None:
     backend = env._backend
     backend.qpos = backend.qpos.to(device=target)
     backend.qvel = backend.qvel.to(device=target)
-    backend.sensors = {
-        name: value.to(device=target) for name, value in backend.sensors.items()
-    }
+    backend.sensors = {name: value.to(device=target) for name, value in backend.sensors.items()}
 
 
 def _make_parity_env(mode: str) -> tuple[Any, Any, FakeEnvUpdateGraphRuntime]:
@@ -235,7 +230,11 @@ def _capture_evidence(env: Any, backend: Any, mode: str = "eager") -> StepEviden
                 env._env_update_graph_backend_receipt.sequence,
             )
             if env._env_update_graph_backend_receipt is not None
-            else ("step", backend.graph_completions[-1].capture_id, backend.graph_completions[-1].sequence)
+            else (
+                "step",
+                backend.graph_completions[-1].capture_id,
+                backend.graph_completions[-1].sequence,
+            )
         ),
         verdicts={
             name: value.detach().cpu().clone()
@@ -245,9 +244,7 @@ def _capture_evidence(env: Any, backend: Any, mode: str = "eager") -> StepEviden
 
 
 def _assert_step_parity(expected: StepEvidence, actual: StepEvidence) -> None:
-    torch.testing.assert_close(
-        expected.obs, actual.obs, check_device=False, check_dtype=False
-    )
+    torch.testing.assert_close(expected.obs, actual.obs, check_device=False, check_dtype=False)
     torch.testing.assert_close(expected.reward, actual.reward)
     torch.testing.assert_close(expected.reward_components, actual.reward_components)
     torch.testing.assert_close(expected.terminated, actual.terminated)
