@@ -248,8 +248,6 @@ def test_g1_walk_flat_owner_one_step(
 
 def test_g1_walk_flat_owner_eager_capture_warmup_and_replay_share_semantics() -> None:
     """The full Manager trajectory is invariant across MJWarp execution modes."""
-    from unisim import GraphLifecycleState
-
     _require_cuda_mjwarp()
     GlobalHydra.instance().clear()
     with initialize_config_dir(
@@ -285,20 +283,15 @@ def test_g1_walk_flat_owner_eager_capture_warmup_and_replay_share_semantics() ->
             env.init_state()
             env.seed(common_seed)
             if mode == "eager":
-                env.backend.invalidate_graph("capture_failed")
+                env.backend._disable_cuda_graphs("test requests eager execution")
             else:
-                assert env.backend.get_graph_lifecycle() is GraphLifecycleState.READY
+                assert env.backend._cuda_graph_enabled
 
             action_dim = int(env.action_space.shape[-1])
             action = torch.zeros((2, action_dim), dtype=torch.float32, device=env.device)
             # This first public step is capture warmup for the graph backend;
             # forcing eager makes it the same semantic warmup boundary.
             env.step(action)
-            if mode != "eager":
-                snapshot = env.get_graph_lifecycle_manifest()
-                assert snapshot["state"] == GraphLifecycleState.READY.value
-                assert snapshot["capture_id"] is not None
-                assert snapshot["replay_count"] >= 1
 
             trace: list[dict[str, object]] = []
             for control_value, reset_mask in zip(controls, masks, strict=True):
@@ -307,13 +300,10 @@ def test_g1_walk_flat_owner_eager_capture_warmup_and_replay_share_semantics() ->
                 reset_mask = reset_mask.to(device=env.device)
                 reset_obs, _reset_info = env.reset(reset_mask=reset_mask)
                 after_reset = env.step(torch.zeros_like(action))
-                completion = after_reset.info.get("graph_completion")
-                if mode == "eager":
-                    assert completion is None
-                else:
-                    assert completion is not None
-                    assert completion.operation == "step"
-                    assert completion.capture_id is not None
+                completion = after_reset.info.get("completion")
+                assert completion is not None
+                assert completion.operation == "step"
+                assert completion.producer_id is not None
                 trace.append(
                     {
                         "obs": {name: value.clone() for name, value in state.obs.items()},
@@ -326,8 +316,7 @@ def test_g1_walk_flat_owner_eager_capture_warmup_and_replay_share_semantics() ->
                             name: value.clone() for name, value in after_reset.obs.items()
                         },
                         "after_reward": after_reset.reward.clone(),
-                        "rng_state": env.graph_rng_state["state"].clone(),
-                        "manifest": dict(env.get_graph_lifecycle_manifest()),
+                        "rng_state": env.torch_rng.get_state().clone(),
                     }
                 )
             references[mode] = trace
@@ -363,11 +352,6 @@ def test_g1_walk_flat_owner_eager_capture_warmup_and_replay_share_semantics() ->
                 cast(torch.Tensor, expected_row["rng_state"]),
                 cast(torch.Tensor, actual_row["rng_state"]),
             )
-            actual_manifest = cast(dict[str, object], actual_row["manifest"])
-            assert actual_manifest["state"] == GraphLifecycleState.READY.value
-            assert actual_manifest["capture_id"] is not None
-            assert actual_manifest["fallback_count"] == 0
-            assert actual_manifest["replay_count"] >= 3
 
 
 def test_body_state_matches_mujoco_backend() -> None:

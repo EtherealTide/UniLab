@@ -5,6 +5,7 @@ import subprocess
 import sys
 import textwrap
 from importlib.metadata import distribution
+from os import environ
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -16,6 +17,14 @@ _MATERIALIZER_CONSUMERS = (
 
 def test_unisim_dependency_uses_an_approved_source() -> None:
     direct_url = distribution("unisim-core").read_text("direct_url.json")
+    if environ.get("UNILAB_ALLOW_LOCAL_UNISIM") == "1":
+        # Coordinated multi-repository validation against a sibling checkout.
+        # The environment is temporary and must not be used for release checks.
+        assert direct_url is not None, "UniSim must resolve from the local source checkout"
+        assert direct_url.startswith('{"url":"file://'), (
+            "UniSim local validation must use a file:// editable source"
+        )
+        return
     assert direct_url is None, "UniSim must resolve from the published package registry"
 
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from uni_rl.logging.runtime_manifest_schema import RUNTIME_MANIFEST_SCHEMA_VERSION
 
 from unilab.training.soak import (
     SoakFailureError,
@@ -58,7 +59,7 @@ def _completed_summary() -> dict[str, Any]:
         "total_env_steps": 102_400,
         "metric_schema_version": 1,
         "runtime_manifest": {
-            "schema_version": 1,
+            "schema_version": RUNTIME_MANIFEST_SCHEMA_VERSION,
             "inference_ring_capacity": 1,
             "collector_metrics_interval": 100,
             "collector_backend_device": "cuda:0",
@@ -210,7 +211,7 @@ def test_soak_monitor_reports_abnormal_shutdown_diagnostics(tmp_path: Path) -> N
         "error": "learner update failed",
         "metric_schema_version": 1,
         "runtime_manifest": {
-            "schema_version": 1,
+            "schema_version": RUNTIME_MANIFEST_SCHEMA_VERSION,
             "shutdown": {
                 "classification": "learner_failure",
                 "owner": "learner",
@@ -258,7 +259,10 @@ def test_soak_monitor_preserves_abnormal_producer_classification(
         "status": "failed",
         "error": "collector stopped",
         "metric_schema_version": 1,
-        "runtime_manifest": {"schema_version": 1, "shutdown": shutdown},
+        "runtime_manifest": {
+            "schema_version": RUNTIME_MANIFEST_SCHEMA_VERSION,
+            "shutdown": shutdown,
+        },
     }
 
     with pytest.raises(SoakFailureError, match="run_summary status is 'failed'"):
@@ -274,7 +278,7 @@ def test_soak_monitor_reports_missing_abnormal_shutdown_diagnostics(tmp_path: Pa
         "status": "failed",
         "error": "learner stopped before diagnostics",
         "metric_schema_version": 1,
-        "runtime_manifest": {"schema_version": 1},
+        "runtime_manifest": {"schema_version": RUNTIME_MANIFEST_SCHEMA_VERSION},
     }
 
     with pytest.raises(SoakFailureError, match="shutdown diagnostics are unavailable"):
@@ -289,7 +293,10 @@ def test_soak_monitor_rejects_normal_completion_on_abnormal_run(tmp_path: Path) 
     summary: dict[str, Any] = {
         "status": "failed",
         "metric_schema_version": 1,
-        "runtime_manifest": {"schema_version": 1, "shutdown": _normal_shutdown()},
+        "runtime_manifest": {
+            "schema_version": RUNTIME_MANIFEST_SCHEMA_VERSION,
+            "shutdown": _normal_shutdown(),
+        },
     }
 
     with pytest.raises(SoakFailureError, match="cannot be normal_completion"):
@@ -508,7 +515,10 @@ def test_soak_monitor_fails_closed_on_invalid_metric_schema(
         _run_with_summary(tmp_path, summary)
 
 
-@pytest.mark.parametrize("runtime_schema_version", [None, 0, 2, "1", 1.0, True])
+@pytest.mark.parametrize(
+    "runtime_schema_version",
+    [None, 0, 1, 3, "2", 2.0, True],
+)
 def test_soak_monitor_fails_closed_on_invalid_runtime_manifest_schema(
     tmp_path: Path, runtime_schema_version: object
 ) -> None:

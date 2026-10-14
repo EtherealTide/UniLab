@@ -584,7 +584,7 @@ def test_cuda_host_bridge_requires_public_completion_publication() -> None:
     # capability branch without initializing an unavailable CUDA runtime.
     env = _StubTorchEnv(backend=backend, device="cpu")
     env._device = torch.device("cuda:0")
-    with pytest.raises(ValueError, match="graph_completion_publication"):
+    with pytest.raises(ValueError, match="ordered_completion_publication"):
         env.init_state()
 
 

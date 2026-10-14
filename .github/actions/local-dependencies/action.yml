@@ -1,0 +1,19 @@
+name: Check out coordinated local dependencies
+description: Materialize the sibling checkouts expected by the temporary #2359 local sources.
+runs:
+  using: composite
+  steps:
+    - name: Clone local dependency sources
+      shell: bash
+      run: |
+        set -euo pipefail
+        dependency_root="$(pwd)/.."
+        rm -rf "${dependency_root}/unisim" "${dependency_root}/unilab_rl"
+        git clone --depth 1 --branch feat/issue-2359-remove-graph-contracts \
+          https://github.com/unilabsim/unisim.git "${dependency_root}/unisim"
+        git clone --depth 1 --branch feat/issue-2359-remove-collector-graph \
+          https://github.com/unilabsim/unilab_rl.git "${dependency_root}/unilab_rl"
+        printf 'unisim: '
+        git -C "${dependency_root}/unisim" rev-parse HEAD
+        printf 'unilab_rl: '
+        git -C "${dependency_root}/unilab_rl" rev-parse HEAD

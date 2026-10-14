@@ -8,7 +8,8 @@
 - Roadmaps: #2307 (historical contract), #2311 (M0 boundary addendum)
 - Scope: historical pre-registration and integration evidence; no active runtime contract
 - Supersedes: None
-- Superseded by: [ADR-0238 State-update-only CUDA graph boundary](ADR-0238-state-update-only-cuda-graph-boundary.md)
+- Superseded by: None. ADR-0238 was subsequently rejected in #2358; its
+  residual public lifecycle/completion naming was removed by #2359.
 
 ## Context
 
@@ -24,8 +25,10 @@ during caller capture and that the non-nested public path reaches transient
 MuJoCo-Warp allocation/free that invalidates the outer capture. This ADR is
 retained as historical pre-registration and audit evidence only. It is not an
 active execution plan, does not authorize `collector_graph` in UniLab, and makes
-no support or performance claim. The successor boundary is ADR-0238's
-state-update-only `env_update_graph`.
+no support or performance claim. Its derivative state-update-only route was
+also rejected; it is not an active successor boundary.
+The surviving eager receipt boundary is operation-neutral completion metadata,
+not a graph lifecycle or whole-collector tick contract.
 
 Issue #2307 closed at Gate B no-go only because its Phase B boundary could not
 remove the then-private backend/replay completion barriers. Issue #2309 has
@@ -47,7 +50,10 @@ updates which must never enter this graph.
 The decision recorded here was pre-registered for the #2311 integration branch
 and was rejected at M2 before promotion to `main`. The sections below preserve
 the exact historical boundary, inventory, mode, workload, and gates for audit;
-they must not be read as pending M1/M2 work.
+they must not be read as pending M1/M2 work. Historical API/config/test names
+below no longer exist; #2358 also removed the derivative caller-owned update
+route and retained the neutral runtime hot-path audit
+`tests/architecture/test_runtime_hot_path_static_audit.py`.
 
 Define an integration-only public capture boundary negotiated through `SimBackend` capabilities. The candidate consumes one preallocated action input of shape `[num_envs, action_dim]` and produces fixed-shape observation, reward, terminated, truncated, terminal-observation, and transition-publication carriers. The candidate is exactly K=1; policy inference and learner updates are outside capture.
 
@@ -250,8 +256,8 @@ K>1, pre-committed action sequences, stale/replay inference, and speculative tra
   preserved on `main`; collector graph execution itself remains unsupported.
 - `collector_graph` API, defaults, manifests, resolver behavior, and training
   integration are not public contracts and must not be merged from the branch.
-- ADR-0238 owns the current graph boundary and keeps `env_update_graph`
-  semantically and nominally distinct from this abandoned route.
+- ADR-0238's derivative state-update-only route was also rejected in #2358; no
+  caller-owned collector/update graph boundary remains active.
 - No graph-enabled support or performance claim follows from this historical
   record. The structural M2 evidence and the absence of Gate S/Gate P runs are
   the relevant outcomes.

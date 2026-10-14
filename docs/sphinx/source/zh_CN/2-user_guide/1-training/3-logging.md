@@ -286,7 +286,7 @@ sequenceDiagram
         L-->>C: Collector Release / response(t)
     end
 
-    par Collector tick t
+    par Collector 迭代 t
         C->>C: Env Step(t)
         C->>D: Replay Write(t)
         C->>I: Inference Request(t+1)

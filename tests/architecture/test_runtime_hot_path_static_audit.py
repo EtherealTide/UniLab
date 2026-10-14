@@ -1,4 +1,9 @@
-"""Static audit boundary for the K=1 collector graph candidate hot path."""
+"""Neutral static hygiene audit for eager runtime hot paths.
+
+The audit protects fixed-width tensor execution from accidental dynamic
+indexing, host transfers, and unnecessary temporary allocation. It is not a
+capture-safety contract and does not authorize a caller-owned update graph.
+"""
 
 from __future__ import annotations
 
@@ -9,9 +14,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = ROOT / "src" / "unilab"
 
-# Functions reachable from action consumption through post-reset observation
-# and transition publication. `publish_validation_verdicts` is intentionally
-# absent: it is the fail-closed completion boundary outside capture.
+# Functions reachable from action consumption through post-reset observation and
+# transition publication. `publish_validation_verdicts` is intentionally absent:
+# it is the fail-closed completion boundary outside the step hot path.
 AUDITED_FUNCTIONS: dict[Path, frozenset[str]] = {
     SOURCE_ROOT / "base/torch_env.py": frozenset(
         {
@@ -32,7 +37,6 @@ AUDITED_FUNCTIONS: dict[Path, frozenset[str]] = {
             "apply_action",
             "update_state",
             "_update_state_in_read_phase",
-            "_run_env_update_graph_body",
             "_reset_done_envs",
             "reset",
             "_publish_reward_components",
@@ -42,8 +46,8 @@ AUDITED_FUNCTIONS: dict[Path, frozenset[str]] = {
     SOURCE_ROOT / "managers/action_manager.py": frozenset(
         {"process_action", "apply_action", "reset"}
     ),
-    # Reset-time semantic publication is completion/interval-owned and must
-    # not be captured; its audit covers the compute path only.
+    # Reset-time semantic publication is completion/interval-owned; the audit
+    # covers the compute path only.
     SOURCE_ROOT / "managers/reward_manager.py": frozenset({"compute"}),
     SOURCE_ROOT / "managers/termination_manager.py": frozenset({"compute"}),
     SOURCE_ROOT / "managers/command_manager.py": frozenset({"compute"}),
@@ -64,64 +68,37 @@ FORBIDDEN_DIRECT_CALLS = frozenset({"nonzero", "masked_select", "item", "tolist"
 FORBIDDEN_ATTRIBUTE_CALLS = frozenset({"cpu", "tolist", "numpy", "item"})
 FORBIDDEN_ALLOCATION_CALLS = frozenset({"empty", "zeros", "ones", "cat", "stack"})
 
-# Static operations outside the graph-candidate proper are explicitly
-# classified rather than silently erased from the audit:
-# - non-autoreset mode is rejected by the public graph preflight;
-# - public-carrier layout recovery is a fail-cold fallback, while a graph
-#   runtime materializes the stable layout before capture;
-# - eager invalid-row diagnostics are unreachable after deferred validation
-#   returns, with publication owned by the completion boundary.
-OUT_OF_CAPTURE_VIOLATIONS: frozenset[tuple[str, int, str]] = frozenset(
+# Boundary operations are explicitly classified by file and expression rather
+# than silently erased from the audit. The manual-reset path is a user-selected
+# eager control boundary; eager output cloning, packed concatenation with an
+# owner carrier, and invalid-row diagnostics remain completion-owned.
+ALLOWED_HOT_PATH_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
     {
+        ("src/unilab/envs/manager_based_rl_env.py", "eager_terminated.clone()"),
+        ("src/unilab/envs/manager_based_rl_env.py", "eager_truncated.clone()"),
         (
             "src/unilab/envs/manager_based_rl_env.py",
-            1444,
             "self._manual_reset_pending.nonzero(as_tuple=False)",
         ),
         (
             "src/unilab/envs/manager_based_rl_env.py",
-            1444,
             "self._manual_reset_pending.nonzero(as_tuple=False).flatten().detach().cpu()",
         ),
         (
             "src/unilab/envs/manager_based_rl_env.py",
-            1444,
             "self._manual_reset_pending.nonzero(as_tuple=False).flatten().detach().cpu().tolist()",
         ),
-        (
-            "src/unilab/envs/manager_based_rl_env.py",
-            2313,
-            "eager_terminated.clone()",
-        ),
-        (
-            "src/unilab/envs/manager_based_rl_env.py",
-            2315,
-            "eager_truncated.clone()",
-        ),
+        ("src/unilab/managers/observation_manager.py", "cast(torch.Tensor, obs).clone()"),
         (
             "src/unilab/managers/observation_manager.py",
-            635,
-            "cast(torch.Tensor, obs).clone()",
-        ),
-        (
-            "src/unilab/managers/observation_manager.py",
-            705,
             "torch.cat(\n"
             "                    tensors,\n"
             "                    dim=self._group_obs_concatenate_dim[group_name],\n"
             "                    out=result,\n"
             "                )",
         ),
-        (
-            "src/unilab/managers/reward_manager.py",
-            266,
-            "torch.nonzero(~finite[:, term_idx])",
-        ),
-        (
-            "src/unilab/managers/reward_manager.py",
-            269,
-            "invalid_rows.tolist()",
-        ),
+        ("src/unilab/managers/reward_manager.py", "torch.nonzero(~finite[:, term_idx])"),
+        ("src/unilab/managers/reward_manager.py", "invalid_rows.tolist()"),
     }
 )
 
@@ -198,13 +175,13 @@ def find_violations() -> list[Violation]:
                 elif name in FORBIDDEN_ATTRIBUTE_CALLS:
                     kind = "host-transfer"
                 elif name in FORBIDDEN_ALLOCATION_CALLS and not has_output_carrier:
-                    kind = "capture-time-allocation"
+                    kind = "eager-allocation"
                 elif name == "clone":
                     kind = "temporary-allocation"
                 else:
                     continue
-                key = (str(path.relative_to(ROOT)), child.lineno, expression)
-                if key in OUT_OF_CAPTURE_VIOLATIONS:
+                key = (str(path.relative_to(ROOT)), expression)
+                if key in ALLOWED_HOT_PATH_EXCEPTIONS:
                     continue
                 violations.append(
                     Violation(
@@ -218,12 +195,12 @@ def find_violations() -> list[Violation]:
     return violations
 
 
-def test_graph_candidate_static_audit_is_zero() -> None:
+def test_runtime_hot_path_static_audit_is_zero() -> None:
     violations = find_violations()
     actual = {(str(item.path), item.line, item.kind, item.expression) for item in violations}
     expected: set[tuple[str, int, str, str]] = set()
     assert actual == expected, (
-        "Graph candidate static audit changed:\n"
+        "Runtime hot-path static audit changed:\n"
         f"unexpected={sorted(actual - expected)}\n"
         f"missing={sorted(expected - actual)}"
     )
@@ -236,5 +213,5 @@ def test_static_audit_scope_remains_explicit_and_nonempty() -> None:
         assert functions
 
 
-def test_static_audit_out_of_capture_classifications_are_explicit() -> None:
-    assert OUT_OF_CAPTURE_VIOLATIONS
+def test_static_audit_allowed_classifications_are_explicit() -> None:
+    assert ALLOWED_HOT_PATH_EXCEPTIONS

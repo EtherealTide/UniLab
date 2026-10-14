@@ -58,10 +58,10 @@ selected-row reset。因此 A/B 评估比较同一整数种子下的可复现性
 训练进程的全局 Python/Torch RNG，不会替换 owner 本地 generator 的种子。
 
 `TorchManagerRng` 携带两个互补版本号。`state_version` 只计数成功的 reseed
-与 state 安装；`draw_version` 额外计数每次成功采样调用，因此 graph 诊断可以
-区分消费过与恢复过的 RNG stream，而不需要在每个 transition 序列化完整
-generator state。可复现性的权威载荷仍是精确 generator state；integration-only
-graph capture 必须把两个版本号和 state 一起记录，作为 replay/rollback 证据。
+与 state 安装；`draw_version` 额外计数每次成功采样调用，因此诊断可以区分
+消费过与恢复过的 RNG stream，而不需要在每个 transition 序列化完整
+generator state。可复现性的权威载荷仍是精确 generator state；恢复或审计
+RNG 的 owner 必须把两个版本号和 state 一起记录。
 
 ## Runtime evidence
 

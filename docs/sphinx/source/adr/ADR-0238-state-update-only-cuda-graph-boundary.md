@@ -6,14 +6,15 @@ orphan: true
 
 语言: English
 
-- Status: Proposed / issue-scoped candidate
-- Date: 2026-10-14
+- Status: Rejected / no-go / historical pre-registration
+- Date: 2026-10-14; closeout 2026-10-15
 - Owners: UniLab Manager runtime; UniSim backend contract owner
 - Driving issue: #2338
-- Scope: no-reset Manager state-update publication only; integration branch
-  `dev/issue-2338-state-update-graph`
+- Scope: historical no-reset Manager state-update pre-registration; no active
+  runtime contract
 - Supersedes: None
-- Superseded by: None
+- Superseded by: None. The residual public graph lifecycle/completion contract
+  was removed by #2359; eager ordered completion is operation-neutral.
 
 ## Context
 
@@ -36,6 +37,20 @@ The existing runtime already distinguishes the useful pieces:
   audits only that narrower boundary.
 
 ## Decision
+
+This decision is rejected. Issue #2358 found that the measured benefit depended
+on disabling or bypassing real semantic boundaries, while graph safety would
+permanently constrain every reward, observation, and command term author. The
+graph-only preflight, manifest, runtime, benchmark, and static-audit surfaces
+were removed without compatibility aliases or eager fallback. The follow-up
+#2359 also removed the public graph lifecycle/capture identity and replaced the
+surviving ordered receipt boundary with the neutral completion contract.
+
+The original candidate is retained below as historical pre-registration
+evidence. It is not an implementation plan, a support claim, or a successor
+boundary. Commands, APIs, test names, and manifests named in those historical
+sections no longer exist; the neutral hot-path audit is
+`tests/architecture/test_runtime_hot_path_static_audit.py`.
 
 Capture only the UniLab-owned, fixed-shape, no-reset Manager state-update
 publication body after the backend step completion boundary. Policy inference,
@@ -293,17 +308,21 @@ must not become a support claim.
 
 ## Consequences
 
-- U2 must add update-specific public backend preflight before UniLab consumes it.
-- U3 must add an independent update capture identity and completion operation.
-- Semantic/performance claims require the newly pre-registered gates.
-- Eager semantics remain the baseline throughout U1.
-- UniLab stays at version `1.3.5`; no UniLab tag, PyPI publication, GitHub
-  release, or graph-enabled support claim is permitted while #2338 is open.
+- The state-update-only graph route is rejected; no caller-owned update graph,
+  preflight, manifest, replay, or fallback API is authorized.
+- Eager execution remains the sole Manager state-update path.
+- Independently useful eager work remains: update-body extraction, persistent
+  carriers, deferred validation publication, completion receipts, and the
+  public `SceneTensorReadPlan`.
+- The hot-path hygiene audit is neutral and does not preserve graph-specific
+  exceptions.
+- Backend-owned physics graphs and learner-owned CUDA graphs are unrelated
+  boundaries and are not affected by this rejection.
 
 ## Evidence In Repo
 
 - Update-body extraction: `src/unilab/envs/manager_based_rl_env.py`
-- Narrow static audit: `tests/architecture/test_env_update_graph_static_audit.py`
+- Neutral hot-path audit: `tests/architecture/test_runtime_hot_path_static_audit.py`
 - Eager owner-order parity: `tests/envs/test_manager_based_rl_env.py`
 - Stable read plan: `src/unilab/base/entity.py`
 - Backend public contract: `../unisim/src/unisim/backend/base.py`

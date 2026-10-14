@@ -64,11 +64,11 @@ Torch RNGs but does not replace that owner-local generator seed.
 
 `TorchManagerRng` carries two complementary versions. `state_version` counts
 only successful reseeds and state installations. `draw_version` additionally
-counts every successful sampling call, so graph diagnostics can distinguish a
-consumed stream from a restored one without serializing the generator state on
-every transition. The exact generator state remains the authoritative
-reproducibility payload; integration-only graph capture records both versions
-and the state together for replay/rollback evidence.
+counts every successful sampling call, so diagnostics can distinguish a consumed
+stream from a restored one without serializing the generator state on every
+transition. The exact generator state remains the authoritative
+reproducibility payload; an owner that restores or audits RNG must record both
+versions and the state together.
 
 ## Runtime evidence
 

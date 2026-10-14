@@ -22,9 +22,9 @@ import torch
 from unisim.backend.base import (
     BackendPlayRenderPlan,
     CameraCfg,
+    CompletionToken,
     DebugOverlayGetter,
     DebugPrimitive,
-    GraphCompletionToken,
     SimBackend,
     TensorExecution,
     tensor_device_matches,
@@ -110,7 +110,7 @@ class TorchEnv(ABEnv):
         self._rgb_array_renderer_ready = False
         self._nan_guard: "TensorNanGuard | None" = None
         self._defer_validation_at_boundaries = False
-        self._pending_backend_step_completion: GraphCompletionToken | None = None
+        self._pending_backend_step_completion: CompletionToken | None = None
 
     @property
     def device(self) -> torch.device:
@@ -135,10 +135,10 @@ class TorchEnv(ABEnv):
         if (
             execution is TensorExecution.HOST_BRIDGE
             and self._device.type == "cuda"
-            and not capabilities.graph_completion_publication
+            and not capabilities.ordered_completion_publication
         ):
             raise ValueError(
-                "CUDA HOST_BRIDGE TorchEnv requires graph_completion_publication so "
+                "CUDA HOST_BRIDGE TorchEnv requires ordered_completion_publication so "
                 "downstream replay publication has an ordered public completion receipt"
             )
         if not tensor_device_matches(capabilities.torch_devices, self._device):
@@ -248,28 +248,25 @@ class TorchEnv(ABEnv):
         phase = time.perf_counter()
         phase_cpu = _cpu_time()
         self._pending_backend_step_completion = None
-        try:
-            backend_result = self._backend.step_tensor(ctrl, self._cfg.sim_substeps)
-        except BaseException:
-            # Do not expose the previous transition's completion receipt as if
-            # this failed replay had published a new transition.
-            self._state.info.pop("graph_completion", None)
-            raise
+        # A receipt describes only the transition being published. Remove the
+        # previous one before the backend call so unsupported or failed steps
+        # cannot expose stale completion metadata.
+        self._state.info.pop("completion", None)
+        backend_result = self._backend.step_tensor(ctrl, self._cfg.sim_substeps)
         step_core_ms = (time.perf_counter() - phase) * 1000.0
         step_core_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
         if isinstance(backend_result, dict):
-            pending_completion = backend_result.get("graph_completion")
+            pending_completion = backend_result.get("completion")
             if pending_completion is not None and not isinstance(
-                pending_completion, GraphCompletionToken
+                pending_completion, CompletionToken
             ):
-                self._state.info.pop("graph_completion", None)
+                self._state.info.pop("completion", None)
                 raise TypeError(
-                    "backend graph_completion must be a GraphCompletionToken; got "
+                    "backend completion must be a CompletionToken; got "
                     f"{type(pending_completion).__name__}"
                 )
-            # Publish the receipt to the owner before update_state. The update
-            # graph needs this ordering dependency before replay, while public
-            # transition consumers still read it only after the update succeeds.
+            # Publish the receipt before update_state so public transition
+            # consumers can only read it after the update boundary succeeds.
             self._pending_backend_step_completion = pending_completion
 
         # Transition publication starts only after the backend completion
@@ -339,14 +336,9 @@ class TorchEnv(ABEnv):
         if isinstance(backend_result, dict):
             for key, value in backend_result.get("timing", {}).items():
                 timing[f"backend_{key}"] = value
-            completion = backend_result.get("graph_completion")
+            completion = backend_result.get("completion")
             if completion is not None:
-                if "graph_completion" in self._state.info:
-                    # Preserve the independent owner update receipt while keeping
-                    # the backend dependency publicly inspectable.
-                    self._state.info["backend_step_completion"] = completion
-                else:
-                    self._state.info["graph_completion"] = completion
+                self._state.info["completion"] = completion
         return self._state
 
     def _validate_action(self, actions: torch.Tensor) -> None:
@@ -484,11 +476,11 @@ class TorchEnv(ABEnv):
         return self._defer_validation_at_boundaries
 
     def set_deferred_validation_boundaries(self, enabled: bool) -> None:
-        """Select completion-boundary publication for graph-candidate runs.
+        """Select completion-boundary finite-verdict publication.
 
         When enabled, eager structural checks remain synchronous, while finite
         verdicts stay on their persistent device carriers until an explicit
-        completion boundary publishes them. This is an opt-in integration-only
+        completion boundary publishes them. This is an opt-in profiling-only
         contract and does not sanitize invalid values.
         """
         if not isinstance(enabled, bool):
@@ -546,7 +538,7 @@ class TorchEnv(ABEnv):
     def _reset_done_envs(self) -> None:
         """Run the fixed-shape mask-driven autoreset lifecycle.
 
-        The graph-candidate empty-mask path is fixed-width. Eager execution
+        Deferred validation keeps the empty-mask path fixed-width. Eager execution
         retains the semantic no-done gate; backends and managers own mask
         semantics and no reset env-id row carrier is materialized.
         """

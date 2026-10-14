@@ -208,74 +208,25 @@ def test_deferred_validation_profiling_uses_public_env_boundary() -> None:
     assert calls == [True, False]
 
 
-def test_env_update_mode_selects_deferred_boundary_and_fails_closed() -> None:
-    calls: list[object] = []
-
-    def configure(mode: str, *, allow_eager_fallback: bool = False):
-        calls.append((mode, allow_eager_fallback))
-        if mode == "graph":
-            raise RuntimeError("observation noise has no capture-safe contract")
-
-    env = SimpleNamespace(
-        deferred_validation_boundaries=False,
-        set_deferred_validation_boundaries=lambda enabled: calls.append(enabled),
-        configure_env_update_graph=configure,
-        get_env_update_graph_manifest=lambda: {"mode": "graph"},
-    )
-
-    with pytest.raises(RuntimeError, match="capture-safe contract"):
-        bench._configure_env_update_graph(env, "graph", deferred_validation_boundaries=False)
-
-    assert calls == [True, ("graph", False)]
-
-
-def test_env_update_mode_requires_ready_graph_evidence() -> None:
-    calls: list[object] = []
-    env = SimpleNamespace(
-        deferred_validation_boundaries=False,
-        set_deferred_validation_boundaries=calls.append,
-        configure_env_update_graph=lambda mode, *, allow_eager_fallback: calls.append(
-            (mode, allow_eager_fallback)
-        ),
-        get_env_update_graph_manifest=lambda: {
-            "mode": "graph",
-            "requested": True,
-            "enabled": False,
-            "state": "invalidated",
-            "replay_count": 0,
-            "disable_reason": "active curriculum has no graph boundary",
-        },
-    )
-
-    with pytest.raises(RuntimeError, match="active curriculum"):
-        bench._configure_env_update_graph(env, "graph", deferred_validation_boundaries=True)
-
-
-def test_env_update_mode_is_explicit_cli_selection() -> None:
-    args = bench.parse_args(["--env-update-mode", "graph"])
-
-    assert args.env_update_mode == "graph"
-
-
-def test_deferred_eager_mode_selects_owner_eager_and_deferred_boundary() -> None:
+def test_eager_benchmark_boundary_selection_is_independent() -> None:
     calls: list[object] = []
     env = SimpleNamespace(
         deferred_validation_boundaries=False,
         set_deferred_validation_boundaries=lambda enabled: calls.append(enabled),
-        configure_env_update_graph=lambda mode, *, allow_eager_fallback: calls.append(
-            (mode, allow_eager_fallback)
-        ),
-        get_env_update_graph_manifest=lambda: {"mode": "eager"},
     )
 
-    manifest = bench._configure_env_update_graph(
-        env,
-        "deferred-eager",
-        deferred_validation_boundaries=False,
-    )
+    bench._select_validation_boundary(env, True)
+    env.deferred_validation_boundaries = True
+    bench._select_validation_boundary(env, False)
 
-    assert calls == [True, ("eager", False)]
-    assert manifest["mode"] == "eager"
+    assert calls == [True, False]
+
+
+def test_removed_graph_benchmark_clis_are_rejected() -> None:
+    with pytest.raises(SystemExit, match="2"):
+        bench.parse_args(["--env-update-mode", "deferred-eager"])
+    with pytest.raises(SystemExit, match="2"):
+        bench.parse_args(["--env-update-mode", "graph"])
 
 
 def test_package_versions_record_missing_dependencies_without_hiding_them(
@@ -661,7 +612,6 @@ def test_variant_blocks_alternate_labels_without_extending_measurement(monkeypat
         variant,
         profile_numpy_random,
         deferred_validation_boundaries,
-        env_update_mode="disabled",
     ):
         order.append(variant)
         result = _make_result(

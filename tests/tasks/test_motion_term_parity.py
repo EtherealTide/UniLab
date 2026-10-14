@@ -721,7 +721,7 @@ def test_tensor_command_full_refresh_gathers_advanced_frames() -> None:
     )
 
 
-def test_tensor_command_empty_mask_resample_has_no_host_branch() -> None:
+def test_tensor_command_empty_mask_preserves_rng_and_skips_sampler() -> None:
     command = mt.MotionCommand.__new__(mt.MotionCommand)
     command._device = torch.device("cpu")
     command.last_reset_timing_ms = {}
@@ -808,14 +808,15 @@ def test_tensor_command_empty_mask_resample_has_no_host_branch() -> None:
     )
     writes: list[dict[str, object]] = []
     ingested: list[tuple[torch.Tensor, torch.Tensor]] = []
+    generator = command._env.torch_rng.generator
+    rng_state = generator.get_state()
 
     command._resample_command(torch.zeros(3, dtype=torch.bool))
 
-    assert command.tensor_sampler.diagnostics.reset_dispatches == 1
-    assert len(writes) == 1
-    assert not writes[0]["reset_mask"].any()
-    assert len(ingested) == 1
-    assert not ingested[0][0].any()
+    assert command.tensor_sampler.diagnostics.reset_dispatches == 0
+    assert writes == []
+    assert ingested == []
+    torch.testing.assert_close(generator.get_state(), rng_state)
 
 
 def test_tensor_command_syncs_sampler_mirrors_at_full_width() -> None:
