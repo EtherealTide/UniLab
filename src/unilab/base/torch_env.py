@@ -272,7 +272,10 @@ class TorchEnv(ABEnv):
 
         phase = time.perf_counter()
         phase_cpu = _cpu_time()
-        self._state = self.update_state(self._state)
+        try:
+            self._state = self.update_state(self._state)
+        finally:
+            self._pending_backend_step_completion = None
         if self._nan_guard is not None:
             self._nan_guard.capture(self._tensor_diagnostics_state())
             nan_ids = self._nan_guard.check(
@@ -330,14 +333,17 @@ class TorchEnv(ABEnv):
             - reset_done_cpu_ms,
             0.0,
         )
-        pending_completion = self._pending_backend_step_completion
-        self._pending_backend_step_completion = None
         if isinstance(backend_result, dict):
             for key, value in backend_result.get("timing", {}).items():
                 timing[f"backend_{key}"] = value
-            completion = pending_completion
+            completion = backend_result.get("graph_completion")
             if completion is not None:
-                self._state.info["graph_completion"] = completion
+                if "graph_completion" in self._state.info:
+                    # Preserve the independent owner update receipt while keeping
+                    # the backend dependency publicly inspectable.
+                    self._state.info["backend_step_completion"] = completion
+                else:
+                    self._state.info["graph_completion"] = completion
         return self._state
 
     def _validate_action(self, actions: torch.Tensor) -> None:

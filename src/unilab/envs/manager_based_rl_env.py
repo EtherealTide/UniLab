@@ -23,6 +23,7 @@ from unisim.backend.base import (
     EnvUpdateGraphPreflight,
     GraphCandidatePreflight,
     GraphCompletionToken,
+    GraphLifecycleState,
     SimBackend,
     TensorDataPlane,
     TensorExecution,
@@ -1487,9 +1488,17 @@ class ManagerBasedRlEnv(TorchEnv):
             boundary_ms = (time.perf_counter() - boundary_started) * 1000.0
             timing["update_state_read_boundary_ms"] = boundary_ms
             if self._env_update_graph_enabled:
+                log: dict[str, Any] = {}
+                state.info["log"] = log
+                state.info["update_state_timing"] = {}
+                self.extras = state.info
+                self.common_step_counter = self.step_counter + 1
+                self._sim_step_counter = self.common_step_counter * self._cfg.sim_substeps
                 self._env_update_graph_backend_receipt = self._pending_backend_step_completion
                 completion = self._replay_env_update_graph_body(state.info["steps"])
                 state.info["graph_completion"] = completion
+                timing["update_state_ms"] = 0.0
+                timing["update_state_cpu_ms"] = 0.0
                 return state.replace(
                     obs=self._public_obs,
                     reward=self._public_reward,
@@ -1680,6 +1689,7 @@ class ManagerBasedRlEnv(TorchEnv):
         self._env_update_graph_state = "invalidated"
         self._env_update_graph_invalidation_reason = reason
         self._env_update_graph_disable_reason = f"env update graph invalidated: {reason}"
+        self._env_update_graph_capture_id = None
         self._env_update_graph_replay_count = 0
 
     def _advance_episode_steps(self, steps: torch.Tensor) -> None:

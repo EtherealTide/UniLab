@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+import torch
 from unisim import GraphCompletionToken, GraphLifecycleState
 
 from unilab.base.env_update_graph import validate_env_update_graph_manifest
@@ -85,4 +86,85 @@ def test_env_update_runtime_requires_backend_receipt_for_replay() -> None:
     env._env_update_graph_runtime = runtime
     with pytest.raises(RuntimeError, match="requires the backend step receipt"):
         env._replay_env_update_graph_body(env._state.info["steps"])
+    env.close()
+
+
+def _force_graph_ready(env) -> None:
+    runtime = FakeEnvUpdateGraphRuntime()
+    env._env_update_graph_runtime = runtime
+    env._env_update_graph_state = "ready"
+    env._env_update_graph_enabled = True
+    env._env_update_graph_requested = True
+    env._env_update_graph_capture_id = runtime.capture_id
+    env._env_update_graph_disable_reason = None
+    runtime.layout = env.get_env_update_carrier_layout()
+    env._env_update_graph_backend_receipt = GraphCompletionToken(
+        contract_version=1,
+        lifecycle_state=GraphLifecycleState.READY,
+        operation="step",
+        sequence=1,
+        stream_id=runtime.stream_id,
+        capture_id="backend-capture",
+    )
+
+
+def test_env_update_runtime_rejects_stale_or_wrong_stream_receipt() -> None:
+    env, _backend = _make_graph_env()
+    _force_graph_ready(env)
+    stale = GraphCompletionToken(
+        contract_version=1,
+        lifecycle_state=GraphLifecycleState.READY,
+        operation="mask_reset",
+        sequence=1,
+        stream_id=env._env_update_graph_runtime.stream_id,
+        capture_id="backend-capture",
+    )
+    env._env_update_graph_backend_receipt = stale
+    with pytest.raises(RuntimeError, match="receipt is not READY"):
+        env._replay_env_update_graph_body(env._state.info["steps"])
+
+    wrong_stream = GraphCompletionToken(
+        contract_version=1,
+        lifecycle_state=GraphLifecycleState.READY,
+        operation="step",
+        sequence=1,
+        stream_id=99,
+        capture_id="backend-capture",
+    )
+    env._env_update_graph_backend_receipt = wrong_stream
+    with pytest.raises(RuntimeError, match="stream does not match"):
+        env._replay_env_update_graph_body(env._state.info["steps"])
+    assert env._env_update_graph_runtime.replay_calls == 0
+    env.close()
+
+
+def test_env_update_runtime_rejects_carrier_layout_drift() -> None:
+    env, _backend = _make_graph_env()
+    _force_graph_ready(env)
+    runtime = env._env_update_graph_runtime
+    runtime.layout = {**runtime.layout, "device": "cuda:99"}
+
+    with pytest.raises(RuntimeError, match="carrier layout changed"):
+        env._replay_env_update_graph_body(env._state.info["steps"])
+    manifest = env.get_env_update_graph_manifest()
+    assert manifest["enabled"] is False
+    assert manifest["state"] == "invalidated"
+    assert manifest["invalidation_reason"] == "view"
+    validate_env_update_graph_manifest(manifest)
+    env.close()
+
+
+def test_env_update_runtime_replay_failure_preserves_transition_boundary() -> None:
+    env, backend = _make_graph_env()
+    _force_graph_ready(env)
+    runtime = env._env_update_graph_runtime
+    runtime.fail_replay = True
+    actions = torch.zeros((env.num_envs, 1), dtype=torch.float32, device=env.device)
+
+    with pytest.raises(RuntimeError, match="simulated replay failure"):
+        env.step(actions)
+    assert "graph_completion" not in env._state.info
+    assert env._env_update_graph_replay_count == 0
+    assert env._pending_backend_step_completion is None
+    assert len(backend.tensor_controls) == 1
     env.close()
