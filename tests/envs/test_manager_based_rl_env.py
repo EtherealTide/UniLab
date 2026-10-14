@@ -1743,20 +1743,21 @@ def test_env_update_graph_request_fails_closed_without_backend_boundary() -> Non
     env.close()
 
 
-def test_env_update_graph_supported_preflight_still_fails_before_capture() -> None:
+def test_env_update_graph_supported_preflight_fails_closed_on_cpu_carriers() -> None:
     env, backend = _make_env(_make_cfg(include_optional_managers=False), torch_stream_id=17)
     env.init_state()
+    env.set_deferred_validation_boundaries(True)
 
-    with pytest.raises(RuntimeError, match="capture execution is not implemented"):
+    with pytest.raises(RuntimeError, match="environment carriers must be CUDA-resident"):
         env.configure_env_update_graph("graph")
     manifest = env.get_env_update_graph_manifest()
 
     assert manifest["mode"] == "graph"
     assert manifest["requested"] is True
     assert manifest["enabled"] is False
-    assert manifest["state"] == "unavailable"
-    assert manifest["invalidation_reason"] is None
-    assert "capture execution is not implemented" in manifest["disable_reason"]
+    assert manifest["state"] == "invalidated"
+    assert manifest["invalidation_reason"] == "capture_failed"
+    assert "environment carriers must be CUDA-resident" in manifest["disable_reason"]
     validate_env_update_graph_manifest(manifest)
 
     env.configure_env_update_graph("graph", allow_eager_fallback=True)
@@ -1765,7 +1766,35 @@ def test_env_update_graph_supported_preflight_still_fails_before_capture() -> No
     assert fallback["fallback_count"] == 1
     assert fallback["disable_reason"].startswith("explicit eager fallback:")
     validate_env_update_graph_manifest(fallback)
+    env.close()
+
+
+def test_env_update_graph_owner_preflight_rejects_cpu_carriers() -> None:
+    cfg = _make_cfg(include_optional_managers=False)
+    cfg.events = {}
+    env, backend = _make_env(cfg, torch_stream_id=17)
+    env.init_state()
+    env.set_deferred_validation_boundaries(True)
+
+    with pytest.raises(RuntimeError, match="environment carriers must be CUDA-resident"):
+        env.configure_env_update_graph("graph")
+    manifest = env.get_env_update_graph_manifest()
+    assert manifest["state"] == "invalidated"
+    assert manifest["invalidation_reason"] == "capture_failed"
+    validate_env_update_graph_manifest(manifest)
     assert backend.tensor_controls == []
+    env.close()
+
+
+def test_env_update_graph_owner_preflight_requires_deferred_validation() -> None:
+    cfg = _make_cfg(include_optional_managers=False)
+    cfg.events = {}
+    env, _backend = _make_env(cfg, torch_stream_id=17)
+    env.init_state()
+
+    with pytest.raises(RuntimeError, match="deferred validation boundaries must be enabled"):
+        env.configure_env_update_graph("graph")
+    assert env.get_env_update_graph_manifest()["invalidation_reason"] == "capture_failed"
     env.close()
 
 

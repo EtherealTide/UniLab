@@ -22,6 +22,7 @@ from unisim.backend.base import (
     DebugPrimitive,
     EnvUpdateGraphPreflight,
     GraphCandidatePreflight,
+    GraphCompletionToken,
     SimBackend,
     TensorDataPlane,
     TensorExecution,
@@ -410,6 +411,8 @@ class ManagerBasedRlEnv(TorchEnv):
         self._env_update_graph_fallback_count = 0
         self._env_update_graph_replay_count = 0
         self._env_update_graph_step_active = False
+        self._env_update_graph_runtime: Any = None
+        self._env_update_graph_backend_receipt: GraphCompletionToken | None = None
 
         self._load_managers()
         self._mapped_obs_dims = self._validate_observation_mapping()
@@ -1293,6 +1296,22 @@ class ManagerBasedRlEnv(TorchEnv):
                 return
             raise RuntimeError(reason)
 
+        owner_verdict = self._preflight_env_update_graph_owner(verdict)
+        if owner_verdict.supported is not True:
+            reason = (
+                owner_verdict.disable_reason
+                if isinstance(owner_verdict.disable_reason, str)
+                and owner_verdict.disable_reason.strip()
+                else "env update graph owner preflight rejected the boundary"
+            )
+            self._env_update_graph_state = "invalidated"
+            self._env_update_graph_invalidation_reason = "capture_failed"
+            self._env_update_graph_disable_reason = reason
+            if allow_eager_fallback:
+                self._select_explicit_env_update_eager_fallback()
+                return
+            raise RuntimeError(reason)
+
         self._env_update_graph_state = "unavailable"
         self._env_update_graph_disable_reason = (
             "backend update preflight passed but env update capture execution is not implemented"
@@ -1301,6 +1320,77 @@ class ManagerBasedRlEnv(TorchEnv):
             self._select_explicit_env_update_eager_fallback()
             return
         raise RuntimeError(self._env_update_graph_disable_reason)
+
+    def _preflight_env_update_graph_owner(
+        self, backend_verdict: EnvUpdateGraphPreflight
+    ) -> EnvUpdateGraphPreflight:
+        """Fail closed on every first-candidate update-owner boundary risk."""
+        failures: list[str] = []
+        if self.device.type != "cuda":
+            failures.append("environment carriers must be CUDA-resident")
+        if any(value.device != self.device for value in self._public_obs.values()) or (
+            self._public_reward.device != self.device
+            or self._public_terminated.device != self.device
+            or self._public_truncated.device != self.device
+        ):
+            failures.append("persistent public output carriers are not graph-ready")
+        if (
+            self.episode_length_buf.device != self.device
+            or self._command_dt.device != self.device
+            or self.reset_buf.device != self.device
+            or self.reward_manager.step_rewards.device != self.device
+        ):
+            failures.append("persistent update input/output carriers are not graph-ready")
+        if backend_verdict.torch_stream_id is None:
+            failures.append("backend preflight did not publish an ordered Torch stream")
+        if not self._defer_validation_at_boundaries:
+            failures.append("deferred validation boundaries must be enabled")
+        if "step" in self.event_manager.available_modes:
+            failures.append("step events have no fixed-width graph boundary")
+        if "interval" in self.event_manager.available_modes:
+            failures.append("interval events have no fixed-width graph boundary")
+        if self.metrics_manager.active_terms:
+            failures.append("active metrics have no graph boundary")
+        if self.curriculum_manager.active_terms:
+            failures.append("active curriculum owners have no graph boundary")
+        if self.recorder_manager.active_terms:
+            failures.append("active recorder owners have no graph boundary")
+        if self._reset_state.scene_layout is not None:
+            failures.append("mapped entity reset layout has no graph carrier")
+        if not self._autoreset:
+            failures.append("manual reset guard has no graph boundary")
+        if self.torch_rng.device != self.device:
+            failures.append("Torch RNG device does not match graph carriers")
+        for group_name, group_cfg in self.observation_manager.cfg.items():
+            if group_cfg is None:
+                continue
+            for term_name, term_cfg in group_cfg.terms.items():
+                if term_cfg is None:
+                    continue
+                if term_cfg.noise is not None:
+                    failures.append(
+                        f"observation noise '{group_name}/{term_name}' has no capture-safe contract"
+                    )
+                if term_cfg.delay_max_lag > 0:
+                    failures.append(
+                        f"observation delay buffer '{group_name}/{term_name}' has no graph contract"
+                    )
+                if term_cfg.history_length > 0:
+                    failures.append(
+                        f"observation history buffer '{group_name}/{term_name}' has no graph contract"
+                    )
+        if self.command_manager.active_terms and self._reset_state.last_commit_had_writes:
+            failures.append("command commit requires a data-dependent mid-update read repack")
+        if failures:
+            return EnvUpdateGraphPreflight(
+                requested=True,
+                backend_stream_contract=backend_verdict.backend_stream_contract,
+                supported=False,
+                disable_reason="; ".join(failures),
+                torch_stream_id=backend_verdict.torch_stream_id,
+                allocator_stats=backend_verdict.allocator_stats,
+            )
+        return backend_verdict
 
     def _select_explicit_env_update_eager_fallback(self) -> None:
         """Select eager fallback while retaining the rejected graph evidence."""
