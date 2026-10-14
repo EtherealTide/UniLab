@@ -160,6 +160,22 @@ def test_env_update_runtime_rejects_carrier_layout_drift() -> None:
     env.close()
 
 
+def test_env_update_graph_replay_publishes_real_timing_evidence() -> None:
+    env, _backend = _make_graph_env()
+    _force_graph_ready(env)
+    actions = torch.zeros((env.num_envs, 1), dtype=torch.float32, device=env.device)
+
+    state = env.step(actions)
+
+    update_timing = state.info["update_state_timing"]
+    timing = state.info["timing"]
+    assert update_timing["update_state_graph_replay_ms"] > 0.0
+    assert timing["update_state_ms"] > update_timing["update_state_graph_replay_ms"]
+    manifest = env.get_env_update_graph_manifest()
+    assert manifest["replay_count"] == 1
+    env.close()
+
+
 def test_env_update_runtime_replay_failure_preserves_transition_boundary() -> None:
     env, backend = _make_graph_env()
     _force_graph_ready(env)

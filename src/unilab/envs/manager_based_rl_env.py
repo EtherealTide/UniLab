@@ -336,6 +336,12 @@ class EnvUpdateGraphRuntime:
         "segment.all.freed",
     )
 
+    ALLOCATION_SNAPSHOT_COUNTERS: tuple[str, ...] = (
+        *ALLOCATION_COUNTERS,
+        "allocated_bytes.all.current",
+        "reserved_bytes.all.current",
+    )
+
     def __init__(self, env: "ManagerBasedRlEnv", *, warmup_iterations: int = 3):
         if warmup_iterations <= 0:
             raise ValueError("warmup_iterations must be positive")
@@ -348,10 +354,22 @@ class EnvUpdateGraphRuntime:
         self._events: list[Any] | None = None
         self._event_index = 0
         self._warmup_iterations = warmup_iterations
+        self.allocator_snapshots: list[dict[str, int | str]] = []
 
     def _memory_counters(self) -> dict[str, int]:
         stats = torch.cuda.memory_stats(self.env.device)
         return {key: int(stats[key]) for key in self.ALLOCATION_COUNTERS if key in stats}
+
+    def _allocator_snapshot(self, stage: str) -> dict[str, int]:
+        """Serialize public allocation/absolute-byte evidence per lifecycle stage."""
+        stats = torch.cuda.memory_stats(self.env.device)
+        snapshot = {
+            key: int(stats[key]) for key in self.ALLOCATION_SNAPSHOT_COUNTERS if key in stats
+        }
+        snapshot["memory_allocated_bytes"] = int(torch.cuda.memory_allocated(self.env.device))
+        snapshot["memory_reserved_bytes"] = int(torch.cuda.memory_reserved(self.env.device))
+        self.allocator_snapshots.append({"stage": stage, **snapshot})
+        return snapshot
 
     @staticmethod
     def _require_equal_counters(before: dict[str, int], after: dict[str, int]) -> None:
@@ -424,6 +442,7 @@ class EnvUpdateGraphRuntime:
         else:
             self._stream = torch.cuda.ExternalStream(self.stream_id, device=self.env.device)
         self._events = [torch.cuda.Event(interprocess=False) for _ in range(8)]
+        self.allocator_snapshots = []
         # Materialize fixed-width command/reset staging before allocator proof;
         # first transaction begin can lazily install persistent default state.
         prewarm_context = self.env._prepare_command_update()
@@ -437,7 +456,9 @@ class EnvUpdateGraphRuntime:
             self._stream.synchronize()
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
+        self._allocator_snapshot("after_empty_cache")
         semantic_snapshot = self._snapshot_semantic_state()
+        self._allocator_snapshot("pre_warmup")
 
         with torch.cuda.stream(self._stream):
             for _ in range(self._warmup_iterations):
@@ -447,6 +468,7 @@ class EnvUpdateGraphRuntime:
         with torch.cuda.stream(self._stream):
             self._stream.synchronize()
 
+        self._allocator_snapshot("post_warmup")
         allocator_capture_before = self._memory_counters()
         graph = torch.cuda.CUDAGraph()
         try:
@@ -458,6 +480,7 @@ class EnvUpdateGraphRuntime:
                 self._stream.synchronize()
             raise
         allocator_capture_after = self._memory_counters()
+        self._allocator_snapshot("post_capture")
         self._require_equal_counters(allocator_capture_before, allocator_capture_after)
 
         # Acceptance requires one real replay, not merely a completed capture.
@@ -469,6 +492,7 @@ class EnvUpdateGraphRuntime:
         self._event_index = (self._event_index + 1) % len(self._events)
         event.record(self._stream)
         event.synchronize()
+        self._allocator_snapshot("first_replay")
         allocator_replay_after = self._memory_counters()
         self._require_equal_counters(allocator_capture_before, allocator_replay_after)
         if self.env.get_env_update_carrier_layout() != current_layout:
@@ -488,6 +512,7 @@ class EnvUpdateGraphRuntime:
         event.synchronize()
         after = self._memory_counters()
         self._require_equal_counters(before, after)
+        self._allocator_snapshot("replay")
         token = GraphCompletionToken(
             contract_version=1,
             lifecycle_state=GraphLifecycleState.READY,
@@ -1667,6 +1692,11 @@ class ManagerBasedRlEnv(TorchEnv):
                 "state_version": self.torch_rng.state_version,
                 "draw_version": self.torch_rng.draw_version,
             },
+            "allocator_snapshots": (
+                list(getattr(self._env_update_graph_runtime, "allocator_snapshots", ()))
+                if self._env_update_graph_runtime is not None
+                else []
+            ),
             "carrier_layout": self.get_env_update_carrier_layout(),
         }
 
@@ -1701,15 +1731,20 @@ class ManagerBasedRlEnv(TorchEnv):
             if self._env_update_graph_enabled:
                 log: dict[str, Any] = {}
                 state.info["log"] = log
-                state.info["update_state_timing"] = {}
                 self.extras = state.info
                 self.common_step_counter = self.step_counter + 1
                 self._sim_step_counter = self.common_step_counter * self._cfg.sim_substeps
                 self._env_update_graph_backend_receipt = self._pending_backend_step_completion
-                completion = self._replay_env_update_graph_body(state.info["steps"])
+                update_timing: dict[str, float] = {}
+                state.info["update_state_timing"] = update_timing
+                replay_started_ns = time.perf_counter_ns()
+                try:
+                    completion = self._replay_env_update_graph_body(state.info["steps"])
+                finally:
+                    update_timing["update_state_graph_replay_ms"] = (
+                        time.perf_counter_ns() - replay_started_ns
+                    ) / 1.0e6
                 state.info["graph_completion"] = completion
-                timing["update_state_ms"] = 0.0
-                timing["update_state_cpu_ms"] = 0.0
                 return state.replace(
                     obs=self._public_obs,
                     reward=self._public_reward,

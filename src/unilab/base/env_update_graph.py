@@ -59,6 +59,7 @@ def validate_env_update_graph_manifest(manifest: Any) -> None:
         "backend_step_receipt",
         "update_completion",
         "rng_state",
+        "allocator_snapshots",
         "carrier_layout",
     }
     missing = sorted(required - set(manifest))
@@ -97,6 +98,22 @@ def validate_env_update_graph_manifest(manifest: Any) -> None:
         raise ValueError("env update graph update_completion must be a mapping")
     if not isinstance(manifest["rng_state"], Mapping):
         raise ValueError("env update graph rng_state must be a mapping")
+    snapshots = manifest["allocator_snapshots"]
+    if not isinstance(snapshots, list):
+        raise ValueError("env update graph allocator_snapshots must be a list")
+    for snapshot in snapshots:
+        if not isinstance(snapshot, Mapping):
+            raise ValueError("each env update graph allocator snapshot must be a mapping")
+        stage = snapshot.get("stage")
+        if not isinstance(stage, str) or not stage.strip():
+            raise ValueError("each env update graph allocator snapshot requires a stage")
+        for key, value in snapshot.items():
+            if key == "stage":
+                continue
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(
+                    f"env update graph allocator snapshot[{key}] must be a non-negative integer"
+                )
     if not isinstance(manifest["carrier_layout"], Mapping):
         raise ValueError("env update graph carrier_layout must be a mapping")
     if manifest["enabled"]:
