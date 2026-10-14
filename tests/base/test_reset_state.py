@@ -903,6 +903,35 @@ def test_deferred_mask_validation_commits_nonempty_owner_subset() -> None:
     assert qpos[0, 7] == 0.7
 
 
+def test_owner_tensor_reuses_persistent_write_mask_scratch() -> None:
+    backend = _TensorResetBackend()
+    transaction = _transaction(backend)
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    scratch = transaction._owner_tensor_write_mask
+    assert scratch is not None
+    active_mask = torch.tensor([False, True, True, False])
+    owner_mask = torch.tensor([False, True, False, False])
+
+    with transaction.scoped_device_owner_tensor(active_mask):
+        transaction.write_joint_state_mask(
+            owner_mask,
+            np.array([7], dtype=np.int32),
+            np.array([6], dtype=np.int32),
+            torch.tensor([[0.0], [0.7], [0.0], [0.0]]),
+            torch.tensor([[0.0], [1.7], [0.0], [0.0]]),
+            term_name="first_owner",
+        )
+        assert transaction._tensor_write_mask is scratch
+
+    with transaction.scoped_device_owner_tensor(active_mask):
+        assert transaction._tensor_write_mask is scratch
+        assert not scratch.any()
+        transaction.publish_mask_validation_verdicts()
+
+    assert len(backend.tensor_reset_calls) == 1
+    assert not transaction.last_commit_had_writes
+
+
 def test_deferred_mask_validation_cannot_change_during_active_transaction() -> None:
     transaction = _transaction(_TensorResetBackend())
     transaction.declare_packed_reset_device(torch.device("cpu"))
