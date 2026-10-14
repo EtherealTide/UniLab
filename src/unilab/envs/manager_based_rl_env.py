@@ -429,6 +429,14 @@ class EnvUpdateGraphRuntime:
         prewarm_context = self.env._prepare_command_update()
         with prewarm_context:
             pass
+        # Every observation group must materialize its persistent output and
+        # validation carriers before the allocator proof; the first compute
+        # can otherwise lazily cache Python-visible carriers.
+        with torch.cuda.stream(self._stream):
+            self.env.observation_manager.compute(update_history=True)
+            self._stream.synchronize()
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
         semantic_snapshot = self._snapshot_semantic_state()
 
         with torch.cuda.stream(self._stream):
@@ -589,6 +597,7 @@ class ManagerBasedRlEnv(TorchEnv):
         self._command_dt = torch.full(
             (num_envs,), self.step_dt, dtype=self._dtype, device=self.device
         )
+        self.time_out_scratch = torch.empty_like(self.reset_buf)
         self._manual_reset_pending = torch.zeros_like(self.reset_buf)
         self._all_env_rows = torch.arange(num_envs, dtype=torch.int64, device=self.device)
         self._all_env_reset_mask = torch.ones_like(self.reset_buf)
@@ -1847,13 +1856,17 @@ class ManagerBasedRlEnv(TorchEnv):
         """
         self._advance_episode_steps(steps)
         self._compute_termination_and_reset_flags()
+        command_reset_context = (
+            self._prepare_command_update() if self.command_manager.active_terms else None
+        )
         self.reward_buf = self._compute_rewards()
         self._reward_log_names = self.reward_manager.step_reward_names
         self._reward_log_means = self.reward_manager.step_reward_means
         self._command_dt.fill_(self.step_dt)
         self._command_dt.masked_fill_(self.reset_buf, 0.0)
         if self.command_manager.active_terms:
-            self._compute_commands()
+            with command_reset_context:
+                self._compute_commands()
             self._post_compute_commands()
         manager_obs = self._compute_observations()
         mapped_obs = self._map_observations(manager_obs)

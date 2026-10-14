@@ -75,47 +75,51 @@ OUT_OF_CAPTURE_VIOLATIONS: frozenset[tuple[str, int, str]] = frozenset(
     {
         (
             "src/unilab/envs/manager_based_rl_env.py",
-            1410,
+            1419,
             "self._manual_reset_pending.nonzero(as_tuple=False)",
         ),
         (
             "src/unilab/envs/manager_based_rl_env.py",
-            1410,
+            1419,
             "self._manual_reset_pending.nonzero(as_tuple=False).flatten().detach().cpu()",
         ),
         (
             "src/unilab/envs/manager_based_rl_env.py",
-            1410,
+            1419,
             "self._manual_reset_pending.nonzero(as_tuple=False).flatten().detach().cpu().tolist()",
         ),
         (
             "src/unilab/envs/manager_based_rl_env.py",
-            2268,
+            2281,
             "eager_terminated.clone()",
         ),
         (
             "src/unilab/envs/manager_based_rl_env.py",
-            2270,
+            2283,
             "eager_truncated.clone()",
         ),
         (
             "src/unilab/managers/observation_manager.py",
-            622,
+            632,
             "cast(torch.Tensor, obs).clone()",
         ),
         (
             "src/unilab/managers/observation_manager.py",
-            695,
-            "torch.cat(tensors, dim=self._group_obs_concatenate_dim[group_name])",
-        ),
-        (
-            "src/unilab/managers/reward_manager.py",
-            263,
-            "torch.nonzero(~finite[:, term_idx])",
+            705,
+            "torch.cat(\n"
+            "                    tensors,\n"
+            "                    dim=self._group_obs_concatenate_dim[group_name],\n"
+            "                    out=result,\n"
+            "                )",
         ),
         (
             "src/unilab/managers/reward_manager.py",
             266,
+            "torch.nonzero(~finite[:, term_idx])",
+        ),
+        (
+            "src/unilab/managers/reward_manager.py",
+            269,
             "invalid_rows.tolist()",
         ),
     }
