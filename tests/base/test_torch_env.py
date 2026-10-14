@@ -580,7 +580,9 @@ def test_cuda_host_bridge_requires_public_completion_publication() -> None:
         stream_event_ownership="test",
         torch_devices=("cpu", "cuda"),
     )
-    env = _StubTorchEnv(backend=backend, device="cuda")
+    # An indexed request avoids CPU-only initialization of the CUDA runtime.
+    # The guard itself is a cold capability check, not a CUDA smoke test.
+    env = _StubTorchEnv(backend=backend, device="cuda:0")
     with pytest.raises(ValueError, match="graph_completion_publication"):
         env.init_state()
 
