@@ -47,11 +47,15 @@ def _materialize_env() -> Any:
     env_cfg.observations["critic"].enable_corruption = False
     from unilab.managers import ObservationTermCfg
 
+    policy_obs_carrier = torch.zeros((2, 1), dtype=torch.float32, device="cuda")
+
     def policy_obs(_env):
-        return torch.zeros((2, 1), dtype=torch.float32, device="cuda")
+        return policy_obs_carrier
+
+    critic_obs_carrier = torch.zeros((2, 2), dtype=torch.float32, device="cuda")
 
     def critic_obs(_env):
-        return torch.zeros((2, 2), dtype=torch.float32, device="cuda")
+        return critic_obs_carrier
 
     setattr(policy_obs, "returns_transient_tensor", True)
     setattr(critic_obs, "returns_transient_tensor", True)
@@ -88,6 +92,10 @@ def test_real_cuda_env_update_graph_capture_replay_and_allocator_invariant() -> 
         assert env.device.type == "cuda"
         env.set_deferred_validation_boundaries(True)
         env.reset(seed=7)
+        # This allocator-focused candidate starts from a deterministic non-terminal
+        # boundary; semantic reset parity belongs to the later Gate U suite.
+        env._state.info["steps"].zero_()
+        env.episode_length_buf.zero_()
         env.configure_env_update_graph("graph")
 
         manifest = env.get_env_update_graph_manifest()
@@ -95,7 +103,11 @@ def test_real_cuda_env_update_graph_capture_replay_and_allocator_invariant() -> 
         assert manifest["state"] == "ready"
         assert manifest["replay_count"] == 1
 
-        actions = torch.zeros((env.num_envs, 1), dtype=torch.float32, device=env.device)
+        actions = torch.zeros(
+            (env.num_envs, env.action_manager.total_action_dim),
+            dtype=torch.float32,
+            device=env.device,
+        )
         for _ in range(4):
             env.step(actions)
             manifest = env.get_env_update_graph_manifest()
