@@ -856,6 +856,29 @@ def test_deferred_mask_validation_skips_completed_no_write_owner_scope() -> None
     assert not transaction.last_commit_had_writes
 
 
+def test_deferred_mask_validation_clears_previous_commit_verdict_on_tensor_begin() -> None:
+    transaction = _transaction(_TensorResetBackend())
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    transaction.set_deferred_mask_validation(True)
+    event_mask = torch.tensor([True, True, False, False])
+    root_state = torch.zeros((4, 13), dtype=torch.float32)
+    root_state[:, 3] = 1.0
+
+    with transaction.scoped_device_event_tensor(event_mask):
+        transaction.write_root_state_tensor(
+            event_mask,
+            BackendRootStateLayout(tuple(range(7)), tuple(range(6))),
+            root_state,
+            term_name="first_event_reset",
+        )
+    assert transaction.last_commit_had_writes
+
+    with transaction.scoped_device_owner_tensor(torch.ones(4, dtype=torch.bool)):
+        transaction.publish_mask_validation_verdicts()
+
+    assert not transaction.last_commit_had_writes
+
+
 def test_deferred_mask_validation_commits_nonempty_owner_subset() -> None:
     backend = _TensorResetBackend()
     transaction = _transaction(backend)

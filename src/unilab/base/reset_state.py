@@ -368,6 +368,7 @@ class ResetStateTransaction:
         self._tensor_has_writes = False
         self._tensor_owner_subset = owner_subset
         self._requesting_terms.clear()
+        self._last_commit_had_writes = False
         self._tensor_active = True
 
     def write_entity_state(
