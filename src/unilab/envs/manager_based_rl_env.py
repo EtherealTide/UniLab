@@ -36,6 +36,11 @@ from unilab.base.config_overrides import (
 )
 from unilab.base.cpu_runtime import apply_env_cpu_runtime
 from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadPlan, SceneTensorReadSpec
+from unilab.base.env_update_graph import (
+    ENV_UPDATE_GRAPH_MANIFEST_VERSION,
+    EnvUpdateGraphMode,
+    resolve_env_update_graph_mode,
+)
 from unilab.base.reset_state import ResetStateTransaction
 from unilab.base.scene import SceneCfg, resolve_scene_default_qpos
 from unilab.base.torch_env import TorchEnv, TorchEnvState
@@ -394,6 +399,16 @@ class ManagerBasedRlEnv(TorchEnv):
         self._all_env_rows = torch.arange(num_envs, dtype=torch.int64, device=self.device)
         self._all_env_reset_mask = torch.ones_like(self.reset_buf)
         self._has_transition = False
+        self._env_update_graph_mode = EnvUpdateGraphMode.DISABLED
+        self._env_update_graph_requested = False
+        self._env_update_graph_enabled = False
+        self._env_update_graph_state = "unavailable"
+        self._env_update_graph_capture_id: str | None = None
+        self._env_update_graph_invalidation_reason: str | None = None
+        self._env_update_graph_disable_reason = "env update graph mode is disabled"
+        self._env_update_graph_fallback_count = 0
+        self._env_update_graph_replay_count = 0
+        self._env_update_graph_step_active = False
 
         self._load_managers()
         self._mapped_obs_dims = self._validate_observation_mapping()
@@ -1202,7 +1217,13 @@ class ManagerBasedRlEnv(TorchEnv):
                 f"ManagerBasedRlEnv environments {pending} must be reset before step() "
                 "when auto_reset=False"
             )
-        state = super().step(actions)
+        if self._env_update_graph_step_active:
+            raise RuntimeError("env update graph mode cannot change during a control step")
+        self._env_update_graph_step_active = True
+        try:
+            state = super().step(actions)
+        finally:
+            self._env_update_graph_step_active = False
         self._publish_reward_components(state)
         reset_completion = self.last_reset_completion
         if reset_completion is not None:
@@ -1211,6 +1232,85 @@ class ManagerBasedRlEnv(TorchEnv):
             self._manual_reset_pending.logical_or_(state.terminated | state.truncated)
         self.recorder_manager.record_post_step()
         return state
+
+    def configure_env_update_graph(
+        self, mode: EnvUpdateGraphMode | str, *, allow_eager_fallback: bool = False
+    ) -> None:
+        """Negotiate the distinct state-update graph mode on a cold path.
+
+        ``graph`` remains fail-closed until #2338 adds a public update-specific
+        backend preflight and real capture/replay. Backend physics-graph state is
+        never interpreted as update-graph readiness.
+        """
+        if self._env_update_graph_step_active:
+            raise RuntimeError("env update graph mode cannot change during a control step")
+        resolved = (
+            mode if isinstance(mode, EnvUpdateGraphMode) else resolve_env_update_graph_mode(mode)
+        )
+        self._env_update_graph_mode = resolved
+        self._env_update_graph_requested = resolved is EnvUpdateGraphMode.GRAPH
+        self._env_update_graph_enabled = False
+        self._env_update_graph_capture_id = None
+        self._env_update_graph_invalidation_reason = None
+        self._env_update_graph_fallback_count = 0
+        self._env_update_graph_replay_count = 0
+
+        if resolved is EnvUpdateGraphMode.DISABLED:
+            self._env_update_graph_state = "unavailable"
+            self._env_update_graph_disable_reason = "env update graph mode is disabled"
+            return
+        if resolved is EnvUpdateGraphMode.EAGER:
+            self._env_update_graph_state = "eager"
+            self._env_update_graph_disable_reason = "explicit eager env update execution"
+            return
+
+        self._env_update_graph_state = "invalidated"
+        self._env_update_graph_invalidation_reason = "capture_failed"
+        self._env_update_graph_disable_reason = (
+            "update-specific backend preflight and env update capture execution are not implemented"
+        )
+        if allow_eager_fallback:
+            self._env_update_graph_mode = EnvUpdateGraphMode.EAGER
+            self._env_update_graph_state = "eager"
+            self._env_update_graph_invalidation_reason = None
+            self._env_update_graph_requested = False
+            self._env_update_graph_disable_reason = (
+                f"explicit eager fallback: {self._env_update_graph_disable_reason}"
+            )
+            self._env_update_graph_fallback_count = 1
+            return
+        raise RuntimeError(self._env_update_graph_disable_reason)
+
+    def get_env_update_graph_manifest(self) -> dict[str, Any]:
+        """Serialize distinct state-update graph evidence on a cold path."""
+        return {
+            "contract_version": ENV_UPDATE_GRAPH_MANIFEST_VERSION,
+            "mode": self._env_update_graph_mode.value,
+            "requested": self._env_update_graph_requested,
+            "enabled": self._env_update_graph_enabled,
+            "state": self._env_update_graph_state,
+            "capture_id": self._env_update_graph_capture_id,
+            "invalidation_reason": self._env_update_graph_invalidation_reason,
+            "disable_reason": self._env_update_graph_disable_reason,
+            "fallback_count": self._env_update_graph_fallback_count,
+            "replay_count": self._env_update_graph_replay_count,
+            "backend_step_receipt": {
+                "operation": None,
+                "sequence": None,
+                "capture_id": None,
+            },
+            "update_completion": {
+                "operation": "env_update",
+                "capture_id": self._env_update_graph_capture_id,
+                "sequence": self._env_update_graph_replay_count,
+            },
+            "rng_state": {
+                "device": str(self.torch_rng.device),
+                "state_version": self.torch_rng.state_version,
+                "draw_version": self.torch_rng.draw_version,
+            },
+            "carrier_layout": self.get_env_update_carrier_layout(),
+        }
 
     def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:
         del state
@@ -1252,13 +1352,13 @@ class ManagerBasedRlEnv(TorchEnv):
         state.info["log"] = log
         self.extras = state.info
 
-        self.episode_length_buf.copy_(state.info["steps"]).add_(1)
         self.common_step_counter = self.step_counter + 1
         self._sim_step_counter = self.common_step_counter * self._cfg.sim_substeps
         timing["update_state_prelude_ms"] = (time.perf_counter_ns() - prelude_started_ns) / 1.0e6
 
         termination_compute_started = time.perf_counter()
-        self.termination_manager.compute()
+        self._advance_episode_steps(state.info["steps"])
+        self._compute_termination_and_reset_flags()
         termination_compute_ms = (time.perf_counter() - termination_compute_started) * 1000.0
         termination_timing = getattr(self.termination_manager, "last_step_timing_ms", {})
         timing.update(termination_timing)
@@ -1270,19 +1370,10 @@ class ManagerBasedRlEnv(TorchEnv):
         timing["update_state_termination_ms"] = (time.perf_counter() - phase_started) * 1000.0
         timing["update_state_termination_host_ms"] = termination_compute_ms
         phase_started = time.perf_counter()
-        terminated = self.termination_manager.terminated
-        time_outs = self.termination_manager.time_outs
-        if self._cfg.is_finite_horizon:
-            torch.logical_or(terminated, time_outs, out=self.reset_terminated)
-            self.reset_time_outs.fill_(False)
-        else:
-            self.reset_terminated.copy_(terminated)
-            self.reset_time_outs.copy_(time_outs)
-        torch.logical_or(self.reset_terminated, self.reset_time_outs, out=self.reset_buf)
         timing["update_state_reset_flags_ms"] = (time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
 
-        self.reward_buf = self.reward_manager.compute(dt=self.step_dt)
+        self.reward_buf = self._compute_rewards()
         reward_timing = getattr(self.reward_manager, "last_step_timing_ms", {})
         state.info["update_state_timing"].update(reward_timing)
         timing.update(reward_timing)
@@ -1293,50 +1384,30 @@ class ManagerBasedRlEnv(TorchEnv):
 
         if self._cfg.sim_substeps == 1:
             self.metrics_manager.compute_substep()
-        self.metrics_manager.compute()
+        self._compute_metrics()
         timing["update_state_metrics_ms"] = (time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
 
         events_started = time.perf_counter()
-        applied_runtime_event = False
-        if "step" in self.event_manager.available_modes:
-            self.event_manager.apply(mode="step", dt=self.step_dt)
-            applied_runtime_event = True
-        if "interval" in self.event_manager.available_modes:
-            self.event_manager.apply(mode="interval", dt=self.step_dt)
-            applied_runtime_event = True
-        if applied_runtime_event:
-            # Event terms may mutate simulation state through their formal
-            # interval/step capabilities; EventManager does not expose whether a
-            # particular interval fired, so this boundary stays fail-closed.
-            self.scene._invalidate_state_reads()
-            self._refresh_tensor_reads_after_mutation()
+        self._apply_runtime_events()
         timing["update_state_events_ms"] = (time.perf_counter() - events_started) * 1000.0
 
         command_preflight_started = time.perf_counter()
-        self._command_dt.fill_(self.step_dt)
-        self._command_dt.masked_fill_(self.reset_buf, 0.0)
-        step_read_plan = self.scene._tensor_read_plan
-        del step_read_plan
-        self._reset_state.declare_packed_reset_device(self.device)
-        step_reset_context = self._reset_state.scoped_device_owner_tensor(self._all_env_reset_mask)
+        step_reset_context = self._prepare_command_update()
         timing["update_state_command_preflight_ms"] = (
             time.perf_counter() - command_preflight_started
         ) * 1000.0
         command_started = time.perf_counter()
         with step_reset_context:
-            self.command_manager.compute(dt=self._command_dt)
+            self._compute_commands()
             step_timing = getattr(self.command_manager, "last_step_timing_ms", {})
             state.info["update_state_timing"].update(step_timing)
             timing.update(step_timing)
         timing["update_state_command_compute_ms"] = (time.perf_counter() - command_started) * 1000.0
         command_epilogue_started = time.perf_counter()
-        if self._reset_state.last_commit_had_writes:
-            self.scene._invalidate_state_reads()
-            self._refresh_tensor_reads_after_mutation()
-        read_refresh_ms = (time.perf_counter() - command_epilogue_started) * 1000.0
+        read_refresh_ms = self._refresh_reads_after_command_commit()
         post_compute_started = time.perf_counter()
-        self.command_manager.post_compute()
+        self._post_compute_commands()
         post_compute_ms = (time.perf_counter() - post_compute_started) * 1000.0
         timing["update_state_command_read_refresh_ms"] = read_refresh_ms
         timing["update_state_command_post_compute_ms"] = post_compute_ms
@@ -1346,7 +1417,7 @@ class ManagerBasedRlEnv(TorchEnv):
         timing["update_state_command_ms"] = (time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
 
-        manager_obs = self.observation_manager.compute(update_history=True)
+        manager_obs = self._compute_observations()
         observation_timing = getattr(self.observation_manager, "last_step_timing_ms", {})
         state.info["update_state_timing"].update(observation_timing)
         timing.update(observation_timing)
@@ -1398,6 +1469,74 @@ class ManagerBasedRlEnv(TorchEnv):
             ) / 1.0e6
         return replacement
 
+    def _advance_episode_steps(self, steps: torch.Tensor) -> None:
+        """Advance the fixed-width device episode-step carrier by one."""
+        self.episode_length_buf.copy_(steps).add_(1)
+
+    def _compute_termination_and_reset_flags(self) -> None:
+        """Compute termination and publish fixed-width reset-flag carriers."""
+        self.termination_manager.compute()
+        terminated = self.termination_manager.terminated
+        time_outs = self.termination_manager.time_outs
+        if self._cfg.is_finite_horizon:
+            torch.logical_or(terminated, time_outs, out=self.reset_terminated)
+            self.reset_time_outs.fill_(False)
+        else:
+            self.reset_terminated.copy_(terminated)
+            self.reset_time_outs.copy_(time_outs)
+        torch.logical_or(self.reset_terminated, self.reset_time_outs, out=self.reset_buf)
+
+    def _compute_rewards(self) -> torch.Tensor:
+        """Compute and return the persistent full-width reward carrier."""
+        return self.reward_manager.compute(dt=self.step_dt)
+
+    def _compute_metrics(self) -> None:
+        """Advance Manager metric carriers after the step boundary."""
+        self.metrics_manager.compute()
+
+    def _apply_runtime_events(self) -> None:
+        """Apply runtime events and repack any backend state they mutate."""
+        applied_runtime_event = False
+        if "step" in self.event_manager.available_modes:
+            self.event_manager.apply(mode="step", dt=self.step_dt)
+            applied_runtime_event = True
+        if "interval" in self.event_manager.available_modes:
+            self.event_manager.apply(mode="interval", dt=self.step_dt)
+            applied_runtime_event = True
+        if applied_runtime_event:
+            # Event terms may mutate simulation state through their formal
+            # interval/step capabilities; EventManager does not expose whether a
+            # particular interval fired, so this boundary stays fail-closed.
+            self.scene._invalidate_state_reads()
+            self._refresh_tensor_reads_after_mutation()
+
+    def _prepare_command_update(self):
+        """Pin command dt and return the fixed-width owner transaction scope."""
+        self._command_dt.fill_(self.step_dt)
+        self._command_dt.masked_fill_(self.reset_buf, 0.0)
+        self._reset_state.declare_packed_reset_device(self.device)
+        return self._reset_state.scoped_device_owner_tensor(self._all_env_reset_mask)
+
+    def _compute_commands(self) -> None:
+        """Advance command state using the persistent per-env dt carrier."""
+        self.command_manager.compute(dt=self._command_dt)
+
+    def _refresh_reads_after_command_commit(self) -> float:
+        """Repack backend reads if the fixed-width command commit wrote state."""
+        started = time.perf_counter()
+        if self._reset_state.last_commit_had_writes:
+            self.scene._invalidate_state_reads()
+            self._refresh_tensor_reads_after_mutation()
+        return (time.perf_counter() - started) * 1000.0
+
+    def _post_compute_commands(self) -> None:
+        """Publish command post-compute state on its owner boundary."""
+        self.command_manager.post_compute()
+
+    def _compute_observations(self) -> dict[str, Any]:
+        """Compute all observation groups, histories, and noise carriers."""
+        return self.observation_manager.compute(update_history=True)
+
     def publish_reward_log(self) -> dict[str, float]:
         """Publish latest device reward means through the legacy log contract."""
         if not self._reward_log_names:
@@ -1430,6 +1569,56 @@ class ManagerBasedRlEnv(TorchEnv):
             self.torch_rng.state_version,
             self.torch_rng.draw_version,
         )
+
+    def get_env_update_carrier_layout(self) -> dict[str, Any]:
+        """Return fixed carrier layout identity for the update-only boundary."""
+        return {
+            "num_envs": self.num_envs,
+            "device": str(self.device),
+            "episode_steps": self._carrier_layout(self.episode_length_buf),
+            "command_dt": self._carrier_layout(self._command_dt),
+            "observations": {
+                name: self._carrier_layout(value) for name, value in self._public_obs.items()
+            },
+            "reward": self._carrier_layout(self._public_reward),
+            "reward_components": self._carrier_layout(self.reward_manager.step_rewards),
+            "terminated": self._carrier_layout(self._public_terminated),
+            "truncated": self._carrier_layout(self._public_truncated),
+            "reset_mask": self._carrier_layout(self.reset_buf),
+            "validation_verdicts": {
+                name: self._carrier_layout(value)
+                for name, value in self.env_update_validation_verdicts.items()
+            },
+        }
+
+    @property
+    def env_update_validation_verdicts(self) -> dict[str, torch.Tensor]:
+        """Return persistent owner verdicts for the update-only boundary."""
+        verdicts = {
+            "reward_finite": self.reward_manager.finite_valid,
+            "action_term_finite": self.action_manager.action_finite_valid,
+        }
+        for output_name in self.obs_groups_spec:
+            group_name = (
+                self._cfg.policy_observation_group
+                if output_name == "obs"
+                else self._cfg.critic_observation_group
+            )
+            if group_name is None:
+                continue
+            verdicts[f"observation_finite[{output_name}]"] = self.observation_manager.finite_valid(
+                group_name
+            )
+        return verdicts
+
+    @staticmethod
+    def _carrier_layout(value: torch.Tensor) -> dict[str, Any]:
+        return {
+            "shape": tuple(int(size) for size in value.shape),
+            "dtype": str(value.dtype).removeprefix("torch."),
+            "device": str(value.device),
+            "data_ptr": value.data_ptr(),
+        }
 
     def rollback_graph_rng_state(self, snapshot: tuple[torch.Tensor, int, int]) -> None:
         """Restore a failed graph boundary without silently advancing draws."""
@@ -1576,6 +1765,8 @@ class ManagerBasedRlEnv(TorchEnv):
         super().set_deferred_validation_boundaries(enabled)
         self.action_manager.set_deferred_validation_boundaries(enabled)
         self.reward_manager.set_deferred_validation_boundaries(enabled)
+        self.observation_manager.set_deferred_validation_boundaries(enabled)
+        self.command_manager.set_deferred_validation_boundaries(enabled)
         self._reset_state.set_deferred_payload_validation(enabled)
         self._reset_state.set_deferred_mask_validation(enabled)
         capabilities = self._backend.get_tensor_capabilities()
@@ -1596,9 +1787,11 @@ class ManagerBasedRlEnv(TorchEnv):
             )
 
     def publish_validation_verdicts(self) -> None:
-        """Publish env, reward, and fused reset verdicts at one boundary."""
+        """Publish env, command, reward, and fused reset verdicts."""
         self.action_manager.publish_validation_verdict()
         self.reward_manager.publish_validation_verdict()
+        self.observation_manager.publish_validation_verdict()
+        self.command_manager.publish_validation_verdicts()
         self._reset_state.publish_payload_validation_verdicts(term_name="reset_state")
         self._reset_state.publish_mask_validation_verdicts()
         self._backend.publish_torch_fused_validation()

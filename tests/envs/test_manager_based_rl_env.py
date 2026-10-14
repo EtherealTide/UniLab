@@ -29,6 +29,7 @@ from unilab.assets import ASSETS_ROOT_PATH
 from unilab.base.backend_factory import create_backend, env_backend_kwargs
 from unilab.base.backend_timing import UPDATE_STATE_DETAIL_TIMING_KEYS
 from unilab.base.entity import EntityCfg
+from unilab.base.env_update_graph import EnvUpdateGraphMode, validate_env_update_graph_manifest
 from unilab.base.scene import SceneCfg
 from unilab.base.torch_env import TorchEnv, TorchEnvState
 from unilab.envs import (
@@ -1432,11 +1433,13 @@ def test_deferred_validation_boundaries_propagate_to_owner_verdicts() -> None:
     assert env.deferred_validation_boundaries is True
     assert env.action_manager.deferred_validation_boundaries is True
     assert env.reward_manager.deferred_validation_boundaries is True
+    assert env.observation_manager.deferred_validation_boundaries is True
     assert env._reset_state.deferred_payload_validation is True
     assert env._reset_state.deferred_mask_validation is True
 
     env.reward_manager._finite_valid.fill_(False)
     env.action_manager._action_finite_valid.fill_(True)
+    env.observation_manager._group_finite_valid["actor"].fill_(True)
     with pytest.raises(ValueError, match="RewardManager returned a non-finite reward"):
         env.publish_validation_verdicts()
     env.close()
@@ -1632,6 +1635,84 @@ def test_graph_rng_state_snapshot_is_versioned_and_restoreable() -> None:
     first_after_restore = env.torch_rng.random(1)
     env.torch_rng.set_state(restored["state"])
     torch.testing.assert_close(env.torch_rng.random(1), first_after_restore)
+    env.close()
+
+
+def test_env_update_graph_defaults_disabled_and_negotiates_distinct_eager_mode() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+
+    initial = env.get_env_update_graph_manifest()
+    assert initial["mode"] == "disabled"
+    assert initial["requested"] is False
+    assert initial["enabled"] is False
+    assert initial["backend_step_receipt"] == {
+        "operation": None,
+        "sequence": None,
+        "capture_id": None,
+    }
+    assert initial["update_completion"]["operation"] == "env_update"
+    assert initial["update_completion"]["capture_id"] is None
+    validate_env_update_graph_manifest(initial)
+
+    env.configure_env_update_graph(EnvUpdateGraphMode.EAGER)
+    eager = env.get_env_update_graph_manifest()
+
+    assert eager["mode"] == "eager"
+    assert eager["requested"] is False
+    assert eager["enabled"] is False
+    assert eager["state"] == "eager"
+    assert eager["disable_reason"] == "explicit eager env update execution"
+    validate_env_update_graph_manifest(eager)
+    env.close()
+
+
+def test_env_update_graph_request_fails_closed_without_backend_boundary() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env.init_state()
+
+    with pytest.raises(RuntimeError, match="update-specific backend preflight"):
+        env.configure_env_update_graph("graph")
+    failed = env.get_env_update_graph_manifest()
+    assert failed["mode"] == "graph"
+    assert failed["requested"] is True
+    assert failed["enabled"] is False
+    assert failed["state"] == "invalidated"
+    assert failed["invalidation_reason"] == "capture_failed"
+    validate_env_update_graph_manifest(failed)
+
+    env.configure_env_update_graph("graph", allow_eager_fallback=True)
+    fallback = env.get_env_update_graph_manifest()
+    assert fallback["mode"] == "eager"
+    assert fallback["requested"] is False
+    assert fallback["fallback_count"] == 1
+    assert fallback["disable_reason"].startswith("explicit eager fallback:")
+    validate_env_update_graph_manifest(fallback)
+    env.close()
+
+
+def test_env_update_graph_carrier_layout_pins_update_outputs_and_verdicts() -> None:
+    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env.init_state()
+    env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
+
+    verdicts = env.env_update_validation_verdicts
+    layout = env.get_env_update_carrier_layout()
+
+    assert set(layout["observations"]) == set(env.obs_groups_spec)
+    assert layout["reward_components"]["shape"] == (2, 1)
+    assert layout["episode_steps"]["shape"] == (2,)
+    assert layout["command_dt"]["shape"] == (2,)
+    assert layout["terminated"]["shape"] == (2,)
+    assert layout["truncated"]["shape"] == (2,)
+    assert layout["reset_mask"]["shape"] == (2,)
+    assert layout["reward_components"]["data_ptr"] == (env.reward_manager.step_rewards.data_ptr())
+    assert layout["episode_steps"]["data_ptr"] == env.episode_length_buf.data_ptr()
+    assert layout["command_dt"]["data_ptr"] == env._command_dt.data_ptr()
+    assert layout["reset_mask"]["data_ptr"] == env.reset_buf.data_ptr()
+    assert set(layout["validation_verdicts"]) == set(verdicts)
+    assert layout["validation_verdicts"]["reward_finite"]["data_ptr"] == (
+        verdicts["reward_finite"].data_ptr()
+    )
     env.close()
 
 
@@ -4202,7 +4283,7 @@ def test_reward_log_publication_is_interval_boundary_only() -> None:
 
 
 def test_unified_validation_pack_publishes_all_owner_verdicts_once() -> None:
-    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
+    env, _backend = _make_env(_make_cfg(include_optional_managers=True))
     env.set_deferred_validation_boundaries(True)
     env.init_state()
     flags = env._validation_flags()
@@ -4215,6 +4296,10 @@ def test_unified_validation_pack_publishes_all_owner_verdicts_once() -> None:
     assert env.reward_manager.finite_valid.data_ptr() == reward_pointer
     assert all(bool(value) for value in env._validation_flags().values())
     assert bool(env.reward_manager.finite_valid)
+    assert all(
+        term._command_finite_valid.item() and term._metrics_finite_valid.item()
+        for term in env.command_manager._terms.values()
+    )
     assert state.info["reward_components"] is env.reward_manager.step_rewards
     env.close()
 
@@ -4435,3 +4520,68 @@ def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
         assert len(eager["backend_reset_rows"]) == len(deferred["backend_reset_rows"])
         for left, right in zip(eager["backend_reset_rows"], deferred["backend_reset_rows"]):
             torch.testing.assert_close(left, right)
+
+
+def test_extracted_env_update_body_preserves_eager_owner_order() -> None:
+    """The no-reset update body exposes the exact eager owner execution order."""
+    cfg = _make_cfg(
+        include_optional_managers=False, metrics={"progress": MetricsTermCfg(func=_metric)}
+    )
+    cfg.events = {}
+    env, _backend = _make_env(cfg)
+    env.init_state()
+    actions = torch.zeros((2, 1), dtype=torch.float32, device=env.device)
+    env.step(actions)
+
+    calls: list[str] = []
+    originals = {
+        "episode_steps": env._advance_episode_steps,
+        "termination": env._compute_termination_and_reset_flags,
+        "reward": env._compute_rewards,
+        "metrics": env._compute_metrics,
+        "events": env._apply_runtime_events,
+        "command": env._compute_commands,
+        "command_post": env._post_compute_commands,
+        "observations": env._compute_observations,
+    }
+
+    def bind(name: str, owner):
+        def wrapper(*args, **kwargs):
+            calls.append(name)
+            return owner(*args, **kwargs)
+
+        return wrapper
+
+    for name, owner in originals.items():
+        setattr(env, _method_name(name), bind(name, owner))
+
+    state = env.step(actions)
+
+    assert calls == [
+        "episode_steps",
+        "termination",
+        "reward",
+        "metrics",
+        "events",
+        "command",
+        "command_post",
+        "observations",
+    ]
+    assert state.terminated.shape == (2,)
+    assert state.truncated.shape == (2,)
+    assert state.reward.shape == (2,)
+    assert set(state.obs) == set(env.obs_groups_spec)
+    env.close()
+
+
+def _method_name(name: str) -> str:
+    return {
+        "episode_steps": "_advance_episode_steps",
+        "termination": "_compute_termination_and_reset_flags",
+        "reward": "_compute_rewards",
+        "metrics": "_compute_metrics",
+        "events": "_apply_runtime_events",
+        "command": "_compute_commands",
+        "command_post": "_post_compute_commands",
+        "observations": "_compute_observations",
+    }[name]
