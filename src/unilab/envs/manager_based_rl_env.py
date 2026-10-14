@@ -1548,7 +1548,7 @@ class ManagerBasedRlEnv(TorchEnv):
         self._env_update_graph_capture_id = capture_id
         self._env_update_graph_state = "ready"
         self._env_update_graph_enabled = True
-        self._env_update_graph_disable_reason = ""
+        self._env_update_graph_disable_reason = None
         self._env_update_graph_runtime.layout = layout
         # The runtime's acceptance replay already produced real evidence;
         # publish that first replay rather than requiring a later step.
