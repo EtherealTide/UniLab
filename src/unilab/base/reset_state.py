@@ -148,6 +148,8 @@ class ResetStateTransaction:
         self._tensor_root_payload_valid: torch.Tensor | None = None
         self._deferred_payload_validation = False
         self._deferred_mask_validation = False
+        self._commit_verdict_published = False
+        self._completed_tensor_has_writes = False
 
     @property
     def active(self) -> bool:
@@ -194,9 +196,15 @@ class ResetStateTransaction:
             return
         if bool(self._mask_outside_rows):
             raise ValueError("tensor reset mask attempted a write outside the active mask")
+        if self._commit_verdict_published:
+            return
         if not self._last_commit_had_writes:
             return
         if bool(self._mask_count.item()):
+            self._commit_verdict_published = True
+            return
+        if self._completed_tensor_has_writes:
+            self._commit_verdict_published = True
             return
         raise ValueError("fixed-width tensor reset commit has no selected rows")
 
@@ -379,6 +387,7 @@ class ResetStateTransaction:
         self._tensor_owner_subset = owner_subset
         self._requesting_terms.clear()
         self._last_commit_had_writes = False
+        self._commit_verdict_published = False
         self._tensor_active = True
 
     def write_entity_state(
@@ -2521,8 +2530,10 @@ class ResetStateTransaction:
         self._mask_count.zero_()
         self._mask_outside_rows.zero_()
         self._tensor_has_writes = False
+        self._completed_tensor_has_writes = self._last_commit_had_writes
         self._tensor_owner_subset = False
         self._tensor_write_mask = None
+        self._commit_verdict_published = False
 
 
 __all__ = ["ResetStateTransaction"]
