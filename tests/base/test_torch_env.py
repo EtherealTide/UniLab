@@ -555,6 +555,16 @@ def test_cuda_host_bridge_binds_without_completion_capability() -> None:
     assert env._tensor_runtime_bound
 
 
+def test_produces_completion_receipts_follows_backend_step_receipt_contract() -> None:
+    # Synchronous host-bridge producers (mujoco/motrix/superdex) emit no
+    # receipt, so the env declares the relaxed sync semantic to uni_rl.
+    assert _StubTorchEnv().produces_completion_receipts is False
+    # The event-backed async mjwarp CUDA path publishes a receipt per step.
+    backend = _backend()
+    backend.backend_type = "mjwarp"
+    assert _StubTorchEnv(backend=backend).produces_completion_receipts is True
+
+
 def test_backend_reset_timing_hook_is_merged() -> None:
     class _TimedEnv(_StubTorchEnv):
         def _collect_reset_backend_timing_ms(self) -> dict[str, float]:

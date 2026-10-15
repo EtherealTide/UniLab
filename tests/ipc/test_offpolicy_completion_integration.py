@@ -54,6 +54,9 @@ def test_eager_mujoco_replay_rows_own_their_tick_across_autoreset() -> None:
 
     try:
         initial_obs, _ = env.reset(seed=2359)
+        # The mujoco host bridge is a synchronous producer: it declares the
+        # no-receipt semantic, so CUDA replay ingress must not demand one.
+        assert env.produces_completion_receipts is False
         # Normalize the randomized bootstrap counters so the forced time-out at
         # the autoreset tick is the only episode boundary in this sequence.
         env.set_episode_length_buf(torch.zeros(env.num_envs, dtype=torch.int64, device=env.device))

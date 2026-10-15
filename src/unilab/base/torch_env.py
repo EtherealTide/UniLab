@@ -67,6 +67,14 @@ def _cpu_time() -> float:
     return process.user + process.system
 
 
+# Backends whose ``step_tensor`` publishes an event-backed asynchronous step
+# receipt (a unisim ``CompletionToken`` carried in ``info["completion"]``).
+# Synchronous producers — host-bridge backends and device-resident backends
+# that synchronize before returning (for example genesis) — publish no
+# receipt, so consumers must accept a missing receipt without waiting.
+_EVENT_BACKED_STEP_RECEIPT_BACKENDS = frozenset({"mjwarp"})
+
+
 class TorchEnv(ABEnv):
     """Backend-agnostic Torch environment lifecycle.
 
@@ -145,6 +153,19 @@ class TorchEnv(ABEnv):
     def backend(self) -> SimBackend:
         """Public backend owner used by Manager terms and tensor contracts."""
         return self._backend
+
+    @property
+    def produces_completion_receipts(self) -> bool:
+        """uni_rl env-contract declaration of the backend's step receipts.
+
+        ``True`` when the bound backend publishes an event-backed async
+        completion receipt on every ``step`` (replay CUDA ingress then fails
+        closed without one). ``False`` for synchronous producers whose step
+        outputs are already ordered at return, where no receipt exists and
+        none is awaited. This is a cold-path declaration; ``step`` keeps
+        publishing whatever receipt the backend returns.
+        """
+        return self._backend.backend_type in _EVENT_BACKED_STEP_RECEIPT_BACKENDS
 
     @property
     def num_envs(self) -> int:
