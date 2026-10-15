@@ -51,6 +51,15 @@ _PRODUCTION_NUMPY_IMPORT_ALLOWLIST = {
     "src/unilab/visualization/viser_scene.py",
     # Cold NPZ motion ingestion.
     *_RUNTIME_NUMPY_ALLOWLIST,
+    # RL runtime NumPy leaves merged from unilab-rl (ADR-0016): host-side ring
+    # buffers, weight sync, NaN diagnostics, RNG application, tensor conversion.
+    "src/unilab/rl/runtime/ipc/replay_buffer.py",
+    "src/unilab/rl/runtime/ipc/rollout_ring_buffer.py",
+    "src/unilab/rl/runtime/ipc/weight_sync.py",
+    "src/unilab/rl/runtime/nan_guard.py",
+    "src/unilab/rl/runtime/offpolicy/actor_adapter.py",
+    "src/unilab/rl/runtime/seed.py",
+    "src/unilab/rl/runtime/tensor.py",
 }
 
 
@@ -99,14 +108,26 @@ def test_tensor_runtime_switch_is_absent_from_source_and_owner_configs() -> None
         "tensor_runtime_device",
         "tensor_runtime:",
     )
+    # The merged RL layer (ADR-0016) owns the tensor-runtime resolution and its
+    # legacy `env.tensor_runtime` compatibility reads; the guard stays for the
+    # env/task/manager layers and owner configs.
+    allowlist = {
+        "src/unilab/training/tensor_runtime.py",
+        "src/unilab/rl/runtime/placement.py",
+        "src/unilab/rl/runtime/offpolicy/worker.py",
+        "src/unilab/rl/runtime/offpolicy/double_buffer_runner.py",
+    }
     for path in (_REPO_ROOT / "src").rglob("*"):
         if not path.is_file() or path.suffix not in {".py", ".yaml"}:
             continue
         if ".venv" in path.parts or "__pycache__" in path.parts:
             continue
+        relative = path.relative_to(_REPO_ROOT).as_posix()
+        if relative in allowlist:
+            continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         if any(pattern in text for pattern in patterns):
-            offenders.append(path.relative_to(_REPO_ROOT).as_posix())
+            offenders.append(relative)
     assert offenders == [], f"tensor-runtime switch references remain: {offenders}"
 
 
@@ -122,7 +143,10 @@ def test_production_source_does_not_import_or_configure_numba() -> None:
         (path.relative_to(_REPO_ROOT).as_posix(), line_number, line.strip())
         for path in sorted(source_root.rglob("*.py"))
         for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
-        if "NUMBA_" in line or "set_num_threads" in line
+        # ``set_num_threads`` only counts as Numba configuration when it targets
+        # numba itself; torch thread control (e.g. rl/runtime/offpolicy/
+        # thread_budget.py) is a different owner.
+        if "NUMBA_" in line or "numba.set_num_threads" in line
     ]
 
     assert import_violations == [], f"production Numba imports remain: {import_violations}"
@@ -324,9 +348,14 @@ def test_manager_env_and_task_runtime_have_no_numpy_conversion() -> None:
 
 def test_production_source_does_not_seed_global_numpy_rng() -> None:
     source_root = _REPO_ROOT / "src" / "unilab"
+    # rl/runtime/seed.py deliberately applies the process RNG seed to NumPy's
+    # legacy global RandomState for collector host-side env physics/DR
+    # (behavior preserved from unilab-rl, ADR-0016).
+    allowlist = {"src/unilab/rl/runtime/seed.py"}
     offenders = [
         (path.relative_to(_REPO_ROOT).as_posix(), line_number, line.strip())
         for path in sorted(source_root.rglob("*.py"))
+        if path.relative_to(_REPO_ROOT).as_posix() not in allowlist
         for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
         if "np.random.seed(" in line or "numpy.random.seed(" in line
     ]
