@@ -11,24 +11,10 @@ import datetime
 import os
 import sys
 from contextlib import contextmanager, nullcontext
-from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
 from omegaconf import DictConfig, OmegaConf
-from uni_rl.ipc.dp_launcher import (
-    UNILAB_DP_LOG_DIR,
-    UNILAB_DP_WORLD_SIZE,
-    DpRankSupervisor,
-    apply_dp_rank_config,
-    current_dp_rank,
-    current_dp_world_size,
-    reject_removed_device_config,
-    resolve_collector_cpu_ids,
-    resolve_dp_rank_device,
-    resolve_dp_rendezvous_path,
-    selected_visible_entries,
-)
 from unisim.backend.base import log_playback_plan
 
 from unilab.base.config_adapter import create_env
@@ -36,12 +22,22 @@ from unilab.base.env_factory import registry_env_factory
 from unilab.base.process_device import (
     apply_backend_env_device_override,
     apply_manager_torch_device_override,
-    bind_backend_process_device_for_backend,
     configure_backend_process_device,
     pin_genesis_device_before_cuda_init,
     resolve_backend_env_device_id,
     resolve_backend_process_device,
 )
+from unilab.rl.runtime.distributed.affinity import resolve_collector_cpu_ids
+from unilab.rl.runtime.distributed.context import (
+    UNILAB_DP_LOG_DIR,
+    UNILAB_DP_WORLD_SIZE,
+    current_dp_rank,
+    current_dp_world_size,
+    resolve_dp_rank_device,
+    resolve_dp_rendezvous_path,
+    selected_visible_entries,
+)
+from unilab.rl.runtime.distributed.launcher import DpRankSupervisor
 from unilab.training import (
     assert_offpolicy_task_choice_matches_algo,
     build_run_dir_name,
@@ -61,9 +57,14 @@ from unilab.training.cuda_process_sharing import (
     CudaProcessSharingEvidence,
     probe_cuda_process_sharing,
 )
+from unilab.training.dp_config import apply_dp_rank_config, reject_removed_device_config
 from unilab.training.experiment import ExperimentTracker
 from unilab.training.onnx_export import export_policy_onnx, verify_policy_onnx
 from unilab.training.seed import apply_configured_training_seed
+from unilab.training.tensor_runtime import (
+    resolve_inference_transport,
+    resolve_tensor_runtime_settings,
+)
 from unilab.utils.checkpoint import normalize_checkpoint_value
 from unilab.utils.checkpoint import (
     resolve_offpolicy_checkpoint_path as resolve_checkpoint_path,
@@ -287,7 +288,7 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
     )
 
     env_factory = registry_env_factory(str(cfg.training.task_name), str(cfg.training.sim_backend))
-    from uni_rl.offpolicy.thread_budget import (
+    from unilab.rl.runtime.offpolicy.thread_budget import (
         apply_torch_thread_runtime,
         resolve_torch_thread_runtime,
     )
@@ -322,7 +323,7 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
                 "build_runner requires log_dir for multi-GPU data-parallel rank 0 "
                 "(it anchors the DP rendezvous FileStore)"
             )
-        from uni_rl.ipc.dp_sync import DpParameterSync
+        from unilab.rl.runtime.distributed.sync import DpParameterSync
 
         dp_sync = DpParameterSync(
             world_size=dp_world_size,
@@ -351,9 +352,15 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
             f"Unsupported training.replay_prefetch_mode={replay_prefetch_mode!r}; "
             "expected 'one_tick'"
         )
-    from uni_rl.ipc.replay_pipelines.gpu_resident import require_offpolicy_replay_device
+    from unilab.rl.runtime.ipc.replay_pipelines.gpu_resident import (
+        require_offpolicy_replay_device,
+    )
 
     replay_device = require_offpolicy_replay_device(rank_device)
+    algo_labels = {"sac": "SAC", "flashsac": "FlashSAC"}
+    algo_label = algo_labels.get(algo_name)
+    if algo_label is None:
+        raise ValueError(f"Unsupported algo: {algo_name}")
     builder_kwargs: dict[str, Any] = {
         "env_factory": env_factory,
         "env_cfg_override": env_cfg_override,
@@ -364,30 +371,50 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
         "torch_thread_runtime": torch_thread_runtime,
         "collector_cpu_ids": collector_cpu_ids,
         "dp_sync": dp_sync,
-        # Keep the injected collector hook top-level/pickleable while selecting
-        # the backend lazily inside the spawned process.  The historical
-        # one-argument binder remains available for mjwarp compatibility; new
-        # backends must not accidentally bind through the wrong runtime.
-        "backend_device_binder": partial(
-            bind_backend_process_device_for_backend,
-            str(cfg.training.sim_backend),
-        ),
+        # Backend-owned process-device resolution/binding is injected as
+        # top-level, pickleable callables; the spawned collector repeats the
+        # configuration in its own process.
+        "backend_device_resolver": resolve_backend_process_device,
+        "backend_device_configurer": configure_backend_process_device,
     }
+    # Resolve the spawn-facing tensor-runtime knobs before the one-env probe so
+    # invalid training knobs fail closed without materializing a backend.
+    tensor_runtime_settings = resolve_tensor_runtime_settings(
+        cfg,
+        algo_name=algo_label,
+        num_envs=int(cfg.algo.num_envs),
+    )
     with _genesis_probe_para_level(str(cfg.training.sim_backend)):
+        import torch
+
+        probe_env = env_factory(1, env_cfg_override)
+        try:
+            probe_state = probe_env.init_state()
+            probe_observation = probe_state.obs.get("obs")
+            env_tensor_native = isinstance(probe_observation, torch.Tensor) and str(
+                probe_observation.device
+            ).startswith("cuda")
+        finally:
+            probe_env.close()
+        builder_kwargs["inference_placement"] = resolve_inference_transport(
+            cfg,
+            device=replay_device,
+            algo_name=algo_label,
+            env_tensor_native=env_tensor_native,
+        )
+        builder_kwargs["tensor_runtime_settings"] = tensor_runtime_settings
         if algo_name == "sac":
-            from uni_rl.algos.sac.double_buffer import (
+            from unilab.rl.algos.sac.double_buffer import (
                 build_sac_double_buffer_runner,
             )
 
             runner = build_sac_double_buffer_runner(cfg, **builder_kwargs)
-        elif algo_name == "flashsac":
-            from uni_rl.algos.flash_sac.double_buffer import (
+        else:
+            from unilab.rl.algos.flash_sac.double_buffer import (
                 build_flashsac_double_buffer_runner,
             )
 
             runner = build_flashsac_double_buffer_runner(cfg, **builder_kwargs)
-        else:
-            raise ValueError(f"Unsupported algo: {algo_name}")
 
     _attach_cuda_process_sharing_manifest(runner, cuda_process_sharing)
     return runner

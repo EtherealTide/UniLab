@@ -11,7 +11,6 @@ from typing import Any, cast
 import hydra
 import torch
 from omegaconf import DictConfig, OmegaConf
-from uni_rl.algos.appo.runtime import resolve_appo_runtime
 from unisim.backend.base import log_playback_plan
 
 from unilab.base.config_adapter import (
@@ -26,6 +25,7 @@ from unilab.base.process_device import (
     pin_genesis_device_before_cuda_init,
 )
 from unilab.rl import RslRlVecEnvAdapter
+from unilab.rl.algos.appo.runtime import resolve_appo_runtime
 from unilab.training import (
     algo_config_dict,
     build_run_dir_name,

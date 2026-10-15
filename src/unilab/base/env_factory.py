@@ -1,11 +1,12 @@
-"""Picklable ``EnvFactory`` adapters bridging uni_rl's injected env contract
-to the UniLab env registry.
+"""Picklable ``EnvFactory`` adapters bridging the RL env contract to the
+UniLab env registry.
 
-uni_rl runners and collectors never construct environments themselves; the
-caller injects an ``EnvFactory`` (see ``uni_rl.env_contract``). Because
-collectors run in ``multiprocessing`` spawn subprocesses, the factory must be
-picklable by reference — the adapters below are module-level functions bound
-with ``functools.partial`` (never closures or lambdas).
+RL runners and collectors (``unilab.rl``) never construct environments
+themselves; the caller injects an ``EnvFactory`` (see
+``unilab.rl.contracts.env``). Because collectors run in ``multiprocessing``
+spawn subprocesses, the factory must be picklable by reference — the adapters
+below are module-level functions bound with ``functools.partial`` (never
+closures or lambdas).
 """
 
 from __future__ import annotations
@@ -17,10 +18,9 @@ from typing import TYPE_CHECKING, Any, cast
 from unilab.base.process_device import bind_genesis_process_device
 
 if TYPE_CHECKING:
-    # uni_rl is an optional dependency (``unilab[uni_rl]``); its
     # ``EnvFactory``/``EnvProtocol`` are typing-only Protocols, so the import
     # is annotation-only and must not run at module import time.
-    from uni_rl.env_contract import EnvFactory, EnvProtocol
+    from unilab.rl.contracts.env import EnvFactory, EnvProtocol
 
 
 def make_registry_env(

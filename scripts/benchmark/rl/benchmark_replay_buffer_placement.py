@@ -191,11 +191,12 @@ def _xpu_available() -> bool:
 
 
 def _replay_transfer_manifest(device: torch.device, *, ring_depth: int = 2) -> dict[str, Any]:
-    """Describe the uni_rl 1.2.1 replay-transfer backend for ``device``.
+    """Describe the RL replay-transfer backend for ``device``.
 
-    uni_rl 1.2.1 builds ``CudaLikeReplayTransferBackend`` for CUDA (ROCm
-    included) and ``TorchCopyReplayTransferBackend`` otherwise; the async
-    ``submit_h2d`` path and the dedicated XPU backend no longer exist.
+    The in-tree RL runtime (``unilab.rl``) builds
+    ``CudaLikeReplayTransferBackend`` for CUDA (ROCm included) and
+    ``TorchCopyReplayTransferBackend`` otherwise; the async ``submit_h2d``
+    path and the dedicated XPU backend no longer exist.
     """
     if device.type == "cuda":
         torch_version = getattr(torch, "version", None)
@@ -310,9 +311,8 @@ def _resolve_targets(
 
 
 def _resolve_env_shape(cfg: DictConfig, algo: str) -> ReplayShape:
-    from uni_rl.utils.observations import get_obs_dims
-
     from unilab.base.config_adapter import BackendAdapter, create_env
+    from unilab.rl.contracts.observations import get_obs_dims
     from unilab.training import ensure_registries
 
     ensure_registries()

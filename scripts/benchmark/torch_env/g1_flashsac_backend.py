@@ -1197,7 +1197,8 @@ def main() -> None:
         "unilab_source": _git_source_info(ROOT_DIR),
         "external_worker_runtimes": _external_worker_runtime_provenance(backends),
         "local_dependencies": {
-            "unilab_rl": _package_source_info("uni_rl"),
+            # The RL stack is merged in-tree as ``unilab.rl``; its provenance
+            # is the ``unilab_source`` record above.
             "mjbatch_uni": _git_source_info(ROOT_DIR.parent / "mjbatch_uni"),
         },
         "runtime": {
