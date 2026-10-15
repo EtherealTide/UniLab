@@ -166,26 +166,6 @@ class FailingActionCfg(DummyActionCfg):
         return FailingAction(self, env)
 
 
-class DeferredVerdictAction(DummyAction):
-    def __init__(self, cfg: DeferredVerdictActionCfg, env: FakeEnv):
-        super().__init__(cfg, env)
-        self.publish_calls = 0
-
-    def process_actions(self, actions: torch.Tensor) -> None:
-        self._action_finite_valid.copy_(torch.isfinite(actions).all())
-        self._raw.copy_(actions)
-
-    def validate_actions(self) -> None:
-        self.publish_calls += 1
-        self.publish_validation_verdict()
-
-
-@dataclass(kw_only=True)
-class DeferredVerdictActionCfg(DummyActionCfg):
-    def build(self, env: FakeEnv) -> DeferredVerdictAction:
-        return DeferredVerdictAction(self, env)
-
-
 def test_action_term_errors_include_manager_and_term_context(fake_env: FakeEnv) -> None:
     manager = ActionManager(
         {"broken": FailingActionCfg(entity_name="robot", dim=1)},
@@ -328,34 +308,29 @@ def test_reward_pack_supplies_outputs_without_duplicate_execution(fake_env: Fake
     assert calls == ["packed"]
 
 
-def test_reward_aggregation_reuses_persistent_scratch_carriers(fake_env: FakeEnv) -> None:
+def test_reward_aggregation_recomputes_weighted_values(fake_env: FakeEnv) -> None:
     manager = RewardManager(
         {
             "left": RewardTermCfg(func=lambda env: torch.ones(env.num_envs), weight=2.0),
-            "right": RewardTermCfg(func=lambda env: torch.full((env.num_envs,), 3.0), weight=-1.0),
+            "right": RewardTermCfg(func=lambda env: env.value, weight=-1.0),
         },
         fake_env,
         scale_by_dt=False,
     )
-    addresses = {
-        name: getattr(manager, name).data_ptr()
-        for name in (
-            "_term_reward_scratch",
-            "_packed_reward_scratch",
-            "_term_step_scratch",
-            "_packed_step_scratch",
-            "_step_reward_mean_scratch",
-        )
-    }
 
     first = manager.compute(dt=1.0)
-    second = manager.compute(dt=1.0)
-
-    assert {name: getattr(manager, name).data_ptr() for name in addresses} == addresses
-    torch.testing.assert_close(first, torch.full_like(first, -1.0))
-    torch.testing.assert_close(second, first)
+    torch.testing.assert_close(first, 2.0 - fake_env.value)
     torch.testing.assert_close(
-        manager.step_reward_means, torch.tensor([2.0, -3.0], dtype=torch.float32)
+        manager.step_reward_means, torch.tensor([2.0, -float(fake_env.value.mean())])
+    )
+
+    # The returned reward is an internal view; the observable contract is that
+    # the next compute reflects the new inputs exactly.
+    fake_env.value = fake_env.value + 1.0
+    second = manager.compute(dt=1.0)
+    torch.testing.assert_close(second, 2.0 - fake_env.value)
+    torch.testing.assert_close(
+        manager.step_reward_means, torch.tensor([2.0, -float(fake_env.value.mean())])
     )
 
 
@@ -386,44 +361,6 @@ def test_reward_nonfinite_is_an_error(fake_env: FakeEnv, bad: float) -> None:
     manager = RewardManager({"bad_reward": RewardTermCfg(func=reward, weight=1.0)}, fake_env)
     with pytest.raises(ValueError, match="RewardManager term 'bad_reward'"):
         manager.compute(0.01)
-
-
-def test_deferred_reward_validation_fails_closed_at_boundary(fake_env: FakeEnv) -> None:
-    def reward(env: FakeEnv) -> torch.Tensor:
-        value = torch.ones(env.num_envs, dtype=torch.float32)
-        value[1] = torch.nan
-        return value
-
-    manager = RewardManager({"bad_reward": RewardTermCfg(func=reward, weight=1.0)}, fake_env)
-    manager.set_deferred_validation_boundaries(True)
-    assert manager.deferred_validation_boundaries is True
-
-    result = manager.compute(0.01)
-
-    assert torch.isnan(result[1])
-    assert manager.finite_valid.item() is False
-    with pytest.raises(ValueError, match="non-finite reward"):
-        manager.publish_validation_verdict()
-
-
-def test_deferred_reward_finite_mask_uses_persistent_scratch(fake_env: FakeEnv) -> None:
-    def reward(env: FakeEnv) -> torch.Tensor:
-        value = torch.ones(env.num_envs, dtype=torch.float32)
-        value[1] = torch.nan
-        value[3] = torch.inf
-        return value
-
-    manager = RewardManager({"bad_reward": RewardTermCfg(func=reward, weight=1.0)}, fake_env)
-    manager.set_deferred_validation_boundaries(True)
-    value_scratch = manager._finite_value_scratch
-    finite_scratch = manager._finite_scratch
-
-    manager.compute(0.01)
-
-    assert value_scratch.data_ptr() == manager._finite_value_scratch.data_ptr()
-    assert finite_scratch.data_ptr() == manager._finite_scratch.data_ptr()
-    assert finite_scratch.tolist() == [True, False, True, False]
-    assert manager.finite_valid.item() is False
 
 
 def test_reward_compute_publishes_phase_attribution(fake_env: FakeEnv) -> None:
@@ -556,7 +493,7 @@ def test_termination_splits_timeouts_and_failures(fake_env: FakeEnv) -> None:
     }
 
 
-def test_termination_aggregates_into_persistent_carriers(fake_env: FakeEnv) -> None:
+def test_termination_aggregation_recomputes_correct_values(fake_env: FakeEnv) -> None:
     timeout = torch.tensor([True, False, False, True])
     failure = torch.tensor([False, True, False, True])
     manager = TerminationManager(
@@ -566,15 +503,21 @@ def test_termination_aggregates_into_persistent_carriers(fake_env: FakeEnv) -> N
         },
         fake_env,
     )
-    dones_address = manager._dones_buf.data_ptr()
-    term_address = manager._term_dones["timeout"].data_ptr()
 
     first = manager.compute()
-    second = manager.compute()
+    torch.testing.assert_close(first, timeout | failure)
+    torch.testing.assert_close(manager.get_term("timeout"), timeout)
+    torch.testing.assert_close(manager.get_term("failure"), failure)
 
-    assert first.data_ptr() == second.data_ptr() == dones_address
-    assert manager._term_dones["timeout"].data_ptr() == term_address
+    # The returned dones are an internal view; the observable contract is that
+    # the next compute reflects the new inputs exactly.
+    failure[1] = False
+    failure[2] = True
+    second = manager.compute()
     torch.testing.assert_close(second, timeout | failure)
+    torch.testing.assert_close(manager.get_term("failure"), failure)
+    torch.testing.assert_close(manager.time_outs, timeout)
+    torch.testing.assert_close(manager.terminated, failure)
 
 
 def test_transient_tensor_termination_opt_in_preserves_manager_buffers(
@@ -637,24 +580,26 @@ def test_termination_terms_own_their_returned_carrier(fake_env: FakeEnv) -> None
     )
 
 
-def test_termination_aggregation_reuses_time_out_owner_scratch(fake_env: FakeEnv) -> None:
+def test_termination_aggregation_publishes_time_outs_through_owner_scratch(
+    fake_env: FakeEnv,
+) -> None:
     scratch = torch.zeros(fake_env.num_envs, dtype=torch.bool)
     setattr(fake_env, "time_out_scratch", scratch)
+    flags = torch.ones(fake_env.num_envs, dtype=torch.bool)
     manager = TerminationManager(
-        {
-            "timeout": TerminationTermCfg(
-                func=lambda env: torch.ones(env.num_envs, dtype=torch.bool), time_out=True
-            )
-        },
+        {"timeout": TerminationTermCfg(func=lambda env: flags.clone(), time_out=True)},
         fake_env,
     )
 
     first = manager.compute()
-    second = manager.compute()
-
+    # The env-owned scratch is the manager's time-out publication carrier.
     assert manager.time_outs is scratch
-    assert first.data_ptr() == second.data_ptr()
-    torch.testing.assert_close(second, torch.ones_like(second))
+    torch.testing.assert_close(first, torch.ones_like(first))
+
+    flags[:] = False
+    second = manager.compute()
+    torch.testing.assert_close(second, torch.zeros_like(second))
+    torch.testing.assert_close(manager.time_outs, torch.zeros_like(manager.time_outs))
 
 
 def test_curriculum_and_null_semantics(fake_env: FakeEnv) -> None:
@@ -687,67 +632,3 @@ def test_scene_entity_selector_resolution(fake_env: FakeEnv) -> None:
     inconsistent = SceneEntityCfg(name="robot", joint_names="hip", joint_ids=[1])
     with pytest.raises(ValueError, match="Inconsistent joint"):
         inconsistent.resolve(fake_env.scene)
-
-
-def test_deferred_action_validation_fails_closed_at_boundary(fake_env: FakeEnv) -> None:
-    manager = ActionManager({"a": DummyActionCfg(entity_name="robot", dim=2)}, fake_env)
-    manager.set_deferred_validation_boundaries(True)
-    assert manager.deferred_validation_boundaries is True
-
-    invalid = torch.ones((fake_env.num_envs, 2), dtype=torch.float32)
-    invalid[1] = torch.nan
-
-    accepted = manager.process_action(invalid)
-
-    assert accepted is None
-    assert manager.action_finite_valid.item() is False
-    with pytest.raises(ValueError, match="action containing NaN or Inf"):
-        manager.publish_validation_verdict()
-
-
-def test_deferred_action_term_pack_skips_eager_publication(fake_env: FakeEnv) -> None:
-    manager = ActionManager(
-        {
-            "first": DeferredVerdictActionCfg(entity_name="robot", dim=1),
-            "second": DeferredVerdictActionCfg(entity_name="robot", dim=1),
-        },
-        fake_env,
-    )
-    manager.set_deferred_validation_boundaries(True)
-
-    invalid = torch.ones((fake_env.num_envs, 2), dtype=torch.float32)
-    invalid[0, 0] = torch.nan
-    manager.process_action(invalid)
-
-    first = manager.get_term("first")
-    second = manager.get_term("second")
-    assert first.publish_calls == 0
-    assert second.publish_calls == 0
-    assert manager.action_finite_valid.item() is False
-    with pytest.raises(ValueError, match="ActionManager received an action containing NaN"):
-        manager.publish_validation_verdict()
-
-
-def test_deferred_action_still_updates_history_and_term_transforms(fake_env: FakeEnv) -> None:
-    manager = ActionManager(
-        {
-            "first": DeferredVerdictActionCfg(entity_name="robot", dim=1),
-            "second": DeferredVerdictActionCfg(entity_name="robot", dim=1),
-        },
-        fake_env,
-    )
-    manager.set_deferred_validation_boundaries(True)
-    manager.process_action(torch.zeros((fake_env.num_envs, 2), dtype=torch.float32))
-    actions = torch.full((fake_env.num_envs, 2), 2.0, dtype=torch.float32)
-
-    manager.process_action(actions)
-
-    torch.testing.assert_close(manager.action, actions)
-    torch.testing.assert_close(manager.prev_action, torch.zeros_like(actions))
-    torch.testing.assert_close(manager.prev_prev_action, torch.zeros_like(actions))
-    first = manager.get_term("first")
-    second = manager.get_term("second")
-    torch.testing.assert_close(first.raw_action, actions[:, :1])
-    torch.testing.assert_close(second.raw_action, actions[:, 1:])
-    assert first.publish_calls == 0
-    assert second.publish_calls == 0

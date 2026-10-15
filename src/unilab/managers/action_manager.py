@@ -71,25 +71,6 @@ class ActionTerm(ManagerTermBase):
         self._action_finite_valid = torch.ones(
             (), dtype=torch.bool, device=getattr(env, "device", torch.device("cpu"))
         )
-        self._deferred_validation_boundaries = False
-
-    @property
-    def action_finite_valid(self) -> torch.Tensor:
-        """Latest aggregate action-slice finite verdict."""
-        return self._action_finite_valid
-
-    @property
-    def deferred_validation_boundaries(self) -> bool:
-        """Whether action finite verdict publication may defer."""
-        return self._deferred_validation_boundaries
-
-    def set_deferred_validation_boundaries(self, enabled: bool) -> None:
-        """Opt in to completion-boundary action verdict publication."""
-        if not isinstance(enabled, bool):
-            raise TypeError(
-                f"deferred action validation boundaries must be bool, got {type(enabled)}"
-            )
-        self._deferred_validation_boundaries = enabled
 
     def publish_validation_verdict(self) -> None:
         """Fail closed on the latest action-slice finite verdict."""
@@ -140,7 +121,6 @@ class ActionManager(ManagerBase):
         self._prev_action = torch.zeros_like(self._action)
         self._prev_prev_action = torch.zeros_like(self._action)
         self._action_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
-        self._deferred_validation_boundaries = False
 
     def __str__(self) -> str:
         msg = f"<ActionManager> contains {len(self._term_names)} active terms.\n"
@@ -182,34 +162,6 @@ class ActionManager(ManagerBase):
         """Raw policy output from two steps ago, before per-term
         scale/offset. Shape: ``(num_envs, total_action_dim)``."""
         return self._prev_prev_action
-
-    @property
-    def action_finite_valid(self) -> torch.Tensor:
-        """Latest aggregate action-finite verdict for interval publication."""
-        return self._action_finite_valid
-
-    @property
-    def deferred_validation_boundaries(self) -> bool:
-        """Whether action finite verdict publication may defer."""
-        return self._deferred_validation_boundaries
-
-    def set_deferred_validation_boundaries(self, enabled: bool) -> None:
-        """Opt in to completion-boundary action verdict publication."""
-        if not isinstance(enabled, bool):
-            raise TypeError(
-                f"deferred action validation boundaries must be bool, got {type(enabled)}"
-            )
-        self._deferred_validation_boundaries = enabled
-        for term in self._terms.values():
-            setter = getattr(term, "set_deferred_validation_boundaries", None)
-            if callable(setter):
-                setter(enabled)
-
-    def publish_validation_verdict(self) -> None:
-        """Fail closed on the latest action-finite verdict."""
-        if bool(self._action_finite_valid):
-            return
-        raise ValueError("ActionManager received an action containing NaN or Inf.")
 
     def record_public_action_finite(self, action: torch.Tensor) -> None:
         """Record the public full-width action verdict without publication."""
@@ -312,11 +264,8 @@ class ActionManager(ManagerBase):
         else:
             valid = torch.isfinite(action).all()
             self._action_finite_valid.copy_(valid)
-        if not self._deferred_validation_boundaries and not bool(valid):
+        if not bool(valid):
             raise ValueError("ActionManager received an action containing NaN or Inf.")
-        # Deferred mode moves only the invalid-value publication boundary; action
-        # history and per-term transforms still execute. This keeps deferred
-        # control semantics identical while the verdict stays device-resident.
         # Shift history: prev_prev ← prev ← current ← new.
         self._prev_prev_action[:] = self._prev_action
         self._prev_action[:] = self._action
@@ -327,16 +276,9 @@ class ActionManager(ManagerBase):
             term_actions = action[:, idx : idx + term.action_dim]
             try:
                 term.process_actions(term_actions)
-                if self._deferred_validation_boundaries:
-                    torch.logical_and(
-                        self._action_finite_valid,
-                        term.action_finite_valid,
-                        out=self._action_finite_valid,
-                    )
-                else:
-                    validator = getattr(term, "validate_actions", None)
-                    if callable(validator):
-                        validator()
+                validator = getattr(term, "validate_actions", None)
+                if callable(validator):
+                    validator()
             except (TypeError, ValueError, NotImplementedError) as exc:
                 raise type(exc)(f"ActionManager term '{name}': {exc}") from exc
             idx += term.action_dim

@@ -25,7 +25,7 @@ from unilab.cli import build_command
 
 _ARTIFACT_SCHEMA_VERSION = "0.3.0"
 _SUPPORTED_METRIC_SCHEMA_VERSION = 1
-_SUPPORTED_RUNTIME_MANIFEST_SCHEMA_VERSION = 1
+_SUPPORTED_RUNTIME_MANIFEST_SCHEMA_VERSION = 2
 _SHUTDOWN_CLASSIFICATIONS = frozenset(
     (
         "normal_completion",
@@ -516,7 +516,10 @@ def _runtime_manifest_contract_failure(
     try:
         validate_runtime_manifest(manifest, completed=completed)
     except (TypeError, ValueError) as exc:
-        return f"runtime_manifest violates v1 contract: {exc}"
+        return (
+            "runtime_manifest violates "
+            f"v{_SUPPORTED_RUNTIME_MANIFEST_SCHEMA_VERSION} contract: {exc}"
+        )
     return None
 
 

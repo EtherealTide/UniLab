@@ -88,44 +88,34 @@ def test_torch_rng_restores_generator_state_in_place() -> None:
     torch.testing.assert_close(second, rng.random((3,)))
 
 
-def test_torch_rng_state_version_tracks_seed_and_restore_only() -> None:
+def test_torch_rng_reseeding_reproduces_the_stream() -> None:
     rng = TorchManagerRng.seeded(7)
-    state = rng.get_state()
-    initial_version = rng.state_version
+    first = rng.random(4)
 
-    rng.random(4)
-    assert rng.state_version == initial_version
-
-    rng.manual_seed(9)
-    assert rng.state_version == initial_version + 1
-
-    rng.set_state(state)
-    assert rng.state_version == initial_version + 2
+    rng.manual_seed(7)
+    torch.testing.assert_close(first, rng.random(4))
 
 
-def test_torch_rng_draw_version_tracks_every_stream_transition() -> None:
+def test_torch_rng_set_state_restores_stream_position_across_draw_kinds() -> None:
     rng = TorchManagerRng.seeded(7)
-    version = rng.draw_version
-
-    rng.random(4)
-    assert rng.draw_version == version + 1
     rng.uniform(0.0, 1.0, (4,))
-    assert rng.draw_version == version + 2
-    rng.standard_normal(4)
-    assert rng.draw_version == version + 3
-    rng.normal(0.0, 1.0, (4,))
-    assert rng.draw_version == version + 4
-    rng.integers(0, 2, (4,))
-    assert rng.draw_version == version + 5
-    rng.choice(2, 4, p=torch.tensor((0.5, 0.5)))
-    assert rng.draw_version == version + 6
-
     state = rng.get_state()
-    rng.set_state(state)
-    assert rng.draw_version == version + 7
 
-    rng.manual_seed(9)
-    assert rng.draw_version == version + 8
+    draws = (
+        rng.standard_normal(4),
+        rng.normal(0.0, 1.0, (4,)),
+        rng.integers(0, 2, (4,)),
+        rng.choice(2, 4, p=torch.tensor((0.5, 0.5))),
+    )
+    rng.set_state(state)
+    redraws = (
+        rng.standard_normal(4),
+        rng.normal(0.0, 1.0, (4,)),
+        rng.integers(0, 2, (4,)),
+        rng.choice(2, 4, p=torch.tensor((0.5, 0.5))),
+    )
+    for draw, redraw in zip(draws, redraws, strict=True):
+        torch.testing.assert_close(draw, redraw)
 
 
 def test_numpy_manager_stream_stays_independent() -> None:

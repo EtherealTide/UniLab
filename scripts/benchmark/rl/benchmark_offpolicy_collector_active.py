@@ -23,12 +23,6 @@ Usage:
     uv run --extra genesis scripts/benchmark/rl/benchmark_offpolicy_collector_active.py \
         --cases flashsac/g1_motion_tracking/genesis
     uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --num-envs 1024 --measure-steps 100
-    # Gate UP #2351 modes; graph requests fail closed rather than falling back:
-    uv run --extra mjwarp scripts/benchmark/rl/benchmark_offpolicy_collector_active.py \
-        --cases flashsac/g1_motion_tracking/mjwarp --env-update-mode graph
-    # Deferred-boundary eager is an explicit mode for unambiguous A/B commands:
-    uv run --extra mjwarp scripts/benchmark/rl/benchmark_offpolicy_collector_active.py \
-        --cases flashsac/g1_motion_tracking/mjwarp --env-update-mode deferred-eager
 """
 
 from __future__ import annotations
@@ -86,14 +80,6 @@ BENCHMARK_BACKENDS = ("mujoco",)
 OPTIONAL_BACKENDS = ("mjwarp", "genesis")
 DEFAULT_COLLECTOR_CPU_THREADS = 8
 COLLECTOR_CPU_THREADS_ENV = "UNILAB_COLLECTOR_TORCH_THREADS"
-ENV_UPDATE_GRAPH_MODES = ("disabled", "eager", "graph")
-ENV_UPDATE_BENCHMARK_MODES = (*ENV_UPDATE_GRAPH_MODES, "deferred-eager")
-CORRECTNESS_GATE = {
-    "issue": 2350,
-    "status": "unresolved",
-    "formal_gate_up_decision_allowed": False,
-    "measurement_validity": "provisional",
-}
 FIXATION_PACKAGE_NAMES = (
     "unilab",
     "unisim-core",
@@ -113,7 +99,6 @@ ENV_STEP_TIMING_KEYS = (
     "apply_action_ms",
     "step_core_ms",
     "update_state_ms",
-    "update_state_graph_replay_ms",
     "update_state_cpu_ms",
     "update_state_read_boundary_ms",
     "update_state_prelude_ms",
@@ -267,7 +252,6 @@ ENV_STEP_TIMING_CSV_FIELDS = (
     ("apply_action_ms", "apply_action_ms"),
     ("step_core_ms", "step_core_ms"),
     ("update_state_ms", "update_state_ms"),
-    ("update_state_graph_replay_ms", "update_state_graph_replay_ms"),
     ("reset_done_ms", "reset_done_ms"),
     ("env_step_internal_gap_ms", "env_step_internal_gap_ms"),
     ("reset_done_terminal_obs_ms", "reset_done_terminal_obs_ms"),
@@ -421,21 +405,15 @@ class CollectorResult:
     numpy_random_ms_per_vector_step: TimingStats | None = None
     numpy_random_calls_per_vector_step: TimingStats | None = None
     # Public backend runtime diagnostics, captured after construction and before
-    # the measured window. They make CUDA graph fallbacks visible in cross-host
-    # A/B reports instead of requiring private backend inspection.
+    # the measured window, make execution-mode changes visible in cross-host A/B
+    # reports instead of requiring private backend inspection.
     backend_runtime_diagnostics: dict[str, dict[str, bool | str | None]] = field(
         default_factory=dict
     )
-    # Public TorchEnv validation-boundary mode selected before the active window.
-    deferred_validation_boundaries: bool = False
     # Public bounded-ingress ordering evidence collected after the active window.
     replay_ingress_diagnostics: dict[str, int | float] = field(default_factory=dict)
-    # Explicit state-update execution mode and fail-closed lifecycle evidence.
-    env_update_mode: str = "disabled"
-    env_update_manifest_before: dict[str, Any] = field(default_factory=dict)
-    env_update_manifest_after: dict[str, Any] = field(default_factory=dict)
     # Context-only actor forward time; actions used by the measured collector
-    # remain pre-generated and inference is outside the env-update graph.
+    # remain pre-generated and inference is outside the environment step.
     policy_inference_context: TimingStats | None = None
     policy_inference_context_evidence: dict[str, Any] = field(default_factory=dict)
 
@@ -592,71 +570,6 @@ def _backend_runtime_diagnostics(env: Any) -> dict[str, dict[str, bool | str | N
         }
         for name, diagnostic in diagnostics().items()
     }
-
-
-def _enable_deferred_validation_boundaries(env: Any, enabled: bool) -> None:
-    """Select the public env validation boundary without backend duplication."""
-    setter = getattr(env, "set_deferred_validation_boundaries", None)
-    if not callable(setter):
-        if enabled:
-            raise TypeError("deferred validation profiling requires the public TorchEnv boundary")
-        return
-    if not enabled and not getattr(env, "deferred_validation_boundaries", False):
-        return
-    setter(enabled)
-
-
-def _env_update_graph_manifest(env: Any) -> dict[str, Any]:
-    getter = getattr(env, "get_env_update_graph_manifest", None)
-    if not callable(getter):
-        raise TypeError("env-update graph benchmarking requires the public manifest boundary")
-    manifest = getter()
-    if not isinstance(manifest, dict):
-        raise TypeError("env update graph manifest must be a dictionary")
-    return manifest
-
-
-def _configure_env_update_graph(
-    env: Any,
-    mode: str,
-    *,
-    deferred_validation_boundaries: bool,
-) -> dict[str, Any]:
-    """Select the distinct state-update mode explicitly and fail closed.
-
-    ``graph`` is never inferred from backend physics-graph state. The required
-    deferred boundary is enabled by this owner call rather than left implicit.
-    """
-    if mode not in ENV_UPDATE_BENCHMARK_MODES:
-        raise ValueError(f"unsupported env-update mode {mode!r}")
-    owner_mode = "eager" if mode == "deferred-eager" else mode
-    if mode == "graph":
-        _enable_deferred_validation_boundaries(env, True)
-    elif deferred_validation_boundaries or mode == "deferred-eager":
-        _enable_deferred_validation_boundaries(env, True)
-    elif getattr(env, "deferred_validation_boundaries", False):
-        _enable_deferred_validation_boundaries(env, False)
-    if mode == "disabled" and not hasattr(env, "configure_env_update_graph"):
-        return {"mode": "disabled", "not_negotiated_reason": "default eager baseline"}
-    setter = getattr(env, "configure_env_update_graph", None)
-    if not callable(setter):
-        raise TypeError("env-update graph benchmarking requires the public owner mode boundary")
-    setter(owner_mode, allow_eager_fallback=False)
-    manifest = _env_update_graph_manifest(env)
-    if manifest.get("mode") != owner_mode:
-        raise RuntimeError(
-            f"env-update graph mode changed silently: requested {owner_mode!r}, "
-            f"got {manifest.get('mode')!r}"
-        )
-    if mode == "graph" and not (
-        manifest.get("requested") is True
-        and manifest.get("enabled") is True
-        and manifest.get("state") == "ready"
-        and int(manifest.get("replay_count", 0)) > 0
-    ):
-        reason = manifest.get("disable_reason")
-        raise RuntimeError(f"env-update graph failed closed without eager fallback: {reason}")
-    return manifest
 
 
 def _runtime_sim_backend(sim: str) -> str:
@@ -910,7 +823,7 @@ def _measure_policy_inference_context(
     warmup_steps: int,
     measure_steps: int,
 ) -> tuple[TimingStats, dict[str, Any]]:
-    """Measure an untrained actor forward for outside-graph context only."""
+    """Measure an untrained actor forward for context only."""
     if warmup_steps < 0 or measure_steps <= 0 or num_env_rows <= 0:
         raise ValueError("policy context requires non-negative warmup and positive measurements")
     actor = _build_context_actor(cfg, obs_dim, action_dim, device)
@@ -946,8 +859,6 @@ def _run_active_window_case(
     measure_steps: int,
     profile_numpy_random: bool = False,
     tail_steps: int = DEFAULT_TAIL_STEPS,
-    deferred_validation_boundaries: bool = False,
-    env_update_mode: str = "disabled",
     policy_inference_context: TimingStats | None = None,
     policy_inference_context_evidence: dict[str, Any] | None = None,
 ) -> CollectorResult:
@@ -965,11 +876,6 @@ def _run_active_window_case(
     )
 
     env_device = env.device
-    manifest_before = _configure_env_update_graph(
-        env,
-        env_update_mode,
-        deferred_validation_boundaries=deferred_validation_boundaries,
-    )
     backend_runtime_diagnostics = _backend_runtime_diagnostics(env)
     actions = torch.zeros((case.num_envs, case.action_dim), dtype=torch.float32, device=env_device)
     state = env.step(actions)
@@ -1002,7 +908,6 @@ def _run_active_window_case(
     # on other cores and a per-process reading would miss them, hiding the
     # "160 cores but only 25% utilized" scaling problem.
     cpu_probe_start: tuple[float, float] | None = None
-    manifest_window_start: dict[str, Any] | None = None
 
     if random_profiler is not None:
         random_profiler.install()
@@ -1016,9 +921,6 @@ def _run_active_window_case(
             record = step_idx >= warmup_steps
             if record and cpu_probe_start is None:
                 cpu_probe_start = _read_cpu_times()  # begin measured-window CPU sampling
-                if env_update_mode == "graph":
-                    manifest_window_start = _env_update_graph_manifest(env)
-
             phase_start_ns = time.perf_counter_ns()
             if random_profiler is not None and record:
                 random_profiler.begin_step()
@@ -1086,7 +988,7 @@ def _run_active_window_case(
                 critic=critic,
                 next_critic=next_critic,
                 terminal_next_critic=terminal_critic,
-                completion=state.info.get("graph_completion"),
+                completion=state.info.get("completion"),
             )
             ingress = replay_buffer.take_published_ingress()
             if ingress is None:
@@ -1157,24 +1059,6 @@ def _run_active_window_case(
     }
 
     replay_ingress_diagnostics = replay_buffer.ingress_diagnostics()
-    manifest_after = _env_update_graph_manifest(env)
-    if env_update_mode == "graph":
-        if manifest_window_start is None:
-            raise RuntimeError("env-update graph measurement lost its window-start replay receipt")
-        replay_delta = int(manifest_after.get("replay_count", 0)) - int(
-            manifest_window_start.get("replay_count", 0)
-        )
-        if replay_delta != int(measure_steps):
-            raise RuntimeError(
-                f"env-update graph replay evidence mismatch: expected {measure_steps}, "
-                f"observed delta {replay_delta}"
-            )
-        if not (
-            manifest_after.get("enabled") is True
-            and manifest_after.get("state") == "ready"
-            and int(manifest_after.get("fallback_count", 0)) == 0
-        ):
-            raise RuntimeError("env-update graph left READY execution during measurement")
     del replay_buffer
     _cleanup()
     physics_stats = _stats(aux_samples["physics_ms"]) if aux_samples["physics_ms"] else None
@@ -1206,11 +1090,7 @@ def _run_active_window_case(
             _stats(numpy_random_call_samples) if numpy_random_call_samples else None
         ),
         backend_runtime_diagnostics=backend_runtime_diagnostics,
-        deferred_validation_boundaries=deferred_validation_boundaries,
         replay_ingress_diagnostics=replay_ingress_diagnostics,
-        env_update_mode=env_update_mode,
-        env_update_manifest_before=manifest_before,
-        env_update_manifest_after=manifest_after,
         policy_inference_context=policy_inference_context,
         policy_inference_context_evidence=policy_inference_context_evidence or {},
     )
@@ -1227,8 +1107,6 @@ def _build_and_run_case(
     extra_overrides: list[str],
     variant: str = "default",
     profile_numpy_random: bool = False,
-    deferred_validation_boundaries: bool = False,
-    env_update_mode: str = "disabled",
 ) -> CollectorResult:
     from unilab.base.config_adapter import BackendAdapter
     from unilab.training import ensure_registries
@@ -1291,8 +1169,6 @@ def _build_and_run_case(
             measure_steps=measure_steps,
             profile_numpy_random=profile_numpy_random,
             tail_steps=tail_steps,
-            deferred_validation_boundaries=deferred_validation_boundaries,
-            env_update_mode=env_update_mode,
             policy_inference_context=policy_context,
             policy_inference_context_evidence=policy_context_evidence,
         )
@@ -1414,9 +1290,6 @@ def _write_csv(path: Path, results: list[CollectorResult]) -> None:
         "env_step_overhead_pct",
         *(f"{field_name[:-3]}_pct" for _, field_name in ENV_STEP_TIMING_CSV_FIELDS),
         "cpu_util_pct",
-        "env_update_mode",
-        "env_update_graph_replay_count",
-        "env_update_graph_fallback_count",
         "policy_inference_context_ms",
     ]
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -1498,13 +1371,6 @@ def _write_csv(path: Path, results: list[CollectorResult]) -> None:
                 )
             row["cpu_util_pct"] = (
                 result.cpu_util_pct if result.cpu_util_pct == result.cpu_util_pct else ""
-            )
-            row["env_update_mode"] = result.env_update_mode
-            row["env_update_graph_replay_count"] = result.env_update_manifest_after.get(
-                "replay_count", ""
-            )
-            row["env_update_graph_fallback_count"] = result.env_update_manifest_after.get(
-                "fallback_count", ""
             )
             row["policy_inference_context_ms"] = (
                 result.policy_inference_context.mean_ms
@@ -2074,10 +1940,6 @@ def _format_env_step_timing_table(results: list[CollectorResult]) -> str:
         "Apply action ms (% env, % active)",
         "Backend step ms (% env, % active)",
         "Update state ms (% env, % active)",
-        "Graph replay ms (% env, % active)",
-        "Env update mode",
-        "Replays",
-        "Fallbacks",
         "Reset done ms (% env, % active)",
         "Internal gap ms (% env, % active)",
     )
@@ -2101,10 +1963,6 @@ def _format_env_step_timing_table(results: list[CollectorResult]) -> str:
                 _format_env_step_timing(result, "apply_action_ms"),
                 _format_env_step_timing(result, "step_core_ms"),
                 _format_env_step_timing(result, "update_state_ms"),
-                _format_env_step_timing(result, "update_state_graph_replay_ms"),
-                result.env_update_mode,
-                str(result.env_update_manifest_after.get("replay_count", "n/a")),
-                str(result.env_update_manifest_after.get("fallback_count", "n/a")),
                 _format_env_step_timing(result, "reset_done_ms"),
                 _format_env_step_timing(result, "env_step_internal_gap_ms"),
             )
@@ -2379,24 +2237,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--deferred-validation-boundaries",
-        action="store_true",
-        help=(
-            "Enable the public TorchEnv completion-boundary validation mode used "
-            "for graph-candidate profiling. Structural checks remain eager."
-        ),
-    )
-    parser.add_argument(
-        "--env-update-mode",
-        choices=ENV_UPDATE_BENCHMARK_MODES,
-        default="disabled",
-        help=(
-            "Select the distinct state-update execution mode explicitly. "
-            "graph requires READY capture/replay evidence and never falls back; "
-            "deferred-eager is owner mode eager with deferred validation."
-        ),
-    )
-    parser.add_argument(
         "--variants",
         default=None,
         help=(
@@ -2481,10 +2321,6 @@ def main() -> int:
                             extra_overrides=[*args.override, *variant_extra_overrides],
                             variant=variant,
                             profile_numpy_random=bool(args.profile_numpy_random),
-                            deferred_validation_boundaries=bool(
-                                args.deferred_validation_boundaries
-                            ),
-                            env_update_mode=args.env_update_mode,
                         )
                     ]
                     results.extend(case_results)
@@ -2507,7 +2343,6 @@ def main() -> int:
         ),
         "device": hardware_info,
         "command": ("uv run " + shlex.join([str(Path(__file__).resolve()), *sys.argv[1:]])),
-        "correctness_gate": dict(CORRECTNESS_GATE),
         "args": {
             "cases": args.cases,
             "algos": args.algos,
@@ -2523,8 +2358,6 @@ def main() -> int:
             "variant_override": args.variant_override,
             "repeat_variant_blocks": args.repeat_variant_blocks,
             "profile_numpy_random": args.profile_numpy_random,
-            "deferred_validation_boundaries": args.deferred_validation_boundaries,
-            "env_update_mode": args.env_update_mode,
         },
         "fixation": _runtime_fixation(),
         "results": [_result_to_dict(result) for result in results],

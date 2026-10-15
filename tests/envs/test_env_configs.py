@@ -637,46 +637,6 @@ def test_flashsac_g1_motion_mujoco_tensor_command_model_field_dr_roll_out(
         env._backend.close()
 
 
-def test_flashsac_g1_motion_mjwarp_graph_preflight_uses_public_owner_verdict() -> None:
-    """The canonical DR-free owner reports graph blockers through public state."""
-    ensure_registries()
-    _require_mjwarp_runtime()
-    from unilab.base import registry
-
-    _, override = _motion_manager_override(
-        "g1_motion_tracking",
-        "mjwarp",
-        config_root="flashsac",
-    )
-    env = registry.make(
-        "G1MotionTracking",
-        num_envs=2,
-        sim_backend="mjwarp",
-        env_cfg_override=override,
-    )
-    try:
-        env.init_state()
-
-        result = env.preflight_graph_candidate(requested=True)
-
-        assert result["requested"] is True
-        assert result["supported"] is False
-        assert result["backend_stream_contract"] == (
-            env.backend.get_tensor_capabilities().stream_event_ownership
-        )
-        # The canonical owner is DR-free and must not be rejected for interval,
-        # metric, curriculum, recorder, or manual-reset semantic owners.
-        assert "interval events" not in result["disable_reason"]
-        assert "metrics reset" not in result["disable_reason"]
-        assert "curriculum reset" not in result["disable_reason"]
-        assert "recorder lifecycle" not in result["disable_reason"]
-        assert "manual reset" not in result["disable_reason"]
-        assert isinstance(result["torch_stream_id"], int | None)
-    finally:
-        env.close()
-        env._backend.close()
-
-
 def test_flashsac_g1_motion_genesis_manager_tensor_command_roll_out() -> None:
     """The canonical FlashSAC Genesis owner exercises the Manager tensor path."""
     ensure_registries()

@@ -10,7 +10,6 @@ import math
 import re
 import secrets
 import time
-import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -21,10 +20,6 @@ import torch
 from unisim.backend.base import (
     DebugOverlayGetter,
     DebugPrimitive,
-    EnvUpdateGraphPreflight,
-    GraphCandidatePreflight,
-    GraphCompletionToken,
-    GraphLifecycleState,
     SimBackend,
     TensorDataPlane,
     TensorExecution,
@@ -40,12 +35,6 @@ from unilab.base.config_overrides import (
 )
 from unilab.base.cpu_runtime import apply_env_cpu_runtime
 from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadPlan, SceneTensorReadSpec
-from unilab.base.env_update_graph import (
-    ENV_UPDATE_GRAPH_INVALIDATION_REASONS,
-    ENV_UPDATE_GRAPH_MANIFEST_VERSION,
-    EnvUpdateGraphMode,
-    resolve_env_update_graph_mode,
-)
 from unilab.base.reset_state import ResetStateTransaction
 from unilab.base.scene import SceneCfg, resolve_scene_default_qpos
 from unilab.base.torch_env import TorchEnv, TorchEnvState
@@ -302,228 +291,6 @@ def _resolve_backend_entity_contract(
     return (primary_root or root_entities[0])[1], body_state_requested, selected_names
 
 
-class _EventEnvUpdateCompletionToken(GraphCompletionToken):
-    """Owner-local update receipt carrying its independent CUDA event."""
-
-    def __init__(self, token: GraphCompletionToken, event: Any) -> None:
-        object.__setattr__(self, "contract_version", token.contract_version)
-        object.__setattr__(self, "lifecycle_state", token.lifecycle_state)
-        object.__setattr__(self, "operation", token.operation)
-        object.__setattr__(self, "sequence", token.sequence)
-        object.__setattr__(self, "stream_id", token.stream_id)
-        object.__setattr__(self, "capture_id", token.capture_id)
-        self.event = event
-
-    def wait_before_read(self, stream: Any | None = None) -> None:
-        if stream is None:
-            self.event.synchronize()
-            return
-        self.event.wait(stream)
-
-    def ipc_handle(self) -> bytes:
-        raise NotImplementedError("UniLab env-update completion has no IPC transport")
-
-
-class EnvUpdateGraphRuntime:
-    """Owner-side CUDA capture/replay controller for the update-only body."""
-
-    ALLOCATION_COUNTERS: tuple[str, ...] = (
-        "allocation.all.allocated",
-        "allocation.all.freed",
-        "allocated_bytes.all.allocated",
-        "allocated_bytes.all.freed",
-        "segment.all.allocated",
-        "segment.all.freed",
-    )
-
-    ALLOCATION_SNAPSHOT_COUNTERS: tuple[str, ...] = (
-        *ALLOCATION_COUNTERS,
-        "allocated_bytes.all.current",
-        "reserved_bytes.all.current",
-    )
-
-    def __init__(self, env: "ManagerBasedRlEnv", *, warmup_iterations: int = 3):
-        if warmup_iterations <= 0:
-            raise ValueError("warmup_iterations must be positive")
-        self.env = env
-        self.stream_id: int | None = None
-        self.layout: dict[str, Any] | None = None
-        self.capture_id: str | None = None
-        self.graph: Any = None
-        self._stream: Any = None
-        self._events: list[Any] | None = None
-        self._event_index = 0
-        self._warmup_iterations = warmup_iterations
-        self.allocator_snapshots: list[dict[str, int | str]] = []
-
-    def _memory_counters(self) -> dict[str, int]:
-        stats = torch.cuda.memory_stats(self.env.device)
-        return {key: int(stats[key]) for key in self.ALLOCATION_COUNTERS if key in stats}
-
-    def _allocator_snapshot(self, stage: str) -> dict[str, int]:
-        """Serialize public allocation/absolute-byte evidence per lifecycle stage."""
-        stats = torch.cuda.memory_stats(self.env.device)
-        snapshot = {
-            key: int(stats[key]) for key in self.ALLOCATION_SNAPSHOT_COUNTERS if key in stats
-        }
-        snapshot["memory_allocated_bytes"] = int(torch.cuda.memory_allocated(self.env.device))
-        snapshot["memory_reserved_bytes"] = int(torch.cuda.memory_reserved(self.env.device))
-        self.allocator_snapshots.append({"stage": stage, **snapshot})
-        return snapshot
-
-    @staticmethod
-    def _require_equal_counters(before: dict[str, int], after: dict[str, int]) -> None:
-        missing = sorted(set(before) - set(after))
-        if missing:
-            raise RuntimeError(f"CUDA allocator counters disappeared: {missing}")
-        changed = {key: (before[key], after[key]) for key in before if before[key] != after[key]}
-        if changed:
-            raise RuntimeError(f"CUDA allocator invariant changed: {changed}")
-
-    def _snapshot_semantic_state(self) -> dict[str, Any]:
-        return {
-            "episode_steps": self.env.episode_length_buf.detach().clone(),
-            "reward": self.env.reward_buf.detach().clone(),
-            "reward_components": self.env.reward_manager.step_rewards.detach().clone(),
-            "reset_buf": self.env.reset_buf.detach().clone(),
-            "reset_terminated": self.env.reset_terminated.detach().clone(),
-            "reset_time_outs": self.env.reset_time_outs.detach().clone(),
-            "public_obs": {
-                name: value.detach().clone() for name, value in self.env._public_obs.items()
-            },
-            "public_reward": self.env._public_reward.detach().clone(),
-            "public_terminated": self.env._public_terminated.detach().clone(),
-            "public_truncated": self.env._public_truncated.detach().clone(),
-            "commands": {
-                name: {
-                    "time_left": term.time_left.detach().clone(),
-                    "command_counter": term.command_counter.detach().clone(),
-                    "command": term.command.detach().clone()
-                    if isinstance(term.command, torch.Tensor)
-                    else None,
-                }
-                for name, term in self.env.command_manager._terms.items()
-            },
-            "rng": self.env.snapshot_graph_rng_state(),
-        }
-
-    def _restore_semantic_state(self, snapshot: dict[str, Any]) -> None:
-        self.env.episode_length_buf.copy_(snapshot["episode_steps"])
-        self.env.reward_buf.copy_(snapshot["reward"])
-        self.env.reward_manager.step_rewards.copy_(snapshot["reward_components"])
-        self.env.reset_buf.copy_(snapshot["reset_buf"])
-        self.env.reset_terminated.copy_(snapshot["reset_terminated"])
-        self.env.reset_time_outs.copy_(snapshot["reset_time_outs"])
-        for name, value in snapshot["public_obs"].items():
-            self.env._public_obs[name].copy_(value)
-        self.env._public_reward.copy_(snapshot["public_reward"])
-        self.env._public_terminated.copy_(snapshot["public_terminated"])
-        self.env._public_truncated.copy_(snapshot["public_truncated"])
-        for name, value in snapshot["commands"].items():
-            term = self.env.command_manager._terms[name]
-            term.time_left.copy_(value["time_left"])
-            term.command_counter.copy_(value["command_counter"])
-            if value["command"] is not None:
-                term.command.copy_(value["command"])
-        self.env.rollback_graph_rng_state(snapshot["rng"])
-
-    def capture(self, verdict, body, *, current_layout):
-        if self.env.device.type != "cuda" or not torch.cuda.is_available():
-            raise RuntimeError("env update graph capture requires a CUDA Torch carrier")
-        if verdict.torch_stream_id is None:
-            raise RuntimeError("env update graph capture requires an ordered backend stream")
-        self.stream_id = int(verdict.torch_stream_id)
-        if self.stream_id == 0:
-            # A default-stream id is valid ordered execution evidence but cannot
-            # own CUDA capture. Allocate a stable owner stream before warmup so
-            # every later backend dependency is enqueued onto this stream.
-            self._stream = torch.cuda.Stream(device=self.env.device)
-            self.stream_id = int(self._stream.cuda_stream)
-        else:
-            self._stream = torch.cuda.ExternalStream(self.stream_id, device=self.env.device)
-        self._events = [torch.cuda.Event(interprocess=False) for _ in range(8)]
-        self.allocator_snapshots = []
-        # Materialize fixed-width command/reset staging before allocator proof;
-        # first transaction begin can lazily install persistent default state.
-        prewarm_context = self.env._prepare_command_update()
-        with prewarm_context:
-            pass
-        # Every observation group must materialize its persistent output and
-        # validation carriers before the allocator proof; the first compute
-        # can otherwise lazily cache Python-visible carriers.
-        with torch.cuda.stream(self._stream):
-            self.env.observation_manager.compute(update_history=True)
-            self._stream.synchronize()
-        torch.cuda.synchronize()
-        torch.cuda.empty_cache()
-        self._allocator_snapshot("after_empty_cache")
-        semantic_snapshot = self._snapshot_semantic_state()
-        self._allocator_snapshot("pre_warmup")
-
-        with torch.cuda.stream(self._stream):
-            for _ in range(self._warmup_iterations):
-                body()
-            self._stream.synchronize()
-        self._restore_semantic_state(semantic_snapshot)
-        with torch.cuda.stream(self._stream):
-            self._stream.synchronize()
-
-        self._allocator_snapshot("post_warmup")
-        allocator_capture_before = self._memory_counters()
-        graph = torch.cuda.CUDAGraph()
-        try:
-            with torch.cuda.graph(graph, stream=self._stream):
-                body()
-        except BaseException:
-            self._restore_semantic_state(semantic_snapshot)
-            with torch.cuda.stream(self._stream):
-                self._stream.synchronize()
-            raise
-        allocator_capture_after = self._memory_counters()
-        self._allocator_snapshot("post_capture")
-        self._require_equal_counters(allocator_capture_before, allocator_capture_after)
-
-        # Acceptance requires one real replay, not merely a completed capture.
-        self.graph = graph
-        self.capture_id = f"env-update-{uuid.uuid4()}"
-        self.layout = current_layout
-        graph.replay()
-        event = self._events[self._event_index]
-        self._event_index = (self._event_index + 1) % len(self._events)
-        event.record(self._stream)
-        event.synchronize()
-        self._allocator_snapshot("first_replay")
-        allocator_replay_after = self._memory_counters()
-        self._require_equal_counters(allocator_capture_before, allocator_replay_after)
-        if self.env.get_env_update_carrier_layout() != current_layout:
-            raise RuntimeError("env update graph carrier layout changed during first replay")
-        return self.capture_id, current_layout
-
-    def replay(self, receipt, body):
-        del body
-        if self.graph is None or self.capture_id is None:
-            raise RuntimeError("env update graph is not captured")
-        receipt.wait_before_read(self._stream)
-        before = self._memory_counters()
-        self.graph.replay()
-        event = self._events[self._event_index]
-        self._event_index = (self._event_index + 1) % len(self._events)
-        event.record(self._stream)
-        event.synchronize()
-        after = self._memory_counters()
-        self._require_equal_counters(before, after)
-        self._allocator_snapshot("replay")
-        token = GraphCompletionToken(
-            contract_version=1,
-            lifecycle_state=GraphLifecycleState.READY,
-            operation="env_update",
-            sequence=self.env._env_update_graph_replay_count + 1,
-            stream_id=self.stream_id or 0,
-            capture_id=self.capture_id,
-        )
-        return _EventEnvUpdateCompletionToken(token, event)
-
-
 class ManagerBasedRlEnv(TorchEnv):
     """Manager-Based runtime with a Torch public lifecycle.
 
@@ -612,11 +379,7 @@ class ManagerBasedRlEnv(TorchEnv):
         self.reset_buf = torch.zeros(num_envs, dtype=torch.bool, device=self.device)
         self.reset_terminated = torch.zeros_like(self.reset_buf)
         self.reset_time_outs = torch.zeros_like(self.reset_buf)
-        self._public_terminated = torch.zeros_like(self.reset_buf)
-        self._public_truncated = torch.zeros_like(self.reset_buf)
         self.reward_buf = torch.zeros(num_envs, dtype=self._dtype, device=self.device)
-        self._public_reward = torch.zeros_like(self.reward_buf)
-        self._public_obs: dict[str, torch.Tensor] = {}
         self.obs_buf: dict[str, torch.Tensor] = {}
         self.extras: dict[str, Any] = {"log": {}}
         self._command_dt = torch.full(
@@ -627,27 +390,9 @@ class ManagerBasedRlEnv(TorchEnv):
         self._all_env_rows = torch.arange(num_envs, dtype=torch.int64, device=self.device)
         self._all_env_reset_mask = torch.ones_like(self.reset_buf)
         self._has_transition = False
-        self._env_update_graph_mode = EnvUpdateGraphMode.DISABLED
-        self._env_update_graph_requested = False
-        self._env_update_graph_enabled = False
-        self._env_update_graph_state = "unavailable"
-        self._env_update_graph_capture_id: str | None = None
-        self._env_update_graph_invalidation_reason: str | None = None
-        self._env_update_graph_disable_reason: str | None = "env update graph mode is disabled"
-        self._env_update_graph_fallback_count = 0
-        self._env_update_graph_replay_count = 0
-        self._env_update_graph_step_active = False
-        self._env_update_graph_runtime = EnvUpdateGraphRuntime(self)
-        self._env_update_graph_backend_receipt: GraphCompletionToken | None = None
 
         self._load_managers()
         self._mapped_obs_dims = self._validate_observation_mapping()
-        # Graph candidates own stable outputs. Eager execution does not read
-        # these carriers; it keeps freshly allocated public step outputs.
-        self._public_obs = {
-            name: torch.empty((num_envs, dim), dtype=self._dtype, device=self.device)
-            for name, dim in self.obs_groups_spec.items()
-        }
         self._validate_substep_capabilities()
         self._configure_action_control()
         self.set_autoreset(cfg.auto_reset)
@@ -1447,258 +1192,12 @@ class ManagerBasedRlEnv(TorchEnv):
                 f"ManagerBasedRlEnv environments {pending} must be reset before step() "
                 "when auto_reset=False"
             )
-        if self._env_update_graph_step_active:
-            raise RuntimeError("env update graph mode cannot change during a control step")
-        self._env_update_graph_step_active = True
-        try:
-            state = super().step(actions)
-        finally:
-            self._env_update_graph_step_active = False
+        state = super().step(actions)
         self._publish_reward_components(state)
-        reset_completion = self.last_reset_completion
-        if reset_completion is not None:
-            state.info["graph_reset_completion"] = reset_completion
         if not self._autoreset:
             self._manual_reset_pending.logical_or_(state.terminated | state.truncated)
         self.recorder_manager.record_post_step()
         return state
-
-    def configure_env_update_graph(
-        self, mode: EnvUpdateGraphMode | str, *, allow_eager_fallback: bool = False
-    ) -> None:
-        """Negotiate the distinct state-update graph mode on a cold path.
-
-        ``graph`` remains fail-closed until #2338 adds a public update-specific
-        backend preflight and real capture/replay. Backend physics-graph state is
-        never interpreted as update-graph readiness.
-        """
-        if self._env_update_graph_step_active:
-            raise RuntimeError("env update graph mode cannot change during a control step")
-        resolved = (
-            mode if isinstance(mode, EnvUpdateGraphMode) else resolve_env_update_graph_mode(mode)
-        )
-        self._env_update_graph_mode = resolved
-        self._env_update_graph_requested = resolved is EnvUpdateGraphMode.GRAPH
-        self._env_update_graph_enabled = False
-        self._env_update_graph_capture_id = None
-        self._env_update_graph_invalidation_reason = None
-        self._env_update_graph_fallback_count = 0
-        self._env_update_graph_replay_count = 0
-
-        if resolved is EnvUpdateGraphMode.DISABLED:
-            self._env_update_graph_state = "unavailable"
-            self._env_update_graph_disable_reason = "env update graph mode is disabled"
-            return
-        if resolved is EnvUpdateGraphMode.EAGER:
-            self._env_update_graph_state = "eager"
-            self._env_update_graph_disable_reason = "explicit eager env update execution"
-            return
-
-        try:
-            verdict = self._backend.preflight_env_update_graph(
-                EnvUpdateGraphPreflight(requested=True)
-            )
-        except BaseException:
-            self._env_update_graph_state = "invalidated"
-            self._env_update_graph_invalidation_reason = "capture_failed"
-            self._env_update_graph_disable_reason = (
-                "update-specific backend preflight failed closed"
-            )
-            if allow_eager_fallback:
-                self._select_explicit_env_update_eager_fallback()
-                return
-            raise
-        if verdict.supported is not True:
-            reason = (
-                verdict.disable_reason
-                if isinstance(verdict.disable_reason, str) and verdict.disable_reason.strip()
-                else "update-specific backend preflight rejected the boundary"
-            )
-            self._env_update_graph_state = "invalidated"
-            self._env_update_graph_invalidation_reason = "capture_failed"
-            self._env_update_graph_disable_reason = reason
-            if allow_eager_fallback:
-                self._select_explicit_env_update_eager_fallback()
-                return
-            raise RuntimeError(reason)
-
-        owner_verdict = self._preflight_env_update_graph_owner(verdict)
-        if owner_verdict.supported is not True:
-            reason = (
-                owner_verdict.disable_reason
-                if isinstance(owner_verdict.disable_reason, str)
-                and owner_verdict.disable_reason.strip()
-                else "env update graph owner preflight rejected the boundary"
-            )
-            self._env_update_graph_state = "invalidated"
-            self._env_update_graph_invalidation_reason = "capture_failed"
-            self._env_update_graph_disable_reason = reason
-            if allow_eager_fallback:
-                self._select_explicit_env_update_eager_fallback()
-                return
-            raise RuntimeError(reason)
-
-        if self._env_update_graph_runtime is None:
-            self._env_update_graph_state = "unavailable"
-            self._env_update_graph_disable_reason = (
-                "env update graph runtime is not installed on this environment"
-            )
-            if allow_eager_fallback:
-                self._select_explicit_env_update_eager_fallback()
-                return
-            raise RuntimeError(self._env_update_graph_disable_reason)
-        if self._state is None:
-            self._env_update_graph_state = "unavailable"
-            self._env_update_graph_disable_reason = (
-                "env update graph capture requires an initialized state"
-            )
-            if allow_eager_fallback:
-                self._select_explicit_env_update_eager_fallback()
-                return
-            raise RuntimeError(self._env_update_graph_disable_reason)
-        try:
-            capture_id, layout = self._env_update_graph_runtime.capture(
-                owner_verdict,
-                lambda: self._run_env_update_graph_body(self._state.info["steps"]),  # type: ignore[union-attr]
-                current_layout=self.get_env_update_carrier_layout(),
-            )
-            if layout != self.get_env_update_carrier_layout():
-                raise RuntimeError("env update carrier layout changed during capture")
-        except BaseException:
-            self._invalidate_env_update_graph("capture_failed")
-            if allow_eager_fallback:
-                self._select_explicit_env_update_eager_fallback()
-                return
-            raise
-        self._env_update_graph_capture_id = capture_id
-        self._env_update_graph_state = "ready"
-        self._env_update_graph_enabled = True
-        self._env_update_graph_disable_reason = None
-        self._env_update_graph_runtime.layout = layout
-        # The runtime's acceptance replay already produced real evidence;
-        # publish that first replay rather than requiring a later step.
-        self._env_update_graph_replay_count = 1
-
-    def _preflight_env_update_graph_owner(
-        self, backend_verdict: EnvUpdateGraphPreflight
-    ) -> EnvUpdateGraphPreflight:
-        """Fail closed on every first-candidate update-owner boundary risk."""
-        failures: list[str] = []
-        if self.device.type != "cuda":
-            failures.append("environment carriers must be CUDA-resident")
-        if any(value.device != self.device for value in self._public_obs.values()) or (
-            self._public_reward.device != self.device
-            or self._public_terminated.device != self.device
-            or self._public_truncated.device != self.device
-        ):
-            failures.append("persistent public output carriers are not graph-ready")
-        if (
-            self.episode_length_buf.device != self.device
-            or self._command_dt.device != self.device
-            or self.reset_buf.device != self.device
-            or self.reward_manager.step_rewards.device != self.device
-        ):
-            failures.append("persistent update input/output carriers are not graph-ready")
-        if backend_verdict.torch_stream_id is None:
-            failures.append("backend preflight did not publish an ordered Torch stream")
-        if not self._defer_validation_at_boundaries:
-            failures.append("deferred validation boundaries must be enabled")
-        if "step" in self.event_manager.available_modes:
-            failures.append("step events have no fixed-width graph boundary")
-        if "interval" in self.event_manager.available_modes:
-            failures.append("interval events have no fixed-width graph boundary")
-        if self.metrics_manager.active_terms:
-            failures.append("active metrics have no graph boundary")
-        if self.curriculum_manager.active_terms:
-            failures.append("active curriculum owners have no graph boundary")
-        if self.recorder_manager.active_terms:
-            failures.append("active recorder owners have no graph boundary")
-        if self._reset_state.scene_layout is not None:
-            failures.append("mapped entity reset layout has no graph carrier")
-        if not self._autoreset:
-            failures.append("manual reset guard has no graph boundary")
-        if not self.reward_manager.step_reward_names:
-            failures.append("reward term set is empty")
-        if self.torch_rng.device != self.device:
-            failures.append("Torch RNG device does not match graph carriers")
-        for group_name, group_cfg in self.observation_manager.cfg.items():
-            if group_cfg is None:
-                continue
-            for term_name, term_cfg in group_cfg.terms.items():
-                if term_cfg is None:
-                    continue
-                if term_cfg.noise is not None:
-                    failures.append(
-                        f"observation noise '{group_name}/{term_name}' has no capture-safe contract"
-                    )
-                if term_cfg.delay_max_lag > 0:
-                    failures.append(
-                        f"observation delay buffer '{group_name}/{term_name}' has no graph contract"
-                    )
-                if term_cfg.history_length > 0:
-                    failures.append(
-                        f"observation history buffer '{group_name}/{term_name}' has no graph contract"
-                    )
-        if self.command_manager.active_terms and self._reset_state._tensor_has_writes:
-            failures.append("command commit requires a data-dependent mid-update read repack")
-        if failures:
-            return EnvUpdateGraphPreflight(
-                requested=True,
-                backend_stream_contract=backend_verdict.backend_stream_contract,
-                supported=False,
-                disable_reason="; ".join(failures),
-                torch_stream_id=backend_verdict.torch_stream_id,
-                allocator_stats=backend_verdict.allocator_stats,
-            )
-        return backend_verdict
-
-    def _select_explicit_env_update_eager_fallback(self) -> None:
-        """Select eager fallback while retaining the rejected graph evidence."""
-        self._env_update_graph_mode = EnvUpdateGraphMode.EAGER
-        self._env_update_graph_state = "eager"
-        self._env_update_graph_invalidation_reason = None
-        self._env_update_graph_requested = False
-        self._env_update_graph_disable_reason = (
-            f"explicit eager fallback: {self._env_update_graph_disable_reason}"
-        )
-        self._env_update_graph_fallback_count = 1
-
-    def get_env_update_graph_manifest(self) -> dict[str, Any]:
-        """Serialize distinct state-update graph evidence on a cold path."""
-        receipt = self._env_update_graph_backend_receipt
-        return {
-            "contract_version": ENV_UPDATE_GRAPH_MANIFEST_VERSION,
-            "mode": self._env_update_graph_mode.value,
-            "requested": self._env_update_graph_requested,
-            "enabled": self._env_update_graph_enabled,
-            "state": self._env_update_graph_state,
-            "capture_id": self._env_update_graph_capture_id,
-            "invalidation_reason": self._env_update_graph_invalidation_reason,
-            "disable_reason": self._env_update_graph_disable_reason,
-            "fallback_count": self._env_update_graph_fallback_count,
-            "replay_count": self._env_update_graph_replay_count,
-            "backend_step_receipt": {
-                "operation": receipt.operation if receipt is not None else None,
-                "sequence": receipt.sequence if receipt is not None else None,
-                "capture_id": receipt.capture_id if receipt is not None else None,
-            },
-            "update_completion": {
-                "operation": "env_update",
-                "capture_id": self._env_update_graph_capture_id,
-                "sequence": self._env_update_graph_replay_count,
-            },
-            "rng_state": {
-                "device": str(self.torch_rng.device),
-                "state_version": self.torch_rng.state_version,
-                "draw_version": self.torch_rng.draw_version,
-            },
-            "allocator_snapshots": (
-                list(getattr(self._env_update_graph_runtime, "allocator_snapshots", ()))
-                if self._env_update_graph_runtime is not None
-                else []
-            ),
-            "carrier_layout": self.get_env_update_carrier_layout(),
-        }
 
     def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:
         del state
@@ -1728,29 +1227,6 @@ class ManagerBasedRlEnv(TorchEnv):
                 read_plan.refresh()
             boundary_ms = (time.perf_counter() - boundary_started) * 1000.0
             timing["update_state_read_boundary_ms"] = boundary_ms
-            if self._env_update_graph_enabled:
-                log: dict[str, Any] = {}
-                state.info["log"] = log
-                self.extras = state.info
-                self.common_step_counter = self.step_counter + 1
-                self._sim_step_counter = self.common_step_counter * self._cfg.sim_substeps
-                self._env_update_graph_backend_receipt = self._pending_backend_step_completion
-                update_timing: dict[str, float] = {}
-                state.info["update_state_timing"] = update_timing
-                replay_started_ns = time.perf_counter_ns()
-                try:
-                    completion = self._replay_env_update_graph_body(state.info["steps"])
-                finally:
-                    update_timing["update_state_graph_replay_ms"] = (
-                        time.perf_counter_ns() - replay_started_ns
-                    ) / 1.0e6
-                state.info["graph_completion"] = completion
-                return state.replace(
-                    obs=self._public_obs,
-                    reward=self._public_reward,
-                    terminated=self._public_terminated,
-                    truncated=self._public_truncated,
-                )
             return self._update_state_in_read_phase(state)
 
     def _update_state_in_read_phase(self, state: TorchEnvState) -> TorchEnvState:
@@ -1880,75 +1356,6 @@ class ManagerBasedRlEnv(TorchEnv):
             ) / 1.0e6
         return replacement
 
-    def _run_env_update_graph_body(self, steps: torch.Tensor) -> None:
-        """Run only the capture-eligible Manager state-update operations.
-
-        Everything in this method is intended to be captured verbatim during a
-        CUDA graph. Python timing, semantic logs, host counters, runtime-event
-        repacking, state replacement, reset orchestration, and completion
-        publication remain outside the captured region and are owned by
-        :meth:`_update_state_in_read_phase` or the graph lifecycle.
-        """
-        self._advance_episode_steps(steps)
-        self._compute_termination_and_reset_flags()
-        self.reward_buf = self._compute_rewards()
-        self._reward_log_names = self.reward_manager.step_reward_names
-        self._reward_log_means = self.reward_manager.step_reward_means
-        self._command_dt.fill_(self.step_dt)
-        self._command_dt.masked_fill_(self.reset_buf, 0.0)
-        if self.command_manager.active_terms:
-            with self._prepare_command_update():
-                self._compute_commands()
-            self._post_compute_commands()
-        manager_obs = self._compute_observations()
-        mapped_obs = self._map_observations(manager_obs)
-        self.obs_buf = mapped_obs
-        self._has_transition = True
-        # Persistent group carriers remove the allocating defensive clone from
-        # this graph-only publication boundary.
-        if self._defer_validation_at_boundaries:
-            for name, value in mapped_obs.items():
-                self._public_obs[name].copy_(value)
-            self._public_reward.copy_(self.reward_buf)
-            self._public_terminated.copy_(self.reset_terminated)
-            self._public_truncated.copy_(self.reset_time_outs)
-            return None
-        self._publish_step_outputs(mapped_obs)
-
-    def _replay_env_update_graph_body(self, steps: torch.Tensor) -> Any:
-        """Replay the captured update body on one ordered stream."""
-        if self._env_update_graph_runtime is None:
-            raise RuntimeError("env update graph runtime is not installed")
-        if self._env_update_graph_backend_receipt is None:
-            raise RuntimeError("env update graph replay requires the backend step receipt")
-        receipt = self._env_update_graph_backend_receipt
-        if receipt.operation != "step" or receipt.lifecycle_state is not GraphLifecycleState.READY:
-            raise RuntimeError("backend step receipt is not READY for env update replay")
-        if receipt.capture_id is None:
-            raise RuntimeError("backend step receipt has no capture identity")
-        if receipt.stream_id != self._env_update_graph_runtime.stream_id:
-            raise RuntimeError("backend step receipt stream does not match env update graph")
-        if self.get_env_update_carrier_layout() != self._env_update_graph_runtime.layout:
-            self._invalidate_env_update_graph("view")
-            raise RuntimeError("env update graph carrier layout changed before replay")
-        completion = self._env_update_graph_runtime.replay(
-            receipt,
-            lambda: self._run_env_update_graph_body(steps),
-        )
-        self._env_update_graph_replay_count += 1
-        return completion
-
-    def _invalidate_env_update_graph(self, reason: str) -> None:
-        """Disable a captured update graph and retain fail-closed evidence."""
-        if reason not in ENV_UPDATE_GRAPH_INVALIDATION_REASONS:
-            raise ValueError(f"unsupported env update graph invalidation reason {reason!r}")
-        self._env_update_graph_enabled = False
-        self._env_update_graph_state = "invalidated"
-        self._env_update_graph_invalidation_reason = reason
-        self._env_update_graph_disable_reason = f"env update graph invalidated: {reason}"
-        self._env_update_graph_capture_id = None
-        self._env_update_graph_replay_count = 0
-
     def _advance_episode_steps(self, steps: torch.Tensor) -> None:
         """Advance the fixed-width device episode-step carrier by one."""
         self.episode_length_buf.copy_(steps).add_(1)
@@ -2032,261 +1439,10 @@ class ManagerBasedRlEnv(TorchEnv):
         """Expose cold-path reward component metadata to algorithm owners."""
         return SimpleNamespace(reward_component_names=self.reward_manager.step_reward_names)
 
-    @property
-    def graph_rng_state(self) -> dict[str, Any]:
-        """Return the versioned graph-candidate RNG state snapshot."""
-        return {
-            "device": str(self.torch_rng.device),
-            "state_version": self.torch_rng.state_version,
-            "draw_version": self.torch_rng.draw_version,
-            "state": self.torch_rng.get_state(),
-        }
-
-    def snapshot_graph_rng_state(self) -> tuple[torch.Tensor, int, int]:
-        """Capture the deterministic RNG state and versions for graph replay."""
-        return (
-            self.torch_rng.get_state().clone(),
-            self.torch_rng.state_version,
-            self.torch_rng.draw_version,
-        )
-
-    def get_env_update_carrier_layout(self) -> dict[str, Any]:
-        """Return fixed carrier layout identity for the update-only boundary."""
-        return {
-            "num_envs": self.num_envs,
-            "device": str(self.device),
-            "episode_steps": self._carrier_layout(self.episode_length_buf),
-            "command_dt": self._carrier_layout(self._command_dt),
-            "observations": {
-                name: self._carrier_layout(value) for name, value in self._public_obs.items()
-            },
-            "reward": self._carrier_layout(self._public_reward),
-            "reward_components": self._carrier_layout(self.reward_manager.step_rewards),
-            "terminated": self._carrier_layout(self._public_terminated),
-            "truncated": self._carrier_layout(self._public_truncated),
-            "reset_mask": self._carrier_layout(self.reset_buf),
-            "validation_verdicts": {
-                name: self._carrier_layout(value)
-                for name, value in self.env_update_validation_verdicts.items()
-            },
-        }
-
-    @property
-    def env_update_validation_verdicts(self) -> dict[str, torch.Tensor]:
-        """Return persistent owner verdicts for the update-only boundary."""
-        verdicts = {
-            "reward_finite": self.reward_manager.finite_valid,
-            "action_term_finite": self.action_manager.action_finite_valid,
-        }
-        for output_name in self.obs_groups_spec:
-            group_name = (
-                self._cfg.policy_observation_group
-                if output_name == "obs"
-                else self._cfg.critic_observation_group
-            )
-            if group_name is None:
-                continue
-            verdicts[f"observation_finite[{output_name}]"] = self.observation_manager.finite_valid(
-                group_name
-            )
-        return verdicts
-
-    @staticmethod
-    def _carrier_layout(value: torch.Tensor) -> dict[str, Any]:
-        return {
-            "shape": tuple(int(size) for size in value.shape),
-            "dtype": str(value.dtype).removeprefix("torch."),
-            "device": str(value.device),
-            "data_ptr": value.data_ptr(),
-        }
-
-    def rollback_graph_rng_state(self, snapshot: tuple[torch.Tensor, int, int]) -> None:
-        """Restore a failed graph boundary without silently advancing draws."""
-        state, state_version, draw_version = snapshot
-        if state.device.type != "cpu":
-            raise ValueError("graph RNG rollback state must be a CPU Torch tensor")
-        restored = self.graph_rng_state
-        if restored["state_version"] < state_version or restored["draw_version"] < draw_version:
-            raise ValueError("cannot roll graph RNG state backward")
-        self.torch_rng.set_state(state)
-
-    def preflight_graph_candidate(self, requested: bool = True) -> dict[str, Any]:
-        """Run the public backend preflight without mutating graph state."""
-        request = (
-            GraphCandidatePreflight(requested=True)
-            if requested
-            else GraphCandidatePreflight(
-                requested=False,
-                supported=False,
-                disable_reason="graph candidate was not requested",
-            )
-        )
-        verdict = self._backend.preflight_graph_candidate(request)
-        if not requested:
-            return {
-                "requested": False,
-                "supported": False,
-                "disable_reason": verdict.disable_reason,
-                "backend_stream_contract": verdict.backend_stream_contract,
-                "torch_stream_id": verdict.torch_stream_id,
-            }
-        if verdict.supported is not True:
-            return {
-                "requested": True,
-                "supported": False,
-                "disable_reason": verdict.disable_reason,
-                "backend_stream_contract": verdict.backend_stream_contract,
-                "torch_stream_id": verdict.torch_stream_id,
-            }
-        action_shape = self.action_space.shape
-        owner_failures: list[str] = []
-        if action_shape is None:
-            owner_failures.append("action dimension is not fixed")
-        if self.device.type != "cuda":
-            owner_failures.append("environment output carrier is not CUDA-resident")
-        if self._reset_state.scene_layout is not None:
-            owner_failures.append("mapped entity reset layout has no K=1 graph carrier")
-        if set(self._public_obs) != set(self.obs_groups_spec) or any(
-            value.device != self.device
-            or value.shape != (self.num_envs, self.obs_groups_spec[name])
-            or value.dtype != self._dtype
-            for name, value in self._public_obs.items()
-        ):
-            owner_failures.append("persistent observation output carrier is not graph-ready")
-        if (
-            self._public_reward.shape != (self.num_envs,)
-            or self._public_reward.dtype != self._dtype
-            or self._public_reward.device != self.device
-        ):
-            owner_failures.append("persistent reward output carrier is not graph-ready")
-        if any(
-            value.shape != (self.num_envs,)
-            or value.dtype != torch.bool
-            or value.device != self.device
-            for value in (self._public_terminated, self._public_truncated)
-        ):
-            owner_failures.append("persistent done output carriers are not graph-ready")
-        if not self.reward_manager.step_reward_names:
-            owner_failures.append("reward component layout is empty")
-        final_observation_carrier = self._final_observation_scratch
-        if final_observation_carrier is None:
-            owner_failures.append("terminal observation carrier is not materialized")
-        else:
-            expected_groups = set(self.obs_groups_spec)
-            if set(final_observation_carrier) != expected_groups:
-                owner_failures.append("terminal observation carrier groups do not match outputs")
-            elif any(
-                value.device != self.device
-                or value.shape != (self.num_envs, self.obs_groups_spec[name])
-                for name, value in final_observation_carrier.items()
-            ):
-                owner_failures.append("terminal observation carrier layout does not match outputs")
-        if self.torch_rng.device != self.device:
-            owner_failures.append("Torch RNG device does not match the graph carrier")
-        if "interval" in self.event_manager.available_modes:
-            owner_failures.append("interval events have no fixed-width graph boundary")
-        if self.metrics_manager.active_terms:
-            owner_failures.append("metrics reset publication has no graph boundary")
-        if self.curriculum_manager.active_terms:
-            owner_failures.append("curriculum reset publication has no graph boundary")
-        if self.recorder_manager.active_terms:
-            owner_failures.append("recorder lifecycle publication has no graph boundary")
-        if not self._autoreset:
-            owner_failures.append("manual reset guard has no graph boundary")
-        if owner_failures:
-            return {
-                "requested": True,
-                "supported": False,
-                "disable_reason": "; ".join(owner_failures),
-                "backend_stream_contract": verdict.backend_stream_contract,
-                "torch_stream_id": verdict.torch_stream_id,
-            }
-        return {
-            "requested": True,
-            "supported": True,
-            "disable_reason": None,
-            "backend_stream_contract": verdict.backend_stream_contract,
-            "torch_stream_id": verdict.torch_stream_id,
-            "carrier_layout": {
-                "num_envs": self.num_envs,
-                "device": str(self.device),
-                "action_dim": int(action_shape[0]) if action_shape is not None else None,
-                "observation_groups": {
-                    name: int(dim) for name, dim in self.obs_groups_spec.items()
-                },
-                "reward_components": len(self.reward_manager.step_reward_names),
-                "terminal_observation_groups": sorted(self.obs_groups_spec),
-                "persistent_output_carriers": True,
-            },
-            "rng_state": {
-                "device": str(self.torch_rng.device),
-                "state_version": self.torch_rng.state_version,
-                "draw_version": self.torch_rng.draw_version,
-            },
-            "graph_lifecycle": str(self._backend.get_graph_lifecycle().value),
-        }
-
-    def get_graph_lifecycle_manifest(self) -> dict[str, Any]:
-        """Serialize public backend graph lifecycle evidence on a cold path."""
-        snapshot = self._backend.get_graph_lifecycle_snapshot()
-        return {
-            "contract_version": snapshot.contract_version,
-            "state": snapshot.state.value,
-            "capture_id": snapshot.capture_id,
-            "replay_count": snapshot.replay_count,
-            "fallback_count": snapshot.fallback_count,
-            "disable_reason": snapshot.disable_reason,
-        }
-
-    def set_deferred_validation_boundaries(self, enabled: bool) -> None:
-        """Propagate graph-candidate deferred validation to all owners."""
-        if not isinstance(enabled, bool):
-            raise TypeError(f"deferred validation boundaries must be bool, got {type(enabled)}")
-        super().set_deferred_validation_boundaries(enabled)
-        self.action_manager.set_deferred_validation_boundaries(enabled)
-        self.reward_manager.set_deferred_validation_boundaries(enabled)
-        self.observation_manager.set_deferred_validation_boundaries(enabled)
-        self.command_manager.set_deferred_validation_boundaries(enabled)
-        self._reset_state.set_deferred_payload_validation(enabled)
-        self._reset_state.set_deferred_mask_validation(enabled)
-        capabilities = self._backend.get_tensor_capabilities()
-        if not capabilities.deferred_fused_validation:
-            raise NotImplementedError(
-                "deferred validation boundaries require the backend "
-                "deferred_fused_validation tensor capability"
-            )
-        setter = getattr(self._backend, "set_defer_torch_fused_validation", None)
-        if callable(setter):
-            setter(enabled)
-        diagnostics = self._backend.get_tensor_runtime_diagnostics()
-        diagnostic = diagnostics.get("deferred_fused_validation")
-        if diagnostic is None or not diagnostic.enabled:
-            raise NotImplementedError(
-                "deferred validation boundaries require a backend declaring the "
-                "deferred_fused_validation runtime optimization"
-            )
-
-    def publish_validation_verdicts(self) -> None:
-        """Publish env, command, reward, and fused reset verdicts."""
-        self.action_manager.publish_validation_verdict()
-        self.reward_manager.publish_validation_verdict()
-        self.observation_manager.publish_validation_verdict()
-        self.command_manager.publish_validation_verdicts()
-        self._reset_state.publish_payload_validation_verdicts(term_name="reset_state")
-        self._reset_state.publish_mask_validation_verdicts()
-        self._backend.publish_torch_fused_validation()
-        super().publish_validation_verdicts()
-
     def _publish_reward_components(self, state: TorchEnvState) -> None:
         """Publish fixed-width reward components for tensor-native consumers."""
         if self.reward_manager.step_reward_names:
             state.info["reward_components"] = self.reward_manager.step_rewards
-
-    def _validation_flags(self) -> dict[str, torch.Tensor]:
-        """Replace the base action verdict with the ActionManager aggregate."""
-        flags = super()._validation_flags()
-        flags["action_finite"] = self.action_manager.action_finite_valid
-        return flags
 
     def _record_action_finite(self, actions: torch.Tensor) -> None:
         """Let the action owner record the public finite verdict."""
@@ -2301,7 +1457,7 @@ class ManagerBasedRlEnv(TorchEnv):
     def _publish_step_outputs(
         self, mapped_obs: Mapping[str, torch.Tensor]
     ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Publish eager-fresh outputs or copy them into graph carriers."""
+        """Publish fresh step outputs without aliasing mutable manager carriers."""
         eager_obs = {
             name: self._manager_tensor(values, dtype=self._dtype)
             for name, values in mapped_obs.items()
@@ -2313,23 +1469,16 @@ class ManagerBasedRlEnv(TorchEnv):
             eager_terminated = eager_terminated.clone()
         if eager_truncated is self.reset_time_outs:
             eager_truncated = eager_truncated.clone()
-        if not self._defer_validation_at_boundaries:
-            return eager_obs, eager_reward, eager_terminated, eager_truncated
-
-        for name, values in eager_obs.items():
-            self._public_obs[name].copy_(values)
-        self._public_reward.copy_(eager_reward)
-        self._public_terminated.copy_(eager_terminated)
-        self._public_truncated.copy_(eager_truncated)
-        return (
-            self._public_obs,
-            self._public_reward,
-            self._public_terminated,
-            self._public_truncated,
-        )
+        return eager_obs, eager_reward, eager_terminated, eager_truncated
 
     def _compute_truncated(self, state: TorchEnvState) -> torch.Tensor:
         return state.truncated
+
+    def _collect_reset_backend_timing_ms(self) -> dict[str, float]:
+        timing = dict(super()._collect_reset_backend_timing_ms())
+        timing.update(self._reset_state.last_set_state_timing_ms)
+        timing.update(self._last_reset_manager_timing_ms)
+        return timing
 
     def reset(
         self,
@@ -2360,13 +1509,8 @@ class ManagerBasedRlEnv(TorchEnv):
             raise RuntimeError("ManagerBasedRlEnv requires init_state before mask reset")
         reset_timing: dict[str, float] = {}
         read_plan = self.scene._tensor_read_plan
-        # Eager execution matches the pre-graph trajectory: an empty explicit
-        # reset does not publish a pre-reset recorder boundary. The integration
-        # graph candidate keeps the fixed-width lifecycle behind its explicit
-        # deferred-boundary switch.
-        if self._has_transition and (
-            self._defer_validation_at_boundaries or bool(reset_mask.any())
-        ):
+        # An empty explicit reset does not publish a pre-reset recorder boundary.
+        if self._has_transition and bool(reset_mask.any()):
             self.recorder_manager.record_pre_reset(reset_mask)
         # Match the selected-row lifecycle: curriculum consumes the terminal
         # episode state before reset clears the public counters.
@@ -2494,17 +1638,6 @@ class ManagerBasedRlEnv(TorchEnv):
         self.extras = self._state.info
         self.recorder_manager.record_post_reset(reset_mask)
         return self._state.obs, {"log": log}
-
-    def _collect_reset_backend_timing_ms(self) -> dict[str, float]:
-        timing = dict(super()._collect_reset_backend_timing_ms())
-        timing.update(self._reset_state.last_set_state_timing_ms)
-        timing.update(self._last_reset_manager_timing_ms)
-        return timing
-
-    @property
-    def last_reset_completion(self) -> Any | None:
-        """Return the latest public reset completion receipt, if negotiated."""
-        return self._reset_state.last_set_state_completion
 
     def _map_observations(
         self,

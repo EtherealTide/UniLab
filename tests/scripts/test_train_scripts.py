@@ -1062,8 +1062,9 @@ def test_run_motrix_play_loop_runs_without_physics_state():
         def reset(self, env_indices):
             self.reset_calls += 1
             assert env_indices.shape == (2,)
-            assert env_indices.dtype == torch.int64
+            assert env_indices.dtype == torch.bool
             assert env_indices.device == self.device
+            assert bool(env_indices.all())
             return {"obs": torch.ones((2, 5), dtype=torch.float32, device=self.device)}, {}
 
         def step(self, actions):
@@ -1646,8 +1647,8 @@ def test_play_offpolicy_can_skip_onnx_export_and_still_record_video(
                 {"obs": {"obs": torch.zeros((cfg.training.play_env_num, 4), dtype=torch.float32)}},
             )()
 
-        def reset(self, env_ids):
-            batch = len(env_ids)
+        def reset(self):
+            batch = int(cfg.training.play_env_num)
             return ({"obs": torch.zeros((batch, 4), dtype=torch.float32)}, {})
 
         def step(self, actions):
@@ -1777,8 +1778,8 @@ def _make_play_fake_env(captured: dict[str, Any], play_env_num: int):
                 {"obs": {"obs": torch.zeros((play_env_num, 4), dtype=torch.float32)}},
             )()
 
-        def reset(self, env_ids):
-            batch = len(env_ids)
+        def reset(self):
+            batch = int(play_env_num)
             return ({"obs": torch.zeros((batch, 4), dtype=torch.float32)}, {})
 
         def step(self, actions):
@@ -2004,7 +2005,7 @@ def test_play_wrapper_uses_current_reset_contract():
         def init_state(self):
             pass
 
-        def reset(self, env_indices):
+        def reset(self):
             # Returns current contract: (obs, info)
             return {"obs": torch.ones((2, 5))}, {}
 
@@ -2039,7 +2040,7 @@ def test_play_wrapper_policy_obs_mode_actor():
         def init_state(self):
             pass
 
-        def reset(self, env_indices):
+        def reset(self):
             return {
                 "obs": torch.ones((1, 3)),
                 "critic": torch.zeros((1, 5)),
@@ -2087,7 +2088,7 @@ def test_play_wrapper_flat_policy_excludes_critic_only_group():
         def init_state(self):
             pass
 
-        def reset(self, env_indices):
+        def reset(self):
             return cast(dict[str, torch.Tensor], getattr(self.state, "obs")), {}
 
     wrapper = RslRlVecEnvAdapter(FakeEnv(), device="cpu", policy_obs_mode="flat")
@@ -2117,7 +2118,7 @@ def test_play_wrapper_step_exports_time_outs_without_bootstrap_obs():
         def init_state(self):
             pass
 
-        def reset(self, env_indices):
+        def reset(self):
             return {"obs": torch.zeros((1, 3))}, {}
 
         def step(self, actions):
@@ -2162,7 +2163,7 @@ def test_play_wrapper_round_trips_torchenv_training_state():
         def init_state(self):
             pass
 
-        def reset(self, env_indices):
+        def reset(self):
             return {"obs": torch.zeros((1, 3))}, {}
 
         def export_training_state(self):
@@ -2184,7 +2185,7 @@ def test_play_wrapper_round_trips_torchenv_training_state():
         def init_state(self):
             pass
 
-        def reset(self, env_indices):
+        def reset(self):
             return {"obs": torch.zeros((1, 3))}, {}
 
     provider = _ProviderEnv()

@@ -13,6 +13,40 @@ UniLab 遵循[语义化版本](https://semver.org/)。本共享页面以中英�
 PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完整提交历史请参阅
 [UniLab 仓库](https://github.com/unilabsim/UniLab)。
 
+## Unreleased / 未发布
+
+### Breaking changes / 破坏性变更
+
+- Removed the collector CUDA-graph public lifecycle and graph-named completion
+  contract without aliases or compatibility paths. Runtime code now consumes the
+  neutral completion-v2 receipt (`state.info["completion"]`) while eager ordered
+  visibility, producer validation, actual-operation waits, backend-owned physics
+  graphs, and learner CUDA graphs remain in their owner layers. Each successful
+  step publishes its current receipt, and an autoreset step publishes the reset
+  boundary receipt that gates its post-reset observation carrier
+  ([#2359](https://github.com/Motphys/UniLab/issues/2359),
+  [#2358](https://github.com/Motphys/UniLab/issues/2358)).
+  移除 collector CUDA graph 的公共 lifecycle 与 graph 命名 completion 契约，
+  不保留 alias 或兼容路径。运行时改用中性 completion-v2 receipt
+  （`state.info["completion"]`），同时保留 eager 有序可见性、producer 校验、
+  按实际操作等待、backend 私有 physics graph 与 learner CUDA graph
+  （#2359、#2358）。
+
+### Fixed / 修复
+
+- Multi-term concatenated observations are again caller-owned: the Manager no
+  longer publishes rotating internal output carriers through the default eager
+  boundary, so observations retained by a transition consumer remain immutable
+  across later steps ([#2362](https://github.com/Motphys/UniLab/issues/2362)).
+  多 term 拼接 observation 重新归 caller 所有：Manager 不再通过默认 eager
+  boundary 发布轮换的内部 output carrier，因此 transition consumer 保留的
+  observation 不会在后续 step 中被改写（#2362）。
+- Restored the v1.3.5 `MotionCommand` empty-reset-mask semantics: an empty mask
+  consumes no sampler RNG and performs no backend state write or packet ingestion
+  ([#2359](https://github.com/Motphys/UniLab/issues/2359)).
+  恢复 v1.3.5 的 `MotionCommand` 空 reset mask 语义：空 mask 不消耗 sampler
+  RNG，也不写 backend state 或摄取 packet（#2359）。
+
 ## 1.3.5 (2026-10-13)
 
 ### Breaking changes / 破坏性变更

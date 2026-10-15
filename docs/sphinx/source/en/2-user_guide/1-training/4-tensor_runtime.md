@@ -62,13 +62,10 @@ same integer seed, not bitwise NumPy trajectories. Use an explicit `env.seed`
 for deterministic runs; `algo.seed` seeds the training run's global Python and
 Torch RNGs but does not replace that owner-local generator seed.
 
-`TorchManagerRng` carries two complementary versions. `state_version` counts
-only successful reseeds and state installations. `draw_version` additionally
-counts every successful sampling call, so graph diagnostics can distinguish a
-consumed stream from a restored one without serializing the generator state on
-every transition. The exact generator state remains the authoritative
-reproducibility payload; integration-only graph capture records both versions
-and the state together for replay/rollback evidence.
+`TorchManagerRng.get_state()` returns the generator's CPU state tensor and
+`set_state()` restores it. The exact generator state remains the authoritative
+reproducibility payload; an owner that restores or audits RNG records that
+state tensor. The runtime keeps no per-transition version accounting.
 
 ## Runtime evidence
 

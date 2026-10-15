@@ -323,7 +323,7 @@ def test_observation_groups_pipeline_order_and_history(fake_env: FakeEnv) -> Non
     assert manager.get_active_iterable_terms(0)[0][0] == "policy-state"
 
 
-def test_concatenated_observations_rotate_persistent_output_carriers(
+def test_concatenated_observations_remain_caller_owned_across_later_computes(
     fake_env: FakeEnv,
 ) -> None:
     manager = ObservationManager(
@@ -339,16 +339,17 @@ def test_concatenated_observations_rotate_persistent_output_carriers(
         },
         fake_env,
     )
-    addresses = [carrier.data_ptr() for carrier in manager._group_output_carriers["policy"]]
+    outputs: list[torch.Tensor] = []
+    snapshots: list[torch.Tensor] = []
+    for value in range(4):
+        fake_env.obs.fill_(float(value))
+        output = manager.compute(update_history=True)["policy"]
+        outputs.append(output)
+        snapshots.append(output.clone())
 
-    first = manager.compute(update_history=True)["policy"]
-    second = manager.compute(update_history=True)["policy"]
-
-    assert first.data_ptr() == addresses[0]
-    assert second.data_ptr() == addresses[1]
-    torch.testing.assert_close(
-        second, torch.cat((fake_env.obs, torch.ones_like(fake_env.obs[:, :1])), dim=1)
-    )
+    assert len({output.data_ptr() for output in outputs}) == len(outputs)
+    for output, snapshot in zip(outputs, snapshots, strict=True):
+        torch.testing.assert_close(output, snapshot)
 
 
 def test_non_temporal_tensor_terms_stay_on_device_for_clip_scale_concat(
@@ -546,103 +547,36 @@ def test_concatenated_outputs_do_not_alias_the_latest_term_buffer(fake_env: Fake
         torch.testing.assert_close(output[:, 2:], torch.full((fake_env.num_envs, 1), 3.0))
 
 
-def test_configured_noise_publications_rotate_persistent_carriers(fake_env: FakeEnv) -> None:
-    manager = ObservationManager(
-        {
-            "policy": ObservationGroupCfg(
-                enable_corruption=True,
-                terms={
-                    "state": ObservationTermCfg(
-                        func=lambda env: env.obs,
-                        noise=UniformNoiseCfg(n_min=-0.1, n_max=0.1),
-                    )
-                },
-            )
-        },
-        fake_env,
-    )
-
-    noisy_addresses = []
-    manager.compute(update_history=True)
-    for _ in range(3):
-        before = set(
-            carrier.data_ptr()
-            for carrier in manager._group_term_noise_carriers[("policy", "state")]
-        )
-        manager.compute(update_history=True)
-        after = set(
-            carrier.data_ptr()
-            for carrier in manager._group_term_noise_carriers[("policy", "state")]
-        )
-        assert before == after
-        noisy_addresses.append(
-            manager._group_term_noise_carriers[("policy", "state")][
-                manager._group_term_noise_generation[("policy", "state")] % 2
-            ].data_ptr()
-        )
-
-    assert len(noisy_addresses) == 3
-    assert len(set(noisy_addresses)) <= 2
-
-
-def test_deferred_observation_finite_verdict_stays_device_resident(fake_env: FakeEnv) -> None:
-    def invalid(env: FakeEnv) -> torch.Tensor:
-        value = torch.ones((env.num_envs, 2), dtype=torch.float32)
-        value[1] = torch.nan
-        return value
-
-    manager = ObservationManager(
-        {"policy": ObservationGroupCfg(terms={"bad": ObservationTermCfg(func=invalid)})},
-        fake_env,
-    )
-    manager.set_deferred_validation_boundaries(True)
-
-    result = manager.compute(update_history=True)["policy"]
-
-    assert torch.isfinite(result[0]).all()
-    assert bool(torch.isnan(result[1]).any())
-    assert manager.finite_valid("policy").shape == (fake_env.num_envs,)
-    assert manager.finite_valid("policy").tolist() == [True, False, True, True]
-    with pytest.raises(ValueError, match="ObservationManager group 'policy'"):
-        manager.publish_validation_verdict()
-
-
-def test_deferred_observation_finite_mask_uses_persistent_scratch(fake_env: FakeEnv) -> None:
-    def invalid(env: FakeEnv) -> torch.Tensor:
-        value = torch.ones((env.num_envs, 2), dtype=torch.float32)
-        value[1] = torch.nan
-        value[3] = torch.inf
-        return value
-
-    manager = ObservationManager(
-        {
-            "policy": ObservationGroupCfg(
-                terms={
-                    "finite": ObservationTermCfg(func=lambda env: env.obs),
-                    "invalid": ObservationTermCfg(func=invalid),
-                }
-            )
-        },
-        fake_env,
-    )
-    manager.set_deferred_validation_boundaries(True)
-    scratch = manager._group_finite_scratch["policy"]
-
-    manager.compute(update_history=True)
-
-    assert scratch.data_ptr() == manager._group_finite_scratch["policy"].data_ptr()
-    assert torch.equal(
-        scratch,
-        torch.tensor(
-            [
-                [True, True, True, True],
-                [True, True, False, False],
-                [True, True, True, True],
-                [True, True, False, False],
-            ]
+def test_configured_noise_is_applied_and_seed_deterministic() -> None:
+    cfg = {
+        "policy": ObservationGroupCfg(
+            enable_corruption=True,
+            terms={
+                "state": ObservationTermCfg(
+                    func=lambda env: env.obs,
+                    noise=UniformNoiseCfg(n_min=-0.1, n_max=0.1),
+                )
+            },
         ),
-    )
-    assert manager.finite_valid("policy").tolist() == [True, False, True, False]
+    }
+    left = ObservationManager(cfg, FakeEnv(seed=11))
+    right = ObservationManager(cfg, FakeEnv(seed=11))
+
+    left_first = left.compute(update_history=True)["policy"]
+    right_first = right.compute(update_history=True)["policy"]
+
+    # Noise is applied: the corrupted observation differs from the raw term but
+    # stays within the configured uniform range.
+    assert isinstance(left_first, torch.Tensor)
+    noise = left_first - left._env.obs
+    assert float(noise.abs().max()) > 0.0
+    assert float(noise.abs().max()) <= 0.1 + 1e-6
+    torch.testing.assert_close(left_first, right_first)
+
+    # Repeated computes keep publishing seeded, in-range noise.
+    left_second = left.compute(update_history=True)["policy"]
+    right_second = right.compute(update_history=True)["policy"]
+    torch.testing.assert_close(left_second, right_second)
 
 
 def test_concatenated_nan_sanitize_does_not_mutate_term_owned_input(

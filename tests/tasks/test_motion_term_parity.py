@@ -614,12 +614,11 @@ def test_tensor_command_publishes_sampler_advance_exactly_once() -> None:
     torch.testing.assert_close(command.time_steps, torch.tensor([5, 1, 10], dtype=torch.int32))
 
 
-def test_motion_command_finite_verdict_reuses_persistent_carrier() -> None:
+def test_motion_command_finite_verdict_gates_refresh() -> None:
     command = mt.MotionCommand.__new__(mt.MotionCommand)
     command._device = torch.device("cpu")
     command._command = torch.ones((3, 4), dtype=torch.float32)
     command._command_finite_valid = torch.ones((), dtype=torch.bool)
-    command._deferred_validation_boundaries = False
     refreshes = 0
 
     def refresh() -> None:
@@ -628,9 +627,11 @@ def test_motion_command_finite_verdict_reuses_persistent_carrier() -> None:
 
     command._refresh_motion_torch = refresh
 
+    # A finite command is published without a refresh.
     first = command.command
+    torch.testing.assert_close(first, torch.ones((3, 4)))
     assert command._command_finite_valid.item() is True
-    assert first.data_ptr() == command._command.data_ptr()
+    assert refreshes == 0
 
     command._command[1, 1] = torch.nan
     command.command
@@ -638,39 +639,19 @@ def test_motion_command_finite_verdict_reuses_persistent_carrier() -> None:
     assert refreshes == 1
 
 
-def test_motion_command_deferred_finite_verdict_does_not_host_refresh() -> None:
-    command = mt.MotionCommand.__new__(mt.MotionCommand)
-    command._device = torch.device("cpu")
-    command._command = torch.ones((3, 4), dtype=torch.float32)
-    command._command_finite_valid = torch.ones((), dtype=torch.bool)
-    command._deferred_validation_boundaries = True
-    refreshes = 0
-
-    def refresh() -> None:
-        nonlocal refreshes
-        refreshes += 1
-
-    command._refresh_motion_torch = refresh
-    command._command[2, 3] = torch.nan
-    result = command.command
-
-    assert result.data_ptr() == command._command.data_ptr()
-    assert command._command_finite_valid.item() is False
-    assert refreshes == 0
-
-
-def test_motion_packet_reuses_persistent_reset_carrier() -> None:
+def test_motion_packet_gathers_requested_frames() -> None:
     command = mt.MotionCommand.__new__(mt.MotionCommand)
     command._device = torch.device("cpu")
     command._motion_features = torch.arange(3 * 4, dtype=torch.float32).reshape(3, 4)
     command._reset_motion_packet = torch.empty_like(command._motion_features)
 
-    first = command._motion_packet(torch.tensor((0, 1, 2), dtype=torch.int32))
-    second = command._motion_packet(torch.tensor((1, 1, 1), dtype=torch.int32))
+    # The returned packet is an internal view; the observable contract is the
+    # gathered values at each call.
+    packet = command._motion_packet(torch.tensor((0, 1, 2), dtype=torch.int32))
+    torch.testing.assert_close(packet, command._motion_features)
 
-    assert first.data_ptr() == command._reset_motion_packet.data_ptr()
-    assert second.data_ptr() == command._reset_motion_packet.data_ptr()
-    torch.testing.assert_close(second, command._motion_features[torch.ones(3, dtype=torch.int64)])
+    packet = command._motion_packet(torch.tensor((1, 1, 1), dtype=torch.int32))
+    torch.testing.assert_close(packet, command._motion_features[torch.ones(3, dtype=torch.int64)])
 
 
 def test_tensor_command_full_refresh_gathers_advanced_frames() -> None:
@@ -721,7 +702,7 @@ def test_tensor_command_full_refresh_gathers_advanced_frames() -> None:
     )
 
 
-def test_tensor_command_empty_mask_resample_has_no_host_branch() -> None:
+def test_tensor_command_empty_mask_preserves_rng_and_skips_sampler() -> None:
     command = mt.MotionCommand.__new__(mt.MotionCommand)
     command._device = torch.device("cpu")
     command.last_reset_timing_ms = {}
@@ -808,14 +789,15 @@ def test_tensor_command_empty_mask_resample_has_no_host_branch() -> None:
     )
     writes: list[dict[str, object]] = []
     ingested: list[tuple[torch.Tensor, torch.Tensor]] = []
+    generator = command._env.torch_rng.generator
+    rng_state = generator.get_state()
 
     command._resample_command(torch.zeros(3, dtype=torch.bool))
 
-    assert command.tensor_sampler.diagnostics.reset_dispatches == 1
-    assert len(writes) == 1
-    assert not writes[0]["reset_mask"].any()
-    assert len(ingested) == 1
-    assert not ingested[0][0].any()
+    assert command.tensor_sampler.diagnostics.reset_dispatches == 0
+    assert writes == []
+    assert ingested == []
+    torch.testing.assert_close(generator.get_state(), rng_state)
 
 
 def test_tensor_command_syncs_sampler_mirrors_at_full_width() -> None:
@@ -939,21 +921,6 @@ def test_motion_feature_layout_is_cached_without_recomputing_shapes() -> None:
     }
 
 
-def test_motion_reset_carriers_are_persistent_and_not_copied_per_reset() -> None:
-    command = mt.MotionCommand.__new__(mt.MotionCommand)
-    command._reset_joint_values = torch.zeros((3, 2))
-    command._reset_root_state = torch.zeros((3, 13))
-    command._reset_packet_velocity = torch.empty_like(command._reset_joint_values)
-    command._reset_joint_values_scratch = torch.empty_like(command._reset_joint_values)
-    command._reset_root_state_scratch = torch.empty_like(command._reset_root_state)
-
-    assert command._reset_packet_velocity.data_ptr() != command._reset_joint_values.data_ptr()
-    assert command._reset_joint_values_scratch.data_ptr() != (
-        command._reset_joint_values.data_ptr()
-    )
-    assert command._reset_root_state_scratch.data_ptr() != (command._reset_root_state.data_ptr())
-
-
 def test_motion_reset_values_kernel_matches_eager_and_reuses_scratch() -> None:
     rng = np.random.default_rng(1811)
     count, num_joints, num_bodies = 39, 29, 14
@@ -1052,7 +1019,7 @@ def test_motion_reset_values_kernel_matches_eager_and_reuses_scratch() -> None:
         )
 
 
-def test_motion_packet_ingest_swaps_two_persistent_carriers() -> None:
+def test_motion_packet_ingest_updates_only_selected_rows() -> None:
     command = mt.MotionCommand.__new__(mt.MotionCommand)
     command._num_envs = 3
     command.motion = SimpleNamespace(num_joints=2)
@@ -1087,15 +1054,10 @@ def test_motion_packet_ingest_swaps_two_persistent_carriers() -> None:
     packet[:, num_joints * 2 + 14 : num_joints * 2 + 20] = 10.0
     packet[:, num_joints * 2 + 20 : num_joints * 2 + 26] = 11.0
     packet[:, num_joints * 2 + 26 :] = 12.0
-    first_data = command._motion_data
-    first_scratch = command._motion_packet_scratch
     mask = torch.tensor([False, True, False])
 
     command._ingest_motion_packet_mask(mask, packet)
 
-    assert command._motion_data is first_scratch
-    assert command._motion_packet_scratch is first_data
-    assert command._motion_data.joint_pos.data_ptr() == first_scratch.joint_pos.data_ptr()
     assert command._motion_data.joint_pos[1].eq(7.0).all()
     assert command._motion_data.joint_pos[[0, 2]].eq(0.0).all()
     assert command._motion_data.body_pos_w[1].eq(8.0).all()
@@ -1108,3 +1070,19 @@ def test_motion_packet_ingest_swaps_two_persistent_carriers() -> None:
     assert command._body_pos_packet_scratch[1].eq(8.0).all()
     assert command._command[1].eq(7.0).all()
     assert command._command[[0, 2]].eq(-2.0).all()
+
+    # A second ingest on a different row subset accumulates correctly: row 2
+    # picks up the packet while row 1 keeps the values from the first ingest.
+    command._ingest_motion_packet_mask(torch.tensor([False, False, True]), packet)
+
+    assert command._motion_data.joint_pos[1].eq(7.0).all()
+    assert command._motion_data.joint_pos[2].eq(7.0).all()
+    assert command._motion_data.joint_pos[0].eq(0.0).all()
+    assert command._motion_data.body_pos_w[2].eq(8.0).all()
+    assert (
+        command._motion_data.body_pos_w[[0, 1]].eq(torch.tensor([1.0, 8.0]).reshape(2, 1, 1)).all()
+    )
+    assert command._body_pos_w[2].eq(8.0).all()
+    assert command._body_pos_w[[0, 1]].eq(torch.tensor([-1.0, 8.0]).reshape(2, 1, 1)).all()
+    assert command._command[2].eq(7.0).all()
+    assert command._command[[0, 1]].eq(torch.tensor([-2.0, 7.0]).reshape(2, 1)).all()

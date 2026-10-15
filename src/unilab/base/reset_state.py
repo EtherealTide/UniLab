@@ -118,7 +118,6 @@ class ResetStateTransaction:
         self._tensor_has_writes = False
         self._tensor_owner_subset = False
         self._mask_count = torch.zeros((), dtype=torch.int64)
-        self._mask_outside_rows = torch.zeros((), dtype=torch.bool)
         self._begin_rows: torch.Tensor | None = None
         self._begin_ids: np.ndarray | None = None
         self._host_has_writes = False
@@ -144,12 +143,6 @@ class ResetStateTransaction:
         self._tensor_joint_columns: (
             tuple[tuple[int, ...], tuple[int, ...], torch.Tensor, torch.Tensor] | None
         ) = None
-        self._motion_payload_valid: torch.Tensor | None = None
-        self._tensor_root_payload_valid: torch.Tensor | None = None
-        self._deferred_payload_validation = False
-        self._deferred_mask_validation = False
-        self._commit_verdict_published = False
-        self._completed_tensor_has_writes = False
 
     @property
     def active(self) -> bool:
@@ -157,82 +150,9 @@ class ResetStateTransaction:
         return self._active or self._tensor_active
 
     @property
-    def motion_payload_valid(self) -> torch.Tensor:
-        """Latest fused motion-reset payload verdict."""
-        return self._require_motion_payload_valid()
-
-    @property
-    def tensor_root_payload_valid(self) -> torch.Tensor:
-        """Latest fused tensor root-reset payload verdict."""
-        return self._require_tensor_root_payload_valid()
-
-    @property
-    def deferred_payload_validation(self) -> bool:
-        """Whether fused reset payload verdicts may defer publication."""
-        return self._deferred_payload_validation
-
-    def set_deferred_payload_validation(self, enabled: bool) -> None:
-        """Opt in to completion-boundary fused reset payload publication."""
-        if not isinstance(enabled, bool):
-            raise TypeError(f"deferred payload validation must be bool, got {type(enabled)}")
-        self._deferred_payload_validation = enabled
-
-    @property
-    def deferred_mask_validation(self) -> bool:
-        """Whether reset mask scope/row-count verdicts may defer publication."""
-        return self._deferred_mask_validation
-
-    def set_deferred_mask_validation(self, enabled: bool) -> None:
-        """Opt in to completion-boundary reset mask verdict publication."""
-        if not isinstance(enabled, bool):
-            raise TypeError(f"deferred mask validation must be bool, got {type(enabled)}")
-        if self.active:
-            raise RuntimeError("deferred mask validation cannot change during an active reset")
-        self._deferred_mask_validation = enabled
-
-    def publish_mask_validation_verdicts(self) -> None:
-        """Fail closed on deferred reset-scope and row-count verdicts."""
-        if not self._deferred_mask_validation:
-            return
-        if bool(self._mask_outside_rows):
-            raise ValueError("tensor reset mask attempted a write outside the active mask")
-        if self._commit_verdict_published:
-            return
-        if not self._last_commit_had_writes:
-            return
-        if bool(self._mask_count.item()):
-            self._commit_verdict_published = True
-            return
-        if self._completed_tensor_has_writes:
-            self._commit_verdict_published = True
-            return
-        raise ValueError("fixed-width tensor reset commit has no selected rows")
-
-    @property
     def tensor_active(self) -> bool:
         """Whether the active reset composes device tensor rows without host staging."""
         return self._tensor_active
-
-    def _require_motion_payload_valid(self) -> torch.Tensor:
-        if self._motion_payload_valid is None:
-            return torch.ones((), dtype=torch.bool)
-        return self._motion_payload_valid
-
-    def _require_tensor_root_payload_valid(self) -> torch.Tensor:
-        if self._tensor_root_payload_valid is None:
-            return torch.ones((), dtype=torch.bool)
-        return self._tensor_root_payload_valid
-
-    def publish_payload_validation_verdicts(self, *, term_name: str) -> None:
-        """Fail closed on fused reset payload verdicts at a completion boundary."""
-        if not self._deferred_payload_validation:
-            return
-        if bool(self.tensor_root_payload_valid) and bool(self.motion_payload_valid):
-            return
-        raise ValueError(
-            f"EventManager term '{term_name}' tensor reset payload contains NaN/Inf "
-            "or a non-unit quaternion"
-        )
 
     @property
     def last_commit_had_writes(self) -> bool:
@@ -387,7 +307,6 @@ class ResetStateTransaction:
         self._tensor_owner_subset = owner_subset
         self._requesting_terms.clear()
         self._last_commit_had_writes = False
-        self._commit_verdict_published = False
         self._tensor_active = True
 
     def write_entity_state(
@@ -1360,13 +1279,6 @@ class ResetStateTransaction:
         # reduction. Compare against a device-resident true scalar so the
         # success path remains non-synchronizing; invalid diagnostics below are
         # still allowed to synchronize and identify the offending payload.
-        if self._motion_payload_valid is None or (
-            self._motion_payload_valid.device != valid.device
-        ):
-            self._motion_payload_valid = torch.empty_like(valid)
-        self._motion_payload_valid.copy_(valid)
-        if self._deferred_payload_validation:
-            return
         if torch.equal(valid, torch.ones_like(valid)):
             return
         payloads = (
@@ -1453,16 +1365,10 @@ class ResetStateTransaction:
     def _tensor_mask_has_outside_rows(
         self, reset_mask: torch.Tensor, active_mask: torch.Tensor
     ) -> bool:
-        outside = (reset_mask & ~active_mask).any()
-        self._mask_outside_rows.copy_(outside)
-        if self._deferred_mask_validation:
-            return False
-        return bool(outside)
+        return bool((reset_mask & ~active_mask).any())
 
     def _mask_is_empty(self, reset_mask: torch.Tensor) -> bool:
         self._mask_count.copy_(reset_mask.sum())
-        if self._deferred_mask_validation:
-            return False
         return bool(self._mask_count.item() == 0)
 
     def _commit_has_rows(self, commit_mask: torch.Tensor) -> bool:
@@ -1847,11 +1753,6 @@ class ResetStateTransaction:
             if isinstance(backend_timing, dict):
                 self._last_set_state_timing_ms.update(backend_timing)
 
-    @property
-    def last_set_state_completion(self) -> Any | None:
-        """Return the public receipt from the most recent backend reset commit."""
-        return self._last_set_state_timing_ms.get("graph_completion")
-
     def _require_packed_transaction(self) -> TorchPackedResetComposer:
         """Return the declared packed composer or fail closed."""
         transaction = self._packed_reset_transaction
@@ -1935,13 +1836,6 @@ class ResetStateTransaction:
             atol=1e-6,
         )
         valid = torch.isfinite(root_state).all() & valid_quat.all()
-        if self._tensor_root_payload_valid is None or (
-            self._tensor_root_payload_valid.device != valid.device
-        ):
-            self._tensor_root_payload_valid = torch.empty_like(valid)
-        self._tensor_root_payload_valid.copy_(valid)
-        if self._deferred_payload_validation:
-            return
         if torch.equal(valid, torch.ones_like(valid)):
             return
         if not bool(torch.isfinite(root_state).all()):
@@ -2528,12 +2422,9 @@ class ResetStateTransaction:
         self._tensor_active = False
         self._tensor_active_mask = None
         self._mask_count.zero_()
-        self._mask_outside_rows.zero_()
         self._tensor_has_writes = False
-        self._completed_tensor_has_writes = self._last_commit_had_writes
         self._tensor_owner_subset = False
         self._tensor_write_mask = None
-        self._commit_verdict_published = False
 
 
 __all__ = ["ResetStateTransaction"]

@@ -223,7 +223,6 @@ def test_step_without_done_preserves_eager_autoreset_gate() -> None:
 def test_reset_done_count_remains_device_resident_before_timing_publication() -> None:
     env = _StubTorchEnv()
     env.init_state()
-    env.set_deferred_validation_boundaries(True)
 
     env.step(_actions(env))
 
@@ -335,40 +334,6 @@ def test_nonfinite_reward_fails_closed_without_sanitization() -> None:
     env.update_state = bad_update  # type: ignore[method-assign]
     with pytest.raises(ValueError, match="reward contains NaN or Inf"):
         env.step(_actions(env))
-
-
-def test_deferred_validation_flags_fail_closed_at_completion() -> None:
-    env = _StubTorchEnv()
-    env.init_state()
-    env.set_deferred_validation_boundaries(True)
-    assert env.deferred_validation_boundaries is True
-
-    with pytest.raises(ValueError, match="action contains NaN or Inf"):
-        env.step(torch.full((env.num_envs, 4), torch.nan))
-
-    assert env._validation_flags()["action_finite"].item() is False
-
-
-def test_public_output_finite_verdict_reuses_persistent_carrier() -> None:
-    env = _StubTorchEnv()
-    env.init_state()
-    verdict = env._validation_flags()["state_finite"]
-
-    env.step(_actions(env))
-
-    assert verdict.data_ptr() == env._validation_flags()["state_finite"].data_ptr()
-    assert bool(verdict)
-
-    original_update = env.update_state
-
-    def bad_update(state: TorchEnvState) -> TorchEnvState:
-        result = original_update(state)
-        return result.replace(reward=torch.full_like(result.reward, torch.nan))
-
-    env.update_state = bad_update  # type: ignore[method-assign]
-    with pytest.raises(ValueError, match="reward contains NaN or Inf"):
-        env.step(_actions(env))
-    assert bool(env._validation_flags()["state_finite"]) is False
 
 
 def test_invalid_backend_control_fails_closed() -> None:
@@ -568,7 +533,7 @@ def test_backend_device_must_match_capability() -> None:
         env.init_state()
 
 
-def test_cuda_host_bridge_requires_public_completion_publication() -> None:
+def test_cuda_host_bridge_binds_without_completion_capability() -> None:
     backend = _backend()
     backend.get_tensor_capabilities.return_value = TensorLifecycleCapabilities(
         execution=TensorExecution.HOST_BRIDGE,
@@ -584,8 +549,20 @@ def test_cuda_host_bridge_requires_public_completion_publication() -> None:
     # capability branch without initializing an unavailable CUDA runtime.
     env = _StubTorchEnv(backend=backend, device="cpu")
     env._device = torch.device("cuda:0")
-    with pytest.raises(ValueError, match="graph_completion_publication"):
-        env.init_state()
+    # Synchronous host-bridge backends emit no completion receipt; binding must
+    # not require any completion capability.
+    env._bind_tensor_runtime()
+    assert env._tensor_runtime_bound
+
+
+def test_produces_completion_receipts_follows_backend_step_receipt_contract() -> None:
+    # Synchronous host-bridge producers (mujoco/motrix/superdex) emit no
+    # receipt, so the env declares the relaxed sync semantic to uni_rl.
+    assert _StubTorchEnv().produces_completion_receipts is False
+    # The event-backed async mjwarp CUDA path publishes a receipt per step.
+    backend = _backend()
+    backend.backend_type = "mjwarp"
+    assert _StubTorchEnv(backend=backend).produces_completion_receipts is True
 
 
 def test_backend_reset_timing_hook_is_merged() -> None:

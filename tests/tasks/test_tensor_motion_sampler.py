@@ -55,8 +55,7 @@ def test_adaptive_reset_sampling_is_device_resident_and_deterministic() -> None:
     assert first.dtype == torch.int32
     assert first.device.type == "cpu"
     # Integer frame output can alias across draws when both float samples land
-    # in the same frame bin; deterministic replay and persistent carriers below
-    # are the semantic checks.
+    # in the same frame bin; deterministic replay below is the semantic check.
     assert sampler.diagnostics.total == 0
 
     generator.manual_seed(7)
@@ -64,40 +63,48 @@ def test_adaptive_reset_sampling_is_device_resident_and_deterministic() -> None:
     torch.testing.assert_close(repeat, first)
 
 
-def test_reset_sampling_reuses_persistent_full_width_carriers() -> None:
-    adaptive = _sampler()
-    mixed = _sampler(mode="mixed", start_ratio=0.5)
-    generator = torch.Generator(device="cpu").manual_seed(7)
+def test_reset_sampling_returns_valid_frames_and_selects_masked_rows() -> None:
+    adaptive = _sampler(initial_frames=torch.tensor([5, 6, 7, 8], dtype=torch.int32))
+    mixed = _sampler(
+        mode="mixed",
+        start_ratio=0.5,
+        initial_frames=torch.tensor([5, 6, 7, 8], dtype=torch.int32),
+    )
     mask = torch.tensor([False, True, True, True])
 
-    adaptive_frames = adaptive.sample_frames(mask, generator)
-    adaptive_repeat = adaptive.sample_frames(mask, generator)
-    mixed_frames = mixed.sample_frames(mask, generator)
+    for sampler in (adaptive, mixed):
+        generator = torch.Generator(device="cpu").manual_seed(7)
+        frames = sampler.sample_frames(mask, generator)
 
-    assert adaptive_frames.data_ptr() == adaptive._reset_frames.data_ptr()
-    assert adaptive_repeat.data_ptr() == adaptive._reset_frames.data_ptr()
-    assert mixed_frames.data_ptr() == mixed._reset_frames.data_ptr()
-    assert adaptive_frames.shape == (4,)
-    assert adaptive_frames.dtype is torch.int32
+        assert frames.shape == (4,)
+        assert frames.dtype is torch.int32
+        assert bool((frames >= 0).all()) and bool((frames < sampler.num_frames).all())
+        # Only masked rows are published into the current-frame mirrors.
+        torch.testing.assert_close(sampler.current_frames[0], torch.tensor(5, dtype=torch.int32))
+        torch.testing.assert_close(sampler.current_frames[1:], frames[1:])
 
 
-def test_step_full_reuses_persistent_carriers_and_values() -> None:
+def test_step_full_advances_active_rows_and_reports_done() -> None:
     sampler = _sampler(initial_frames=torch.tensor([30, 10, 11, 3], dtype=torch.int32))
     active = torch.tensor([True, False, True, False])
     time_steps = torch.zeros(4, dtype=torch.int32)
 
     first = sampler.step_full(active, time_steps)
+    assert first.dtype == torch.bool
+    torch.testing.assert_close(
+        sampler.current_frames, torch.tensor([31, 10, 12, 3], dtype=torch.int32)
+    )
+
+    # Repeated applies keep advancing active rows exactly once per call.
     second = sampler.step_full(active, time_steps)
 
-    assert first.data_ptr() == sampler._step_done.data_ptr()
-    assert second.data_ptr() == sampler._step_done.data_ptr()
     assert second.tolist() == [False, False, False, False]
     torch.testing.assert_close(
         sampler.current_frames, torch.tensor([31, 10, 13, 3], dtype=torch.int32)
     )
 
 
-def test_failure_stats_reuse_persistent_carriers() -> None:
+def test_failure_stats_update_bin_counts_and_blend() -> None:
     sampler = _sampler()
     sampler.current_frames.copy_(torch.tensor([0, 8, 16, 24], dtype=torch.int32))
     terminated = torch.tensor([True, False, True, False])
@@ -112,41 +119,34 @@ def test_failure_stats_reuse_persistent_carriers() -> None:
     torch.testing.assert_close(sampler.bin_failed_count, expected, rtol=0, atol=0)
 
 
-def test_adaptive_probabilities_and_metrics_reuse_persistent_carriers() -> None:
+def test_adaptive_probabilities_and_metrics_are_numerically_correct() -> None:
     sampler = _sampler()
     sampler.bin_failed_count.copy_(torch.tensor([0.2, 0.1, 0.0, 0.0]))
 
     probabilities = sampler._adaptive_probabilities()
-    first_pointer = probabilities.data_ptr()
     sampler._publish_sampling_metrics(probabilities)
     repeat = sampler._adaptive_probabilities()
 
-    assert repeat.data_ptr() == first_pointer
     expected = torch.tensor([0.5625, 0.3125, 0.0625, 0.0625])
     torch.testing.assert_close(repeat, expected, rtol=0, atol=1.0e-7)
+    torch.testing.assert_close(repeat.sum(), torch.ones(()), rtol=0, atol=1.0e-7)
     assert bool(torch.isfinite(sampler.sampling_entropy))
     assert bool(torch.isfinite(sampler.sampling_top1_prob))
     assert bool(torch.isfinite(sampler.sampling_top1_bin))
 
 
-def test_mixed_metrics_reuse_persistent_carriers_and_values() -> None:
+def test_mixed_metrics_publish_expected_values_across_samples() -> None:
     sampler = _sampler(mode="mixed", start_ratio=0.5)
     mask = torch.ones(4, dtype=torch.bool)
     generator = torch.Generator(device="cpu").manual_seed(3)
 
-    first_entropy_pointer = sampler.sampling_entropy.data_ptr()
-    log_start_pointer = sampler._mixed_log_start.data_ptr()
-    log_uniform_pointer = sampler._mixed_log_uniform.data_ptr()
-    entropy_carrier_pointer = sampler._mixed_entropy.data_ptr()
     sampler.sample_frames(mask, generator)
-    second_entropy_pointer = sampler.sampling_entropy.data_ptr()
+    first_entropy = sampler.sampling_entropy.clone()
     sampler.sample_frames(mask, generator)
 
-    assert second_entropy_pointer == first_entropy_pointer
-    assert sampler.sampling_entropy.data_ptr() == first_entropy_pointer
-    assert sampler._mixed_log_start.data_ptr() == log_start_pointer
-    assert sampler._mixed_log_uniform.data_ptr() == log_uniform_pointer
-    assert sampler._mixed_entropy.data_ptr() == entropy_carrier_pointer
+    # Mixed-mode metrics are a deterministic function of the sampling ratios, so
+    # repeated samples publish the same values.
+    torch.testing.assert_close(sampler.sampling_entropy, first_entropy, rtol=0, atol=0)
     assert sampler.sampling_top1_prob.item() == pytest.approx(0.625)
     assert sampler.sampling_top1_bin.item() == 0.0
     start_mass = 0.625
