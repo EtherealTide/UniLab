@@ -7,20 +7,20 @@ from collections import defaultdict
 
 import pytest
 import torch
-import unilab.rl.runtime.distributed.affinity as affinity
-from unilab.rl.runtime.distributed.context import (
-    UNILAB_DP_LOG_DIR,
-    UNILAB_DP_RANK,
-    UNILAB_DP_WORLD_SIZE,
-)
-from unilab.rl.runtime.distributed.sync import DpParameterSync
 
+import unilab.rl.runtime.distributed.affinity as affinity
 from tests.algos.test_offpolicy_double_buffer_runner import (
     _fake_env_factory,
     _FakeRunner,
     _offpolicy,
     _offpolicy_cfg,
 )
+from unilab.rl.runtime.distributed.context import (
+    UNILAB_DP_LOG_DIR,
+    UNILAB_DP_RANK,
+    UNILAB_DP_WORLD_SIZE,
+)
+from unilab.rl.runtime.distributed.sync import DpParameterSync
 
 
 def _bare_runner():

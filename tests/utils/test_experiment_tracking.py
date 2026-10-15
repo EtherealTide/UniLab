@@ -6,11 +6,11 @@ import types
 from typing import Any
 
 import pytest
-import unilab.rl.logging.common as common_module
 from rich.console import Console
-from unilab.rl.logging import OffPolicyLogger, OnPolicyLogger
 
+import unilab.rl.logging.common as common_module
 import unilab.training.experiment as experiment_module
+from unilab.rl.logging import OffPolicyLogger, OnPolicyLogger
 from unilab.training.experiment import ExperimentTracker, build_wandb_settings
 
 

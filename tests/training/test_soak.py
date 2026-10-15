@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from unilab.rl.logging.runtime_manifest_schema import RUNTIME_MANIFEST_SCHEMA_VERSION
 
+from unilab.rl.logging.runtime_manifest_schema import RUNTIME_MANIFEST_SCHEMA_VERSION
 from unilab.training.soak import (
     SoakFailureError,
     _tree_snapshot,

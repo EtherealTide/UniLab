@@ -17,6 +17,7 @@ import pytest
 import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
+
 from unilab.rl.runtime.distributed.context import (
     UNILAB_DP_LOG_DIR,
     UNILAB_DP_RANK,
@@ -24,7 +25,6 @@ from unilab.rl.runtime.distributed.context import (
 )
 from unilab.rl.runtime.placement import InferencePlacement, InferenceTransport
 from unilab.rl.runtime.settings import TensorRuntimeSettings
-
 from unilab.training import cuda_process_sharing
 
 _ROOT = Path(__file__).parent.parent.parent

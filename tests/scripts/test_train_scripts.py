@@ -1557,7 +1557,6 @@ def test_offpolicy_build_play_actor_preserves_flashsac_model_kwargs(
 ):
     import unilab.rl.algos.common.actor_factory as actor_factory
     import unilab.rl.algos.common.normalization as normalization
-
     from unilab.visualization.interactive_playback import build_play_actor
 
     captured: dict[str, Any] = {}
@@ -1752,7 +1751,6 @@ def _patch_offpolicy_play_session(
     fake_env_cls,
 ) -> None:
     import unilab.rl.algos.common.actor_factory as actor_factory
-
     import unilab.utils.checkpoint as checkpoint_utils
 
     monkeypatch.setattr(mod, "build_offpolicy_env_cfg_override", lambda algo_name, cfg: {})

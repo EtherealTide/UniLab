@@ -7,10 +7,10 @@ import tempfile
 import numpy as np
 import pytest
 import torch
-from tests.rl._fakes import StrictTensorEnv, StrictTensorEnvFactory
 from rsl_rl.models import MLPModel
 from tensordict import TensorDict
 
+from tests.rl._fakes import StrictTensorEnv, StrictTensorEnvFactory
 from unilab.rl.algos.appo.learner import APPOLearner, gaussian_distribution_std
 from unilab.rl.algos.appo.runner import APPORunner
 

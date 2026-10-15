@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import torch
-from tests.rl._fakes import FakeVecEnv, _FakePlayCapabilities, _FakeSpace
 
+from tests.rl._fakes import FakeVecEnv, _FakePlayCapabilities, _FakeSpace
 from unilab.rl.contracts.env import (
     EnvAlgoCapabilities,
     EnvAlgoCapabilitiesProtocol,

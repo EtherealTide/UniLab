@@ -12,10 +12,10 @@ import pytest
 import torch
 
 import unilab.rl.runtime.offpolicy.worker as worker_module
-from unilab.rl.runtime.collector_timing import extract_env_step_breakdown_timing_ms
-from unilab.rl.runtime.ipc.inference_ring import SharedInferenceRing
 from unilab.rl.logging.metrics_drain import RewardComponentWindow, drain_collector_metrics
 from unilab.rl.logging.offpolicy import OffPolicyLogger
+from unilab.rl.runtime.collector_timing import extract_env_step_breakdown_timing_ms
+from unilab.rl.runtime.ipc.inference_ring import SharedInferenceRing
 from unilab.rl.runtime.offpolicy.tensor_metrics import TensorCollectorMetrics
 from unilab.rl.runtime.offpolicy.worker import (
     _publish_collector_ready,

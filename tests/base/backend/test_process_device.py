@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from unilab.rl.runtime.distributed.context import visible_cuda_entries
 from unisim.backend.mjwarp import runtime as mjwarp_runtime
 
 import unilab.base.process_device as process_device
@@ -20,6 +19,7 @@ from unilab.base.process_device import (
     resolve_backend_env_device_id,
     resolve_backend_process_device,
 )
+from unilab.rl.runtime.distributed.context import visible_cuda_entries
 
 
 class _FakeWarpDevice:
