@@ -48,51 +48,76 @@ def test_eager_mujoco_completion_reaches_replay_ingress() -> None:
 
     try:
         initial_obs, _ = env.reset(seed=2359)
-        actions = torch.zeros(
-            (2, env.action_space.shape[0]), dtype=torch.float32, device=env.device
-        )
-        state = env.step(actions)
-        completion = state.info.get("completion")
-        assert completion is not None
-        assert completion.__class__.__module__.startswith("unisim.")
+        current_obs = initial_obs
+        states = []
+        packed_rows: list[torch.Tensor] = []
+        source_snapshots: list[dict[str, torch.Tensor]] = []
+        next_snapshots: list[dict[str, torch.Tensor]] = []
 
-        done = state.terminated | state.truncated
-        terminal_final = state.final_observation
-        terminal_obs = terminal_final.get("obs") if terminal_final is not None else None
-        terminal_critic = terminal_final.get("critic") if terminal_final is not None else None
-        assert replay.add_batch(
-            initial_obs["obs"],
-            actions,
-            state.reward.to(dtype=torch.float32).ravel(),
-            state.obs["obs"],
-            done.to(dtype=torch.float32),
-            state.truncated.to(dtype=torch.float32),
-            terminal_mask=done,
-            terminal_next_obs=terminal_obs,
-            critic=initial_obs["critic"],
-            next_critic=state.obs["critic"],
-            terminal_next_critic=terminal_critic,
-            completion=completion,
-        )
+        for tick in range(5):
+            source_snapshots.append({name: value.clone() for name, value in current_obs.items()})
+            actions = torch.full(
+                (2, env.action_space.shape[0]),
+                (tick + 1) * 0.02,
+                dtype=torch.float32,
+                device=env.device,
+            )
+            state = env.step(actions)
+            states.append(state)
+            next_snapshots.append({name: value.clone() for name, value in state.obs.items()})
 
-        published = replay.last_completion
-        assert published is not completion
-        assert isinstance(published, ImmediateCompletion)
-        assert published.contract_version == completion.contract_version
-        assert published.operation == completion.operation
-        assert published.sequence == completion.sequence
-        assert published.stream_id == completion.stream_id
-        assert published.producer_id == completion.producer_id
+            completion = state.info.get("completion")
+            assert completion is not None
+            assert completion.__class__.__module__.startswith("unisim.")
 
-        ingress = replay.take_published_ingress()
-        assert ingress is not None
-        slot, start, count, packed = ingress
-        replay.commit_ingress(slot=slot, start=start, count=count)
-        assert (start, count) == (0, 2)
-        torch.testing.assert_close(replay.field_view(packed, "obs"), initial_obs["obs"])
-        torch.testing.assert_close(replay.field_view(packed, "actions"), actions)
-        torch.testing.assert_close(replay.field_view(packed, "rewards"), state.reward)
-        torch.testing.assert_close(replay.field_view(packed, "next_obs"), state.obs["obs"])
+            done = state.terminated | state.truncated
+            terminal_final = state.final_observation
+            terminal_obs = terminal_final.get("obs") if terminal_final is not None else None
+            terminal_critic = terminal_final.get("critic") if terminal_final is not None else None
+            assert replay.add_batch(
+                current_obs["obs"],
+                actions,
+                state.reward.to(dtype=torch.float32).ravel(),
+                state.obs["obs"],
+                done.to(dtype=torch.float32),
+                state.truncated.to(dtype=torch.float32),
+                terminal_mask=done,
+                terminal_next_obs=terminal_obs,
+                critic=current_obs["critic"],
+                next_critic=state.obs["critic"],
+                terminal_next_critic=terminal_critic,
+                completion=completion,
+            )
+
+            published = replay.last_completion
+            assert published is not completion
+            assert isinstance(published, ImmediateCompletion)
+            assert published.contract_version == completion.contract_version
+            assert published.operation == completion.operation
+            assert published.sequence == completion.sequence
+            assert published.stream_id == completion.stream_id
+            assert published.producer_id == completion.producer_id
+
+            ingress = replay.take_published_ingress()
+            assert ingress is not None
+            slot, start, count, packed = ingress
+            replay.commit_ingress(slot=slot, start=start, count=count)
+            assert (start, count) == (tick * 2, 2)
+            packed_rows.append(packed.clone())
+            current_obs = state.obs
+
+        # A public observation remains valid after later eager steps even when
+        # the consumer and replay publication retain it without an extra clone.
+        for tick, (state, packed) in enumerate(zip(states, packed_rows, strict=True)):
+            for group, field in (("obs", "obs"), ("critic", "critic")):
+                torch.testing.assert_close(
+                    replay.field_view(packed, field),
+                    source_snapshots[tick][group],
+                )
+            for group, field in (("obs", "next_obs"), ("critic", "next_critic")):
+                expected = next_snapshots[tick][group]
+                torch.testing.assert_close(state.obs[group], expected)
+                torch.testing.assert_close(replay.field_view(packed, field), expected)
     finally:
         replay.close()
         env.close()

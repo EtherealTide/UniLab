@@ -3734,6 +3734,62 @@ def test_public_observation_groups_do_not_alias_step_outputs() -> None:
     assert env._manager_tensor(values["obs"], dtype=torch.float32) is values["obs"]
 
 
+def test_eager_public_observations_survive_later_steps() -> None:
+    def episode_observation(env: _TestEnv) -> torch.Tensor:
+        return env.episode_length_buf[:, None].to(dtype=torch.float32)
+
+    def action_observation(env: _TestEnv) -> torch.Tensor:
+        return env.action_manager.action.to(dtype=torch.float32)
+
+    def critic_action_observation(env: _TestEnv) -> torch.Tensor:
+        return env.action_manager.action.to(dtype=torch.float32)
+
+    cfg = _make_cfg(
+        observations={
+            "actor": ObservationGroupCfg(
+                terms={
+                    "episode": ObservationTermCfg(func=episode_observation),
+                    "action": ObservationTermCfg(func=action_observation),
+                }
+            ),
+            "value": ObservationGroupCfg(
+                terms={
+                    "episode": ObservationTermCfg(func=episode_observation),
+                    "action": ObservationTermCfg(func=critic_action_observation),
+                }
+            ),
+        }
+    )
+    # Keep all five rows on one episode so the first observation remains
+    # semantically distinct from later publications.
+    cfg.max_episode_seconds = 100.0
+    env, _backend = _make_env(cfg)
+    try:
+        env.reset()
+        actions = [
+            torch.tensor([[0.25], [0.5]]),
+            torch.tensor([[0.5], [0.25]]),
+            torch.tensor([[-0.25], [-0.5]]),
+            torch.tensor([[-0.5], [-1.0]]),
+            torch.tensor([[1.0], [0.0]]),
+        ]
+        states = []
+        expected: list[dict[str, torch.Tensor]] = []
+        for action in actions:
+            state = env.step(action)
+            states.append(state)
+            expected.append({name: value.clone() for name, value in state.obs.items()})
+
+        for group in ("obs", "critic"):
+            pointers = [state.obs[group].data_ptr() for state in states]
+            assert len(set(pointers)) == len(pointers)
+        for state, expected_obs in zip(states, expected, strict=True):
+            for group, snapshot in expected_obs.items():
+                torch.testing.assert_close(state.obs[group], snapshot)
+    finally:
+        env.close()
+
+
 class _RecordingResetOwner(ResetOwner):
     def __init__(self, cfg: ResetOwnerCfg, env) -> None:
         super().__init__(cfg, env)

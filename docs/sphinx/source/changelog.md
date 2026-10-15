@@ -34,6 +34,13 @@ PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完
 
 ### Fixed / 修复
 
+- Multi-term concatenated observations are again caller-owned: the Manager no
+  longer publishes rotating internal output carriers through the default eager
+  boundary, so observations retained by a transition consumer remain immutable
+  across later steps ([#2362](https://github.com/Motphys/UniLab/issues/2362)).
+  多 term 拼接 observation 重新归 caller 所有：Manager 不再通过默认 eager
+  boundary 发布轮换的内部 output carrier，因此 transition consumer 保留的
+  observation 不会在后续 step 中被改写（#2362）。
 - Restored the v1.3.5 `MotionCommand` empty-reset-mask semantics: an empty mask
   consumes no sampler RNG and performs no backend state write or packet ingestion
   ([#2359](https://github.com/Motphys/UniLab/issues/2359)).

@@ -70,8 +70,8 @@ FORBIDDEN_ALLOCATION_CALLS = frozenset({"empty", "zeros", "ones", "cat", "stack"
 
 # Boundary operations are explicitly classified by file and expression rather
 # than silently erased from the audit. The manual-reset path is a user-selected
-# eager control boundary; eager output cloning, packed concatenation with an
-# owner carrier, and invalid-row diagnostics remain completion-owned.
+# eager control boundary; eager output ownership transfers and invalid-row
+# diagnostics remain explicitly classified.
 ALLOWED_HOT_PATH_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("src/unilab/envs/manager_based_rl_env.py", "eager_terminated.clone()"),
@@ -91,11 +91,7 @@ ALLOWED_HOT_PATH_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
         ("src/unilab/managers/observation_manager.py", "cast(torch.Tensor, obs).clone()"),
         (
             "src/unilab/managers/observation_manager.py",
-            "torch.cat(\n"
-            "                    tensors,\n"
-            "                    dim=self._group_obs_concatenate_dim[group_name],\n"
-            "                    out=result,\n"
-            "                )",
+            "torch.cat(tensors, dim=self._group_obs_concatenate_dim[group_name])",
         ),
         ("src/unilab/managers/reward_manager.py", "torch.nonzero(~finite[:, term_idx])"),
         ("src/unilab/managers/reward_manager.py", "invalid_rows.tolist()"),
