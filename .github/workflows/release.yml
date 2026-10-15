@@ -48,6 +48,20 @@ jobs:
         run: uv build --out-dir dist
       - name: Check distribution metadata
         run: uvx --from twine twine check dist/*
+      - name: Verify RL payload files are in the wheel
+        shell: bash
+        run: |
+          python3 - <<'EOF'
+          import glob, zipfile
+          whl = glob.glob('dist/*.whl')[0]
+          names = set(zipfile.ZipFile(whl).namelist())
+          for entry in (
+              'unilab/rl/py.typed',
+              'unilab/rl/runtime/ipc/replay_pipelines/native_h2d_ext.cpp',
+          ):
+              assert entry in names, f'{entry} missing from {whl}'
+          print('wheel RL payload ok')
+          EOF
       - name: Install the freshly built wheel
         run: |
           uv venv .release-venv
@@ -62,6 +76,7 @@ jobs:
           esac
           .release-venv/bin/python -c "
           import unilab
+          import unilab.rl.runtime.distributed.context
           assert unilab.ROOT_PATH.is_dir()
           assert (unilab.ROOT_PATH / 'conf').is_dir()
           version = unilab.__version__

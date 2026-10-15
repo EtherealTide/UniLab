@@ -225,3 +225,7 @@ jobs:
         run: uv run --no-sync unilab-pull-assets --robot all
       - name: Test with coverage
         run: uv run --no-sync pytest -m "not slow" --cov=src/unilab --cov-report "markdown-append:${GITHUB_STEP_SUMMARY:-/dev/null}" --cov-fail-under=25
+      - name: RL subsystem coverage gate
+        # Preserves the standalone unilab-rl CI gate (--cov-fail-under=50) for
+        # the RL stack merged into src/unilab/rl/ (issue #2372).
+        run: uv run --no-sync pytest tests/rl --cov=src/unilab/rl --cov-report=term-missing --cov-fail-under=50

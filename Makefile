@@ -1,6 +1,6 @@
 .PHONY: sync
 sync:
-	uv sync --extra mujoco --extra uni_rl
+	uv sync --extra mujoco
 
 .PHONY: setup
 setup: sync
@@ -19,7 +19,7 @@ sync-rocm:
 
 .PHONY: sync-xpu
 sync-xpu:
-	uv sync --extra mujoco --extra uni_rl --no-install-package torch
+	uv sync --extra mujoco --no-install-package torch
 	uv pip install torch==2.7.0 --torch-backend xpu
 
 .PHONY: format
