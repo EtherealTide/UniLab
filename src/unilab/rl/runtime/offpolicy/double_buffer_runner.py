@@ -637,7 +637,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         value = categories["persistent_exploration_scratch"]
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError("persistent exploration scratch bytes must be a non-negative int")
-        return value
+        return int(value)
 
     def _prepare_inference_timing_events(self) -> None:
         """Allocate the two CUDA timing events accounted for by the startup budget."""

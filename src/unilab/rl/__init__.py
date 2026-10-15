@@ -11,7 +11,26 @@ live in their owner modules.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from unilab.rl.adapters.rsl_rl.distributed import (
+        apply_rsl_rl_rank_seed,
+        finish_rsl_rl_distributed,
+        ppo_samples_per_iteration,
+        resolve_rsl_rl_device,
+        rsl_rl_single_process_topology,
+    )
+    from unilab.rl.adapters.rsl_rl.vec_env import RslRlVecEnvAdapter, get_policy_obs_dims
+    from unilab.rl.runtime.distributed.affinity import resolve_collector_cpu_ids
+    from unilab.rl.runtime.distributed.context import (
+        UNILAB_DP_LOG_DIR,
+        current_torch_distributed_local_rank,
+        current_torch_distributed_rank,
+        current_torch_distributed_world_size,
+    )
+    from unilab.rl.runtime.distributed.launcher import launch_torchrun_workers
+    from unilab.training.dp_config import reject_removed_device_config
 
 _LAZY_ATTRS: dict[str, tuple[str, str]] = {
     "UNILAB_DP_LOG_DIR": ("unilab.rl.runtime.distributed.context", "UNILAB_DP_LOG_DIR"),

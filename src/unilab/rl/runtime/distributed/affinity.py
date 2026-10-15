@@ -41,9 +41,13 @@ def resolve_collector_cpu_ids(
         raise ValueError(f"data-parallel rank {rank} is out of range for world_size={world_size}")
     groups: list[list[int]] | None = None
     if cpu_count is None:
-        try:
-            available_ids = sorted(os.sched_getaffinity(0))
-        except (AttributeError, OSError):
+        sched_getaffinity = getattr(os, "sched_getaffinity", None)
+        if sched_getaffinity is not None:
+            try:
+                available_ids = sorted(sched_getaffinity(0))
+            except OSError:
+                available_ids = list(range(os.cpu_count() or 1))
+        else:
             available_ids = list(range(os.cpu_count() or 1))
         groups = _discover_physical_cpu_groups(available_ids)
         cpu_count = len(available_ids)
@@ -120,10 +124,10 @@ def _discover_physical_cpu_groups(cpu_ids: Sequence[int]) -> list[list[int]]:
                 subprocess.check_output(["sysctl", "-n", "hw.physicalcpu"], text=True).strip()
             )
             physical = max(1, min(physical, len(ids)))
-            groups = [[] for _ in range(physical)]
+            darwin_groups: list[list[int]] = [[] for _ in range(physical)]
             for index, cpu_id in enumerate(ids):
-                groups[min(index * physical // len(ids), physical - 1)].append(cpu_id)
-            return [group for group in groups if group]
+                darwin_groups[min(index * physical // len(ids), physical - 1)].append(cpu_id)
+            return [group for group in darwin_groups if group]
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
     return [[cpu_id] for cpu_id in ids]

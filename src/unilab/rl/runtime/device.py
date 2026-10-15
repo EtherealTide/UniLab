@@ -11,6 +11,9 @@ and workers receive it through injected callables (see
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import cast
+
 import torch
 
 from unilab.utils.device import get_default_device
@@ -37,7 +40,7 @@ def _device_count(device_type: str) -> int | None:
         xpu = getattr(torch, "xpu", None)
         device_count = getattr(xpu, "device_count", None)
         if callable(device_count):
-            return int(device_count())
+            return int(cast(Callable[[], int], device_count)())
     return None
 
 
