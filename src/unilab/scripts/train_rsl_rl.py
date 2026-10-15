@@ -107,7 +107,7 @@ def build_ppo_env_cfg_override(cfg: DictConfig) -> dict[str, Any]:
         result,
         str(cfg.training.sim_backend),
         collector_tensor_device=str(
-            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+            OmegaConf.select(cfg, "training.collector_tensor_device", default="auto")
         ),
         learner_device=learner_device,
     )
@@ -142,7 +142,7 @@ def build_ppo_play_env_cfg_override(cfg: DictConfig) -> dict[str, Any]:
         result,
         str(cfg.training.sim_backend),
         collector_tensor_device=str(
-            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+            OmegaConf.select(cfg, "training.collector_tensor_device", default="auto")
         ),
         learner_device=learner_device,
     )
@@ -341,7 +341,7 @@ def play_rsl_rl(cfg: DictConfig, device: str) -> str | None:
         play_env_cfg_override,
         str(cfg.training.sim_backend),
         collector_tensor_device=str(
-            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+            OmegaConf.select(cfg, "training.collector_tensor_device", default="auto")
         ),
         learner_device=device,
     )
@@ -507,7 +507,7 @@ def main(cfg: DictConfig) -> None:
         env_cfg_override,
         str(cfg.training.sim_backend),
         collector_tensor_device=str(
-            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+            OmegaConf.select(cfg, "training.collector_tensor_device", default="auto")
         ),
         learner_device=device,
     )

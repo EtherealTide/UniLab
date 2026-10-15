@@ -876,7 +876,7 @@ def create_playback_session(
             env_cfg_override,
             sim_backend,
             collector_tensor_device=str(
-                OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+                OmegaConf.select(cfg, "training.collector_tensor_device", default="auto")
             ),
             learner_device=device,
         )

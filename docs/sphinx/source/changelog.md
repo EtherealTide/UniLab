@@ -32,6 +32,27 @@ PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完
   按实际操作等待、backend 私有 physics graph 与 learner CUDA graph
   （#2359、#2358）。
 
+### Changed / 变更
+
+- `training.collector_tensor_device` now defaults to `auto`: MuJoCo
+  HOST_BRIDGE training follows the learner device, so a CUDA learner receives
+  CUDA Manager/TorchEnv carriers and CUDA inference transport without explicit
+  overrides, while CPU and torch.mps (Metal Performance Shaders) learners keep
+  the CPU carrier. Explicit `cpu`/`cuda` values are unchanged and win over
+  `auto`. Existing MuJoCo configurations that relied on the previous `cpu`
+  default with a CUDA learner now allocate one CUDA context per collector
+  process on the learner GPU; pin `training.collector_tensor_device=cpu` to
+  keep the previous topology
+  ([#2365](https://github.com/Motphys/UniLab/issues/2365)).
+  `training.collector_tensor_device` 默认值改为 `auto`：MuJoCo HOST_BRIDGE
+  训练跟随 learner 设备——CUDA learner 无需显式配置即可获得 CUDA
+  Manager/TorchEnv carrier 与 CUDA inference transport，CPU 与 torch.mps
+  （Metal Performance Shaders）learner 保持 CPU carrier。显式 `cpu`/`cuda`
+  语义不变且优先于 `auto`。原先在 CUDA learner 下依赖 `cpu` 默认值的
+  MuJoCo 配置，现在每个 collector 进程会在 learner GPU 上额外占用一个
+  CUDA context；如需保持原拓扑，请显式固定
+  `training.collector_tensor_device=cpu`（#2365）。
+
 ### Fixed / 修复
 
 - Multi-term concatenated observations are again caller-owned: the Manager no

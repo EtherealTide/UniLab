@@ -141,6 +141,9 @@ def test_appo_motrix_task_configs_load(task, tmp_path):
 @pytest.mark.skipif(torch.cuda.device_count() == 0, reason="off-policy health smoke requires CUDA")
 def test_offpolicy_task_configs_load(algo, task, tmp_path):
     """Off-policy smoke must complete and preserve basic training health."""
+    # The mujoco row exercises the auto collector-tensor default itself: the
+    # learner resolves to CUDA and the probe-based placement resolves CUDA
+    # inference transport with no explicit overrides.
     result = subprocess.run(
         [
             sys.executable,
@@ -152,14 +155,6 @@ def test_offpolicy_task_configs_load(algo, task, tmp_path):
             "training.export_onnx=false",
             "training.wandb_mode=disabled",
             f"training.log_root={tmp_path}",
-            *(
-                [
-                    "+training.inference_transport=cuda",
-                    "training.collector_tensor_device=cuda",
-                ]
-                if task.endswith("/mujoco")
-                else []
-            ),
         ],
         capture_output=True,
         text=True,

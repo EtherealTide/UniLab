@@ -243,10 +243,12 @@ ROCm notes:
   profile, use `uv run --no-sync` (or `UV_NO_SYNC=1 make ...`) for validation;
   automatic synchronization would reinstall that profile's CUDA wheels.
 - With ROCm PyTorch and an available GPU, a `HOST_BRIDGE` backend accepting
-  `cuda` buffers can use the current GPU for Manager/TorchEnv tensors when
-  MuJoCo training explicitly sets `training.collector_tensor_device=cuda`.
-  The direct environment and training default remain CPU. MuJoCo physics stays
-  on CPU; packed transfers connect it to explicitly requested GPU observations,
+  `cuda` buffers uses the current GPU for Manager/TorchEnv tensors whenever the
+  MuJoCo training learner resolves to CUDA: the default
+  `training.collector_tensor_device=auto` follows the learner device, and an
+  explicit `training.collector_tensor_device=cuda` forces the same routing for
+  other learner devices. Direct environment construction remains CPU. MuJoCo
+  physics stays on CPU; packed transfers connect it to the GPU observations,
   actions, rewards, and resets. CUDA-only physics backends remain unsupported
   on ROCm. See
   {doc}`/adr/ADR-0012-sole-tensor-manager-and-scoped-backends`.
