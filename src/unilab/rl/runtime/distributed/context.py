@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from unilab.process_context import visible_cuda_entries as _visible_cuda_entries
+from unilab.process_context import visible_cuda_entries
 
 UNILAB_DP_RANK = "UNILAB_DP_RANK"
 UNILAB_DP_WORLD_SIZE = "UNILAB_DP_WORLD_SIZE"
@@ -19,17 +19,6 @@ UNILAB_DP_LOG_DIR = "UNILAB_DP_LOG_DIR"
 def current_dp_rank() -> int:
     """Data-parallel rank of this process (0 when not spawned as a rank)."""
     return int(os.environ.get(UNILAB_DP_RANK, "0"))
-
-
-def visible_cuda_entries(current_visible_devices: str | None = None) -> tuple[str, ...]:
-    """Return the process-local CUDA visibility entries without touching Torch.
-
-    Entries are opaque: they may be physical indices or CUDA UUID/MIG tokens.
-    An unset variable means the host namespace; an empty value (or ``-1``)
-    means CUDA is deliberately hidden.  This parser is cold-path only and is
-    intentionally usable before the first CUDA query.
-    """
-    return _visible_cuda_entries(current_visible_devices)
 
 
 def rank_local_cuda_device(
