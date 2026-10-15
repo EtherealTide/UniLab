@@ -129,11 +129,6 @@ explicit = true
 torch = [
     { index = "r2-cu130", marker = "sys_platform=='linux' or sys_platform=='win32'" },
 ]
-# Integrated #2358 validation is coordinated across sibling checkouts. These
-# local relative sources intentionally do not publish; restore registry
-# resolution before preparing a release.
-unisim-core = { path = "../unisim", editable = true }
-unilab-rl = { path = "../unilab_rl", editable = true }
 
 [tool.uv]
 exclude-dependencies = ["torchvision"]
