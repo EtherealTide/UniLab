@@ -308,34 +308,29 @@ def test_reward_pack_supplies_outputs_without_duplicate_execution(fake_env: Fake
     assert calls == ["packed"]
 
 
-def test_reward_aggregation_reuses_persistent_scratch_carriers(fake_env: FakeEnv) -> None:
+def test_reward_aggregation_recomputes_weighted_values(fake_env: FakeEnv) -> None:
     manager = RewardManager(
         {
             "left": RewardTermCfg(func=lambda env: torch.ones(env.num_envs), weight=2.0),
-            "right": RewardTermCfg(func=lambda env: torch.full((env.num_envs,), 3.0), weight=-1.0),
+            "right": RewardTermCfg(func=lambda env: env.value, weight=-1.0),
         },
         fake_env,
         scale_by_dt=False,
     )
-    addresses = {
-        name: getattr(manager, name).data_ptr()
-        for name in (
-            "_term_reward_scratch",
-            "_packed_reward_scratch",
-            "_term_step_scratch",
-            "_packed_step_scratch",
-            "_step_reward_mean_scratch",
-        )
-    }
 
     first = manager.compute(dt=1.0)
-    second = manager.compute(dt=1.0)
-
-    assert {name: getattr(manager, name).data_ptr() for name in addresses} == addresses
-    torch.testing.assert_close(first, torch.full_like(first, -1.0))
-    torch.testing.assert_close(second, first)
+    torch.testing.assert_close(first, 2.0 - fake_env.value)
     torch.testing.assert_close(
-        manager.step_reward_means, torch.tensor([2.0, -3.0], dtype=torch.float32)
+        manager.step_reward_means, torch.tensor([2.0, -float(fake_env.value.mean())])
+    )
+
+    # The returned reward is an internal view; the observable contract is that
+    # the next compute reflects the new inputs exactly.
+    fake_env.value = fake_env.value + 1.0
+    second = manager.compute(dt=1.0)
+    torch.testing.assert_close(second, 2.0 - fake_env.value)
+    torch.testing.assert_close(
+        manager.step_reward_means, torch.tensor([2.0, -float(fake_env.value.mean())])
     )
 
 
@@ -498,7 +493,7 @@ def test_termination_splits_timeouts_and_failures(fake_env: FakeEnv) -> None:
     }
 
 
-def test_termination_aggregates_into_persistent_carriers(fake_env: FakeEnv) -> None:
+def test_termination_aggregation_recomputes_correct_values(fake_env: FakeEnv) -> None:
     timeout = torch.tensor([True, False, False, True])
     failure = torch.tensor([False, True, False, True])
     manager = TerminationManager(
@@ -508,15 +503,21 @@ def test_termination_aggregates_into_persistent_carriers(fake_env: FakeEnv) -> N
         },
         fake_env,
     )
-    dones_address = manager._dones_buf.data_ptr()
-    term_address = manager._term_dones["timeout"].data_ptr()
 
     first = manager.compute()
-    second = manager.compute()
+    torch.testing.assert_close(first, timeout | failure)
+    torch.testing.assert_close(manager.get_term("timeout"), timeout)
+    torch.testing.assert_close(manager.get_term("failure"), failure)
 
-    assert first.data_ptr() == second.data_ptr() == dones_address
-    assert manager._term_dones["timeout"].data_ptr() == term_address
+    # The returned dones are an internal view; the observable contract is that
+    # the next compute reflects the new inputs exactly.
+    failure[1] = False
+    failure[2] = True
+    second = manager.compute()
     torch.testing.assert_close(second, timeout | failure)
+    torch.testing.assert_close(manager.get_term("failure"), failure)
+    torch.testing.assert_close(manager.time_outs, timeout)
+    torch.testing.assert_close(manager.terminated, failure)
 
 
 def test_transient_tensor_termination_opt_in_preserves_manager_buffers(
@@ -579,24 +580,26 @@ def test_termination_terms_own_their_returned_carrier(fake_env: FakeEnv) -> None
     )
 
 
-def test_termination_aggregation_reuses_time_out_owner_scratch(fake_env: FakeEnv) -> None:
+def test_termination_aggregation_publishes_time_outs_through_owner_scratch(
+    fake_env: FakeEnv,
+) -> None:
     scratch = torch.zeros(fake_env.num_envs, dtype=torch.bool)
     setattr(fake_env, "time_out_scratch", scratch)
+    flags = torch.ones(fake_env.num_envs, dtype=torch.bool)
     manager = TerminationManager(
-        {
-            "timeout": TerminationTermCfg(
-                func=lambda env: torch.ones(env.num_envs, dtype=torch.bool), time_out=True
-            )
-        },
+        {"timeout": TerminationTermCfg(func=lambda env: flags.clone(), time_out=True)},
         fake_env,
     )
 
     first = manager.compute()
-    second = manager.compute()
-
+    # The env-owned scratch is the manager's time-out publication carrier.
     assert manager.time_outs is scratch
-    assert first.data_ptr() == second.data_ptr()
-    torch.testing.assert_close(second, torch.ones_like(second))
+    torch.testing.assert_close(first, torch.ones_like(first))
+
+    flags[:] = False
+    second = manager.compute()
+    torch.testing.assert_close(second, torch.zeros_like(second))
+    torch.testing.assert_close(manager.time_outs, torch.zeros_like(manager.time_outs))
 
 
 def test_curriculum_and_null_semantics(fake_env: FakeEnv) -> None:

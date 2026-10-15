@@ -336,28 +336,6 @@ def test_nonfinite_reward_fails_closed_without_sanitization() -> None:
         env.step(_actions(env))
 
 
-def test_public_output_finite_verdict_reuses_persistent_carrier() -> None:
-    env = _StubTorchEnv()
-    env.init_state()
-    verdict = env._state_finite_valid
-
-    env.step(_actions(env))
-
-    assert verdict.data_ptr() == env._state_finite_valid.data_ptr()
-    assert bool(verdict)
-
-    original_update = env.update_state
-
-    def bad_update(state: TorchEnvState) -> TorchEnvState:
-        result = original_update(state)
-        return result.replace(reward=torch.full_like(result.reward, torch.nan))
-
-    env.update_state = bad_update  # type: ignore[method-assign]
-    with pytest.raises(ValueError, match="reward contains NaN or Inf"):
-        env.step(_actions(env))
-    assert bool(env._state_finite_valid) is False
-
-
 def test_invalid_backend_control_fails_closed() -> None:
     class _BadControlEnv(_StubTorchEnv):
         def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:

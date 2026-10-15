@@ -316,14 +316,6 @@ def test_tensor_motion_control_stays_on_control_plane_with_default_bias() -> Non
     scene["robot"].data.encoder_bias[:, 0] = np.asarray([0.05, -0.05])
 
     assert isinstance(action, MotionJointPositionAction)
-    carrier_names = (
-        "_selected_default_bias",
-        "_selected_encoder_bias",
-        "_control_adjustment",
-        "_tensor_motion_target",
-    )
-    carriers = {name: getattr(action, name) for name in carrier_names}
-    carrier_addresses = {name: value.data_ptr() for name, value in carriers.items()}
     action.process_actions(torch.tensor([[0.25, -0.5], [1.0, 1.5]], dtype=torch.float32))
     action.apply_actions()
 
@@ -332,12 +324,19 @@ def test_tensor_motion_control_stays_on_control_plane_with_default_bias() -> Non
     torch.testing.assert_close(control[:, 1], expected_hip)
     torch.testing.assert_close(control[:, 0], expected_knee)
     torch.testing.assert_close(control[:, 2], torch.zeros_like(control[:, 2]))
-    assert {name: getattr(action, name).data_ptr() for name in carrier_names} == (carrier_addresses)
     torch.testing.assert_close(action.tensor_target[:, 0], control[:, 1])
     torch.testing.assert_close(
         action._control_adjustment,
         action._selected_default_bias - action._selected_encoder_bias,
     )
+
+    # A second processed action recomputes the control plane from the new input.
+    action.process_actions(torch.tensor([[0.0, 0.25], [-1.0, 0.5]], dtype=torch.float32))
+    action.apply_actions()
+
+    torch.testing.assert_close(control[:, 1], torch.tensor([0.0 + 0.2 - 0.05, -1.0 - 0.2 + 0.05]))
+    torch.testing.assert_close(control[:, 0], torch.tensor([0.25 - 0.1, 0.5 + 0.1]))
+    torch.testing.assert_close(action.tensor_target[:, 0], control[:, 1])
 
 
 def test_relative_joint_position_action_reads_current_position_at_apply_time() -> None:

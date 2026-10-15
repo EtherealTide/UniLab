@@ -52,8 +52,8 @@ and was rejected at M2 before promotion to `main`. The sections below preserve
 the exact historical boundary, inventory, mode, workload, and gates for audit;
 they must not be read as pending M1/M2 work. Historical API/config/test names
 below no longer exist; #2358 also removed the derivative caller-owned update
-route and retained the neutral runtime hot-path audit
-`tests/architecture/test_runtime_hot_path_static_audit.py`.
+route. The neutral runtime hot-path audit that survived that removal was
+itself deleted under #2363 in favor of observable-contract tests.
 
 Define an integration-only public capture boundary negotiated through `SimBackend` capabilities. The candidate consumes one preallocated action input of shape `[num_envs, action_dim]` and produces fixed-shape observation, reward, terminated, truncated, terminal-observation, and transition-publication carriers. The candidate is exactly K=1; policy inference and learner updates are outside capture.
 
@@ -288,7 +288,8 @@ K>1, pre-committed action sequences, stale/replay inference, and speculative tra
 - #2309 public lifecycle tests: `tests/envs/test_manager_based_rl_env.py`
 - Canonical owner preflight: `tests/envs/test_env_configs.py`
 - Frozen task owner: `src/unilab/conf/flashsac/task/g1_motion_tracking/mjwarp.yaml`
-- Surviving neutral hot-path audit: `tests/architecture/test_runtime_hot_path_static_audit.py`
+- Surviving neutral hot-path audit: removed under #2363 in favor of
+  observable-contract tests
 
 Historical evidence deleted by the collector-graph removal
 ([PR #2361](https://github.com/Motphys/UniLab/pull/2361),

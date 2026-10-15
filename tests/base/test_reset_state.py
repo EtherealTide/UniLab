@@ -803,12 +803,10 @@ def test_packed_root_state_rejects_invalid_payloads(root_state, error, match: st
     assert backend.tensor_reset_calls == []
 
 
-def test_owner_tensor_reuses_persistent_write_mask_scratch() -> None:
+def test_owner_tensor_scope_without_writes_clears_commit_marker() -> None:
     backend = _TensorResetBackend()
     transaction = _transaction(backend)
     transaction.declare_packed_reset_device(torch.device("cpu"))
-    scratch = transaction._owner_tensor_write_mask
-    assert scratch is not None
     active_mask = torch.tensor([False, True, True, False])
     owner_mask = torch.tensor([False, True, False, False])
 
@@ -821,11 +819,11 @@ def test_owner_tensor_reuses_persistent_write_mask_scratch() -> None:
             torch.tensor([[0.0], [1.7], [0.0], [0.0]]),
             term_name="first_owner",
         )
-        assert transaction._tensor_write_mask is scratch
+    assert transaction.last_commit_had_writes
 
+    # A later owner scope with no writes must not commit or keep a stale marker.
     with transaction.scoped_device_owner_tensor(active_mask):
-        assert transaction._tensor_write_mask is scratch
-        assert not scratch.any()
+        pass
 
     assert len(backend.tensor_reset_calls) == 1
     assert not transaction.last_commit_had_writes
@@ -843,7 +841,7 @@ def test_packed_reset_rejects_invalid_mask_layout() -> None:
     assert backend.tensor_reset_calls == []
 
 
-def test_tensor_transaction_reuses_mask_count_carrier() -> None:
+def test_tensor_event_scope_with_active_mask_but_no_writes_does_not_commit() -> None:
     backend = _TensorResetBackend()
     transaction = _transaction(backend)
     transaction.declare_packed_reset_device(torch.device("cpu"))
@@ -851,9 +849,8 @@ def test_tensor_transaction_reuses_mask_count_carrier() -> None:
     with transaction.scoped_device_event_tensor(torch.tensor([False, True, False, True])):
         pass
 
-    assert isinstance(transaction._mask_count, torch.Tensor)
-    assert transaction._mask_count.dtype is torch.int64
-    assert transaction._mask_count.item() == 0
+    assert backend.tensor_reset_calls == []
+    assert not transaction.last_commit_had_writes
 
 
 def test_packed_motion_root_state_payloads_remain_contiguous() -> None:

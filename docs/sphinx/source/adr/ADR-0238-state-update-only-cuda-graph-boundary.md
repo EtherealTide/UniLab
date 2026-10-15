@@ -49,8 +49,8 @@ surviving ordered receipt boundary with the neutral completion contract.
 The original candidate is retained below as historical pre-registration
 evidence. It is not an implementation plan, a support claim, or a successor
 boundary. Commands, APIs, test names, and manifests named in those historical
-sections no longer exist; the neutral hot-path audit is
-`tests/architecture/test_runtime_hot_path_static_audit.py`.
+sections no longer exist; the neutral hot-path audit that survived the initial
+removal was itself deleted under #2363 in favor of observable-contract tests.
 
 Capture only the UniLab-owned, fixed-shape, no-reset Manager state-update
 publication body after the backend step completion boundary. Policy inference,
@@ -318,15 +318,17 @@ must not become a support claim.
 - Independently useful eager work remains: update-body extraction, persistent
   carriers, deferred validation publication, completion receipts, and the
   public `SceneTensorReadPlan`.
-- The hot-path hygiene audit is neutral and does not preserve graph-specific
-  exceptions.
+- The hot-path hygiene audit stayed neutral and was later removed under #2363;
+  allocation/host-sync regressions are covered by observable-contract tests and
+  the benchmark smoke gate.
 - Backend-owned physics graphs and learner-owned CUDA graphs are unrelated
   boundaries and are not affected by this rejection.
 
 ## Evidence In Repo
 
 - Update-body extraction: `src/unilab/envs/manager_based_rl_env.py`
-- Neutral hot-path audit: `tests/architecture/test_runtime_hot_path_static_audit.py`
+- Neutral hot-path audit: removed under #2363 in favor of observable-contract
+  tests (was `tests/architecture/test_runtime_hot_path_static_audit.py`)
 - Eager owner-order parity: `tests/envs/test_manager_based_rl_env.py`
 - Stable read plan: `src/unilab/base/entity.py`
 - Backend public contract and MJWarp stable views/receipts: the `unisim`
