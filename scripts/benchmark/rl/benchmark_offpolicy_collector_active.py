@@ -23,9 +23,6 @@ Usage:
     uv run --extra genesis scripts/benchmark/rl/benchmark_offpolicy_collector_active.py \
         --cases flashsac/g1_motion_tracking/genesis
     uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --num-envs 1024 --measure-steps 100
-    # Independent eager A/B profiling of the public validation boundary:
-    uv run --extra mjwarp scripts/benchmark/rl/benchmark_offpolicy_collector_active.py \
-        --cases flashsac/g1_motion_tracking/mjwarp --deferred-validation-boundaries
 """
 
 from __future__ import annotations
@@ -413,8 +410,6 @@ class CollectorResult:
     backend_runtime_diagnostics: dict[str, dict[str, bool | str | None]] = field(
         default_factory=dict
     )
-    # Public TorchEnv validation-boundary mode selected before the active window.
-    deferred_validation_boundaries: bool = False
     # Public bounded-ingress ordering evidence collected after the active window.
     replay_ingress_diagnostics: dict[str, int | float] = field(default_factory=dict)
     # Context-only actor forward time; actions used by the measured collector
@@ -575,29 +570,6 @@ def _backend_runtime_diagnostics(env: Any) -> dict[str, dict[str, bool | str | N
         }
         for name, diagnostic in diagnostics().items()
     }
-
-
-def _enable_deferred_validation_boundaries(env: Any, enabled: bool) -> None:
-    """Select the public env validation boundary without backend duplication."""
-    setter = getattr(env, "set_deferred_validation_boundaries", None)
-    if not callable(setter):
-        if enabled:
-            raise TypeError("deferred validation profiling requires the public TorchEnv boundary")
-        return
-    if not enabled and not getattr(env, "deferred_validation_boundaries", False):
-        return
-    setter(enabled)
-
-
-def _select_validation_boundary(
-    env: Any,
-    deferred_validation_boundaries: bool,
-) -> None:
-    """Select the eager validation-boundary arm explicitly."""
-    if deferred_validation_boundaries:
-        _enable_deferred_validation_boundaries(env, True)
-    elif getattr(env, "deferred_validation_boundaries", False):
-        _enable_deferred_validation_boundaries(env, False)
 
 
 def _runtime_sim_backend(sim: str) -> str:
@@ -887,7 +859,6 @@ def _run_active_window_case(
     measure_steps: int,
     profile_numpy_random: bool = False,
     tail_steps: int = DEFAULT_TAIL_STEPS,
-    deferred_validation_boundaries: bool = False,
     policy_inference_context: TimingStats | None = None,
     policy_inference_context_evidence: dict[str, Any] | None = None,
 ) -> CollectorResult:
@@ -905,7 +876,6 @@ def _run_active_window_case(
     )
 
     env_device = env.device
-    _select_validation_boundary(env, deferred_validation_boundaries)
     backend_runtime_diagnostics = _backend_runtime_diagnostics(env)
     actions = torch.zeros((case.num_envs, case.action_dim), dtype=torch.float32, device=env_device)
     state = env.step(actions)
@@ -1120,7 +1090,6 @@ def _run_active_window_case(
             _stats(numpy_random_call_samples) if numpy_random_call_samples else None
         ),
         backend_runtime_diagnostics=backend_runtime_diagnostics,
-        deferred_validation_boundaries=deferred_validation_boundaries,
         replay_ingress_diagnostics=replay_ingress_diagnostics,
         policy_inference_context=policy_inference_context,
         policy_inference_context_evidence=policy_inference_context_evidence or {},
@@ -1138,7 +1107,6 @@ def _build_and_run_case(
     extra_overrides: list[str],
     variant: str = "default",
     profile_numpy_random: bool = False,
-    deferred_validation_boundaries: bool = False,
 ) -> CollectorResult:
     from unilab.base.config_adapter import BackendAdapter
     from unilab.training import ensure_registries
@@ -1201,7 +1169,6 @@ def _build_and_run_case(
             measure_steps=measure_steps,
             profile_numpy_random=profile_numpy_random,
             tail_steps=tail_steps,
-            deferred_validation_boundaries=deferred_validation_boundaries,
             policy_inference_context=policy_context,
             policy_inference_context_evidence=policy_context_evidence,
         )
@@ -2270,14 +2237,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--deferred-validation-boundaries",
-        action="store_true",
-        help=(
-            "Enable the public TorchEnv completion-boundary validation mode for "
-            "an independent eager A/B profile. Structural checks remain eager."
-        ),
-    )
-    parser.add_argument(
         "--variants",
         default=None,
         help=(
@@ -2362,9 +2321,6 @@ def main() -> int:
                             extra_overrides=[*args.override, *variant_extra_overrides],
                             variant=variant,
                             profile_numpy_random=bool(args.profile_numpy_random),
-                            deferred_validation_boundaries=bool(
-                                args.deferred_validation_boundaries
-                            ),
                         )
                     ]
                     results.extend(case_results)
@@ -2402,7 +2358,6 @@ def main() -> int:
             "variant_override": args.variant_override,
             "repeat_variant_blocks": args.repeat_variant_blocks,
             "profile_numpy_random": args.profile_numpy_random,
-            "deferred_validation_boundaries": args.deferred_validation_boundaries,
         },
         "fixation": _runtime_fixation(),
         "results": [_result_to_dict(result) for result in results],

@@ -89,7 +89,6 @@ class RewardManager(ManagerBase):
             (len(self._term_names),), dtype=torch.float32, device=self._device
         )
         self._finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
-        self._deferred_validation_boundaries = False
 
     def __str__(self) -> str:
         msg = f"<RewardManager> contains {len(self._term_names)} active terms.\n"
@@ -111,30 +110,6 @@ class RewardManager(ManagerBase):
     @property
     def active_terms(self) -> list[str]:
         return self._term_names
-
-    @property
-    def finite_valid(self) -> torch.Tensor:
-        """Latest aggregate reward-finite verdict for interval publication."""
-        return self._finite_valid
-
-    @property
-    def deferred_validation_boundaries(self) -> bool:
-        """Whether reward finite verdict publication may defer."""
-        return self._deferred_validation_boundaries
-
-    def set_deferred_validation_boundaries(self, enabled: bool) -> None:
-        """Opt in to completion-boundary reward verdict publication."""
-        if not isinstance(enabled, bool):
-            raise TypeError(
-                f"deferred reward validation boundaries must be bool, got {type(enabled)}"
-            )
-        self._deferred_validation_boundaries = enabled
-
-    def publish_validation_verdict(self) -> None:
-        """Fail closed on the latest reward-finite verdict."""
-        if bool(self._finite_valid):
-            return
-        raise ValueError("RewardManager returned a non-finite reward.")
 
     # Methods.
 
@@ -245,14 +220,6 @@ class RewardManager(ManagerBase):
         finite = self._finite_scratch
         torch.eq(finite_value, 0.0, out=finite)
         torch.all(finite, out=self._finite_valid)
-        if self._deferred_validation_boundaries:
-            timing["update_state_reward_term_dispatch_ms"] = dispatch_ms * 1000.0
-            timing["update_state_reward_aggregation_ms"] = aggregation_ms * 1000.0
-            timing["update_state_reward_finite_validation_ms"] = (
-                time.perf_counter() - finite_started
-            ) * 1000.0
-            timing["update_state_reward_manager_residual_ms"] = reset_ms * 1000.0
-            return self._reward_buf
         finite = bool(self._finite_valid)
         finite_ms = time.perf_counter() - finite_started
         if not finite:

@@ -166,26 +166,6 @@ class FailingActionCfg(DummyActionCfg):
         return FailingAction(self, env)
 
 
-class DeferredVerdictAction(DummyAction):
-    def __init__(self, cfg: DeferredVerdictActionCfg, env: FakeEnv):
-        super().__init__(cfg, env)
-        self.publish_calls = 0
-
-    def process_actions(self, actions: torch.Tensor) -> None:
-        self._action_finite_valid.copy_(torch.isfinite(actions).all())
-        self._raw.copy_(actions)
-
-    def validate_actions(self) -> None:
-        self.publish_calls += 1
-        self.publish_validation_verdict()
-
-
-@dataclass(kw_only=True)
-class DeferredVerdictActionCfg(DummyActionCfg):
-    def build(self, env: FakeEnv) -> DeferredVerdictAction:
-        return DeferredVerdictAction(self, env)
-
-
 def test_action_term_errors_include_manager_and_term_context(fake_env: FakeEnv) -> None:
     manager = ActionManager(
         {"broken": FailingActionCfg(entity_name="robot", dim=1)},
@@ -386,44 +366,6 @@ def test_reward_nonfinite_is_an_error(fake_env: FakeEnv, bad: float) -> None:
     manager = RewardManager({"bad_reward": RewardTermCfg(func=reward, weight=1.0)}, fake_env)
     with pytest.raises(ValueError, match="RewardManager term 'bad_reward'"):
         manager.compute(0.01)
-
-
-def test_deferred_reward_validation_fails_closed_at_boundary(fake_env: FakeEnv) -> None:
-    def reward(env: FakeEnv) -> torch.Tensor:
-        value = torch.ones(env.num_envs, dtype=torch.float32)
-        value[1] = torch.nan
-        return value
-
-    manager = RewardManager({"bad_reward": RewardTermCfg(func=reward, weight=1.0)}, fake_env)
-    manager.set_deferred_validation_boundaries(True)
-    assert manager.deferred_validation_boundaries is True
-
-    result = manager.compute(0.01)
-
-    assert torch.isnan(result[1])
-    assert manager.finite_valid.item() is False
-    with pytest.raises(ValueError, match="non-finite reward"):
-        manager.publish_validation_verdict()
-
-
-def test_deferred_reward_finite_mask_uses_persistent_scratch(fake_env: FakeEnv) -> None:
-    def reward(env: FakeEnv) -> torch.Tensor:
-        value = torch.ones(env.num_envs, dtype=torch.float32)
-        value[1] = torch.nan
-        value[3] = torch.inf
-        return value
-
-    manager = RewardManager({"bad_reward": RewardTermCfg(func=reward, weight=1.0)}, fake_env)
-    manager.set_deferred_validation_boundaries(True)
-    value_scratch = manager._finite_value_scratch
-    finite_scratch = manager._finite_scratch
-
-    manager.compute(0.01)
-
-    assert value_scratch.data_ptr() == manager._finite_value_scratch.data_ptr()
-    assert finite_scratch.data_ptr() == manager._finite_scratch.data_ptr()
-    assert finite_scratch.tolist() == [True, False, True, False]
-    assert manager.finite_valid.item() is False
 
 
 def test_reward_compute_publishes_phase_attribution(fake_env: FakeEnv) -> None:
@@ -687,67 +629,3 @@ def test_scene_entity_selector_resolution(fake_env: FakeEnv) -> None:
     inconsistent = SceneEntityCfg(name="robot", joint_names="hip", joint_ids=[1])
     with pytest.raises(ValueError, match="Inconsistent joint"):
         inconsistent.resolve(fake_env.scene)
-
-
-def test_deferred_action_validation_fails_closed_at_boundary(fake_env: FakeEnv) -> None:
-    manager = ActionManager({"a": DummyActionCfg(entity_name="robot", dim=2)}, fake_env)
-    manager.set_deferred_validation_boundaries(True)
-    assert manager.deferred_validation_boundaries is True
-
-    invalid = torch.ones((fake_env.num_envs, 2), dtype=torch.float32)
-    invalid[1] = torch.nan
-
-    accepted = manager.process_action(invalid)
-
-    assert accepted is None
-    assert manager.action_finite_valid.item() is False
-    with pytest.raises(ValueError, match="action containing NaN or Inf"):
-        manager.publish_validation_verdict()
-
-
-def test_deferred_action_term_pack_skips_eager_publication(fake_env: FakeEnv) -> None:
-    manager = ActionManager(
-        {
-            "first": DeferredVerdictActionCfg(entity_name="robot", dim=1),
-            "second": DeferredVerdictActionCfg(entity_name="robot", dim=1),
-        },
-        fake_env,
-    )
-    manager.set_deferred_validation_boundaries(True)
-
-    invalid = torch.ones((fake_env.num_envs, 2), dtype=torch.float32)
-    invalid[0, 0] = torch.nan
-    manager.process_action(invalid)
-
-    first = manager.get_term("first")
-    second = manager.get_term("second")
-    assert first.publish_calls == 0
-    assert second.publish_calls == 0
-    assert manager.action_finite_valid.item() is False
-    with pytest.raises(ValueError, match="ActionManager received an action containing NaN"):
-        manager.publish_validation_verdict()
-
-
-def test_deferred_action_still_updates_history_and_term_transforms(fake_env: FakeEnv) -> None:
-    manager = ActionManager(
-        {
-            "first": DeferredVerdictActionCfg(entity_name="robot", dim=1),
-            "second": DeferredVerdictActionCfg(entity_name="robot", dim=1),
-        },
-        fake_env,
-    )
-    manager.set_deferred_validation_boundaries(True)
-    manager.process_action(torch.zeros((fake_env.num_envs, 2), dtype=torch.float32))
-    actions = torch.full((fake_env.num_envs, 2), 2.0, dtype=torch.float32)
-
-    manager.process_action(actions)
-
-    torch.testing.assert_close(manager.action, actions)
-    torch.testing.assert_close(manager.prev_action, torch.zeros_like(actions))
-    torch.testing.assert_close(manager.prev_prev_action, torch.zeros_like(actions))
-    first = manager.get_term("first")
-    second = manager.get_term("second")
-    torch.testing.assert_close(first.raw_action, actions[:, :1])
-    torch.testing.assert_close(second.raw_action, actions[:, 1:])
-    assert first.publish_calls == 0
-    assert second.publish_calls == 0

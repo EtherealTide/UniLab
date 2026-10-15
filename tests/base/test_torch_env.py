@@ -223,7 +223,6 @@ def test_step_without_done_preserves_eager_autoreset_gate() -> None:
 def test_reset_done_count_remains_device_resident_before_timing_publication() -> None:
     env = _StubTorchEnv()
     env.init_state()
-    env.set_deferred_validation_boundaries(True)
 
     env.step(_actions(env))
 
@@ -337,26 +336,14 @@ def test_nonfinite_reward_fails_closed_without_sanitization() -> None:
         env.step(_actions(env))
 
 
-def test_deferred_validation_flags_fail_closed_at_completion() -> None:
-    env = _StubTorchEnv()
-    env.init_state()
-    env.set_deferred_validation_boundaries(True)
-    assert env.deferred_validation_boundaries is True
-
-    with pytest.raises(ValueError, match="action contains NaN or Inf"):
-        env.step(torch.full((env.num_envs, 4), torch.nan))
-
-    assert env._validation_flags()["action_finite"].item() is False
-
-
 def test_public_output_finite_verdict_reuses_persistent_carrier() -> None:
     env = _StubTorchEnv()
     env.init_state()
-    verdict = env._validation_flags()["state_finite"]
+    verdict = env._state_finite_valid
 
     env.step(_actions(env))
 
-    assert verdict.data_ptr() == env._validation_flags()["state_finite"].data_ptr()
+    assert verdict.data_ptr() == env._state_finite_valid.data_ptr()
     assert bool(verdict)
 
     original_update = env.update_state
@@ -368,7 +355,7 @@ def test_public_output_finite_verdict_reuses_persistent_carrier() -> None:
     env.update_state = bad_update  # type: ignore[method-assign]
     with pytest.raises(ValueError, match="reward contains NaN or Inf"):
         env.step(_actions(env))
-    assert bool(env._validation_flags()["state_finite"]) is False
+    assert bool(env._state_finite_valid) is False
 
 
 def test_invalid_backend_control_fails_closed() -> None:

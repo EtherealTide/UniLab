@@ -15,8 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = ROOT / "src" / "unilab"
 
 # Functions reachable from action consumption through post-reset observation and
-# transition publication. `publish_validation_verdicts` is intentionally absent:
-# it is the fail-closed completion boundary outside the step hot path.
+# transition publication.
 AUDITED_FUNCTIONS: dict[Path, frozenset[str]] = {
     SOURCE_ROOT / "base/torch_env.py": frozenset(
         {

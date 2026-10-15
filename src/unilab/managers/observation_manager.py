@@ -175,7 +175,6 @@ class ObservationManager(ManagerBase):
         self._group_obs_dim: dict[str, tuple[int, ...] | list[tuple[int, ...]]] = dict()
         self._group_term_noise_carriers: dict[tuple[str, str], list[torch.Tensor]] = dict()
         self._group_term_noise_generation: dict[tuple[str, str], int] = dict()
-        self._deferred_validation_boundaries = False
         self._group_finite_valid: dict[str, torch.Tensor] = {}
         self._group_finite_scratch: dict[str, torch.Tensor] = {}
         self._group_finite_value_scratch: dict[str, torch.Tensor] = {}
@@ -192,8 +191,8 @@ class ObservationManager(ManagerBase):
 
         self._obs_buffer: dict[str, torch.Tensor | dict[str, torch.Tensor]] | None = None
         for group_name, group_dim in self._group_obs_dim.items():
-            # Deferred finite verdicts are row-owned: every non-batch dimension
-            # is reduced exactly once. Keep the full-width boolean mask resident
+            # Finite verdicts are row-owned: every non-batch dimension is
+            # reduced exactly once. Keep the full-width boolean mask resident
             # too because isfinite has no out= overload.
             verdict_shape = (self.num_envs,)
             resolved_group_dim = cast("tuple[int, ...]", group_dim)
@@ -213,35 +212,6 @@ class ObservationManager(ManagerBase):
             self._group_finite_valid[group_name] = torch.ones(
                 verdict_shape, dtype=torch.bool, device=self._device
             )
-
-    @property
-    def deferred_validation_boundaries(self) -> bool:
-        """Whether observation finite publication may defer to completion."""
-        return self._deferred_validation_boundaries
-
-    def set_deferred_validation_boundaries(self, enabled: bool) -> None:
-        """Move finite publication to an explicit completion boundary."""
-        if not isinstance(enabled, bool):
-            raise TypeError(
-                f"deferred observation validation boundaries must be bool, got {type(enabled)}"
-            )
-        self._deferred_validation_boundaries = enabled
-
-    def finite_valid(self, group_name: str) -> torch.Tensor:
-        """Return the latest device finite verdict for one observation group."""
-        try:
-            return self._group_finite_valid[group_name]
-        except KeyError as exc:
-            raise KeyError(f"unknown observation group '{group_name}'") from exc
-
-    def publish_validation_verdict(self) -> None:
-        """Fail closed on persistent group finite verdicts."""
-        if not self._deferred_validation_boundaries:
-            return
-        for group_name, verdict in self._group_finite_valid.items():
-            if bool(verdict.all()):
-                continue
-            raise ValueError(f"ObservationManager group '{group_name}' contains NaN or Inf")
 
     @staticmethod
     def _concatenated_group_dim(
@@ -708,9 +678,7 @@ class ObservationManager(ManagerBase):
                 torch.eq(finite_value, 0.0, out=finite)
                 verdict = self._group_finite_valid[group_name]
                 torch.all(finite, dim=tuple(range(1, finite.ndim)), out=verdict)
-                if self._deferred_validation_boundaries:
-                    pass
-                elif not bool(verdict.all()):
+                if not bool(verdict.all()):
                     axis = self._group_obs_concatenate_dim[group_name]
                     axis = axis if axis >= 0 else result.ndim + axis
                     offset = 0

@@ -379,11 +379,7 @@ class ManagerBasedRlEnv(TorchEnv):
         self.reset_buf = torch.zeros(num_envs, dtype=torch.bool, device=self.device)
         self.reset_terminated = torch.zeros_like(self.reset_buf)
         self.reset_time_outs = torch.zeros_like(self.reset_buf)
-        self._public_terminated = torch.zeros_like(self.reset_buf)
-        self._public_truncated = torch.zeros_like(self.reset_buf)
         self.reward_buf = torch.zeros(num_envs, dtype=self._dtype, device=self.device)
-        self._public_reward = torch.zeros_like(self.reward_buf)
-        self._public_obs: dict[str, torch.Tensor] = {}
         self.obs_buf: dict[str, torch.Tensor] = {}
         self.extras: dict[str, Any] = {"log": {}}
         self._command_dt = torch.full(
@@ -397,13 +393,6 @@ class ManagerBasedRlEnv(TorchEnv):
 
         self._load_managers()
         self._mapped_obs_dims = self._validate_observation_mapping()
-        # Deferred validation publishes stable device verdicts without an
-        # intermediate host synchronization. Eager execution publishes fresh
-        # step outputs and does not alias manager-owned computation carriers.
-        self._public_obs = {
-            name: torch.empty((num_envs, dim), dtype=self._dtype, device=self.device)
-            for name, dim in self.obs_groups_spec.items()
-        }
         self._validate_substep_capabilities()
         self._configure_action_control()
         self.set_autoreset(cfg.auto_reset)
@@ -1455,55 +1444,10 @@ class ManagerBasedRlEnv(TorchEnv):
         """Expose cold-path reward component metadata to algorithm owners."""
         return SimpleNamespace(reward_component_names=self.reward_manager.step_reward_names)
 
-    def set_deferred_validation_boundaries(self, enabled: bool) -> None:
-        """Propagate deferred validation boundaries to every owner."""
-        if not isinstance(enabled, bool):
-            raise TypeError(f"deferred validation boundaries must be bool, got {type(enabled)}")
-        super().set_deferred_validation_boundaries(enabled)
-        self.action_manager.set_deferred_validation_boundaries(enabled)
-        self.reward_manager.set_deferred_validation_boundaries(enabled)
-        self.observation_manager.set_deferred_validation_boundaries(enabled)
-        self.command_manager.set_deferred_validation_boundaries(enabled)
-        self._reset_state.set_deferred_payload_validation(enabled)
-        self._reset_state.set_deferred_mask_validation(enabled)
-        capabilities = self._backend.get_tensor_capabilities()
-        if not capabilities.deferred_fused_validation:
-            raise NotImplementedError(
-                "deferred validation boundaries require the backend "
-                "deferred_fused_validation tensor capability"
-            )
-        setter = getattr(self._backend, "set_defer_torch_fused_validation", None)
-        if callable(setter):
-            setter(enabled)
-        diagnostics = self._backend.get_tensor_runtime_diagnostics()
-        diagnostic = diagnostics.get("deferred_fused_validation")
-        if diagnostic is None or not diagnostic.enabled:
-            raise NotImplementedError(
-                "deferred validation boundaries require a backend declaring the "
-                "deferred_fused_validation runtime optimization"
-            )
-
-    def publish_validation_verdicts(self) -> None:
-        """Publish env, command, reward, and fused reset verdicts."""
-        self.action_manager.publish_validation_verdict()
-        self.reward_manager.publish_validation_verdict()
-        self.observation_manager.publish_validation_verdict()
-        self.command_manager.publish_validation_verdicts()
-        self._reset_state.publish_payload_validation_verdicts(term_name="reset_state")
-        self._reset_state.publish_mask_validation_verdicts()
-        self._backend.publish_torch_fused_validation()
-        super().publish_validation_verdicts()
-
     def _publish_reward_components(self, state: TorchEnvState) -> None:
         """Publish fixed-width reward components for tensor-native consumers."""
         if self.reward_manager.step_reward_names:
             state.info["reward_components"] = self.reward_manager.step_rewards
-
-    def _validation_flags(self) -> dict[str, torch.Tensor]:
-        """Replace the base action verdict with the ActionManager aggregate."""
-        flags = super()._validation_flags()
-        flags["action_finite"] = self.action_manager.action_finite_valid
-        return flags
 
     def _record_action_finite(self, actions: torch.Tensor) -> None:
         """Let the action owner record the public finite verdict."""
@@ -1518,7 +1462,7 @@ class ManagerBasedRlEnv(TorchEnv):
     def _publish_step_outputs(
         self, mapped_obs: Mapping[str, torch.Tensor]
     ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Publish eager-fresh outputs or stable deferred-validation carriers."""
+        """Publish fresh step outputs without aliasing mutable manager carriers."""
         eager_obs = {
             name: self._manager_tensor(values, dtype=self._dtype)
             for name, values in mapped_obs.items()
@@ -1530,20 +1474,7 @@ class ManagerBasedRlEnv(TorchEnv):
             eager_terminated = eager_terminated.clone()
         if eager_truncated is self.reset_time_outs:
             eager_truncated = eager_truncated.clone()
-        if not self._defer_validation_at_boundaries:
-            return eager_obs, eager_reward, eager_terminated, eager_truncated
-
-        for name, values in eager_obs.items():
-            self._public_obs[name].copy_(values)
-        self._public_reward.copy_(eager_reward)
-        self._public_terminated.copy_(eager_terminated)
-        self._public_truncated.copy_(eager_truncated)
-        return (
-            self._public_obs,
-            self._public_reward,
-            self._public_terminated,
-            self._public_truncated,
-        )
+        return eager_obs, eager_reward, eager_terminated, eager_truncated
 
     def _compute_truncated(self, state: TorchEnvState) -> torch.Tensor:
         return state.truncated
@@ -1589,11 +1520,7 @@ class ManagerBasedRlEnv(TorchEnv):
         reset_timing: dict[str, float] = {}
         read_plan = self.scene._tensor_read_plan
         # An empty explicit reset does not publish a pre-reset recorder boundary.
-        # Deferred validation keeps this fixed-width lifecycle behind its explicit
-        # boundary switch.
-        if self._has_transition and (
-            self._defer_validation_at_boundaries or bool(reset_mask.any())
-        ):
+        if self._has_transition and bool(reset_mask.any()):
             self.recorder_manager.record_pre_reset(reset_mask)
         # Match the selected-row lifecycle: curriculum consumes the terminal
         # episode state before reset clears the public counters.

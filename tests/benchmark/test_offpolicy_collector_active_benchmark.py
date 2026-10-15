@@ -174,59 +174,13 @@ def test_parse_args_accepts_backend_and_all_backend_modes() -> None:
     assert all_args.all_backends
 
 
-def test_parse_args_defaults_to_eager_validation_boundaries() -> None:
-    args = bench.parse_args([])
-
-    assert args.deferred_validation_boundaries is False
-
-
-def test_parse_args_accepts_deferred_validation_boundaries() -> None:
-    args = bench.parse_args(["--deferred-validation-boundaries"])
-
-    assert args.deferred_validation_boundaries is True
-
-
-def test_deferred_validation_profiling_requires_public_env_boundary() -> None:
-    env = SimpleNamespace()
-
-    bench._enable_deferred_validation_boundaries(env, False)
-
-    with pytest.raises(TypeError, match="public TorchEnv boundary"):
-        bench._enable_deferred_validation_boundaries(env, True)
-
-
-def test_deferred_validation_profiling_uses_public_env_boundary() -> None:
-    calls: list[bool] = []
-    env = SimpleNamespace(
-        set_deferred_validation_boundaries=calls.append,
-        deferred_validation_boundaries=True,
-    )
-
-    bench._enable_deferred_validation_boundaries(env, True)
-    bench._enable_deferred_validation_boundaries(env, False)
-
-    assert calls == [True, False]
-
-
-def test_eager_benchmark_boundary_selection_is_independent() -> None:
-    calls: list[object] = []
-    env = SimpleNamespace(
-        deferred_validation_boundaries=False,
-        set_deferred_validation_boundaries=lambda enabled: calls.append(enabled),
-    )
-
-    bench._select_validation_boundary(env, True)
-    env.deferred_validation_boundaries = True
-    bench._select_validation_boundary(env, False)
-
-    assert calls == [True, False]
-
-
 def test_removed_graph_benchmark_clis_are_rejected() -> None:
     with pytest.raises(SystemExit, match="2"):
         bench.parse_args(["--env-update-mode", "deferred-eager"])
     with pytest.raises(SystemExit, match="2"):
         bench.parse_args(["--env-update-mode", "graph"])
+    with pytest.raises(SystemExit, match="2"):
+        bench.parse_args(["--deferred-validation-boundaries"])
 
 
 def test_package_versions_record_missing_dependencies_without_hiding_them(
@@ -262,18 +216,6 @@ def test_runtime_fixation_is_serialized_with_results(monkeypatch: pytest.MonkeyP
     fixation = bench._runtime_fixation()
 
     assert fixation == {"test": True}
-
-
-def test_eager_default_does_not_invoke_env_boundary_again() -> None:
-    calls: list[bool] = []
-    env = SimpleNamespace(
-        set_deferred_validation_boundaries=calls.append,
-        deferred_validation_boundaries=False,
-    )
-
-    bench._enable_deferred_validation_boundaries(env, False)
-
-    assert calls == []
 
 
 def test_hardware_table_includes_cpu_and_memory_details() -> None:
@@ -611,7 +553,6 @@ def test_variant_blocks_alternate_labels_without_extending_measurement(monkeypat
         extra_overrides,
         variant,
         profile_numpy_random,
-        deferred_validation_boundaries,
     ):
         order.append(variant)
         result = _make_result(

@@ -21,7 +21,6 @@ from unisim.backend.base import (
     TensorIOSpec,
     TensorLifecycleCapabilities,
     TensorProcessTopology,
-    TensorRuntimeDiagnostic,
     TrackedBodyStateViews,
 )
 from unisim.dr.types import DomainRandomizationCapabilities
@@ -199,7 +198,6 @@ class _FakeBackend:
             data_plane=(
                 TensorDataPlane.DIRECT if self.packed_reset else TensorDataPlane.HOST_BRIDGE
             ),
-            deferred_fused_validation=self.packed_reset,
             stream_event_ownership="test",
             torch_devices=("cpu",),
             reset_randomization=True,
@@ -209,18 +207,6 @@ class _FakeBackend:
         from unisim.backend.packed_reset import TorchPackedResetComposer
 
         return TorchPackedResetComposer(self, device=device)
-
-    def get_tensor_runtime_diagnostics(self):
-        return {
-            "deferred_fused_validation": TensorRuntimeDiagnostic(
-                requested=True,
-                enabled=True,
-                disable_reason=None,
-            )
-        }
-
-    def publish_torch_fused_validation(self) -> None:
-        return None
 
     def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> None:
         self.set_state_calls.append(
@@ -1400,36 +1386,6 @@ def test_step_publishes_backend_reset_completion_for_terminal_boundaries() -> No
     )["completion"]
     assert completion.operation == "mask_reset"
     assert env.last_reset_completion is None
-    env.close()
-
-
-def test_deferred_validation_boundaries_propagate_to_owner_verdicts() -> None:
-    env, _backend = _make_env()
-    env.set_deferred_validation_boundaries(True)
-
-    assert env.deferred_validation_boundaries is True
-    assert env.action_manager.deferred_validation_boundaries is True
-    assert env.reward_manager.deferred_validation_boundaries is True
-    assert env.observation_manager.deferred_validation_boundaries is True
-    assert env._reset_state.deferred_payload_validation is True
-    assert env._reset_state.deferred_mask_validation is True
-
-    env.reward_manager._finite_valid.fill_(False)
-    env.action_manager._action_finite_valid.fill_(True)
-    env.observation_manager._group_finite_valid["actor"].fill_(True)
-    with pytest.raises(ValueError, match="RewardManager returned a non-finite reward"):
-        env.publish_validation_verdicts()
-    env.close()
-
-
-def test_deferred_validation_boundaries_fail_closed_without_backend_capability() -> None:
-    env, _backend = _make_env()
-    env._backend.packed_reset = False
-    env._backend.get_tensor_runtime_diagnostics = lambda: {}
-
-    with pytest.raises(NotImplementedError, match="deferred_fused_validation tensor capability"):
-        env.set_deferred_validation_boundaries(True)
-    assert env.deferred_validation_boundaries is True
     env.close()
 
 
@@ -3922,28 +3878,6 @@ def test_autoreset_empty_partial_and_full_masks_share_one_fixed_width_lifecycle(
     env.close()
 
 
-def test_deferred_empty_autoreset_preserves_semantic_gate() -> None:
-    """Deferred validation retains the eager no-done autoreset gate."""
-    cfg = _make_cfg()
-    cfg.terminations = {"selective": None, "time_out": None}
-    env, _backend = _make_env(cfg)
-    env.set_deferred_validation_boundaries(True)
-    env.init_state()
-    command = env.command_manager.get_term("target")
-    assert isinstance(command, _Command)
-    command.reset_masks.clear()
-    recorder_traces_before = len(env.trace)
-
-    state = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
-
-    assert [mask.tolist() for mask in command.reset_masks] == [[False, False]]
-    assert state.final_observation is None
-    trace = env.trace[recorder_traces_before:]
-    assert ("pre_reset", [False, False]) not in trace
-    assert ("post_reset", [False, False]) not in trace
-    env.close()
-
-
 def test_autoreset_mask_widths_match_termination_masks() -> None:
     cfg = _make_cfg()
     cfg.terminations = {"selective": TerminationTermCfg(func=_selective_failure)}
@@ -3993,60 +3927,6 @@ def test_reward_log_publication_is_interval_boundary_only() -> None:
     env.close()
 
 
-def test_unified_validation_pack_publishes_all_owner_verdicts_once() -> None:
-    env, _backend = _make_env(_make_cfg(include_optional_managers=True))
-    env.set_deferred_validation_boundaries(True)
-    env.init_state()
-    flags = env._validation_flags()
-    pointers = {name: value.data_ptr() for name, value in flags.items()}
-    reward_pointer = env.reward_manager.finite_valid.data_ptr()
-
-    state = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
-
-    assert {name: value.data_ptr() for name, value in env._validation_flags().items()} == pointers
-    assert env.reward_manager.finite_valid.data_ptr() == reward_pointer
-    assert all(bool(value) for value in env._validation_flags().values())
-    assert bool(env.reward_manager.finite_valid)
-    assert all(
-        term._command_finite_valid.item() and term._metrics_finite_valid.item()
-        for term in env.command_manager._terms.values()
-    )
-    assert state.info["reward_components"] is env.reward_manager.step_rewards
-    env.close()
-
-
-def test_unified_validation_pack_fails_closed_on_invalid_state() -> None:
-    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
-    env.set_deferred_validation_boundaries(True)
-    env.init_state()
-    env._validation_flags()["state_finite"].fill_(False)
-
-    with pytest.raises(ValueError, match="TorchEnvState contains NaN or Inf"):
-        env.publish_validation_verdicts()
-    env.close()
-
-
-def test_deferred_action_owner_publication_reports_manager_verdict() -> None:
-    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
-    env.set_deferred_validation_boundaries(True)
-    env.init_state()
-    env.action_manager._action_finite_valid.fill_(False)
-
-    with pytest.raises(ValueError, match="ActionManager received an action containing NaN"):
-        env.publish_validation_verdicts()
-    env.close()
-
-
-def test_manager_validation_pack_uses_action_manager_verdict() -> None:
-    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
-    env.init_state()
-    env._action_finite_valid.fill_(True)
-    env.action_manager._action_finite_valid.fill_(False)
-
-    assert env._validation_flags()["action_finite"] is env.action_manager.action_finite_valid
-    env.close()
-
-
 def test_manager_action_verdict_is_recorded_once_by_owner() -> None:
     env, _backend = _make_env(_make_cfg(include_optional_managers=False))
     env.init_state()
@@ -4063,14 +3943,12 @@ def test_manager_action_verdict_is_recorded_once_by_owner() -> None:
 
     assert len(calls) == 1
     assert calls[0] is actions
-    assert env._action_finite_valid.item() is True
-    assert env.action_manager.action_finite_valid.item() is True
+    assert env.action_manager._action_finite_valid.item() is True
     env.close()
 
 
 def test_manager_public_action_verdict_reuses_owner_record() -> None:
     env, _backend = _make_env(_make_cfg(include_optional_managers=False))
-    env.set_deferred_validation_boundaries(True)
     env.init_state()
     calls: list[torch.Tensor] = []
     original_process = env.action_manager.process_action
@@ -4086,153 +3964,8 @@ def test_manager_public_action_verdict_reuses_owner_record() -> None:
 
     assert len(calls) == 1
     assert calls[0] is actions
-    assert env.action_manager.action_finite_valid.item() is True
+    assert env.action_manager._action_finite_valid.item() is True
     env.close()
-
-
-def test_deferred_validation_switch_propagates_to_backend_fused_boundary() -> None:
-    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
-    calls: list[bool] = []
-
-    def record(enabled: bool) -> None:
-        calls.append(enabled)
-
-    env._backend.set_defer_torch_fused_validation = record  # type: ignore[method-assign]
-    env.set_deferred_validation_boundaries(True)
-
-    assert calls == [True]
-    env.close()
-
-
-def test_deferred_validation_switch_activates_backend_before_preflight() -> None:
-    env, _backend = _make_env(_make_cfg(include_optional_managers=False))
-    calls: list[bool] = []
-    diagnostics = env._backend.get_tensor_runtime_diagnostics
-
-    def record_and_report(enabled: bool) -> None:
-        calls.append(enabled)
-        # Enabling must make the runtime diagnostic observable before preflight.
-        if enabled:
-            assert diagnostics()["deferred_fused_validation"].enabled is True
-
-    env._backend.set_defer_torch_fused_validation = record_and_report  # type: ignore[method-assign]
-    env.set_deferred_validation_boundaries(True)
-    env.set_deferred_validation_boundaries(False)
-
-    assert calls == [True, False]
-    env.close()
-
-
-def test_eager_deferred_and_mask_widths_share_step_semantics() -> None:
-    """Deferred mode preserves step outputs; empty resets keep mode semantics."""
-    actions = torch.tensor([[0.25], [0.75]], dtype=torch.float32)
-    reset_masks = (
-        torch.zeros(2, dtype=torch.bool),
-        torch.tensor([False, True], dtype=torch.bool),
-        torch.ones(2, dtype=torch.bool),
-    )
-    references: dict[tuple[bool, int], dict[str, Any]] = {}
-
-    for deferred in (False, True):
-        for width_index, reset_mask in enumerate(reset_masks):
-            env, _backend = _make_env(_make_cfg(metrics={"progress": MetricsTermCfg(func=_metric)}))
-            if deferred:
-                env.set_deferred_validation_boundaries(True)
-            env.reset()
-            env.step(actions)
-            before_rng = env.torch_rng.get_state()
-            state = env.step(actions)
-            env.reset(reset_mask)
-            after_reset, _reset_info = env.reset(reset_mask)
-            after_state = env.step(torch.zeros_like(actions))
-            snapshot = {
-                "obs": {name: value.clone() for name, value in state.obs.items()},
-                "reward": state.reward.clone(),
-                "reward_components": state.info.get("reward_components").clone(),
-                "terminated": state.terminated.clone(),
-                "truncated": state.truncated.clone(),
-                "steps": state.info["steps"].clone(),
-                "action": env.action_manager.action.clone(),
-                "command": env.command_manager.get_term("target").command.clone(),
-                "trace": list(env.trace),
-                "reward_means": env._reward_log_means.clone(),
-                "reset_obs": {name: value.clone() for name, value in after_reset.items()},
-                "after_obs": {name: value.clone() for name, value in after_state.obs.items()},
-                "after_reward": after_state.reward.clone(),
-                "after_done": (after_state.terminated | after_state.truncated).clone(),
-                "rng_before": before_rng.clone(),
-                "rng_after": env.torch_rng.get_state().clone(),
-                "final_obs": (
-                    {name: value.clone() for name, value in after_state.final_observation.items()}
-                    if after_state.final_observation is not None
-                    else None
-                ),
-                "curriculum": env.curriculum_manager.reset(reset_mask),
-                "metric_step_count": env.metrics_manager._step_count.clone(),
-                "metric_step_values": env.metrics_manager._step_values.clone(),
-                "metric_episode_sums": {
-                    name: value.clone() for name, value in env.metrics_manager._episode_sums.items()
-                },
-                "backend_state": (
-                    _backend.qpos.clone(),
-                    _backend.qvel.clone(),
-                ),
-                "backend_reset_rows": [entry[0].clone() for entry in _backend.set_state_calls],
-            }
-            key = (deferred, width_index)
-            if key in references:
-                continue
-            references[key] = snapshot
-            env.close()
-
-    for width_index in range(len(reset_masks)):
-        eager = references[(False, width_index)]
-        deferred = references[(True, width_index)]
-        torch.testing.assert_close(eager["reward"], deferred["reward"])
-        torch.testing.assert_close(eager["reward_components"], deferred["reward_components"])
-        torch.testing.assert_close(eager["terminated"], deferred["terminated"])
-        # The deferred carrier is public fixed-width state and remains false
-        # after explicit reset clears reset_time_outs.
-        torch.testing.assert_close(eager["steps"], deferred["steps"])
-        torch.testing.assert_close(eager["action"], deferred["action"])
-        # The test command term also invokes reset() from
-        # _update_command_reset. Consequently explicit empty/full resets and
-        # eager/deferred mode can intentionally differ in reset RNG and trace.
-        if torch.equal(eager["rng_after"], deferred["rng_after"]):
-            torch.testing.assert_close(eager["command"], deferred["command"])
-            assert [event for event in eager["trace"] if event[0] != "pre_reset"] == [
-                event for event in deferred["trace"] if event[0] != "pre_reset"
-            ]
-        torch.testing.assert_close(eager["reward_means"], deferred["reward_means"])
-        for name in eager["after_obs"]:
-            torch.testing.assert_close(eager["after_obs"][name], deferred["after_obs"][name])
-        torch.testing.assert_close(eager["after_reward"], deferred["after_reward"])
-        torch.testing.assert_close(eager["after_done"], deferred["after_done"])
-        torch.testing.assert_close(eager["rng_before"], deferred["rng_before"])
-        if torch.equal(eager["rng_after"], deferred["rng_after"]):
-            torch.testing.assert_close(eager["rng_after"], deferred["rng_after"])
-        else:
-            assert not torch.equal(eager["rng_after"], deferred["rng_after"])
-        # Deferred integration mode always publishes the fixed-width terminal
-        # carrier, while eager mode does so only after a real done.
-        assert eager["final_obs"] is None or deferred["final_obs"] is not None
-        if eager["final_obs"] is not None and deferred["final_obs"] is not None:
-            for name in eager["final_obs"]:
-                torch.testing.assert_close(eager["final_obs"][name], deferred["final_obs"][name])
-        # Curriculum reset state is captured before explicit reset execution;
-        # mode-specific no-op reset work can update it differently.
-        torch.testing.assert_close(eager["metric_step_count"], deferred["metric_step_count"])
-        torch.testing.assert_close(eager["metric_step_values"], deferred["metric_step_values"])
-        for name in eager["metric_episode_sums"]:
-            torch.testing.assert_close(
-                eager["metric_episode_sums"][name],
-                deferred["metric_episode_sums"][name],
-            )
-        torch.testing.assert_close(eager["backend_state"][0], deferred["backend_state"][0])
-        torch.testing.assert_close(eager["backend_state"][1], deferred["backend_state"][1])
-        assert len(eager["backend_reset_rows"]) == len(deferred["backend_reset_rows"])
-        for left, right in zip(eager["backend_reset_rows"], deferred["backend_reset_rows"]):
-            torch.testing.assert_close(left, right)
 
 
 def test_extracted_state_update_body_preserves_eager_owner_order() -> None:

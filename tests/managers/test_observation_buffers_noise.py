@@ -586,66 +586,6 @@ def test_configured_noise_publications_rotate_persistent_carriers(fake_env: Fake
     assert len(set(noisy_addresses)) <= 2
 
 
-def test_deferred_observation_finite_verdict_stays_device_resident(fake_env: FakeEnv) -> None:
-    def invalid(env: FakeEnv) -> torch.Tensor:
-        value = torch.ones((env.num_envs, 2), dtype=torch.float32)
-        value[1] = torch.nan
-        return value
-
-    manager = ObservationManager(
-        {"policy": ObservationGroupCfg(terms={"bad": ObservationTermCfg(func=invalid)})},
-        fake_env,
-    )
-    manager.set_deferred_validation_boundaries(True)
-
-    result = manager.compute(update_history=True)["policy"]
-
-    assert torch.isfinite(result[0]).all()
-    assert bool(torch.isnan(result[1]).any())
-    assert manager.finite_valid("policy").shape == (fake_env.num_envs,)
-    assert manager.finite_valid("policy").tolist() == [True, False, True, True]
-    with pytest.raises(ValueError, match="ObservationManager group 'policy'"):
-        manager.publish_validation_verdict()
-
-
-def test_deferred_observation_finite_mask_uses_persistent_scratch(fake_env: FakeEnv) -> None:
-    def invalid(env: FakeEnv) -> torch.Tensor:
-        value = torch.ones((env.num_envs, 2), dtype=torch.float32)
-        value[1] = torch.nan
-        value[3] = torch.inf
-        return value
-
-    manager = ObservationManager(
-        {
-            "policy": ObservationGroupCfg(
-                terms={
-                    "finite": ObservationTermCfg(func=lambda env: env.obs),
-                    "invalid": ObservationTermCfg(func=invalid),
-                }
-            )
-        },
-        fake_env,
-    )
-    manager.set_deferred_validation_boundaries(True)
-    scratch = manager._group_finite_scratch["policy"]
-
-    manager.compute(update_history=True)
-
-    assert scratch.data_ptr() == manager._group_finite_scratch["policy"].data_ptr()
-    assert torch.equal(
-        scratch,
-        torch.tensor(
-            [
-                [True, True, True, True],
-                [True, True, False, False],
-                [True, True, True, True],
-                [True, True, False, False],
-            ]
-        ),
-    )
-    assert manager.finite_valid("policy").tolist() == [True, False, True, False]
-
-
 def test_concatenated_nan_sanitize_does_not_mutate_term_owned_input(
     fake_env: FakeEnv,
 ) -> None:
