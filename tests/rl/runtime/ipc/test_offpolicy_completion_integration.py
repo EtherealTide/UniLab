@@ -11,8 +11,9 @@ from hydra.core.global_hydra import GlobalHydra
 
 from unilab.base import registry
 from unilab.base.config_adapter import BackendAdapter
+from unilab.rl.runtime.ipc.replay_buffer import ReplayBuffer
 
-ROOT_DIR = Path(__file__).parents[2]
+ROOT_DIR = Path(__file__).parents[4]
 CONF_DIR = ROOT_DIR / "src" / "unilab" / "conf"
 
 
@@ -29,8 +30,6 @@ def test_eager_mujoco_replay_rows_own_their_tick_across_autoreset() -> None:
         "unisim.backend.mujoco.backend",
         reason="unisim-core MuJoCo adapter (mjbatch build) not available",
     )
-    pytest.importorskip("uni_rl.ipc.replay_buffer", reason="uni_rl is unavailable")
-    from uni_rl.ipc.replay_buffer import ReplayBuffer
 
     registry.ensure_registries()
     GlobalHydra.instance().clear()

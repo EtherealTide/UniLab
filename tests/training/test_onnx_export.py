@@ -43,7 +43,7 @@ class _TupleOutputActor(torch.nn.Module):
 
 
 class _NanGuardedActor(torch.nn.Module):
-    """Mimics the uni_rl SAC actor export path (``torch.nan_to_num`` → ``aten_isnan``)."""
+    """Mimics the unilab.rl SAC actor export path (``torch.nan_to_num`` → ``aten_isnan``)."""
 
     def __init__(self, obs_dim: int = 4, action_dim: int = 2) -> None:
         super().__init__()

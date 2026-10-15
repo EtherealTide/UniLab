@@ -1555,8 +1555,8 @@ def test_offpolicy_play_actor_spec_keeps_standard_sac_and_flashsac():
 def test_offpolicy_build_play_actor_preserves_flashsac_model_kwargs(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    import uni_rl.algos.common.actor_factory as actor_factory
-    import uni_rl.algos.common.normalization as normalization
+    import unilab.rl.algos.common.actor_factory as actor_factory
+    import unilab.rl.algos.common.normalization as normalization
 
     from unilab.visualization.interactive_playback import build_play_actor
 
@@ -1723,7 +1723,7 @@ def test_play_offpolicy_can_skip_onnx_export_and_still_record_video(
         ),
     )
 
-    import uni_rl.algos.common.actor_factory as actor_factory
+    import unilab.rl.algos.common.actor_factory as actor_factory
 
     monkeypatch.setattr(actor_factory, "build_actor", lambda *args, **kwargs: FakeActor())
 
@@ -1751,7 +1751,7 @@ def _patch_offpolicy_play_session(
     fake_actor,
     fake_env_cls,
 ) -> None:
-    import uni_rl.algos.common.actor_factory as actor_factory
+    import unilab.rl.algos.common.actor_factory as actor_factory
 
     import unilab.utils.checkpoint as checkpoint_utils
 
@@ -2001,12 +2001,13 @@ def _play_interactive():
 def test_play_wrapper_imports_shared_implementation():
     """PPO and APPO playback both use the UniLab-owned VecEnv adapter."""
     mod = _play_interactive()
-    # uni_rl's RslRlVecEnvWrapper is no longer referenced: the PPO playback
-    # session defaults to the UniLab-owned adapter and the APPO branch passes
-    # it explicitly.
+    # The PPO playback session uses the UniLab-owned adapter owned by
+    # unilab.rl.adapters.rsl_rl (re-exported at the unilab.rl package level);
+    # the deleted uni_rl wrapper must not be referenced.
     assert not hasattr(mod, "RslRlVecEnvWrapper")
     source = Path(mod.__file__).read_text(encoding="utf-8")
-    assert "uni_rl.algos.rsl_rl" not in source
+    assert "uni_rl" not in source
+    assert "from unilab.rl import RslRlVecEnvAdapter" in source
     assert "wrapper_cls=RslRlVecEnvAdapter" in source
 
 

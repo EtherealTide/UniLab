@@ -19,7 +19,7 @@ pytest.importorskip(
     reason="unisim-core MuJoCo adapter (mjbatch build) not available",
 )
 
-from uni_rl.algos.appo.runner import APPORunner
+from unilab.rl.algos.appo.runner import APPORunner
 
 from unilab.base.config_adapter import BackendAdapter
 from unilab.base.env_factory import registry_env_factory

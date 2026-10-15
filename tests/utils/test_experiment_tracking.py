@@ -6,9 +6,9 @@ import types
 from typing import Any
 
 import pytest
-import uni_rl.logging.common as common_module
+import unilab.rl.logging.common as common_module
 from rich.console import Console
-from uni_rl.logging import OffPolicyLogger, OnPolicyLogger
+from unilab.rl.logging import OffPolicyLogger, OnPolicyLogger
 
 import unilab.training.experiment as experiment_module
 from unilab.training.experiment import ExperimentTracker, build_wandb_settings
@@ -179,7 +179,7 @@ def test_onpolicy_logger_uses_offpolicy_terminal_layout():
 
 
 def test_offpolicy_logger_terminal_keeps_core_bottleneck_timing_rows():
-    # uni_rl 1.4.9 selects its terminal layout from the logger console width.
+    # unilab.rl.logging selects its terminal layout from the logger console width.
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setenv("COLUMNS", "120")
     logger = OffPolicyLogger(

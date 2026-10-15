@@ -1,4 +1,8 @@
-"""Tests for the off-policy multi-GPU data-parallel rank topology."""
+"""Data-parallel launch and rank-supervision tests (owner: rl.runtime.distributed.launcher).
+
+Merged from UniLab's former ``tests/ipc/test_dp_launcher.py`` and unilab_rl @
+3654e4b (unilab-rl 1.4.15) ``tests/ipc/test_dp_launcher.py``.
+"""
 
 from __future__ import annotations
 
@@ -10,40 +14,14 @@ import time
 from pathlib import Path
 
 import pytest
-import torch
-import uni_rl.ipc.dp_launcher as dp_launcher
-from hydra import compose, initialize_config_dir
-from hydra.core.global_hydra import GlobalHydra
-from omegaconf import OmegaConf
-from uni_rl.ipc.dp_launcher import (
+
+import unilab.rl.runtime.distributed.launcher as launcher
+from unilab.rl.runtime.distributed.context import (
     UNILAB_DP_LOG_DIR,
     UNILAB_DP_RANK,
     UNILAB_DP_WORLD_SIZE,
-    DpRankSupervisor,
-    apply_dp_rank_config,
-    current_dp_rank,
-    current_dp_world_size,
-    current_torch_distributed_local_rank,
-    current_torch_distributed_rank,
-    current_torch_distributed_world_size,
-    launch_torchrun_workers,
-    reject_removed_device_config,
-    resolve_collector_cpu_ids,
-    resolve_dp_rank_device,
-    selected_visible_entries,
 )
-
-_ROOT = Path(__file__).parent.parent.parent
-_CONF_DIR = _ROOT / "src" / "unilab" / "conf"
-
-
-def _offpolicy_cfg(overrides: list[str] | None = None):
-    GlobalHydra.instance().clear()
-    normalized = list(overrides or [])
-    if not any(override.startswith("task=") for override in normalized):
-        normalized.append("task=g1_walk_flat/mujoco")
-    with initialize_config_dir(config_dir=str(_CONF_DIR / "sac"), version_base="1.3"):
-        return compose("config", overrides=normalized)
+from unilab.rl.runtime.distributed.launcher import DpRankSupervisor, launch_torchrun_workers
 
 
 class _FakePopen:
@@ -102,81 +80,20 @@ def fake_popen(monkeypatch: pytest.MonkeyPatch):
     _FakePopen.instances = []
     _FakePopen.wait_completes = False
     _FakePopen.interrupt_exits = True
-    monkeypatch.setattr(dp_launcher.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(launcher.subprocess, "Popen", _FakePopen)
     monkeypatch.setattr(
-        dp_launcher, "_signal_process_group", lambda child, signum: child.send_signal(signum)
+        launcher, "_signal_process_group", lambda child, signum: child.send_signal(signum)
     )
-    monkeypatch.setattr(
-        dp_launcher, "_process_group_exists", lambda child: child.returncode is None
-    )
-    monkeypatch.setattr(dp_launcher, "_COOPERATIVE_EXIT_GRACE_S", 0.0)
-    monkeypatch.setattr(dp_launcher, "_TERMINATE_TIMEOUT_S", 0.0)
-    monkeypatch.setattr(dp_launcher, "_NORMAL_EXIT_GRACE_S", 0.01)
+    monkeypatch.setattr(launcher, "_process_group_exists", lambda child: child.returncode is None)
+    monkeypatch.setattr(launcher, "_COOPERATIVE_EXIT_GRACE_S", 0.0)
+    monkeypatch.setattr(launcher, "_TERMINATE_TIMEOUT_S", 0.0)
+    monkeypatch.setattr(launcher, "_NORMAL_EXIT_GRACE_S", 0.01)
     return _FakePopen
 
 
 # ---------------------------------------------------------------------------
-# removed training.devices
+# launch_torchrun_workers
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("devices_cfg", [None, []])
-def test_removed_device_config_accepts_empty_defaults(devices_cfg):
-    reject_removed_device_config(devices_cfg)
-
-
-def test_removed_device_config_fails_closed():
-    with pytest.raises(ValueError, match="training.devices was removed"):
-        reject_removed_device_config((0, 1))
-
-
-# ---------------------------------------------------------------------------
-# rank / world-size environment
-# ---------------------------------------------------------------------------
-
-
-def test_current_dp_rank_defaults(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv(UNILAB_DP_RANK, raising=False)
-    monkeypatch.delenv(UNILAB_DP_WORLD_SIZE, raising=False)
-    assert current_dp_rank() == 0
-    assert current_dp_world_size() == 1
-
-
-def test_current_dp_rank_reads_env(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv(UNILAB_DP_RANK, "2")
-    monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "4")
-    assert current_dp_rank() == 2
-    assert current_dp_world_size() == 4
-
-
-def test_current_torch_distributed_rank_defaults(monkeypatch: pytest.MonkeyPatch):
-    for name in ("RANK", "LOCAL_RANK", "WORLD_SIZE"):
-        monkeypatch.delenv(name, raising=False)
-    assert current_torch_distributed_rank() == 0
-    assert current_torch_distributed_local_rank() == 0
-    assert current_torch_distributed_world_size() == 1
-
-
-def test_current_torch_distributed_rank_reads_torchrun_env(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("RANK", "3")
-    monkeypatch.setenv("LOCAL_RANK", "1")
-    monkeypatch.setenv("WORLD_SIZE", "4")
-    assert current_torch_distributed_rank() == 3
-    assert current_torch_distributed_local_rank() == 1
-    assert current_torch_distributed_world_size() == 4
-
-
-def test_selected_visibility_preserves_parent_entries(monkeypatch):
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b,GPU-c")
-
-    assert selected_visible_entries(world_size=3) == ("GPU-a", "GPU-b", "GPU-c")
-
-
-def test_selected_visibility_requires_exact_rank_count(monkeypatch):
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
-
-    with pytest.raises(ValueError, match="one entry per data-parallel rank"):
-        selected_visible_entries(world_size=3)
 
 
 def test_launch_torchrun_workers_builds_standard_single_node_command(
@@ -190,7 +107,7 @@ def test_launch_torchrun_workers_builds_standard_single_node_command(
         return type("Result", (), {"returncode": 0})()
 
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
-    monkeypatch.setattr(dp_launcher.subprocess, "run", fake_run)
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
     monkeypatch.delenv("NCCL_P2P_DISABLE", raising=False)
     monkeypatch.delenv("NCCL_SHM_DISABLE", raising=False)
     script = tmp_path / "train_rsl_rl.py"
@@ -221,7 +138,7 @@ def test_launch_torchrun_workers_builds_standard_single_node_command(
 def test_launch_torchrun_workers_propagates_failure(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
     monkeypatch.setattr(
-        dp_launcher.subprocess,
+        launcher.subprocess,
         "run",
         lambda *args, **kwargs: type("Result", (), {"returncode": 7})(),
     )
@@ -246,7 +163,7 @@ def test_launch_torchrun_workers_preserves_explicit_nccl_transport(
         return type("Result", (), {"returncode": 0})()
 
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
-    monkeypatch.setattr(dp_launcher.subprocess, "run", fake_run)
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
     monkeypatch.setenv("NCCL_P2P_DISABLE", "0")
     monkeypatch.setenv("NCCL_SHM_DISABLE", "0")
 
@@ -262,43 +179,8 @@ def test_launch_torchrun_workers_preserves_explicit_nccl_transport(
 
 
 # ---------------------------------------------------------------------------
-# Hydra compose surface
+# DpRankSupervisor
 # ---------------------------------------------------------------------------
-
-
-def test_offpolicy_config_no_longer_exposes_devices():
-    cfg = _offpolicy_cfg()
-
-    assert "devices" not in cfg.training
-
-
-# ---------------------------------------------------------------------------
-# apply_dp_rank_config / N=1 equivalence
-# ---------------------------------------------------------------------------
-
-
-def test_apply_dp_rank_config_maps_rank_to_device_and_seed(monkeypatch):
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
-    cfg = _offpolicy_cfg(["algo.seed=42"])
-    base_seed = int(cfg.algo.seed)
-    device = apply_dp_rank_config(cfg, rank=1)
-    assert device == "cuda:0"
-    assert "device" not in cfg.training
-    assert int(cfg.algo.seed) == base_seed + 1
-
-
-def test_apply_dp_rank_config_rank_zero_keeps_seed(monkeypatch):
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
-    cfg = _offpolicy_cfg(["algo.seed=42"])
-    assert apply_dp_rank_config(cfg, rank=0) == "cuda:0"
-    assert int(cfg.algo.seed) == 42
-
-
-def test_resolve_dp_rank_device_rejects_multiple_visible_entries(monkeypatch):
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
-
-    with pytest.raises(ValueError, match="exactly one CUDA_VISIBLE_DEVICES"):
-        resolve_dp_rank_device(rank=1)
 
 
 def test_single_device_topology_spawns_no_children(fake_popen, monkeypatch: pytest.MonkeyPatch):
@@ -307,11 +189,6 @@ def test_single_device_topology_spawns_no_children(fake_popen, monkeypatch: pyte
     with DpRankSupervisor(world_size=1, log_dir="/tmp/dp_test_log"):
         assert fake_popen.instances == []
     assert os.environ.get(UNILAB_DP_RANK) is None
-
-
-# ---------------------------------------------------------------------------
-# DpRankSupervisor
-# ---------------------------------------------------------------------------
 
 
 def test_supervisor_spawn_argv_and_env(fake_popen, monkeypatch: pytest.MonkeyPatch):
@@ -335,6 +212,24 @@ def test_supervisor_spawn_argv_and_env(fake_popen, monkeypatch: pytest.MonkeyPat
             child.returncode = 0
     for child in fake_popen.instances:
         assert not child.terminated
+
+
+def test_supervisor_children_each_receive_one_visible_gpu(
+    fake_popen, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Visibility tokens pass through to spawned ranks opaquely."""
+    monkeypatch.delenv(UNILAB_DP_RANK, raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b,GPU-c")
+
+    with DpRankSupervisor(world_size=3, log_dir="/tmp/dp_test_log"):
+        for child in fake_popen.instances:
+            child.returncode = 0
+
+    assert len(fake_popen.instances) == 2
+    assert [child.env["CUDA_VISIBLE_DEVICES"] for child in fake_popen.instances] == [
+        "GPU-b",
+        "GPU-c",
+    ]
 
 
 def test_supervisor_normal_exit_waits_for_children(fake_popen):
@@ -362,7 +257,7 @@ def test_supervisor_clean_child_exit_is_not_a_failure(fake_popen):
 
 def test_supervisor_failed_child_makes_rank_zero_fail(fake_popen, monkeypatch: pytest.MonkeyPatch):
     # Keep the watchdog from polling so __exit__ observes the exit code first.
-    monkeypatch.setattr(dp_launcher, "_WATCHDOG_INTERVAL_S", 60.0)
+    monkeypatch.setattr(launcher, "_WATCHDOG_INTERVAL_S", 60.0)
     supervisor = DpRankSupervisor(world_size=2, log_dir="/tmp/dp_test_log")
     supervisor.__enter__()
     fake_popen.instances[0].returncode = 3
@@ -403,9 +298,9 @@ def test_supervisor_ctrl_c_forwards_sigint_for_cooperative_rank_cleanup(
 def test_supervisor_watchdog_sigterms_rank_zero_on_child_death(
     fake_popen, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setattr(dp_launcher, "_WATCHDOG_INTERVAL_S", 0.01)
+    monkeypatch.setattr(launcher, "_WATCHDOG_INTERVAL_S", 0.01)
     killed: list[int] = []
-    monkeypatch.setattr(dp_launcher.os, "kill", lambda pid, sig: killed.append(sig))
+    monkeypatch.setattr(launcher.os, "kill", lambda pid, sig: killed.append(sig))
     with pytest.raises(RuntimeError, match="exit code 1"):
         with DpRankSupervisor(world_size=2, log_dir="/tmp/dp_test_log"):
             fake_popen.instances[0].returncode = 1
@@ -445,98 +340,3 @@ def test_supervisor_restores_signal_handlers_when_group_reaping_fails(
 
     assert signal.getsignal(signal.SIGINT) == previous_sigint
     assert signal.getsignal(signal.SIGTERM) == previous_sigterm
-
-
-# ---------------------------------------------------------------------------
-# resolve_collector_cpu_ids
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_collector_cpu_ids_single_rank_returns_none():
-    assert resolve_collector_cpu_ids(1, 0, 128) is None
-    assert resolve_collector_cpu_ids(0, 0, 128) is None
-
-
-def test_resolve_collector_cpu_ids_even_partition():
-    assert resolve_collector_cpu_ids(2, 0, 128) == list(range(0, 64))
-    assert resolve_collector_cpu_ids(2, 1, 128) == list(range(64, 128))
-
-
-def test_resolve_collector_cpu_ids_keeps_physical_siblings_together(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    groups = [[0, 4], [1, 5], [2, 6], [3, 7]]
-    monkeypatch.setattr(dp_launcher.os, "sched_getaffinity", lambda _: set(range(8)), raising=False)
-    monkeypatch.setattr(dp_launcher, "_discover_physical_cpu_groups", lambda _: groups)
-    assert resolve_collector_cpu_ids(2, 0) == [0, 4, 1, 5]
-    assert resolve_collector_cpu_ids(2, 1) == [2, 6, 3, 7]
-
-
-def test_resolve_collector_cpu_ids_remainder_stays_unassigned():
-    # 129 CPUs / 2 ranks -> 64+64; CPU 128 keeps default OS scheduling.
-    assert resolve_collector_cpu_ids(2, 0, 129) == list(range(0, 64))
-    assert resolve_collector_cpu_ids(2, 1, 129) == list(range(64, 128))
-
-
-def test_resolve_collector_cpu_ids_requires_one_cpu_per_rank():
-    with pytest.raises(ValueError, match="cpu_count"):
-        resolve_collector_cpu_ids(4, 0, 3)
-
-
-def test_resolve_collector_cpu_ids_rank_out_of_range():
-    with pytest.raises(ValueError, match="out of range"):
-        resolve_collector_cpu_ids(2, 2, 128)
-
-
-def test_resolve_collector_cpu_ids_explicit_valid():
-    assert resolve_collector_cpu_ids(2, 1, 128, explicit=[[0, 1], [2, 3]]) == [2, 3]
-
-
-def test_resolve_collector_cpu_ids_empty_explicit_falls_back_to_auto():
-    assert resolve_collector_cpu_ids(2, 1, 128, explicit=[]) == list(range(64, 128))
-
-
-def test_resolve_collector_cpu_ids_explicit_rejects_segment_count_mismatch():
-    with pytest.raises(ValueError, match="world_size"):
-        resolve_collector_cpu_ids(2, 0, 128, explicit=[[0], [1], [2]])
-
-
-def test_resolve_collector_cpu_ids_explicit_rejects_overlapping_segments():
-    with pytest.raises(ValueError, match="overlap"):
-        resolve_collector_cpu_ids(2, 0, 128, explicit=[[0, 1], [1, 2]])
-
-
-def test_resolve_collector_cpu_ids_explicit_rejects_empty_segment():
-    with pytest.raises(ValueError, match="non-empty"):
-        resolve_collector_cpu_ids(2, 0, 128, explicit=[[0, 1], []])
-
-
-@pytest.mark.parametrize("bad_id", [-1, True, "2"])
-def test_resolve_collector_cpu_ids_explicit_rejects_invalid_ids(bad_id):
-    with pytest.raises(ValueError, match="non-negative integers"):
-        resolve_collector_cpu_ids(2, 0, 128, explicit=[[0, bad_id], [2, 3]])
-
-
-def test_offpolicy_config_dp_collector_cpu_ids_defaults_to_null():
-    cfg = _offpolicy_cfg()
-    assert cfg.training.dp_collector_cpu_ids is None
-
-
-def test_offpolicy_config_dp_collector_cpu_ids_compose():
-    cfg = _offpolicy_cfg(["training.dp_collector_cpu_ids=[[0,1],[2,3]]"])
-    explicit = OmegaConf.to_container(cfg.training.dp_collector_cpu_ids, resolve=True)
-    assert explicit == [[0, 1], [2, 3]]
-    assert resolve_collector_cpu_ids(2, 1, 128, explicit=explicit) == [2, 3]
-
-
-# ---------------------------------------------------------------------------
-# Hardware-gated smoke
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires >=2 CUDA devices")
-@pytest.mark.slow
-def test_rank_local_visibility_validates_on_two_gpu_host(monkeypatch):
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
-
-    assert selected_visible_entries(world_size=2) == ("GPU-a", "GPU-b")

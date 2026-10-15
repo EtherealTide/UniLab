@@ -360,7 +360,7 @@ def test_sac_playback_session_runs_sim2sim_preflight(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import uni_rl.algos.common.actor_factory as actor_factory
+    import unilab.rl.algos.common.actor_factory as actor_factory
     from omegaconf import OmegaConf
 
     import unilab.utils.checkpoint as checkpoint_utils
