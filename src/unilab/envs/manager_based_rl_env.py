@@ -1455,34 +1455,6 @@ class ManagerBasedRlEnv(TorchEnv):
         """Expose cold-path reward component metadata to algorithm owners."""
         return SimpleNamespace(reward_component_names=self.reward_manager.step_reward_names)
 
-    @property
-    def rng_state(self) -> dict[str, Any]:
-        """Return the versioned Manager RNG state snapshot."""
-        return {
-            "device": str(self.torch_rng.device),
-            "state_version": self.torch_rng.state_version,
-            "draw_version": self.torch_rng.draw_version,
-            "state": self.torch_rng.get_state(),
-        }
-
-    def snapshot_rng_state(self) -> tuple[torch.Tensor, int, int]:
-        """Capture the deterministic RNG state and its versioned stream position."""
-        return (
-            self.torch_rng.get_state().clone(),
-            self.torch_rng.state_version,
-            self.torch_rng.draw_version,
-        )
-
-    def rollback_rng_state(self, snapshot: tuple[torch.Tensor, int, int]) -> None:
-        """Restore a failed boundary without silently advancing RNG draws."""
-        state, state_version, draw_version = snapshot
-        if state.device.type != "cpu":
-            raise ValueError("RNG rollback state must be a CPU Torch tensor")
-        restored = self.rng_state
-        if restored["state_version"] < state_version or restored["draw_version"] < draw_version:
-            raise ValueError("cannot roll RNG state backward")
-        self.torch_rng.set_state(state)
-
     def set_deferred_validation_boundaries(self, enabled: bool) -> None:
         """Propagate deferred validation boundaries to every owner."""
         if not isinstance(enabled, bool):

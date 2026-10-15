@@ -269,10 +269,6 @@ class TorchEnv(ABEnv):
             # consumers can only read it after the update boundary succeeds.
             self._pending_backend_step_completion = pending_completion
 
-        # Transition publication starts only after the backend completion
-        # boundary succeeds. A failed replay therefore leaves the previous
-        # public final observation and truncation carrier untouched for RNG
-        # rollback and explicit eager fallback.
         self._state.truncated.fill_(False)
         self._clear_step_final_observation()
 

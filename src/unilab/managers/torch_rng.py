@@ -91,8 +91,6 @@ class TorchManagerRng:
             )
         self.generator = generator
         self.device = resolved
-        self._state_version = 0
-        self._draw_version = 0
 
     @classmethod
     def seeded(cls, seed: int, *, device: str | torch.device = "cpu") -> TorchManagerRng:
@@ -102,14 +100,11 @@ class TorchManagerRng:
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
             raise ValueError(f"TorchManagerRng seed must be a non-negative integer, got {seed!r}")
         self.generator.manual_seed(int(seed))
-        self._state_version += 1
-        self._draw_version += 1
         return self
 
     def random(
         self, size: int | tuple[int, ...], *, dtype: torch.dtype = torch.float32
     ) -> torch.Tensor:
-        self._draw_version += 1
         return torch.rand(_shape(size), dtype=dtype, device=self.device, generator=self.generator)
 
     def uniform(
@@ -123,7 +118,6 @@ class TorchManagerRng:
         shape = _shape(size)
         low_t = _bounds(low, name="low", device=self.device, dtype=dtype)
         high_t = _bounds(high, name="high", device=self.device, dtype=dtype)
-        self._draw_version += 1
         unit = torch.rand(shape, dtype=dtype, device=self.device, generator=self.generator)
         sampled_low, sampled_high = _sampled_bounds(low_t, high_t, shape, device=self.device)
         return unit * (sampled_high - sampled_low) + sampled_low
@@ -131,7 +125,6 @@ class TorchManagerRng:
     def standard_normal(
         self, size: int | tuple[int, ...], *, dtype: torch.dtype = torch.float32
     ) -> torch.Tensor:
-        self._draw_version += 1
         return torch.randn(_shape(size), dtype=dtype, device=self.device, generator=self.generator)
 
     def normal(
@@ -145,7 +138,6 @@ class TorchManagerRng:
         shape = _shape(size)
         mean_t = _bounds(mean, name="mean", device=self.device, dtype=dtype)
         std_t = _bounds(std, name="std", device=self.device, dtype=dtype)
-        self._draw_version += 1
         unit = torch.randn(shape, dtype=dtype, device=self.device, generator=self.generator)
         sampled_mean, sampled_std = _sampled_bounds(mean_t, std_t, shape, device=self.device)
         return sampled_mean + sampled_std * unit
@@ -169,7 +161,6 @@ class TorchManagerRng:
         shape = _shape(size)
         if dtype not in {torch.int32, torch.int64}:
             raise TypeError(f"TorchManagerRng integers supports int32/int64, got {dtype}")
-        self._draw_version += 1
         return torch.randint(
             int(low),
             int(high),
@@ -206,7 +197,6 @@ class TorchManagerRng:
         count = _shape(size)
         if len(count) != 1:
             raise TypeError("TorchManagerRng choice size must be one-dimensional")
-        self._draw_version += 1
         return torch.multinomial(p, count[0], replacement=True, generator=self.generator)
 
     def get_state(self) -> torch.Tensor:
@@ -216,18 +206,6 @@ class TorchManagerRng:
         if state.device.type != "cpu":
             raise ValueError("TorchManagerRng state must be a CPU Torch state tensor")
         self.generator.set_state(state)
-        self._state_version += 1
-        self._draw_version += 1
-
-    @property
-    def state_version(self) -> int:
-        """Monotonic count of successful state installations and reseeds."""
-        return self._state_version
-
-    @property
-    def draw_version(self) -> int:
-        """Monotonic count of successful state installations, reseeds, and draws."""
-        return self._draw_version
 
 
 __all__ = ["TorchManagerRng"]

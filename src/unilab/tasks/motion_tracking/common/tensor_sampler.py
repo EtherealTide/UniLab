@@ -163,7 +163,6 @@ class TensorMotionSampler:
         )
         self._reset_frames = torch.empty(self.num_envs, dtype=torch.int32, device=self.device)
         self._step_next_frames = torch.empty(self.num_envs, dtype=torch.int32, device=self.device)
-        self._step_active_rows = torch.empty(self.num_envs, dtype=torch.int64, device=self.device)
         self._step_clamped_rows = torch.empty(self.num_envs, dtype=torch.int64, device=self.device)
         self._step_clip_ends = torch.empty(self.num_envs, dtype=torch.int32, device=self.device)
         self._step_done = torch.empty(self.num_envs, dtype=torch.bool, device=self.device)
