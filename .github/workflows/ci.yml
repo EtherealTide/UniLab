@@ -20,7 +20,6 @@ permissions:
 
 env:
   UV_FROZEN: "1"
-  UNILAB_ALLOW_LOCAL_UNISIM: "1"
 
 jobs:
   ruff-lint:

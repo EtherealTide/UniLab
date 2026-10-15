@@ -130,7 +130,6 @@ class ResetStateTransaction:
         self._requesting_terms: set[str] = set()
         self._last_commit_had_writes = False
         self._last_set_state_timing_ms: dict[str, float] = {}
-        self._last_set_state_completion: Any | None = None
         self._mocap_bindings: dict[str, BackendMocapPoseBinding] = {}
         self._mocap_pending: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
         self._packed_reset_device: torch.device | None = None
@@ -259,7 +258,6 @@ class ResetStateTransaction:
         self._requesting_terms.clear()
         self._last_commit_had_writes = False
         self._last_set_state_timing_ms = {}
-        self._last_set_state_completion = None
         self._entity_values.clear()
         self._entity_fields.clear()
         self._entity_joints.clear()
@@ -309,7 +307,6 @@ class ResetStateTransaction:
         self._tensor_owner_subset = owner_subset
         self._requesting_terms.clear()
         self._last_commit_had_writes = False
-        self._last_set_state_completion = None
         self._tensor_active = True
 
     def write_entity_state(
@@ -1752,15 +1749,9 @@ class ResetStateTransaction:
     def _merge_backend_timing(self, result: Any) -> None:
         """Merge backend-reported commit sub-timings into the last timing table."""
         if isinstance(result, dict):
-            self._last_set_state_completion = result.get("completion")
             backend_timing = result.get("timing")
             if isinstance(backend_timing, dict):
                 self._last_set_state_timing_ms.update(backend_timing)
-
-    @property
-    def last_set_state_completion(self) -> Any | None:
-        """Return the public receipt from the most recent backend reset commit."""
-        return self._last_set_state_completion
 
     def _require_packed_transaction(self) -> TorchPackedResetComposer:
         """Return the declared packed composer or fail closed."""

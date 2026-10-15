@@ -72,14 +72,12 @@ class _FakeBackend:
         reject_pre_step: bool = False,
         reject_materialize: bool = False,
         packed_reset: bool = True,
-        torch_stream_id: int | None = None,
     ) -> None:
         self.num_envs = num_envs
         self.num_actuators = 1
         self.reject_pre_step = reject_pre_step
         self.reject_materialize = reject_materialize
         self.packed_reset = packed_reset
-        self.torch_stream_id = torch_stream_id
         self.pre_step_control = None
         self.applied_controls: list[np.ndarray] = []
         self.tensor_controls: list[torch.Tensor] = []
@@ -238,7 +236,7 @@ class _FakeBackend:
                     for name, value in full_width.items()
                 }
             )
-        return {"timing": {}, "completion": self.record_completion("mask_reset")}
+        return {"timing": {}}
 
     def get_public_state_widths(self):
         from unisim.backend.base import PublicStateWidths
@@ -269,19 +267,18 @@ class _FakeBackend:
         self.step(ctrl.detach().cpu().numpy(), nsteps)
         if self.completions and self.completions[-1] == "not-a-token":
             return {"timing": {}, "completion": "not-a-token"}
-        return {"timing": {}, "completion": self.record_completion("step")}
+        return {"timing": {}, "completion": self.record_step_completion()}
 
-    def _completion(self, operation: str):
+    def _step_completion(self):
         return CompletionToken(
             contract_version=COMPLETION_CONTRACT_VERSION,
-            operation=operation,
-            sequence=len(self.set_state_calls) + len(self.tensor_controls),
-            stream_id=self.torch_stream_id or 0,
+            operation="step",
+            sequence=len(self.tensor_controls),
             producer_id="test-producer",
         )
 
-    def record_completion(self, operation: str):
-        completion = self._completion(operation)
+    def record_step_completion(self):
+        completion = self._step_completion()
         self.completions.append(completion)
         return completion
 
@@ -1240,13 +1237,11 @@ def _make_env(
     num_envs: int = 2,
     reject_pre_step: bool = False,
     reject_materialize: bool = False,
-    torch_stream_id: int | None = None,
 ) -> tuple[_TestEnv, _FakeBackend]:
     backend = _FakeBackend(
         num_envs,
         reject_pre_step=reject_pre_step,
         reject_materialize=reject_materialize,
-        torch_stream_id=torch_stream_id,
     )
     env = _TestEnv(
         cfg or _make_cfg(),
@@ -1329,7 +1324,7 @@ def test_step_replaces_previous_backend_completion() -> None:
     env.close()
 
 
-def test_terminal_step_publishes_reset_completion_boundary() -> None:
+def test_terminal_step_keeps_the_step_completion_receipt() -> None:
     cfg = _make_cfg()
     cfg.scene.entities["robot"] = replace(cfg.scene.entities["robot"], joint_names=("joint",))
     cfg.events = {"reset": EventTermCfg(func=_write_reset_joint_state, mode="reset")}
@@ -1341,13 +1336,15 @@ def test_terminal_step_publishes_reset_completion_boundary() -> None:
     state = env.step(torch.tensor([[1.0], [0.0]], dtype=torch.float32))
 
     assert bool(state.terminated[0])
+    # Reset operations emit no receipt; the transition receipt stays the
+    # step-only async completion published by the backend for this step.
     assert state.info["completion"] is backend.completions[-1]
-    assert state.info["completion"].operation == "mask_reset"
+    assert state.info["completion"].operation == "step"
     env.close()
 
 
 def test_backend_step_receipt_is_available_before_update_state() -> None:
-    env, backend = _make_env(_make_cfg(include_optional_managers=False), torch_stream_id=17)
+    env, backend = _make_env(_make_cfg(include_optional_managers=False))
     env.init_state()
     observed: list[object] = []
     original_update_state = env.update_state
@@ -1377,15 +1374,14 @@ def test_invalid_backend_step_receipt_fails_before_update_state() -> None:
     env.close()
 
 
-def test_step_publishes_backend_reset_completion_for_terminal_boundaries() -> None:
+def test_backend_reset_commit_publishes_no_completion_receipt() -> None:
     env, backend = _make_env()
     env.reset()
 
-    completion = backend.set_state_tensor_mask(
-        torch.tensor([False, True]), backend.qpos, backend.qvel
-    )["completion"]
-    assert completion.operation == "mask_reset"
-    assert env.last_reset_completion is None
+    result = backend.set_state_tensor_mask(torch.tensor([False, True]), backend.qpos, backend.qvel)
+    assert result is not None
+    assert result.get("completion") is None
+    assert backend.completions == []
     env.close()
 
 

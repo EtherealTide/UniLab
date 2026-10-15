@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import ast
+import json
 import subprocess
 import sys
 import textwrap
 from importlib.metadata import distribution
-from os import environ
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -17,15 +17,24 @@ _MATERIALIZER_CONSUMERS = (
 
 def test_unisim_dependency_uses_an_approved_source() -> None:
     direct_url = distribution("unisim-core").read_text("direct_url.json")
-    if environ.get("UNILAB_ALLOW_LOCAL_UNISIM") == "1":
-        # Coordinated multi-repository validation against a sibling checkout.
-        # The environment is temporary and must not be used for release checks.
-        assert direct_url is not None, "UniSim must resolve from the local source checkout"
-        assert direct_url.startswith('{"url":"file://'), (
-            "UniSim local validation must use a file:// editable source"
-        )
+    if direct_url is None:
+        # Published package registry install.
         return
-    assert direct_url is None, "UniSim must resolve from the published package registry"
+    # The only approved non-registry source is the local editable sibling
+    # checkout used for coordinated multi-repository development (#2363).
+    metadata = json.loads(direct_url)
+    url = metadata.get("url", "")
+    assert isinstance(url, str) and url.startswith("file://"), (
+        "UniSim must resolve from the published registry or a file:// source"
+    )
+    dir_info = metadata.get("dir_info")
+    assert isinstance(dir_info, dict) and dir_info.get("editable") is True, (
+        "UniSim local validation must use an editable sibling checkout"
+    )
+    sibling = (_REPO_ROOT.parent / "unisim").resolve()
+    assert Path(url.removeprefix("file://")).resolve() == sibling, (
+        f"UniSim editable source must be the sibling checkout at {sibling}"
+    )
 
 
 def test_materializer_consumers_use_unisim_owner_module() -> None:
