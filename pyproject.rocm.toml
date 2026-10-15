@@ -91,10 +91,6 @@ torch = [
 triton-rocm = [
     { index = "pytorch-rocm72", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
 ]
-# Coordinated #2359 validation mirrors the default profile until registry
-# dependencies are restored for release.
-unisim-core = { path = "../unisim", editable = true }
-unilab-rl = { path = "../unilab_rl", editable = true }
 
 [tool.uv]
 exclude-dependencies = [
