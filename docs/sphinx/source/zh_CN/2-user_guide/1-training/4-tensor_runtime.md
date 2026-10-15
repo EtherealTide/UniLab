@@ -26,6 +26,25 @@ SAC 与 FlashSAC 会在探测环境或构造 learner 之前解析所有面向进
 `collector_metrics_interval` 覆盖为 `100`；其他 tensor-runtime 默认值仍保持
 上表所示。
 
+## Collector tensor device（MuJoCo host bridge）
+
+`training.collector_tensor_device` 选择 MuJoCo HOST_BRIDGE Manager 的可选加速器
+Torch carrier（路由到 `manager_torch_device` owner 字段）。取值为 `auto`
+（默认）、`cpu` 或不带序号的 `cuda`；`cuda:3` 这类带序号的值会被拒绝。
+
+- `auto` 跟随 learner 设备：CUDA learner 会路由 rank-local 带序号的 learner
+  设备（例如 `cuda:3`），使 collector 的 observation 与 action 留在 learner GPU
+  上，uni_rl 探针无需额外配置即可解析 CUDA inference transport。CPU 与
+  torch.mps（Metal Performance Shaders）learner 保持 CPU carrier。
+- 显式 `cpu`/`cuda` 优先于 `auto`。`cuda` 仍只支持 MuJoCo HOST_BRIDGE 后端；
+  对其他后端该 knob 是 no-op，但请求 `cuda` 会 fail closed。
+
+迁移说明：之前在 CUDA learner 下沿用 `cpu` 默认值的 MuJoCo 配置，现在会通过
+packed host bridge 呈现 CUDA tensor，并解析为 CUDA inference transport。此时每个
+collector 进程会在 learner GPU 上额外持有一个 CUDA context（双 context 拓扑见
+{doc}`7-tensor_runtime_production`）。如需保留原先的 CPU carrier，请显式固定
+`training.collector_tensor_device=cpu`。
+
 ## Replay ingress 权衡
 
 默认 `replay_ingress_slot_rows: null` 会解析为 `algo.num_envs`，并为每个

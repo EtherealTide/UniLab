@@ -27,6 +27,29 @@ string `mps`. The G1 Motion Tracking / MJWarp owner intentionally overrides only
 `collector_metrics_interval` to `100`; all other tensor-runtime defaults remain
 as listed above.
 
+## Collector tensor device (MuJoCo host bridge)
+
+`training.collector_tensor_device` selects the optional accelerator Torch
+carriers of the MuJoCo HOST_BRIDGE Manager (routed to the
+`manager_torch_device` owner field). It accepts `auto` (the default), `cpu`,
+or unindexed `cuda`; indexed values such as `cuda:3` are rejected.
+
+- `auto` follows the learner device: a CUDA learner routes the rank-local
+  indexed learner device (for example `cuda:3`), so collector observations and
+  actions stay on the learner GPU and the uni_rl probe resolves CUDA inference
+  transport with no further configuration. CPU and torch.mps (Metal Performance
+  Shaders) learners keep the CPU carrier.
+- Explicit `cpu` or `cuda` values win over `auto`. `cuda` remains supported
+  only for the MuJoCo HOST_BRIDGE backend; for every other backend the knob is
+  a no-op unless it requests `cuda`, which fails closed.
+
+Migration note: existing MuJoCo configurations that ran a CUDA learner under
+the previous `cpu` default now present CUDA tensors through the packed host
+bridge and resolve CUDA inference transport. Each collector process then holds
+one additional CUDA context on the learner GPU (see
+{doc}`7-tensor_runtime_production` for the two-context topology). Pin
+`training.collector_tensor_device=cpu` to keep the previous CPU carrier.
+
 ## Replay ingress tradeoffs
 
 The default `replay_ingress_slot_rows: null` resolves to `algo.num_envs` and
