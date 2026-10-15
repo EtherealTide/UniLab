@@ -148,9 +148,11 @@ For development and contribution workflows, see the
 ```
 
 UniLab is released under the [Apache License 2.0](LICENSE). See the
-independent [UniSim](https://github.com/unilabsim/unisim) and
-[UniLab RL](https://github.com/unilabsim/unilab_rl) repositories for their
-own release and citation information.
+independent [UniSim](https://github.com/unilabsim/unisim) repository for its
+own release and citation information. The RL stack (algorithms, async runtime,
+training logging) ships inside this repository under `src/unilab/rl/`; it was
+merged from the former [unilab_rl](https://github.com/unilabsim/unilab_rl)
+repository, which is kept for historical reference.
 
 ## Acknowledgments
 

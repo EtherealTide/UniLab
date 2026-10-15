@@ -46,15 +46,16 @@ during issue #1811.
 Choose one core setup path:
 
 ```bash
-# Full default setup: MuJoCo + uni_rl, with shell completion.
+# Full default setup: MuJoCo backend, with shell completion.
 make setup
 ```
 
-`make setup` runs `uv sync --extra mujoco --extra uni_rl` and installs shell
-completion. If `make` is unavailable, run the matching commands directly:
+`make setup` syncs the default environment (MuJoCo backend and the built-in
+RL stack) and installs shell completion. If `make` is unavailable, run the
+matching commands directly:
 
 ```bash
-uv sync --extra mujoco --extra uni_rl
+uv sync --extra mujoco
 uv run --no-sync unilab-complete install
 ```
 
@@ -155,19 +156,25 @@ verification commands:
 
 ## Algorithm Extras
 
-PPO training and playback run directly on `rsl-rl-lib`, which the base package
-installs. The optional `uni_rl` extra adds the `uni_rl` runtime
-(`unilab-rl`), required only for APPO, the off-policy algorithms (SAC),
-and multi-GPU data-parallel PPO launches (`CUDA_VISIBLE_DEVICES` with more than
-one entry):
+No algorithm extra is required. The full RL stack ships inside the `unilab`
+distribution itself under `src/unilab/rl/`: PPO runs directly on
+`rsl-rl-lib`, and the APPO, off-policy (SAC / FlashSAC), and multi-GPU
+data-parallel runtimes are included in the base install. The former
+`unilab-rl` package is merged into this repository (issue #2372, decision in
+{doc}`/adr/ADR-0016-rl-reintegration-into-unilab-rl`).
+
+The legacy `uni_rl` extra remains as an empty transitional shell so old
+install commands keep working without error; it installs nothing and will be
+removed in a later release:
 
 ```bash
-uv sync --extra uni_rl
-# or, from PyPI:
-pip install unilab[uni_rl]
+uv sync --extra uni_rl        # accepted, installs nothing
+pip install unilab[uni_rl]    # accepted, installs nothing
 ```
 
-`make setup` already includes this extra.
+If your code imports `uni_rl` directly, see
+{doc}`../3-deployment/3-framework_migration/7-from_unilab_rl` for the
+`uni_rl.*` → `unilab.rl.*` migration mapping.
 
 ## Switching The Local MuJoCo Version
 
@@ -277,7 +284,7 @@ For a local package mirror, set the uv index before syncing:
 
 ```bash
 export UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-uv sync --extra mujoco --extra uni_rl \
+uv sync --extra mujoco \
   --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 

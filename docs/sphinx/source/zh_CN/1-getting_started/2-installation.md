@@ -42,15 +42,15 @@ UniLab 支持 Python `3.10` 到 `3.13`；主环境推荐使用 `3.13`。issue #1
 选择一条核心安装路径：
 
 ```bash
-# 完整默认环境：MuJoCo + uni_rl，并安装 shell 自动补全。
+# 完整默认环境：MuJoCo 后端，并安装 shell 自动补全。
 make setup
 ```
 
-`make setup` 会运行 `uv sync --extra mujoco --extra uni_rl` 并安装 shell 自动
+`make setup` 会同步默认环境（MuJoCo 后端与内置 RL 栈）并安装 shell 自动
 补全。如果无法使用 `make`，可运行对应的底层命令：
 
 ```bash
-uv sync --extra mujoco --extra uni_rl
+uv sync --extra mujoco
 uv run --no-sync unilab-complete install
 ```
 
@@ -142,17 +142,23 @@ runtime 变量、渲染器要求和验证命令见 scoped 后端页面：
 
 ## 算法 Extras
 
-PPO 训练与回放直接运行在 `rsl-rl-lib` 之上，基础 package 已包含该依赖。可选的
-`uni_rl` extra 提供 `uni_rl` runtime（`unilab-rl`），仅 APPO、off-policy
-算法（SAC）以及多卡数据并行 PPO（`CUDA_VISIBLE_DEVICES` 配置多项）需要：
+不再需要任何算法 extra。完整的 RL 栈已内置在 `unilab` distribution 的
+`src/unilab/rl/` 中：PPO 直接运行在 `rsl-rl-lib` 之上，APPO、off-policy
+（SAC / FlashSAC）与多卡数据并行 runtime 均随基础安装提供。原
+`unilab-rl` 包已并入本仓库（issue #2372，决策见
+{doc}`/adr/ADR-0016-rl-reintegration-into-unilab-rl`）。
+
+旧 `uni_rl` extra 保留为空的过渡壳，旧安装命令不会报错，但不会安装任何
+内容，并将在后续版本移除：
 
 ```bash
-uv sync --extra uni_rl
-# 或从 PyPI 安装：
-pip install unilab[uni_rl]
+uv sync --extra uni_rl        # 命令仍被接受，但不安装任何内容
+pip install unilab[uni_rl]    # 命令仍被接受，但不安装任何内容
 ```
 
-`make setup` 已包含该 extra。
+如果你的代码直接 `import uni_rl`，请参见
+{doc}`../3-deployment/3-framework_migration/7-from_unilab_rl` 中的
+`uni_rl.*` → `unilab.rl.*` 迁移映射。
 
 ## 切换本地 MuJoCo 版本
 
@@ -246,7 +252,7 @@ Intel XPU 说明：
 
 ```bash
 export UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-uv sync --extra mujoco --extra uni_rl \
+uv sync --extra mujoco \
   --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
