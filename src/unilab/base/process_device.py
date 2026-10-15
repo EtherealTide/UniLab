@@ -186,17 +186,21 @@ def apply_manager_torch_device_override(
 
     The input mapping is never mutated. ``collector_tensor_device`` is the explicit
     training contract: ``cpu`` remains on CPU and unindexed ``cuda`` is resolved to
-    the current device by the environment. The legacy ``learner_device`` argument is
-    used only by callers without a composed training configuration.
+    the current device by the environment. ``auto`` follows the learner device: a
+    CUDA learner routes the rank-local (indexed) learner device string, while a CPU
+    or torch.mps learner keeps the CPU carrier. ``auto`` is a no-op for backends
+    outside the MuJoCo HOST_BRIDGE scope and when no learner device is known. The
+    legacy ``learner_device`` argument is used only by callers without a composed
+    training configuration.
     """
 
     result = dict(env_cfg_override) if env_cfg_override is not None else {}
     backend = _normalize_backend(backend_type)
     if collector_tensor_device is not None:
         device = str(collector_tensor_device).strip().lower()
-        if device not in {"cpu", "cuda"}:
+        if device not in {"auto", "cpu", "cuda"}:
             raise ValueError(
-                "training.collector_tensor_device must be 'cpu' or 'cuda'; "
+                "training.collector_tensor_device must be 'auto', 'cpu', or 'cuda'; "
                 f"got {collector_tensor_device!r}"
             )
         if backend not in _COLLECTOR_TENSOR_BACKENDS:
@@ -206,6 +210,8 @@ def apply_manager_torch_device_override(
                     f"the MuJoCo HOST_BRIDGE backend; got {backend_type!r}"
                 )
             return result
+        if device == "auto":
+            return _apply_manager_torch_device_auto(result, learner_device)
         result["manager_torch_device"] = device
         return result
 
@@ -218,6 +224,27 @@ def apply_manager_torch_device_override(
         result["manager_torch_device"] = "cpu"
         return result
     if device.split(":", 1)[0].lower() != "cuda":
+        return result
+    result["manager_torch_device"] = device
+    return result
+
+
+def _apply_manager_torch_device_auto(
+    result: dict[str, Any],
+    learner_device: str | None,
+) -> dict[str, Any]:
+    """Resolve the ``auto`` carrier request from the learner device.
+
+    A CUDA learner routes its rank-local (indexed) device string verbatim; a CPU
+    or torch.mps learner keeps the CPU carrier. ``None`` leaves the mapping
+    unchanged for callers that do not know the learner device yet.
+    """
+
+    if learner_device is None:
+        return result
+    device = str(learner_device).strip()
+    if not device or device.split(":", 1)[0].lower() != "cuda":
+        result["manager_torch_device"] = "cpu"
         return result
     result["manager_torch_device"] = device
     return result

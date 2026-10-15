@@ -186,6 +186,46 @@ def test_collector_tensor_device_override_is_explicit_and_rank_local() -> None:
         )
 
 
+def test_collector_tensor_device_auto_follows_the_learner_device() -> None:
+    owner_override = {"manager_torch_device": "owner-cpu", "nested": {"keep": True}}
+
+    routed = apply_manager_torch_device_override(
+        owner_override,
+        "mujoco",
+        collector_tensor_device="auto",
+        learner_device="cuda:3",
+    )
+    assert routed["manager_torch_device"] == "cuda:3"
+    assert routed["nested"] is owner_override["nested"]
+    assert owner_override["manager_torch_device"] == "owner-cpu"
+
+    for learner_device in ("cpu", "mps"):
+        routed = apply_manager_torch_device_override(
+            owner_override,
+            "mujoco",
+            collector_tensor_device="auto",
+            learner_device=learner_device,
+        )
+        assert routed["manager_torch_device"] == "cpu"
+
+    routed = apply_manager_torch_device_override(
+        owner_override,
+        "mujoco",
+        collector_tensor_device="auto",
+        learner_device=None,
+    )
+    assert routed == owner_override
+
+    # Backends outside the MuJoCo HOST_BRIDGE scope ignore the auto request.
+    routed = apply_manager_torch_device_override(
+        owner_override,
+        "motrix",
+        collector_tensor_device="auto",
+        learner_device="cuda:3",
+    )
+    assert routed == owner_override
+
+
 def test_legacy_manager_torch_device_override_uses_playback_device() -> None:
     owner_override = {"manager_torch_device": "owner-cpu", "nested": {"keep": True}}
 

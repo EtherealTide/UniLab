@@ -104,7 +104,7 @@ def build_appo_runner_kwargs(
         routed_env_cfg_override,
         str(cfg.training.sim_backend),
         collector_tensor_device=str(
-            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+            OmegaConf.select(cfg, "training.collector_tensor_device", default="auto")
         ),
         learner_device=_env_carrier_device(cfg, collector_device),
     )
@@ -293,7 +293,7 @@ def play_appo(
         play_env_cfg_override,
         str(cfg.training.sim_backend),
         collector_tensor_device=str(
-            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+            OmegaConf.select(cfg, "training.collector_tensor_device", default="auto")
         ),
         learner_device=device,
     )
@@ -439,7 +439,7 @@ def main(cfg: DictConfig) -> None:
         env_cfg_override,
         str(cfg.training.sim_backend),
         collector_tensor_device=str(
-            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
+            OmegaConf.select(cfg, "training.collector_tensor_device", default="auto")
         ),
         learner_device=_env_carrier_device(cfg, collector_device, runner_device=learner_device),
     )
