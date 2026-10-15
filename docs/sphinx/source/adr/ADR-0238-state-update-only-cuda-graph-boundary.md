@@ -135,9 +135,11 @@ post-reset observations are not captured.
 - command/event paths that mutate backend state and require a mid-update read
   repack.
 
-`tests/architecture/test_env_update_graph_static_audit.py` records the narrow
-update-body audit. Its eager-only clone classifications are explicit, not
-unclassified graph violations.
+A dedicated static audit recorded the narrow update-body classifications above.
+Its eager-only clone classifications are explicit, not unclassified graph
+violations. That audit was deleted together with the graph contracts by the
+#2363 removal; the surviving neutral hot-path audit is listed under Evidence
+In Repo.
 
 ### Owner mode and manifests
 
@@ -175,9 +177,11 @@ It must fail closed unless all of the following are true:
 - deferred validation and persistent finite verdicts are supported.
 
 The verdict must name the update boundary. It cannot be inferred from backend
-physics graph enablement. A later `GraphCompletionToken` extension for an
-`env_update` operation is also backend-first; the backend step receipt is an
-ordering input and must never be relabeled as update completion evidence.
+physics graph enablement. A later backend-first completion-token extension for
+an `env_update` operation would follow the same rule; the backend step receipt
+is an ordering input and must never be relabeled as update completion evidence.
+(The graph completion-token API named in the original pre-registration was
+deleted by the #2363 removal.)
 
 ### Carrier contract
 
@@ -325,11 +329,18 @@ must not become a support claim.
 - Neutral hot-path audit: `tests/architecture/test_runtime_hot_path_static_audit.py`
 - Eager owner-order parity: `tests/envs/test_manager_based_rl_env.py`
 - Stable read plan: `src/unilab/base/entity.py`
-- Backend public contract: `../unisim/src/unisim/backend/base.py`
-- MJWarp stable views and receipts:
-  `../unisim/src/unisim/backend/mjwarp/backend.py`
+- Backend public contract and MJWarp stable views/receipts: the `unisim`
+  package (`unisim.backend.base`, `unisim.backend.mjwarp`); the historical
+  record cited local sibling-checkout paths, which are not permanent references
 - Driving issue: #2338
 - Historical complete-collector no-go: #2311
+
+Historical evidence deleted by the collector-graph removal
+([PR #2361](https://github.com/Motphys/UniLab/pull/2361),
+[issue #2363](https://github.com/Motphys/UniLab/issues/2363); commits `d10c2a46`,
+`b06c2730`, `b6151623`): the `env_update_graph` mode, its preflight/manifest
+surfaces, the graph completion-token API, and the update-graph static audit
+(`tests/architecture/test_env_update_graph_static_audit.py`).
 
 ## Related Documents
 
