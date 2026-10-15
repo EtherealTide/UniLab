@@ -5293,7 +5293,7 @@ dev = [
 
 [[package]]
 name = "unilab-rl"
-version = "2.0.0"
+version = "1.4.15"
 source = { editable = "../unilab_rl" }
 dependencies = [
     { name = "hydra-core" },
@@ -5335,7 +5335,7 @@ dev = [
 
 [[package]]
 name = "unisim-core"
-version = "2.0.0"
+version = "1.7.22"
 source = { editable = "../unisim" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
