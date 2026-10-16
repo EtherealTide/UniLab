@@ -810,7 +810,15 @@ class ManagerBasedRlEnv(TorchEnv):
         for name in names:
             try:
                 self._backend.bind_sensor_data((name,))
-            except KeyError:
+            except (KeyError, RuntimeError) as exc:
+                missing_sensor = isinstance(exc, RuntimeError) and str(exc) == (
+                    f"sensor '{name}' not found"
+                )
+                if not isinstance(exc, KeyError) and not missing_sensor:
+                    raise type(exc)(
+                        "Manager packed sensor negotiation on backend "
+                        f"'{self._backend.backend_type}': {exc}"
+                    ) from exc
                 continue
             except (TypeError, ValueError, NotImplementedError, AttributeError) as exc:
                 raise type(exc)(

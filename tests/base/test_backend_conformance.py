@@ -304,7 +304,26 @@ def test_actuation_metadata_contract(backend_type: str) -> None:
     np.testing.assert_array_equal(backend.get_default_dof_pos(), detached)
 
 
-@pytest.mark.parametrize("backend_type", _BACKEND_PARAMS)
+@pytest.mark.parametrize(
+    "backend_type",
+    [
+        pytest.param("mujoco", id="mujoco"),
+        pytest.param(
+            "motrix",
+            id="motrix",
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason="unisim-core 1.7.24 leaks a native RuntimeError for missing sensors (unisim#384)",
+            ),
+        ),
+        pytest.param("drake", id="drake"),
+        pytest.param("mjwarp", id="mjwarp", marks=pytest.mark.slow),
+        pytest.param("isaacgym", id="isaacgym", marks=pytest.mark.slow),
+        pytest.param("genesis", id="genesis", marks=pytest.mark.slow),
+        pytest.param("isaacsim", id="isaacsim", marks=pytest.mark.slow),
+        pytest.param("newton", id="newton", marks=pytest.mark.slow),
+    ],
+)
 def test_named_sensor_view_contract(backend_type: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """All available adapters expose the same ordered, finite sensor view."""
     _require_backend(backend_type)

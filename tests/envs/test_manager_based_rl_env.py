@@ -2826,6 +2826,24 @@ def test_command_packed_sensor_read_negotiates_backend_local_alias() -> None:
         _TestEnv(cfg, cast(SimBackend, backend), 2)
 
 
+def test_host_bridge_sensor_negotiation_handles_missing_sensor_runtime_error() -> None:
+    class Backend:
+        backend_type = "test"
+
+        def bind_sensor_data(self, names):
+            name = tuple(names)[0]
+            if name == "local_linvel":
+                return object()
+            raise RuntimeError(f"sensor '{name}' not found")
+
+    env = object.__new__(ManagerBasedRlEnv)
+    env._backend = cast(SimBackend, Backend())
+
+    available = env._available_entity_sensors(("pelvis_local_linvel", "local_linvel"))
+
+    assert available == {"local_linvel"}
+
+
 def test_scene_read_plan_pairs_reset_with_selected_packed_transfer() -> None:
     cfg = _make_cfg(include_optional_managers=False)
     cfg.actions = {
