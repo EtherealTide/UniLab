@@ -397,8 +397,14 @@ class ReplayBuffer(SharedBufferBase):
         """Add batch (called by collector).
 
         `dones` follows the UniLab env lifecycle contract:
-        done = terminated | truncated. Learners must pair it with
-        `truncated` when computing bootstrap masks.
+        done = terminated | truncated. `truncated` is not the raw env
+        truncation flag: the collector encodes the timeout-bootstrap
+        eligibility mask (raw_truncated & ~terminated) before writing, so
+        learners compute ``bootstrap = clamp(1 - dones + truncated, 0, 1)``
+        and never bootstrap a terminated row — including rows where
+        termination and truncation coincide. Timeout-eligible rows bootstrap
+        from the terminal observations patched into the next-observation
+        columns by ``terminal_mask``/``terminal_next_obs``.
         """
         _trace_ns = time.perf_counter_ns() if self.trace_recorder is not None else 0
         return self._add_to_ingress(
