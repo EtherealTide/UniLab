@@ -10,6 +10,7 @@ import os
 import socket
 import subprocess
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -232,7 +233,9 @@ class ExperimentTracker:
         training_cfg: Any,
         full_cfg: Any,
         device: str | None = None,
+        configured_device: str | None = None,
         collector_device: str | None = None,
+        device_resolution: Mapping[str, Mapping[str, str]] | None = None,
         seed_info: Any | None = None,
     ):
         self.root_dir = Path(root_dir)
@@ -243,7 +246,9 @@ class ExperimentTracker:
         self.training_cfg = training_cfg
         self.full_cfg = full_cfg
         self.device = device
+        self.configured_device = configured_device
         self.collector_device = collector_device
+        self.device_resolution = dict(device_resolution) if device_resolution is not None else None
         self.seed_info = seed_info
         self.enabled = str(_cfg_get(training_cfg, "logger", "tensorboard")).lower() == "wandb"
 
@@ -288,7 +293,9 @@ class ExperimentTracker:
             "task": self.task_name,
             "sim_backend": self.sim_backend,
             "device": self.device,
+            "configured_device": self.configured_device,
             "collector_device": self.collector_device,
+            "resolved_devices": self.device_resolution,
             "log_dir": str(self.log_dir),
             "start_time_utc": self._start_utc,
             "hostname": socket.gethostname(),
@@ -312,6 +319,12 @@ class ExperimentTracker:
             full_cfg=self.full_cfg,
             contract_snapshot=extract_contract_snapshot(self.full_cfg),
         )
+        if self.device_resolution:
+            mapping = ", ".join(
+                f"{name} {entry['configured']} -> {entry['resolved']}"
+                for name, entry in self.device_resolution.items()
+            )
+            print(f"[experiment_tracking] Device resolution: {mapping}")
 
         if not self.enabled:
             return

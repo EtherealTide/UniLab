@@ -191,12 +191,22 @@ def test_denylist_nested_dict_mismatch_raises(tmp_path):
         resolve_sim2sim_config(tmp_path, target)
 
 
-def test_warning_mismatch_does_not_raise(tmp_path, capsys):
+def test_ctrl_dt_mismatch_is_denied(tmp_path):
     _write_sidecar(tmp_path, extract_contract_snapshot(_mujoco_cfg()))
     target = _mujoco_cfg()
     target.env.ctrl_dt = 0.02
-    assert resolve_sim2sim_config(tmp_path, target) is target
-    assert "[sim2sim] WARNING override env.ctrl_dt" in capsys.readouterr().out
+    with pytest.raises(CrossBackendIncompatibleError) as excinfo:
+        resolve_sim2sim_config(tmp_path, target)
+    assert "env.ctrl_dt" in str(excinfo.value)
+
+
+def test_command_vel_limit_mismatch_is_denied(tmp_path):
+    _write_sidecar(tmp_path, {"env.commands.vel_limit": 1.5})
+    target = OmegaConf.create({"env": {"commands": {"vel_limit": 2.0}}})
+
+    with pytest.raises(CrossBackendIncompatibleError) as excinfo:
+        resolve_sim2sim_config(tmp_path, target)
+    assert "env.commands.vel_limit" in str(excinfo.value)
 
 
 def test_missing_snapshot_falls_back(tmp_path, capsys):
@@ -288,6 +298,8 @@ def test_env_structural_denylist_is_the_env_subset():
         "env.actions",
         "env.policy_observation_group",
         "env.critic_observation_group",
+        "env.ctrl_dt",
+        "env.commands.vel_limit",
         "env.commands.motion.params.sampling_mode",
     ]
     assert set(ENV_STRUCTURAL_DENYLIST) <= set(DENYLIST)

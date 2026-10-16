@@ -343,7 +343,7 @@ def test_experiment_device_info_uses_library_helper():
     assert experiment_module.get_device_info_dict is device_module.get_device_info_dict
 
 
-def test_experiment_tracker_writes_local_run_files(tmp_path, monkeypatch):
+def test_experiment_tracker_writes_local_run_files(tmp_path, monkeypatch, capsys):
     hardware = {
         "platform": "test-platform",
         "chip": "test-cpu",
@@ -362,7 +362,12 @@ def test_experiment_tracker_writes_local_run_files(tmp_path, monkeypatch):
         training_cfg={"logger": "tensorboard"},
         full_cfg={"training": {"logger": "tensorboard", "cuda_process_sharing": None}},
         device="cuda",
+        configured_device="gpu",
         collector_device="cpu",
+        device_resolution={
+            "learner": {"configured": "gpu", "resolved": "cuda:0"},
+            "collector": {"configured": "cpu", "resolved": "cpu"},
+        },
         seed_info={
             "configured_seed": 5,
             "configured_seed_source": "algo.seed",
@@ -371,6 +376,9 @@ def test_experiment_tracker_writes_local_run_files(tmp_path, monkeypatch):
     )
 
     tracker.start()
+    assert (
+        "[experiment_tracking] Device resolution: learner gpu -> cuda:0" in capsys.readouterr().out
+    )
     tracker.update_summary({"final_mean_reward": 12.3, "completed_iterations": 10})
     tracker.finish()
 
@@ -382,6 +390,11 @@ def test_experiment_tracker_writes_local_run_files(tmp_path, monkeypatch):
     assert run_config["run"]["configured_seed"] == 5
     assert run_config["run"]["configured_seed_source"] == "algo.seed"
     assert run_config["run"]["effective_seed"] == 5
+    assert run_config["run"]["configured_device"] == "gpu"
+    assert run_config["run"]["resolved_devices"]["learner"] == {
+        "configured": "gpu",
+        "resolved": "cuda:0",
+    }
     assert run_config["run"]["hardware"] == hardware
     assert run_config["config"]["training"]["cuda_process_sharing"] is None
     assert run_summary["final_mean_reward"] == 12.3

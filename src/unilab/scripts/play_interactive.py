@@ -47,7 +47,7 @@ _PACKAGE_CONF_ROOT = Path(__file__).resolve().parents[1] / "conf"
 
 from unilab.base.process_device import (
     apply_backend_env_device_override,
-    apply_manager_torch_device_override,
+    apply_sim_carrier_device_override,
     configure_backend_process_device,
     resolve_backend_env_device_id,
 )
@@ -55,6 +55,7 @@ from unilab.training import (
     algo_config_dict,
     ensure_registries,
 )
+from unilab.training.tensor_runtime import select_sim_carrier_device
 from unilab.utils.checkpoint import (
     get_entrypoint_log_root,
     resolve_task_checkpoint_path,
@@ -847,7 +848,7 @@ def create_playback_session(
                 sim_backend,
                 learner_device=device,
             )
-            legacy_env_cfg_override = apply_manager_torch_device_override(
+            legacy_env_cfg_override = apply_sim_carrier_device_override(
                 legacy_env_cfg_override,
                 sim_backend,
                 learner_device=device,
@@ -872,12 +873,10 @@ def create_playback_session(
             sim_backend,
             learner_device=device,
         )
-        env_cfg_override = apply_manager_torch_device_override(
+        env_cfg_override = apply_sim_carrier_device_override(
             env_cfg_override,
             sim_backend,
-            collector_tensor_device=str(
-                OmegaConf.select(cfg, "training.collector_tensor_device", default="auto")
-            ),
+            sim_carrier_device=select_sim_carrier_device(cfg),
             learner_device=device,
         )
         try:

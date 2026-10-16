@@ -64,8 +64,8 @@ def test_resolve_torch_device_alias_gpu_uses_xpu_before_mps(
     assert device_mod.resolve_torch_device_alias("gpu:1") == "xpu:1"
 
 
-@pytest.mark.parametrize("alias", ["gpu", "gpu:0", "cuda", "cuda:0"])
-def test_resolve_torch_device_alias_macos_compat_maps_gpu_and_cuda_to_mps(
+@pytest.mark.parametrize("alias", ["gpu", "gpu:0"])
+def test_resolve_torch_device_alias_macos_compat_maps_abstract_gpu_to_mps(
     monkeypatch: pytest.MonkeyPatch,
     alias: str,
 ) -> None:
@@ -74,7 +74,18 @@ def test_resolve_torch_device_alias_macos_compat_maps_gpu_and_cuda_to_mps(
     assert device_mod.resolve_torch_device_alias(alias) == "mps"
 
 
-@pytest.mark.parametrize("alias", ["gpu:1", "cuda:1", "mps:1"])
+@pytest.mark.parametrize("alias", ["cuda", "cuda:0"])
+def test_resolve_torch_device_alias_does_not_map_concrete_cuda_to_mps(
+    monkeypatch: pytest.MonkeyPatch,
+    alias: str,
+) -> None:
+    _patch_devices(monkeypatch, mps=True)
+
+    with pytest.raises(ValueError, match="CUDA is unavailable"):
+        device_mod.resolve_torch_device_alias(alias)
+
+
+@pytest.mark.parametrize("alias", ["gpu:1", "mps:1"])
 def test_resolve_torch_device_alias_mps_rejects_nonzero_index(
     monkeypatch: pytest.MonkeyPatch,
     alias: str,

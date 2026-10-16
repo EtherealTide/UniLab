@@ -86,7 +86,7 @@ def resolve_inference_placement(
     learner_device: str,
     transport: str | None = None,
     tensor_runtime: bool = False,
-    tensor_runtime_device: str | None = None,
+    resolved_tensor_runtime_device: str | None = None,
     env_tensor_native: bool | None = None,
     algo_name: str,
 ) -> InferencePlacement:
@@ -95,17 +95,19 @@ def resolve_inference_placement(
     ``transport`` is authoritative when supplied. ``tensor_runtime`` is the
     legacy Manager request for CUDA public tensors; combining it with CPU
     transport is incoherent and fails closed. The explicit
-    ``tensor_runtime_device`` and legacy implicit ``learner_device`` requests
+    ``resolved_tensor_runtime_device`` and implicit ``learner_device`` requests
     must also agree when both are present. CPU-transport staging policies are
     selected by ``cpu_ring_staging_policy`` from the learner device type.
     """
     learner = _canonical_device(learner_device, label="learner device", algo_name=algo_name)
-    if tensor_runtime_device is not None and not isinstance(tensor_runtime_device, str):
+    if resolved_tensor_runtime_device is not None and not isinstance(
+        resolved_tensor_runtime_device, str
+    ):
         raise TypeError(
-            f"{algo_name} env.tensor_runtime_device must be a string or omitted, "
-            f"got {tensor_runtime_device!r}"
+            f"{algo_name} resolved tensor-runtime device must be a string, "
+            f"got {resolved_tensor_runtime_device!r}"
         )
-    if env_tensor_native is None and tensor_runtime_device is not None:
+    if env_tensor_native is None and resolved_tensor_runtime_device is not None:
         env_tensor_native = True
     if env_tensor_native is None and tensor_runtime:
         env_tensor_native = True
@@ -113,7 +115,7 @@ def resolve_inference_placement(
         env_tensor_native = True
     if env_tensor_native is None:
         env_tensor_native = False
-    requested_env_device = tensor_runtime_device
+    requested_env_device = resolved_tensor_runtime_device
     if env_tensor_native and requested_env_device is None:
         requested_env_device = learner
     if requested_env_device is None:

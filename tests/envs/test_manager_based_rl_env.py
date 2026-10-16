@@ -1435,18 +1435,18 @@ def test_manager_public_inputs_and_episode_counters_are_tensor_first() -> None:
 
 
 @pytest.mark.parametrize(
-    ("manager_torch_device", "expected_device"),
+    ("sim_carrier_device", "expected_device"),
     [
         (None, torch.device("cpu")),
         ("cpu", torch.device("cpu")),
     ],
 )
 def test_backend_capability_defaults_host_bridge_manager_carriers_to_cpu(
-    manager_torch_device: str | None,
+    sim_carrier_device: str | None,
     expected_device: torch.device,
 ) -> None:
     cfg = _make_cfg()
-    cfg.manager_torch_device = manager_torch_device
+    cfg.sim_carrier_device = sim_carrier_device
 
     env, backend = _make_env(cfg)
 
@@ -1475,10 +1475,10 @@ def test_host_bridge_ignores_accelerator_availability_without_explicit_request(
     assert env.device == torch.device("cpu")
 
 
-def test_manager_torch_device_rejects_non_tensor_device_and_invalid_syntax() -> None:
+def test_sim_carrier_device_rejects_non_tensor_device_and_invalid_syntax() -> None:
     for value, error in (("mps", ValueError), (12, TypeError), ("", TypeError)):
         cfg = _make_cfg()
-        cfg.manager_torch_device = value
+        cfg.sim_carrier_device = value
         with pytest.raises(error):
             cfg.validate()
 
@@ -1526,7 +1526,7 @@ def test_mujoco_host_bridge_packed_reset_lifecycle(
         policy_observation_group="actor",
     )
     if device == "cuda":
-        cfg.manager_torch_device = device
+        cfg.sim_carrier_device = device
     backend = create_backend(
         "mujoco", scene, 2, cfg.sim_dt, base_name="base", add_body_sensors=True
     )
@@ -3659,6 +3659,7 @@ def test_get_playback_debug_overlays_frame_is_none_when_all_terms_return_none() 
 def test_manager_tensor_runtime_switch_is_removed() -> None:
     assert not hasattr(ManagerBasedRlEnvCfg(), "tensor_runtime")
     assert not hasattr(ManagerBasedRlEnvCfg(), "tensor_runtime_device")
+    assert not hasattr(ManagerBasedRlEnvCfg(), "manager_torch_device")
 
 
 def test_manager_publication_rejects_numpy_results() -> None:
