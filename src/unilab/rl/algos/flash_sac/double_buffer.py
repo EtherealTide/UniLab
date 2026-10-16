@@ -119,6 +119,7 @@ def build_flashsac_double_buffer_runner(
         "actor_bc_alpha": cfg.algo.algo_params.actor_bc_alpha,
         "actor_noise_zeta_mu": cfg.algo.algo_params.actor_noise_zeta_mu,
         "actor_noise_zeta_max": cfg.algo.algo_params.actor_noise_zeta_max,
+        "actor_config": _algo_param(cfg.algo, "actor_config", None),
         "learning_rate_init": cfg.algo.algo_params.learning_rate_init,
         "learning_rate_peak": cfg.algo.algo_params.learning_rate_peak,
         "learning_rate_end": cfg.algo.algo_params.learning_rate_end,

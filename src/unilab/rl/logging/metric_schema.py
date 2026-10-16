@@ -543,6 +543,17 @@ METRIC_FAMILIES: dict[str, MetricFamilySpec] = {
             ),
             distributed_aggregation="cross-rank mean of per-rank report means",
         ),
+        MetricFamilySpec(
+            prefix="Loss/aux_",
+            owner="learner",
+            unit="dimensionless objective",
+            aggregation="final emitted actor update for deferred learners; otherwise mean over emitted updates",
+            step_axis=_STEP_AXIS,
+            description=(
+                "Actor-owned auxiliary scalar losses (FlashSAC actor_config custom "
+                "actors); pre-weighted by the actor and already included in Loss/actor."
+            ),
+        ),
     )
 }
 

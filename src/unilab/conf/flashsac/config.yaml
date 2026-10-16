@@ -39,6 +39,13 @@ algo:
     actor_bc_alpha: 0.0
     actor_noise_zeta_mu: 2.0
     actor_noise_zeta_max: 16
+    # Learner-side custom actor injection (null = built-in FlashSACActor).
+    # Mapping form: {builder: "pkg.module:callable", kwargs: {...}}. The builder
+    # receives obs_dim/action_dim/device plus kwargs and returns an nn.Module
+    # implementing the FlashSAC custom actor contract documented in
+    # unilab.rl.algos.flash_sac.actor_spec. Custom actors do not support the
+    # whole-cycle CUDA graph: set use_whole_cycle_cuda_graph=false.
+    actor_config: null
     critic_min_v: -5.0
     critic_max_v: 5.0
     temp_initial_value: 0.01

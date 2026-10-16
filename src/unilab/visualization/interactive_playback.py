@@ -851,6 +851,7 @@ def build_play_actor(
             actor_num_blocks=cfg.algo.algo_params.actor_num_blocks,
             actor_noise_zeta_mu=cfg.algo.algo_params.actor_noise_zeta_mu,
             actor_noise_zeta_max=cfg.algo.algo_params.actor_noise_zeta_max,
+            actor_config=cfg.algo.algo_params.get("actor_config"),
         )
         if cfg.algo.obs_normalization:
             from unilab.rl.algos.common.normalization import EmpiricalNormalization
@@ -863,14 +864,63 @@ def build_play_actor(
     return actor, normalizer, actor_algo_type, actor_kwargs
 
 
+def flashsac_play_actor_semantics(
+    cfg: Any,
+    *,
+    obs_dim: int,
+    action_dim: int,
+    actor: Any | None = None,
+) -> dict[str, Any]:
+    """Recompute the FlashSAC actor semantics payload expected at play time."""
+    from unilab.rl.algos.flash_sac.actor_spec import (
+        FlashSACActorSpec,
+        builtin_actor_semantics,
+        custom_actor_semantics,
+    )
+
+    actor_config = cfg.algo.algo_params.get("actor_config")
+    if actor_config is not None:
+        transform_id = getattr(actor, "action_transform_id", None)
+        if not isinstance(transform_id, str) or not transform_id:
+            raise TypeError(
+                "Custom FlashSAC play actor must declare a non-empty string 'action_transform_id'"
+            )
+        return custom_actor_semantics(
+            FlashSACActorSpec.from_config(actor_config),
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            action_transform_id=transform_id,
+        )
+    return builtin_actor_semantics(
+        obs_dim=obs_dim,
+        action_dim=action_dim,
+        num_blocks=int(cfg.algo.algo_params.actor_num_blocks),
+        hidden_dim=int(cfg.algo.actor_hidden_dim),
+        noise_zeta_mu=float(cfg.algo.algo_params.actor_noise_zeta_mu),
+        noise_zeta_max=int(cfg.algo.algo_params.actor_noise_zeta_max),
+    )
+
+
 def load_play_actor(
     algo_name: str,
     actor: Any,
     normalizer: Any | None,
     checkpoint: dict[str, Any],
+    expected_actor_semantics: dict[str, Any] | None = None,
 ) -> None:
-    """Restore an off-policy play actor and its optional observation normalizer."""
-    if algo_name in ("sac", "flashsac"):
+    """Restore an off-policy play actor and its optional observation normalizer.
+
+    For FlashSAC, ``expected_actor_semantics`` enables fail-closed validation
+    of the checkpoint's actor construction/observation/action semantics against
+    the owner config before weights are loaded.
+    """
+    if algo_name == "flashsac":
+        if expected_actor_semantics is not None:
+            from unilab.rl.algos.flash_sac.actor_spec import validate_actor_semantics
+
+            validate_actor_semantics(checkpoint.get("actor_semantics"), expected_actor_semantics)
+        actor.load_state_dict(checkpoint["actor"])
+    elif algo_name == "sac":
         actor.load_state_dict(checkpoint["actor"])
     else:
         raise ValueError(f"Unsupported algo: {algo_name}")
@@ -958,6 +1008,7 @@ def create_sac_playback_session(
                 "actor_num_blocks": cfg.algo.algo_params.actor_num_blocks,
                 "actor_noise_zeta_mu": cfg.algo.algo_params.actor_noise_zeta_mu,
                 "actor_noise_zeta_max": cfg.algo.algo_params.actor_noise_zeta_max,
+                "actor_config": cfg.algo.algo_params.get("actor_config"),
             }
         )
 
@@ -1004,12 +1055,28 @@ def create_sac_playback_session(
                 strict=bool(getattr(cfg.training, "sim2sim_strict", True)),
             )
             checkpoint = torch.load(checkpoint_path, map_location=session_device, weights_only=True)
+            expected_actor_semantics = (
+                flashsac_play_actor_semantics(
+                    cfg,
+                    obs_dim=obs_dim,
+                    action_dim=action_dim,
+                    actor=actor,
+                )
+                if algo_name == "flashsac"
+                else None
+            )
             with policy_load_dim_guard(
                 env_obs_dim=obs_dim,
                 env_action_dim=action_dim,
                 algo_name=algo_name,
             ):
-                load_play_actor(algo_name, actor, normalizer, checkpoint)
+                load_play_actor(
+                    algo_name,
+                    actor,
+                    normalizer,
+                    checkpoint,
+                    expected_actor_semantics=expected_actor_semantics,
+                )
             log(f"Loading {algo_name} checkpoint: {checkpoint_path}")
 
     log(f"Action mode: {playback_cfg.action_mode}")
@@ -1097,6 +1164,7 @@ __all__ = [
     "create_appo_playback_session",
     "create_rsl_rl_playback_session",
     "create_sac_playback_session",
+    "flashsac_play_actor_semantics",
     "infer_checkpoint_actor_input_dim",
     "make_sim2sim_preflight",
     "normalize_checkpoint_value",
