@@ -70,7 +70,7 @@ class EmpiricalNormalization(nn.Module):
         delta2 = batch_mean - self._mean
         m_a = self._var * self.count
         m_b = batch_var * batch_count_t
-        M2 = m_a + m_b + delta2.pow(2) * (self.count * batch_count_t / new_count)
+        M2 = m_a + m_b + delta * delta2 * batch_count_t
         self._var.copy_(M2 / new_count)
         self._std.copy_(self._var.sqrt())
         self.count.copy_(new_count)
