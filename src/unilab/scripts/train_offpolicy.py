@@ -361,6 +361,11 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
     algo_label = algo_labels.get(algo_name)
     if algo_label is None:
         raise ValueError(f"Unsupported algo: {algo_name}")
+    if algo_name == "flashsac" and cfg.algo.algo_params.n_step != 1:
+        # Reject invalid algo knobs before the one-env probe so a bad config
+        # fails closed without materializing a backend; the algo builder keeps
+        # its own copy of this guard for direct callers.
+        raise ValueError("FlashSAC-B initially supports n_step=1 only")
     builder_kwargs: dict[str, Any] = {
         "env_factory": env_factory,
         "env_cfg_override": env_cfg_override,
