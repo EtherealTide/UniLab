@@ -65,6 +65,23 @@ def _inference_flight_metrics(inference_slot) -> tuple[int, int, int, int]:
     return queue_depth, action_backlog, in_flight, publication_lag
 
 
+def timeout_bootstrap_mask(
+    terminated: torch.Tensor,
+    truncated: torch.Tensor,
+) -> torch.Tensor:
+    """Timeout-bootstrap eligibility mask for replay writes.
+
+    Only rows that truncated without terminating may bootstrap from the
+    terminal observation: a failure that coincides with the time limit is a
+    real terminal transition and must never bootstrap. The returned float mask
+    is what the off-policy replay ``truncated`` column stores (see
+    ``ReplayBuffer.add``); the raw ``truncated`` flags remain the episode
+    statistics source (``timeout_rate`` counts raw truncations, not
+    bootstrap-eligible timeouts).
+    """
+    return (truncated & ~terminated).to(dtype=torch.float32)
+
+
 def sample_offpolicy_actions(
     actor,
     algo_type: str,
@@ -611,6 +628,7 @@ def _run_collector(
     rewards_t: torch.Tensor | None = None
     truncated_t: torch.Tensor | None = None
     combined_dones_t: torch.Tensor | None = None
+    timeout_bootstrap_t: torch.Tensor | None = None
     done_mask_t: torch.Tensor | None = None
     terminal_obs_t: torch.Tensor | None = None
     terminal_critic_t: torch.Tensor | None = None
@@ -781,15 +799,20 @@ def _run_collector(
             rewards_t = state.reward.to(dtype=torch.float32).ravel()
             truncated_t = state.truncated.to(dtype=torch.float32).ravel()
             combined_dones_t = (state.terminated | state.truncated).to(dtype=torch.float32)
+            timeout_bootstrap_t = timeout_bootstrap_mask(state.terminated, state.truncated).ravel()
             assert next_obs_t is not None
             assert next_critic_t is not None
             assert rewards_t is not None
             assert truncated_t is not None
             assert combined_dones_t is not None
+            assert timeout_bootstrap_t is not None
             prev_dones_t = combined_dones_t
             done_mask_t = combined_dones_t > 0.5
             assert tensor_metrics is not None
             reward_components_t = state.info.get("reward_components")
+            # Metrics keep the raw truncation flags: `timeout_rate` counts raw
+            # episode truncations, which is a different statistic from the
+            # bootstrap-eligible timeout mask written to replay below.
             tensor_metrics.update(
                 rewards_t,
                 done_mask_t,
@@ -805,8 +828,12 @@ def _run_collector(
                 terminal_critic_t = None
             assert done_mask_t is not None
             # ReplayBuffer `dones` follows the UniLab env lifecycle contract:
-            # done = terminated | truncated. Learners use `truncated` to keep
-            # bootstrap enabled for timeout/truncation rows.
+            # done = terminated | truncated. The replay `truncated` column
+            # stores the timeout-bootstrap eligibility mask
+            # (truncated & ~terminated): learners keep bootstrap enabled only
+            # for timeout-only rows, so a failure that coincides with the time
+            # limit is treated as a true terminal and never bootstraps. Done
+            # rows still carry the env's real terminal observations.
             phase_start_ns = _record_phase_ms(
                 cycle_timing_ms, "transition_extract_ms", phase_start_ns
             )
@@ -819,7 +846,7 @@ def _run_collector(
                 rewards_t,
                 next_obs_t,
                 combined_dones_t,
-                truncated_t,
+                timeout_bootstrap_t,
                 terminal_mask=done_mask_t,
                 terminal_next_obs=terminal_obs_t,
                 critic=critic_t,

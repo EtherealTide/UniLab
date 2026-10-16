@@ -56,6 +56,9 @@ def compute_categorical_td_target(
     truncated = truncated.view(-1, 1)
     actor_entropy = actor_entropy.view(-1, 1)
 
+    # Replay `truncated` is the collector-encoded timeout-bootstrap mask
+    # (truncated & ~terminated), so terminated rows never bootstrap —
+    # including failures that coincide with the time limit.
     bootstrap = torch.clamp(1.0 - dones + truncated, 0.0, 1.0)
     target_bin_values = reward + bootstrap * gamma * (support - actor_entropy)
     support_min = support[..., :1]

@@ -12,6 +12,7 @@ from hydra.core.global_hydra import GlobalHydra
 from unilab.base import registry
 from unilab.base.config_adapter import BackendAdapter
 from unilab.rl.runtime.ipc.replay_buffer import ReplayBuffer
+from unilab.rl.runtime.offpolicy.worker import timeout_bootstrap_mask
 
 ROOT_DIR = Path(__file__).parents[4]
 CONF_DIR = ROOT_DIR / "src" / "unilab" / "conf"
@@ -114,7 +115,9 @@ def test_eager_mujoco_replay_rows_own_their_tick_across_autoreset() -> None:
                 state.reward.to(dtype=torch.float32).ravel(),
                 state.obs["obs"],
                 done.to(dtype=torch.float32),
-                state.truncated.to(dtype=torch.float32),
+                # Match the collector write boundary: the replay `truncated`
+                # column carries the timeout-bootstrap eligibility mask.
+                timeout_bootstrap_mask(state.terminated, state.truncated).ravel(),
                 terminal_mask=done,
                 terminal_next_obs=terminal_obs,
                 critic=current_obs["critic"],

@@ -1027,6 +1027,9 @@ class SACLearner(LearnerBoilerplateMixin):
         truncated: torch.Tensor,
         next_action_eps: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Replay `truncated` is the collector-encoded timeout-bootstrap mask
+        # (truncated & ~terminated), so terminated rows never bootstrap —
+        # including failures that coincide with the time limit.
         bootstrap = torch.clamp(1.0 - dones.float() + truncated.float(), 0.0, 1.0)
         discount = torch.full_like(dones, self.gamma)
 

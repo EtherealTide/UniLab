@@ -862,6 +862,7 @@ def _run_active_window_case(
 ) -> CollectorResult:
     from unilab.rl.contracts.observations import split_obs_dict
     from unilab.rl.runtime.ipc.replay_buffer import ReplayBuffer
+    from unilab.rl.runtime.offpolicy.worker import timeout_bootstrap_mask
 
     replay_buffer = ReplayBuffer(
         capacity=case.replay_capacity_rows,
@@ -961,7 +962,9 @@ def _run_active_window_case(
             phase_start_ns = time.perf_counter_ns()
             next_obs, next_critic = split_obs_dict(state.obs)
             rewards = state.reward
-            truncated = state.truncated.to(torch.float32)
+            # Mirror the collector write boundary: the replay `truncated`
+            # column stores the timeout-bootstrap eligibility mask.
+            truncated = timeout_bootstrap_mask(state.terminated, state.truncated)
             combined_dones = (state.terminated | state.truncated).to(torch.float32)
             terminal_mask = combined_dones > 0.5
             terminal_obs = (
