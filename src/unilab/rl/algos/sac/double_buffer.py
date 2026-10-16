@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
@@ -13,7 +12,10 @@ from unilab.rl.contracts.env import EnvFactory
 from unilab.rl.contracts.observations import get_obs_dims
 from unilab.rl.runtime.nan_guard import NanGuardCfg
 from unilab.rl.runtime.offpolicy.actor_adapter import import_actor_adapter_modules
-from unilab.rl.runtime.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
+from unilab.rl.runtime.offpolicy.double_buffer_runner import (
+    DoubleBufferOffPolicyRunner,
+    warn_deprecated_inference_request_timeout,
+)
 from unilab.rl.runtime.offpolicy.runtime import (
     resolve_actor_adapter_modules,
     resolve_custom_offpolicy_runtime,
@@ -66,12 +68,7 @@ def build_sac_double_buffer_runner(
         updates_per_step = int(cfg.algo.updates_per_step)
 
     if "inference_request_timeout_sec" in cfg.training:
-        warnings.warn(
-            "training.inference_request_timeout_sec is deprecated and ignored; "
-            "remove it from owner YAML.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        warn_deprecated_inference_request_timeout(stacklevel=3)
     env = env_factory(1, env_cfg_override)
     try:
         action_shape = env.action_space.shape

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Callable
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -16,7 +15,10 @@ from unilab.rl.contracts.observations import get_obs_dims
 from unilab.rl.runtime.device import get_default_device
 from unilab.rl.runtime.ipc.replay_pipelines.gpu_resident import require_offpolicy_replay_device
 from unilab.rl.runtime.nan_guard import NanGuardCfg
-from unilab.rl.runtime.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
+from unilab.rl.runtime.offpolicy.double_buffer_runner import (
+    DoubleBufferOffPolicyRunner,
+    warn_deprecated_inference_request_timeout,
+)
 from unilab.rl.runtime.placement import InferencePlacement
 from unilab.rl.runtime.seed import apply_training_seed
 from unilab.rl.runtime.settings import TensorRuntimeSettings
@@ -83,12 +85,7 @@ def build_flashsac_double_buffer_runner(
         updates_per_step = int(cfg.algo.updates_per_step)
 
     if "inference_request_timeout_sec" in cfg.training:
-        warnings.warn(
-            "training.inference_request_timeout_sec is deprecated and ignored; "
-            "remove it from owner YAML.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        warn_deprecated_inference_request_timeout(stacklevel=3)
     env = env_factory(1, env_cfg_override)
     try:
         obs_dim, critic_obs_dim = get_obs_dims(dict(env.obs_groups_spec))

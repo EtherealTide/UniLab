@@ -253,7 +253,7 @@ def test_compatibility_warmup_exercises_compiled_update_paths(
     compile_helper_name = (
         "get_torch_compile_for_device"
         if module_name == "unilab.rl.algos.sac.learner"
-        else "get_torch_compile_for_cuda"
+        else "get_torch_compile_for_device"
     )
     monkeypatch.setattr(module, compile_helper_name, lambda *args, **kwargs: compile_fn)
     learner_kwargs = (
