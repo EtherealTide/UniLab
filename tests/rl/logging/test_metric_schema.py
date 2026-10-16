@@ -90,7 +90,7 @@ def test_schema_is_closed_except_reward_terms() -> None:
         ["Loss/surrogate", "reward/term", "Train/rollouts_read", "Perf/learner_inference_ms"]
     )
 
-    assert set(METRIC_FAMILIES) == {"reward/"}
+    assert set(METRIC_FAMILIES) == {"reward/", "Loss/aux_"}
     assert "Perf/learner_other_ms" not in METRIC_SPECS
     assert "Train/staging_pool_capacity" not in METRIC_SPECS
     assert "Train/updates" not in METRIC_SPECS

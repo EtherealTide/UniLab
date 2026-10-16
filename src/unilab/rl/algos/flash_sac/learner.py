@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import os
 import warnings
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -21,6 +21,14 @@ from unilab.rl.algos.common.learner_boilerplate import (
     resolve_finite_check_flags,
 )
 from unilab.rl.algos.common.normalization import EmpiricalNormalization
+from unilab.rl.algos.flash_sac.actor_spec import (
+    FlashSACActorSpec,
+    build_custom_actor,
+    builtin_actor_semantics,
+    custom_actor_semantics,
+    validate_actor_semantics,
+    validate_aux_losses,
+)
 from unilab.rl.algos.flash_sac.layers import UnitBatchNorm, UnitLinear, UnitRMSNorm
 from unilab.rl.algos.flash_sac.network import (
     FlashSACActor,
@@ -177,7 +185,10 @@ class FlashSACLearner(LearnerBoilerplateMixin):
 
     def inference_startup_memory_categories(self, batch_size: int) -> dict[str, int]:
         """Expose exact inference-owned persistent scratch before collection."""
-        return self.actor.inference_startup_memory_categories(batch_size)
+        return cast(
+            dict[str, int],
+            cast(Any, self.actor).inference_startup_memory_categories(batch_size),
+        )
 
     def __init__(
         self,
@@ -218,6 +229,7 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         use_whole_cycle_cuda_graph: bool | None = None,
         actor_normalize_parameters: bool = True,
         critic_normalize_parameters: bool = True,
+        actor_config: Mapping[str, Any] | None = None,
     ):
         self.actor_normalize_parameters = bool(actor_normalize_parameters)
         self.critic_normalize_parameters = bool(critic_normalize_parameters)
@@ -261,15 +273,59 @@ class FlashSACLearner(LearnerBoilerplateMixin):
             device_gated=self._device_type == "cuda" and self.use_compile,
         )
         self._gradient_sync: Callable[[Iterable[torch.Tensor]], None] | None = None
-        self.actor = FlashSACActor(
-            num_blocks=actor_num_blocks,
-            input_dim=obs_dim,
-            hidden_dim=actor_hidden_dim,
-            action_dim=action_dim,
-            noise_zeta_mu=actor_noise_zeta_mu,
-            noise_zeta_max=actor_noise_zeta_max,
-            device=self.device,
+        self._actor_spec = (
+            FlashSACActorSpec.from_config(actor_config) if actor_config is not None else None
         )
+        graph_requested = (
+            self._nvidia_cuda
+            if use_whole_cycle_cuda_graph is None
+            else bool(use_whole_cycle_cuda_graph)
+        )
+        if self._actor_spec is not None:
+            if not self.actor_normalize_parameters:
+                raise ValueError(
+                    "actor_normalize_parameters only applies to the built-in "
+                    "FlashSAC actor; custom actors (actor_config) own their "
+                    "parameter normalization"
+                )
+            if graph_requested:
+                raise ValueError(
+                    "FlashSAC custom actors (actor_config) do not support the "
+                    "whole-cycle CUDA graph; set "
+                    "algo.algo_params.use_whole_cycle_cuda_graph=false"
+                )
+        self._aux_loss_names: tuple[str, ...] | None = None
+        if self._actor_spec is not None:
+            self.actor = build_custom_actor(
+                self._actor_spec,
+                obs_dim=obs_dim,
+                action_dim=action_dim,
+                device=self.device,
+            )
+            self._actor_semantics = custom_actor_semantics(
+                self._actor_spec,
+                obs_dim=obs_dim,
+                action_dim=action_dim,
+                action_transform_id=cast(str, cast(Any, self.actor).action_transform_id),
+            )
+        else:
+            self.actor = FlashSACActor(
+                num_blocks=actor_num_blocks,
+                input_dim=obs_dim,
+                hidden_dim=actor_hidden_dim,
+                action_dim=action_dim,
+                noise_zeta_mu=actor_noise_zeta_mu,
+                noise_zeta_max=actor_noise_zeta_max,
+                device=self.device,
+            )
+            self._actor_semantics = builtin_actor_semantics(
+                obs_dim=obs_dim,
+                action_dim=action_dim,
+                num_blocks=actor_num_blocks,
+                hidden_dim=actor_hidden_dim,
+                noise_zeta_mu=actor_noise_zeta_mu,
+                noise_zeta_max=actor_noise_zeta_max,
+            )
         self.critic = FlashSACDoubleCritic(
             num_blocks=critic_num_blocks,
             input_dim=self.critic_obs_dim + action_dim,
@@ -360,11 +416,6 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         self._update_cycle_lr_cursors: dict[int, int] = {}
         self._capture_update_cycle = False
         self._update_cycle_capture_failed = False
-        graph_requested = (
-            self._nvidia_cuda
-            if use_whole_cycle_cuda_graph is None
-            else bool(use_whole_cycle_cuda_graph)
-        )
         # Whole-cycle capture wraps compiled objectives, so disabling compile
         # also disables this dependent layer.  The graph switch otherwise does
         # not change which objective boundary Inductor compiles.
@@ -689,8 +740,13 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         next_obs: torch.Tensor,
         expert_actions: torch.Tensor,
         critic_obs: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Full actor/critic forward and actor objective."""
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+        """Full actor/critic forward and actor objective.
+
+        The third return value carries the actor-owned auxiliary losses
+        (empty for the built-in actor); they are already included in
+        ``actor_loss`` and are returned separately only for diagnostics.
+        """
         obs_all = torch.cat([obs, next_obs], dim=0)
         with self._autocast():
             actions_all, actor_info_all = self.actor(obs_all, training=True)
@@ -700,7 +756,12 @@ class FlashSACLearner(LearnerBoilerplateMixin):
             actor_loss, entropy = self._actor_loss_tensors(
                 log_probs, q_values, actions, expert_actions, self.temperature()
             )
-        return actor_loss, entropy
+            aux_losses = validate_aux_losses(
+                actor_info_all.get("aux_losses"), context="FlashSAC actor"
+            )
+            for aux_loss in aux_losses.values():
+                actor_loss = actor_loss + aux_loss
+        return actor_loss, entropy, dict(aux_losses)
 
     def update_critic(
         self,
@@ -778,12 +839,21 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         next_obs = self._maybe_normalize_obs(next_obs, update=False)
 
         self._pending_actor_metric_values = None
-        actor_loss, entropy = self._actor_objective_tensors(
+        actor_loss, entropy, aux_losses = self._actor_objective_tensors(
             obs,
             next_obs,
             expert_actions,
             critic_obs,
         )
+        aux_names = tuple(sorted(aux_losses))
+        if self._aux_loss_names is None:
+            self._aux_loss_names = aux_names
+        elif aux_names != self._aux_loss_names:
+            raise RuntimeError(
+                "FlashSAC actor auxiliary loss names changed between updates: "
+                f"expected {self._aux_loss_names}, got {aux_names}. Auxiliary "
+                "losses must be structurally stable across training."
+            )
 
         self._zero_optimizer_gradients(self.actor_optimizer)
         if self._finite_check_ok(actor_loss, read_metrics):
@@ -801,7 +871,7 @@ class FlashSACLearner(LearnerBoilerplateMixin):
                 self.actor_optimizer.step()
         if not self._capture_update_cycle:
             self.actor_scheduler.step()
-        self.actor.normalize_parameters()
+        cast(Any, self.actor).normalize_parameters()
 
         temp_value = self.temperature()
         temp_loss = temp_value * (entropy - self.target_entropy)
@@ -820,18 +890,23 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         if not read_metrics:
             # Keep a private device-side snapshot.  The cycle-end drain below
             # performs the only D2H read, after all compiled replays finish.
+            # Auxiliary-loss diagnostics only exist on the metrics-reading
+            # path; their values remain part of Loss/actor here.
             self._pending_actor_metric_values = torch.stack(
                 [tensor.detach().reshape(()) for tensor in actor_metric_tensors]
             )
             return {}
+        aux_metric_names = tuple(f"Loss/aux_{name}" for name in aux_names)
+        aux_metric_tensors = tuple(aux_losses[name] for name in aux_names)
         return self._read_metric_tensors(
             (
                 "Loss/actor",
                 "Loss/entropy",
                 "Policy/temperature",
                 "Loss/temperature",
+                *aux_metric_names,
             ),
-            actor_metric_tensors,
+            (*actor_metric_tensors, *aux_metric_tensors),
         )
 
     @staticmethod
@@ -1240,6 +1315,9 @@ class FlashSACLearner(LearnerBoilerplateMixin):
             "actor_scheduler": self.actor_scheduler.state_dict(),
             "critic_scheduler": self.critic_scheduler.state_dict(),
             "temperature_scheduler": self.temperature_scheduler.state_dict(),
+            # Actor construction/observation/action semantics, validated
+            # fail-closed on load (see unilab.rl.algos.flash_sac.actor_spec).
+            "actor_semantics": copy.deepcopy(self._actor_semantics),
             "obs_normalizer": (
                 self.obs_normalizer.state_dict()
                 if hasattr(self.obs_normalizer, "state_dict")
@@ -1252,6 +1330,7 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        validate_actor_semantics(state_dict.get("actor_semantics"), self._actor_semantics)
         self.actor.load_state_dict(state_dict["actor"])
         self.critic.load_state_dict(state_dict["critic"])
         self.target_critic.load_state_dict(state_dict["target_critic"])

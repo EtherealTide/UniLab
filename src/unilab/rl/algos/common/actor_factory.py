@@ -49,6 +49,19 @@ def build_actor(
             device=device,
         )
     if algo_type == "flashsac":
+        actor_config = kwargs.get("actor_config")
+        if actor_config is not None:
+            from unilab.rl.algos.flash_sac.actor_spec import (
+                FlashSACActorSpec,
+                build_custom_actor,
+            )
+
+            return build_custom_actor(
+                FlashSACActorSpec.from_config(actor_config),
+                obs_dim=obs_dim,
+                action_dim=action_dim,
+                device=device,
+            )
         from unilab.rl.algos.flash_sac.network import FlashSACActor
 
         return FlashSACActor(

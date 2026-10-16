@@ -115,6 +115,8 @@ them in the issue/ADR before expanding the work.
 - Training/run helpers: `src/unilab/training/run.py`
 - PPO (direct rsl-rl integration): `src/unilab/rl/adapters/rsl_rl/`
 - RL algorithms (APPO/SAC/FlashSAC): `src/unilab/rl/algos/`
+- FlashSAC custom actor contract (actor_config injection, aux losses,
+  checkpoint semantics): `src/unilab/rl/algos/flash_sac/actor_spec.py`
 - RL runtime (distributed/ipc/offpolicy): `src/unilab/rl/runtime/`
 - Sim2Sim: `src/unilab/utils/sim2sim.py`
 - Architecture and contracts: `docs/sphinx/source/zh_CN/4-developer_guide/0-index.md`
