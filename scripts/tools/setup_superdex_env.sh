@@ -109,9 +109,8 @@ cat <<EOF
 [setup_superdex_env] 完成。当前 shell 执行：
 source "$ENV_FILE"
 
-# UniLab 本地开发安装：
+# UniLab 本地开发安装（RL 栈已并入 unilab，无需单独安装）：
 uv pip install --python "$PYTHON_BIN" \\
   -e "$(cd "$(dirname "$0")/../.." && pwd)/../unisim[superdex]" \\
-  -e "$(cd "$(dirname "$0")/../.." && pwd)/../unilab_rl" \\
   -e "$(cd "$(dirname "$0")/../.." && pwd)"
 EOF

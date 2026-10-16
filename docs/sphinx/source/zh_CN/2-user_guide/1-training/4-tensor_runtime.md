@@ -34,7 +34,8 @@ Torch carrier（路由到 `manager_torch_device` owner 字段）。取值为 `au
 
 - `auto` 跟随 learner 设备：CUDA learner 会路由 rank-local 带序号的 learner
   设备（例如 `cuda:3`），使 collector 的 observation 与 action 留在 learner GPU
-  上，uni_rl 探针无需额外配置即可解析 CUDA inference transport。CPU 与
+  上，runtime 探针（`unilab.rl.contracts.probe`）无需额外配置即可解析 CUDA
+  inference transport。CPU 与
   torch.mps（Metal Performance Shaders）learner 保持 CPU carrier。
 - 显式 `cpu`/`cuda` 优先于 `auto`。`cuda` 仍只支持 MuJoCo HOST_BRIDGE 后端；
   对其他后端该 knob 是 no-op，但请求 `cuda` 会 fail closed。

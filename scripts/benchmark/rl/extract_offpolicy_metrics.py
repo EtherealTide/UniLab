@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Extract end-to-end off-policy benchmark metrics from TensorBoard event files.
 
-unilab-rl 1.4.1 replaced the ``timing/*`` and lowercase ``perf/*`` tags with the
-canonical schema in ``uni_rl.logging.metric_schema`` (see ``docs/metrics.md`` in
-the unilab_rl repo). A current run records ``metric_schema_version = 1`` in
+The canonical metric schema (``unilab.rl.logging.metric_schema``) replaced the
+historical ``timing/*`` and lowercase ``perf/*`` tags. A current run records
+``metric_schema_version = 1`` in
 ``run_summary.json`` and contains canonical ``Perf/`` / ``Train/`` scalar tags.
 Historical event files are immutable and can be read only with the explicit
 ``--legacy-unversioned`` compatibility mode. That mode accepts recognized

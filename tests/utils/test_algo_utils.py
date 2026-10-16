@@ -1,7 +1,8 @@
 """Tests for registry bootstrap.
 
-The torch actor factory helpers moved to uni_rl (issue #1480);
-``build_actor`` coverage lives in that repo's test suite.
+The torch actor factory helpers live in ``unilab.rl.algos.common`` (issue
+#2372); ``build_actor`` coverage lives in
+``tests/rl/algos/common/test_actor_factory.py``.
 """
 
 from __future__ import annotations

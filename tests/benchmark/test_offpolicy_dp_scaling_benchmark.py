@@ -91,7 +91,7 @@ def test_verdict_for_ratio() -> None:
 
 
 def test_supported_metric_schema_matches_producer() -> None:
-    from uni_rl.logging.metric_schema import METRIC_SCHEMA_VERSION
+    from unilab.rl.logging.metric_schema import METRIC_SCHEMA_VERSION
 
     assert bench._SUPPORTED_METRIC_SCHEMA_VERSION == METRIC_SCHEMA_VERSION
 

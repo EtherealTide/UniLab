@@ -15,8 +15,8 @@ Measurement conventions:
   ``Perf/total_fps`` samples. In DP runs the runner already sums the per-rank
   collector rates before logging. This executable benchmark always generates a
   current run, so immutable historical event files are outside its scope.
-- Learner throughput (Samples/s): unilab-rl 1.4.1 no longer persists learner
-  replay throughput, so schema-v1 runs derive it per iteration as
+- Learner throughput (Samples/s): the current metric schema no longer persists
+  learner replay throughput, so schema-v1 runs derive it per iteration as
   ``world_size * algo.batch_size * algo.updates_per_step / Perf/iteration_time``
   (run configuration from ``run_config.json``). This counts effective learner
   replay rows (including configured sample multipliers), summed across ranks.
@@ -74,8 +74,9 @@ STEPS_PER_SEC_TAGS = (("Perf/total_fps", 1.0),)
 REWARD_TAGS = (("Train/mean_reward", 1.0),)
 DP_SYNC_TIME_TAGS = (("Perf/dp_gradient_sync_ms_per_rank", 0.001),)
 ITERATION_TIME_TAGS = (("Perf/iteration_time", 1.0),)
-# unilab-rl 1.4.1 removed the persisted learner replay throughput chart with
-# no replacement tag; schema-v1 runs derive it from the run configuration and
+# The current metric schema removed the persisted learner replay throughput
+# chart with no replacement tag; schema-v1 runs derive it from the run
+# configuration and
 # ``Perf/iteration_time`` (see derive_learner_samples_per_sec).
 _RETIRED_LEARNER_THROUGHPUT_TAGS = frozenset(
     ("perf/effective_samples_per_sec", "perf/learner_samples_per_sec")
@@ -204,10 +205,10 @@ def read_scalar_series(rank_dir: Path, candidates: Sequence[tuple[str, float]]) 
 
 
 def derive_learner_samples_per_sec(run_dir: Path, world_size: int) -> list[float]:
-    """Reconstruct aggregate learner replay rows/s for post-1.4.1 runs.
+    """Reconstruct aggregate learner replay rows/s for schema-v1 runs.
 
-    unilab-rl 1.4.1 no longer persists learner replay throughput; per
-    unilab_rl ``docs/metrics.md`` it derives from the run configuration —
+    The current metric schema no longer persists learner replay throughput;
+    it derives from the run configuration —
     ``algo.batch_size * algo.updates_per_step`` replay rows per rank per
     iteration, summed across ranks — divided by the measured
     ``Perf/iteration_time``.

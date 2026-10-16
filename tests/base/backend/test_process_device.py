@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from uni_rl.ipc.dp_launcher import visible_cuda_entries
 from unisim.backend.mjwarp import runtime as mjwarp_runtime
 
 import unilab.base.process_device as process_device
@@ -20,6 +19,7 @@ from unilab.base.process_device import (
     resolve_backend_env_device_id,
     resolve_backend_process_device,
 )
+from unilab.rl.runtime.distributed.context import visible_cuda_entries
 
 
 class _FakeWarpDevice:
@@ -75,10 +75,13 @@ def test_host_or_backend_owned_devices_do_not_receive_runner_binding(backend_typ
     assert resolve_backend_process_device(backend_type, "cuda:2") is None
 
 
+@pytest.mark.parametrize("backend_type", ["mjwarp", "newton"])
 @pytest.mark.parametrize("device", [None, "cpu", "mps", "xpu:1"])
-def test_mjwarp_process_device_fails_closed_without_cuda(device: str | None) -> None:
+def test_bound_process_device_fails_closed_without_cuda(
+    backend_type: str, device: str | None
+) -> None:
     with pytest.raises(ValueError, match="CUDA process device"):
-        resolve_backend_process_device("mjwarp", device)
+        resolve_backend_process_device(backend_type, device)
 
 
 def test_mjwarp_binding_rejects_non_cuda_warp_resolution(

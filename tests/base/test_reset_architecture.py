@@ -10,7 +10,7 @@ def test_reset_chain_does_not_materialize_dynamic_done_rows() -> None:
         "managers/event_manager.py",
         "managers/command_manager.py",
         "managers/observation_manager.py",
-        "rl/vec_env.py",
+        "rl/adapters/rsl_rl/vec_env.py",
     )
     forbidden = (
         "reset_buf.nonzero",

@@ -156,7 +156,7 @@ class TorchEnv(ABEnv):
 
     @property
     def produces_completion_receipts(self) -> bool:
-        """uni_rl env-contract declaration of the backend's step receipts.
+        """RL env-contract declaration of the backend's step receipts.
 
         ``True`` when the bound backend publishes an event-backed async
         completion receipt on every ``step`` (replay CUDA ingress then fails
@@ -846,7 +846,8 @@ class TorchEnv(ABEnv):
         """Serialize the backend's tensor runtime diagnostics on the cold path.
 
         This is the collection boundary consumed by training runtimes (the
-        uni_rl off-policy collector publishes it into the run manifest). The
+        ``unilab.rl`` off-policy collector publishes it into the run
+        manifest). The
         payload is plain JSON: ``available`` and ``backend_type`` plus, when
         available, one ``diagnostics`` entry per backend optimization with
         ``requested``/``enabled``/``disable_reason``. Backends that declare

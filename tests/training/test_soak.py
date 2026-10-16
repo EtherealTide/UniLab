@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from uni_rl.logging.runtime_manifest_schema import RUNTIME_MANIFEST_SCHEMA_VERSION
 
+from unilab.rl.logging.runtime_manifest_schema import RUNTIME_MANIFEST_SCHEMA_VERSION
 from unilab.training.soak import (
     SoakFailureError,
     _tree_snapshot,
@@ -565,7 +565,7 @@ def test_soak_monitor_requires_completed_runtime_manifest_stable_fields(
 def test_soak_monitor_fails_closed_on_malformed_backend_diagnostics(
     tmp_path: Path, section: object
 ) -> None:
-    """uni_rl 1.4.12 validates the optional producer section fail-closed."""
+    """unilab.rl.logging validates the optional producer section fail-closed."""
     summary = _completed_summary()
     summary["runtime_manifest"]["backend_diagnostics"] = section
 

@@ -89,7 +89,7 @@ jobs:
           enable-cache: false
           python-version: "3.11"
       - name: Install tensor runtime
-        run: uv sync --extra mujoco --extra mjwarp --extra newton --extra motrix --extra uni_rl
+        run: uv sync --extra mujoco --extra mjwarp --extra newton --extra motrix
       - name: CUDA task contract tests
         run: >
           uv run --no-sync pytest -q

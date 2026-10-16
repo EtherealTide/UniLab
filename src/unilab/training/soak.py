@@ -510,9 +510,9 @@ def _runtime_manifest_contract_failure(
     if not isinstance(manifest, Mapping):
         return None
     try:
-        from uni_rl.logging.runtime_manifest_schema import validate_runtime_manifest
+        from unilab.rl.logging.runtime_manifest_schema import validate_runtime_manifest
     except ImportError as exc:
-        return f"runtime_manifest validation requires uni_rl runtime_manifest_schema: {exc}"
+        return f"runtime_manifest validation requires unilab.rl runtime_manifest_schema: {exc}"
     try:
         validate_runtime_manifest(manifest, completed=completed)
     except (TypeError, ValueError) as exc:

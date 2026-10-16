@@ -138,8 +138,9 @@ recipe，同时消费同一套 task、backend 和 RL contract。目前的下游�
 ```
 
 UniLab 以 [Apache License 2.0](LICENSE) 发布。独立的
-[UniSim](https://github.com/unilabsim/unisim) 与
-[UniLab RL](https://github.com/unilabsim/unilab_rl) 仓库包含各自的发布和引用信息。
+[UniSim](https://github.com/unilabsim/unisim) 仓库包含各自的发布和引用信息。
+RL 栈（算法、异步 runtime、训练日志）内置在本仓库的 `src/unilab/rl/` 中；它并自原
+[unilab_rl](https://github.com/unilabsim/unilab_rl) 仓库，该仓库保留为历史出处。
 
 ## 致谢
 

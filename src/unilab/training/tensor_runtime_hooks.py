@@ -1,8 +1,8 @@
-"""Pickleable runtime hooks injected across the ``uni_rl`` spawn boundary.
+"""Pickleable runtime hooks injected across the ``unilab.rl`` spawn boundary.
 
-``uni_rl`` owns collector orchestration but must not import UniLab.  The
-off-policy runner passes these module-level constructors to the collector so
-environment-owned diagnostics stay in their owner package.
+``unilab.rl`` owns collector orchestration and does not import the training
+layer.  The off-policy runner passes these module-level constructors to the
+collector so environment-owned diagnostics stay in their owner package.
 """
 
 from __future__ import annotations

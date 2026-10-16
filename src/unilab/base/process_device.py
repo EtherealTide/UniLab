@@ -15,6 +15,8 @@ import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
+from unilab.process_context import visible_cuda_entries
+
 # These backends consume an explicit integer device id while materializing
 # their simulator.  MuJoCo/Motrix/Drake run CPU-authoritative physics; their
 # optional accelerator Manager buffers are selected separately through
@@ -27,12 +29,12 @@ BACKEND_ENV_DEVICE_FIELDS: dict[str, str] = {
 
 
 # Newton consumes an explicit ``cuda:N`` device string (``newton_device``)
-# instead of an integer id.  uni_rl's collector-side process binding is
-# injection-based: it binds through the caller-supplied ``bind_device``
-# callable and fails closed when none is injected.  UniLab injects
-# ``bind_backend_process_device_for_backend`` (which covers mjwarp and
-# newton); the env override additionally forwards the rank-local device
-# string so spawn collectors can pass it to the Newton adapter.
+# instead of an integer id.  The RL runtime's collector-side process binding
+# is injection-based: the spawned collector applies the caller-supplied
+# backend-device configurer and skips binding when none is injected.  UniLab
+# injects ``configure_backend_process_device``; the env override additionally
+# forwards the rank-local device string so spawn collectors can pass it to
+# the Newton adapter.
 BACKEND_ENV_DEVICE_STR_FIELDS: dict[str, str] = {
     "newton": "newton_device",
 }
@@ -102,17 +104,7 @@ def rank_local_visible_cuda_entries(
     current_visible_devices: str | None = None,
 ) -> tuple[str, ...]:
     """Return opaque rank-local CUDA visibility entries before Torch init."""
-    raw = (
-        os.environ.get("CUDA_VISIBLE_DEVICES")
-        if current_visible_devices is None
-        else current_visible_devices
-    )
-    if raw is None:
-        return ()
-    entries = tuple(entry.strip() for entry in raw.split(",") if entry.strip())
-    if entries == ("-1",):
-        return ()
-    return entries
+    return visible_cuda_entries(current_visible_devices)
 
 
 def resolve_backend_env_device_id(
@@ -337,8 +329,9 @@ def bind_backend_process_device_for_backend(backend_type: str, resolved: str) ->
     """Bind one backend's process-global accelerator device.
 
     This top-level callable is intentionally backend-aware and lazy.  It can
-    be wrapped with :func:`functools.partial` and injected into uni_rl's
-    spawn-based collectors while remaining pickleable by module reference.
+    be wrapped with :func:`functools.partial` and injected into the RL
+    runtime's spawn-based collectors while remaining pickleable by module
+    reference.
     """
     backend = _normalize_backend(backend_type)
     if backend == "newton":
@@ -355,10 +348,10 @@ def bind_backend_process_device_for_backend(backend_type: str, resolved: str) ->
 def bind_backend_process_device(resolved: str) -> str | None:
     """Bind a resolved backend process device in the current process.
 
-    Top-level on purpose: uni_rl's off-policy collectors receive this as the
-    injected ``backend_device_binder`` and pickle it by reference into
-    spawn-based subprocesses. The mjwarp import stays lazy so the binder is
-    importable without the ``mjwarp`` extra installed.
+    Top-level on purpose: off-policy collector setups can inject this binder
+    and pickle it by reference into spawn-based subprocesses. The mjwarp
+    import stays lazy so the binder is importable without the ``mjwarp``
+    extra installed.
     """
     return bind_backend_process_device_for_backend("mjwarp", resolved)
 

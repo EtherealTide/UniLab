@@ -17,13 +17,14 @@ import pytest
 import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
-from uni_rl.ipc.dp_launcher import UNILAB_DP_LOG_DIR, UNILAB_DP_RANK, UNILAB_DP_WORLD_SIZE
-from uni_rl.utils.tensor_runtime import (
-    InferencePlacement,
-    InferenceTransport,
-    TensorRuntimeSettings,
-)
 
+from unilab.rl.runtime.distributed.context import (
+    UNILAB_DP_LOG_DIR,
+    UNILAB_DP_RANK,
+    UNILAB_DP_WORLD_SIZE,
+)
+from unilab.rl.runtime.placement import InferencePlacement, InferenceTransport
+from unilab.rl.runtime.settings import TensorRuntimeSettings
 from unilab.training import cuda_process_sharing
 
 _ROOT = Path(__file__).parent.parent.parent
@@ -89,7 +90,7 @@ class _FakeRunner:
 
 
 def _fake_env_factory(num_envs, env_cfg_override):
-    """EnvFactory-shaped probe stub (uni_rl runners receive envs by injection)."""
+    """EnvFactory-shaped probe stub (unilab.rl runners receive envs by injection)."""
     del num_envs, env_cfg_override
     return _FakeEnv()
 
@@ -255,7 +256,7 @@ def test_cuda_process_sharing_selects_sole_recorded_daemon_before_probe(
         "configure_backend_process_device",
         lambda _backend, device: device,
     )
-    import uni_rl.algos.sac.double_buffer as owner_module
+    import unilab.rl.algos.sac.double_buffer as owner_module
 
     monkeypatch.setattr(owner_module, "SACLearner", _FakeLearner)
     monkeypatch.setattr(owner_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
@@ -299,7 +300,7 @@ def test_valid_cuda_process_sharing_evidence_enters_runner_manifest(
         lambda *_args, **_kwargs: None,
     )
 
-    import uni_rl.algos.sac.double_buffer as owner_module
+    import unilab.rl.algos.sac.double_buffer as owner_module
 
     monkeypatch.setattr(owner_module, "SACLearner", _FakeLearner)
     monkeypatch.setattr(owner_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
@@ -378,7 +379,7 @@ def test_sac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPatch):
     module = _offpolicy()
     cfg = _offpolicy_cfg([])
 
-    import uni_rl.algos.sac.double_buffer as owner_module
+    import unilab.rl.algos.sac.double_buffer as owner_module
 
     monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
     monkeypatch.setattr(owner_module, "SACLearner", _FakeLearner)
@@ -433,8 +434,8 @@ def test_sac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPatch):
 def test_sac_owner_custom_runtime_can_override_base_learner_kwargs(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    from uni_rl.algos.sac import double_buffer as owner_module
-    from uni_rl.offpolicy.runtime import OffPolicyRuntime
+    from unilab.rl.algos.sac import double_buffer as owner_module
+    from unilab.rl.runtime.offpolicy.runtime import OffPolicyRuntime
 
     cfg = _offpolicy_cfg([])
     custom_runtime = OffPolicyRuntime(
@@ -467,7 +468,7 @@ def test_flashsac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPa
     module = _offpolicy()
     cfg = _offpolicy_cfg(algo="flashsac")
 
-    import uni_rl.algos.flash_sac.double_buffer as flash_module
+    import unilab.rl.algos.flash_sac.double_buffer as flash_module
 
     monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
     monkeypatch.setattr(flash_module, "FlashSACLearner", _FakeLearner)
@@ -503,7 +504,7 @@ def test_flashsac_n_step_is_rejected():
 
 
 def _bare_runner():
-    from uni_rl.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
+    from unilab.rl.runtime.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
 
     runner = object.__new__(DoubleBufferOffPolicyRunner)
     runner.inference_placement = InferencePlacement(
@@ -545,7 +546,7 @@ def _build_sac_runner_with_fakes(
 
     monkeypatch.setattr(module.os, "cpu_count", lambda: cpu_count)
     monkeypatch.setattr(
-        "uni_rl.ipc.dp_launcher.os.sched_getaffinity",
+        "unilab.rl.runtime.distributed.affinity.os.sched_getaffinity",
         lambda _: set(range(cpu_count)),
         raising=False,
     )
@@ -556,7 +557,7 @@ def _build_sac_runner_with_fakes(
             lambda backend, device: backend_binding_calls.append((str(backend), str(device))),
         )
 
-    import uni_rl.algos.sac.double_buffer as owner_module
+    import unilab.rl.algos.sac.double_buffer as owner_module
 
     monkeypatch.setattr(
         module, "registry_env_factory", lambda *args, **kwargs: fake_probe_env_factory
@@ -589,7 +590,7 @@ def test_build_runner_binds_mjwarp_rank_process_to_learner_device(
 
 def test_build_runner_partitions_collector_cpus_per_rank(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
-        "uni_rl.ipc.dp_launcher._discover_physical_cpu_groups",
+        "unilab.rl.runtime.distributed.affinity._discover_physical_cpu_groups",
         lambda _: [[core, core + 64] for core in range(64)],
     )
     # Spawned rank/world size come from the launcher environment.
@@ -621,7 +622,7 @@ def test_build_runner_rank_zero_partitions_without_dp_env(monkeypatch: pytest.Mo
     monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     monkeypatch.setattr(
-        "uni_rl.ipc.dp_launcher._discover_physical_cpu_groups",
+        "unilab.rl.runtime.distributed.affinity._discover_physical_cpu_groups",
         lambda _: [[core, core + 64] for core in range(64)],
     )
     runner, _ = _build_sac_runner_with_fakes(

@@ -288,6 +288,9 @@ _LANGUAGE_PATH_FORWARD: dict[str, str] = {
     "en/4-developer_guide/8-tensor_runtime_production": (
         "zh_CN/4-developer_guide/8-tensor_runtime_production"
     ),
+    "en/3-deployment/3-framework_migration/7-from_unilab_rl": (
+        "zh_CN/3-deployment/3-framework_migration/7-from_unilab_rl"
+    ),
 }
 # Keyed by (current_pagename, target_language) → target_pagename.
 _LANGUAGE_PATH_MAP: dict[tuple[str, str], str] = {}

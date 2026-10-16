@@ -36,7 +36,8 @@ or unindexed `cuda`; indexed values such as `cuda:3` are rejected.
 
 - `auto` follows the learner device: a CUDA learner routes the rank-local
   indexed learner device (for example `cuda:3`), so collector observations and
-  actions stay on the learner GPU and the uni_rl probe resolves CUDA inference
+  actions stay on the learner GPU and the runtime probe
+  (`unilab.rl.contracts.probe`) resolves CUDA inference
   transport with no further configuration. CPU and torch.mps (Metal Performance
   Shaders) learners keep the CPU carrier.
 - Explicit `cpu` or `cuda` values win over `auto`. `cuda` remains supported

@@ -83,7 +83,6 @@ COLLECTOR_CPU_THREADS_ENV = "UNILAB_COLLECTOR_TORCH_THREADS"
 FIXATION_PACKAGE_NAMES = (
     "unilab",
     "unisim-core",
-    "unilab-rl",
     "torch",
     "mujoco-warp",
     "warp-lang",
@@ -771,9 +770,8 @@ def _make_env(
     *,
     env_cfg_override: dict[str, Any] | None,
 ):
-    from uni_rl.utils.observations import get_obs_dims
-
     from unilab.base.config_adapter import create_env
+    from unilab.rl.contracts.observations import get_obs_dims
 
     env = create_env(cfg, num_envs=int(cfg.algo.num_envs), env_cfg_override=env_cfg_override)
     if env.state is None:
@@ -789,7 +787,7 @@ def _make_env(
 
 def _build_context_actor(cfg: DictConfig, obs_dim: int, action_dim: int, device: torch.device):
     """Build the owner actor shape without training or learner state."""
-    from uni_rl.algos.common.actor_factory import build_actor
+    from unilab.rl.algos.common.actor_factory import build_actor
 
     if str(cfg.algo.algo) == "flashsac":
         return build_actor(
@@ -862,8 +860,8 @@ def _run_active_window_case(
     policy_inference_context: TimingStats | None = None,
     policy_inference_context_evidence: dict[str, Any] | None = None,
 ) -> CollectorResult:
-    from uni_rl.ipc.replay_buffer import ReplayBuffer
-    from uni_rl.utils.observations import split_obs_dict
+    from unilab.rl.contracts.observations import split_obs_dict
+    from unilab.rl.runtime.ipc.replay_buffer import ReplayBuffer
 
     replay_buffer = ReplayBuffer(
         capacity=case.replay_capacity_rows,
