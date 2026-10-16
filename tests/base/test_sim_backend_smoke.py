@@ -427,7 +427,11 @@ def test_motrix_backend_smoke_contract(robot):
     from unisim.backend.motrix.backend import MotrixBackend
 
     bkd = MotrixBackend(
-        SceneCfg(model_file=robot["model_file"]), NUM_ENVS, SIM_DT, base_name=robot["base_name"]
+        SceneCfg(model_file=robot["model_file"]),
+        NUM_ENVS,
+        SIM_DT,
+        base_name=robot["base_name"],
+        add_body_sensors=True,
     )
 
     assert bkd.num_envs == NUM_ENVS
@@ -448,9 +452,12 @@ def test_motrix_backend_smoke_contract(robot):
         np.zeros((1, nv)),
         randomization=ResetRandomizationPayload(gravity=gravity),
     )
-    np.testing.assert_allclose(_sensor(bkd, "track_pos_w_pelvis")[0], (1.0, 2.0, 0.8), atol=1e-4)
+    base_name = robot["base_name"]
+    np.testing.assert_allclose(
+        _sensor(bkd, f"track_pos_w_{base_name}")[0], (1.0, 2.0, 0.8), atol=1e-4
+    )
     np.testing.assert_allclose(bkd.model.get_gravity_override(bkd.data)[0], gravity[0])
-    _unit_quat(_sensor(bkd, "track_quat_w_pelvis"), "Motrix smoke")
+    _unit_quat(_sensor(bkd, f"track_quat_w_{base_name}"), "Motrix smoke")
 
     caps = bkd.get_dr_capabilities()
     assert {"base_mass_delta", "base_com_offset", "gravity", "kp", "kd"}.issubset(
@@ -487,13 +494,19 @@ def test_cross_backend_base_pose_smoke(robot):
     qpos = np.tile(_identity_qpos_mujoco(nq), (NUM_ENVS, 1))
     qvel = np.zeros((NUM_ENVS, nv))
     env_idx = np.arange(NUM_ENVS)
-    mj.set_state(env_idx, qpos, qvel)
-    mx.set_state(env_idx, qpos, qvel)
+    _set_state(mj, env_idx, qpos, qvel)
+    _set_state(mx, env_idx, qpos, qvel)
 
-    np.testing.assert_allclose(mj.get_base_pos(), mx.get_base_pos(), atol=_CROSS_BACKEND_ATOL)
+    mj_qpos = mj.get_state_views(("qpos",))["qpos"].detach().cpu().numpy()
+    mx_qpos = mx.get_state_views(("qpos",))["qpos"].detach().cpu().numpy()
     np.testing.assert_allclose(
-        np.abs(mj.get_base_quat()),
-        np.abs(mx.get_base_quat()),
+        mj_qpos[:, :3],
+        mx_qpos[:, :3],
+        atol=_CROSS_BACKEND_ATOL,
+    )
+    np.testing.assert_allclose(
+        np.abs(mj_qpos[:, 3:7]),
+        np.abs(mx_qpos[:, 3:7]),
         atol=_CROSS_BACKEND_ATOL,
     )
 
@@ -712,16 +725,27 @@ def test_motrix_copy_body_state_matches_split_queries():
     body_names = ["pelvis", "torso_link"]
     body_ids = np.asarray([bkd.model.get_link_index(name) for name in body_names], dtype=np.int32)
 
-    expected_pos = bkd.get_body_pos_w(body_ids)
-    expected_quat = bkd.get_body_quat_w(body_ids)
-    expected_lin_vel = bkd.get_body_lin_vel_w(body_ids)
-    expected_ang_vel = bkd.get_body_ang_vel_w(body_ids)
+    expected_pos = np.stack([_sensor(bkd, f"track_pos_w_{name}") for name in body_names], axis=1)
+    expected_quat = np.stack([_sensor(bkd, f"track_quat_w_{name}") for name in body_names], axis=1)
+    expected_lin_vel = np.stack(
+        [_sensor(bkd, f"track_linvel_w_{name}") for name in body_names], axis=1
+    )
+    expected_ang_vel = np.stack(
+        [_sensor(bkd, f"track_angvel_w_{name}") for name in body_names], axis=1
+    )
     out_pos = np.empty_like(expected_pos)
     out_quat = np.empty_like(expected_quat)
     out_lin_vel = np.empty_like(expected_lin_vel)
     out_ang_vel = np.empty_like(expected_ang_vel)
 
-    result = bkd.copy_body_state_w(body_ids, out_pos, out_quat, out_lin_vel, out_ang_vel)
+    result = bkd.copy_body_state_w_rows(
+        np.arange(NUM_ENVS, dtype=np.int32),
+        body_ids,
+        out_pos,
+        out_quat,
+        out_lin_vel,
+        out_ang_vel,
+    )
 
     assert result == (out_pos, out_quat, out_lin_vel, out_ang_vel)
     np.testing.assert_allclose(out_pos, expected_pos)
@@ -729,20 +753,23 @@ def test_motrix_copy_body_state_matches_split_queries():
     np.testing.assert_allclose(out_lin_vel, expected_lin_vel)
     np.testing.assert_allclose(out_ang_vel, expected_ang_vel)
 
-    row_ids = np.array([1, 0, 1], dtype=np.int32)
-    np.testing.assert_allclose(
-        bkd.get_sensor_data_rows("pelvis_local_linvel", row_ids),
-        bkd.get_sensor_data("pelvis_local_linvel")[row_ids],
+    row_ids = np.array([1, 0], dtype=np.int32)
+    row_pos = np.empty((row_ids.size, len(body_names), 3), dtype=np.float32)
+    row_quat = np.empty((row_ids.size, len(body_names), 4), dtype=np.float32)
+    row_lin_vel = np.empty_like(row_pos)
+    row_ang_vel = np.empty_like(row_pos)
+    bkd.copy_body_state_w_rows(
+        row_ids,
+        body_ids,
+        row_pos,
+        row_quat,
+        row_lin_vel,
+        row_ang_vel,
     )
-    # Issue #1295: row-scoped velocity getters are parity with full+slice.
-    np.testing.assert_allclose(
-        bkd.get_body_lin_vel_w_rows(row_ids, body_ids),
-        bkd.get_body_lin_vel_w(body_ids)[row_ids],
-    )
-    np.testing.assert_allclose(
-        bkd.get_body_ang_vel_w_rows(row_ids, body_ids),
-        bkd.get_body_ang_vel_w(body_ids)[row_ids],
-    )
+    np.testing.assert_allclose(row_pos, expected_pos[row_ids])
+    np.testing.assert_allclose(row_quat, expected_quat[row_ids])
+    np.testing.assert_allclose(row_lin_vel, expected_lin_vel[row_ids])
+    np.testing.assert_allclose(row_ang_vel, expected_ang_vel[row_ids])
 
 
 def test_motrix_default_qpos_uses_mujoco_quaternion_convention():

@@ -275,6 +275,21 @@ def test_go2_flat_motrix_owner_uses_tensor_reset_events() -> None:
 
 
 @pytest.mark.parametrize(
+    "owner",
+    (
+        pytest.param("task=go2_joystick_flat/mujoco", id="mujoco"),
+        pytest.param("task=go2_joystick_flat/motrix", id="motrix"),
+    ),
+)
+def test_go2_flat_appo_tracking_sigma_preserves_legacy_reward_kernel(owner: str) -> None:
+    registry.ensure_registries()
+    _, env_cfg, _ = _materialize("appo", (owner,))
+
+    for term_name in ("tracking_lin_vel", "tracking_ang_vel"):
+        assert env_cfg.rewards[term_name].params["tracking_sigma"] == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize(
     ("backend", "owner"),
     (("mujoco", "task=go2_joystick_flat/mujoco"),),
 )

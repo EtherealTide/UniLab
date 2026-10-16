@@ -204,10 +204,13 @@ def test_motrix_set_state_without_randomization_leaves_reset_rand_zero() -> None
         torch.from_numpy(qvel.astype(np.float32, copy=False)),
     )
 
-    timing = _assert_timing_dict_shape(result)
-    # No payload → the fast-return branch in _apply_reset_randomization keeps
-    # this sub-step at essentially zero.
-    assert timing["set_state_reset_rand_ms"] < 1.0
+    timing = result["timing"]
+    if "set_state_reset_rand_ms" in timing:
+        assert timing["set_state_reset_rand_ms"] < 1.0
+    else:
+        assert timing["tensor_reset_packed_d2h_ms"] >= 0.0
+        assert timing["tensor_reset_packed_d2h_count"] == 1.0
+        assert "set_state_reset_rand_ms" not in timing
 
 
 def test_set_state_tensor_keys_stay_out_of_host_set_state_schema() -> None:
@@ -222,6 +225,9 @@ def test_set_state_tensor_keys_stay_out_of_host_set_state_schema() -> None:
         "set_state_tensor_mask_ms",
         "set_state_tensor_commit_forward_ms",
         "set_state_tensor_host_cache_refresh_ms",
+        "tensor_reset_packed_d2h_ms",
+        "tensor_reset_packed_d2h_bytes",
+        "tensor_reset_packed_d2h_count",
     )
     for key in tensor_keys:
         assert key in RESET_DONE_DETAIL_TIMING_KEYS
