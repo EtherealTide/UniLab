@@ -20,7 +20,7 @@ from rsl_rl.models import MLPModel
 from rsl_rl.utils import resolve_optimizer
 from tensordict import TensorDict
 
-from unilab.rl.algos.common.compile import get_torch_compile_for_cuda
+from unilab.rl.algos.common.compile import get_torch_compile_for_device
 
 _LOG_2_PI = math.log(2.0 * math.pi)
 _NORMAL_ENTROPY_OFFSET = 0.5 * (1.0 + _LOG_2_PI)
@@ -223,7 +223,7 @@ class APPOLearner:
         self.vtrace_clip_c = vtrace_clip_c
         self._update_counter = 0
         self.enable_compile = (
-            bool(enable_compile) and get_torch_compile_for_cuda(device, warn=True) is not None
+            bool(enable_compile) and get_torch_compile_for_device(device, warn=True) is not None
         )
 
         # Optimizer
@@ -235,7 +235,7 @@ class APPOLearner:
             self._compile_training_methods()
 
     def _compile_training_methods(self) -> None:
-        compile_fn = get_torch_compile_for_cuda(self._device_type, warn=True)
+        compile_fn = get_torch_compile_for_device(self._device_type, warn=True)
         if compile_fn is None:
             return
 
