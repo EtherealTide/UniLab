@@ -73,7 +73,6 @@ def test_host_bridge_backends_do_not_require_torch_cuda(
         ("mjwarp", {}, "unavailable", "unavailable"),
         ("newton", {"newton_device": "cuda:2"}, "valid", "out of range"),
         ("newton", {"newton_device": "cuda:not-an-index"}, "valid", "not supported"),
-        ("isaacgym", {"isaacgym_device_id": True}, "valid", "non-negative integer"),
     ],
 )
 def test_cuda_only_failures_happen_before_construction(
@@ -120,71 +119,10 @@ def test_cuda_only_backend_can_construct_with_valid_cuda_device(
     assert fake_cuda == []
 
 
-def test_isaac_worker_affinity_is_checked_and_bound_before_construction(
-    fake_cuda: list[int],
-    backend_calls: list[dict[str, object]],
-) -> None:
-    backend_factory.create_backend(
-        "isaacgym",
-        _Scene(),
-        1,
-        0.005,
-        isaacgym_device_id=0,
-    )
-
-    assert len(backend_calls) == 1
-    assert fake_cuda == [0]
-
-
-def test_isaac_cross_device_payload_fails_before_construction(
-    fake_cuda: list[int],
-    backend_calls: list[dict[str, object]],
-) -> None:
-    with pytest.raises(RuntimeError, match="cross-device|does not match") as exc_info:
-        backend_factory.create_backend(
-            "isaacsim",
-            _Scene(),
-            1,
-            0.005,
-            isaacsim_device_id=1,
-        )
-
-    assert "current Torch CUDA device (1 != 0)" in str(exc_info.value)
-    assert backend_calls == []
-    assert fake_cuda == []
-
-
-def test_external_cuda_ipc_process_binding_validates_and_sets_device(
-    fake_cuda: list[int],
-) -> None:
-    assert (
-        configure_backend_process_device(
-            "isaacgym",
-            "cuda:1",
-            backend_device_id=1,
-        )
-        == "cuda:1"
-    )
-    assert fake_cuda == [1]
-
-
-def test_external_cuda_ipc_process_binding_rejects_cross_device_payload(
-    fake_cuda: list[int],
-) -> None:
-    with pytest.raises(ValueError, match="cross-device CUDA IPC"):
-        configure_backend_process_device(
-            "isaacsim",
-            "cuda:0",
-            backend_device_id=1,
-        )
-
-    assert fake_cuda == []
-
-
 @pytest.mark.parametrize("learner_device", ["cpu", "mps"])
 def test_cuda_only_process_devices_reject_cpu_learner(learner_device: str) -> None:
     with pytest.raises(ValueError, match="requires a CUDA process device"):
-        configure_backend_process_device("isaacgym", learner_device)
+        configure_backend_process_device("genesis", learner_device)
 
 
 @pytest.mark.parametrize("learner_device", [None, "cpu", "cuda:0"])

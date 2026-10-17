@@ -98,7 +98,7 @@ def test_mjwarp_binding_rejects_non_cuda_warp_resolution(
         mjwarp_runtime.bind_mjwarp_process_device("cuda:1")
 
 
-@pytest.mark.parametrize("backend_type", ["isaacgym", "isaacsim", "genesis", "newton"])
+@pytest.mark.parametrize("backend_type", ["genesis", "newton"])
 def test_explicit_single_device_fallback_routes_backend_payload(
     backend_type: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -125,7 +125,7 @@ def test_single_gpu_mjwarp_process_binding_needs_no_visibility_mask(
     assert warp.set_calls == ["cuda:0"]
 
 
-@pytest.mark.parametrize("backend_type", ["isaacgym", "isaacsim", "genesis", "newton"])
+@pytest.mark.parametrize("backend_type", ["genesis", "newton"])
 def test_multi_visible_rank_fails_closed(
     backend_type: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -148,12 +148,12 @@ def test_backend_env_device_override_routes_rank_local_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
-    owner_override = {"isaacgym_device_id": 7, "nested": {"keep": True}}
+    owner_override = {"genesis_device_id": 7, "nested": {"keep": True}}
 
-    routed = apply_backend_env_device_override(owner_override, "isaacgym")
+    routed = apply_backend_env_device_override(owner_override, "genesis")
 
-    assert routed["isaacgym_device_id"] == 0
-    assert owner_override["isaacgym_device_id"] == 7
+    assert routed["genesis_device_id"] == 0
+    assert owner_override["genesis_device_id"] == 7
     assert routed["nested"] is owner_override["nested"]
 
 
@@ -266,7 +266,7 @@ def test_sim_carrier_device_is_canonicalized_for_manifests(
 
 
 def test_non_gpu_backend_is_left_untouched() -> None:
-    owner_override = {"isaacgym_device_id": 0}
+    owner_override = {"genesis_device_id": 0}
     assert apply_backend_env_device_override(owner_override, "mujoco") == owner_override
 
 

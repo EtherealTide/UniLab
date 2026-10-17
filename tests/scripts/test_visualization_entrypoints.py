@@ -298,13 +298,11 @@ def test_play_interactive_viewer_model_uses_shared_render_playback_resolver(
 
 def test_play_interactive_binds_mjwarp_process_device_before_session(monkeypatch):
     mod = _load_script("play_interactive")
-    bound: list[tuple[str, str, int | None]] = []
+    bound: list[tuple[str, str]] = []
     monkeypatch.setattr(
         mod,
         "configure_backend_process_device",
-        lambda backend_type, device, backend_device_id=None: bound.append(
-            (backend_type, device, backend_device_id)
-        ),
+        lambda backend_type, device: bound.append((backend_type, device)),
     )
     monkeypatch.setattr(mod, "_select_playback_device", lambda cfg: "cuda:0")
     monkeypatch.setattr(mod, "available_backends_for_task", lambda task: ["mjwarp"])
@@ -326,18 +324,16 @@ def test_play_interactive_binds_mjwarp_process_device_before_session(monkeypatch
     with pytest.raises(RuntimeError, match="stop-before-session"):
         mod.play_interactive(args, None)
 
-    assert bound == [("mjwarp", "cuda:0", None)]
+    assert bound == [("mjwarp", "cuda:0")]
 
 
 def test_play_interactive_device_binding_is_noop_for_mujoco(monkeypatch):
     mod = _load_script("play_interactive")
-    bound: list[tuple[str, str, int | None]] = []
+    bound: list[tuple[str, str]] = []
     monkeypatch.setattr(
         mod,
         "configure_backend_process_device",
-        lambda backend_type, device, backend_device_id=None: bound.append(
-            (backend_type, device, backend_device_id)
-        ),
+        lambda backend_type, device: bound.append((backend_type, device)),
     )
     monkeypatch.setattr(mod, "_select_playback_device", lambda cfg: "cuda:0")
     monkeypatch.setattr(mod, "available_backends_for_task", lambda task: ["mujoco"])
@@ -359,4 +355,4 @@ def test_play_interactive_device_binding_is_noop_for_mujoco(monkeypatch):
     with pytest.raises(RuntimeError, match="stop-before-session"):
         mod.play_interactive(args, None)
 
-    assert bound == [("mujoco", "cuda:0", None)]
+    assert bound == [("mujoco", "cuda:0")]

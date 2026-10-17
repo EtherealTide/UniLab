@@ -40,7 +40,7 @@ class EnvFactory(Protocol):
 
 
 TEnvFactory = TypeVar("TEnvFactory", bound=EnvFactory)
-RewardOverrideField = Literal["reward_config", "rewards"]
+RewardOverrideField = Literal["rewards"]
 _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS = (
     "mujoco",
     "mjwarp",
@@ -227,13 +227,7 @@ def find_available_sim_backend(env_name: str) -> str:
 
 
 def resolve_reward_override_field(env_name: str) -> RewardOverrideField:
-    """Resolve the Hydra root reward target declared by an env config owner.
-
-    Legacy configs own a ``reward_config`` field. Manager-Based configs opt in
-    through the explicit manager-term mapping metadata on ``rewards``. The
-    registry resolves this on the config class without constructing an env or
-    backend so training adapters do not branch on task names.
-    """
+    """Resolve the Manager-Based Hydra root reward target for an env config."""
     if env_name not in _envs:
         raise ValueError(f"Environment '{env_name}' is not registered.")
 
@@ -244,22 +238,14 @@ def resolve_reward_override_field(env_name: str) -> RewardOverrideField:
         rewards_field is not None
         and rewards_field.metadata.get(CONFIG_MAPPING_POLICY_KEY) == MANAGER_TERM_MAPPING_POLICY
     )
-    has_legacy_rewards = "reward_config" in config_fields
     config_owner = type(config).__name__
 
-    if has_manager_rewards and has_legacy_rewards:
-        raise ValueError(
-            f"Environment '{env_name}' config owner '{config_owner}' declares both "
-            "Manager-Based 'rewards' and legacy 'reward_config' targets"
-        )
     if has_manager_rewards:
         return "rewards"
-    if has_legacy_rewards:
-        return "reward_config"
     raise ValueError(
         f"Environment '{env_name}' config owner '{config_owner}' declares no "
-        "supported Hydra root reward target; expected legacy 'reward_config' or an "
-        "explicitly marked Manager-Based 'rewards' field"
+        "supported Hydra root reward target; expected an explicitly marked "
+        "Manager-Based 'rewards' field"
     )
 
 

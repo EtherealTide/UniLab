@@ -9,7 +9,7 @@
 # fields below. Solver/constraint-cone/iterations stay at Genesis defaults:
 # the MJCF option block does not declare them and MuJoCo's implicit defaults
 # (PGS solver, pyramidal cone) have no Genesis equivalent. Unlike the
-# isaacgym owner (events.pd_gains: null), the public Genesis tensor selected
+# shelved Isaac owner (events.pd_gains: null), the public Genesis tensor selected
 # reset does not support randomization, so unsupported host reset terms are
 # explicitly disabled rather than falling back. Playback uses Genesis native
 # rendering: with a display, play_render_mode=auto opens the interactive

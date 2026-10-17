@@ -80,11 +80,6 @@ class EnvCfg:
     newton_njmax: Optional[int] = None
     newton_capacity_check_steps: int = 1
     newton_use_cuda_graph: bool = True
-    # ``isaacgym`` runs physics in a Python 3.8 worker subprocess (Preview 4 is
-    # EOL and incompatible with the main environment). ``None`` keeps the
-    # backend defaults (device 0, generous handshake/step timeout).
-    isaacgym_device_id: Optional[int] = None
-    isaacgym_worker_timeout_s: Optional[float] = None
     # ``genesis`` owns one process-wide GPU session.  The explicit device id
     # must be selected before ``gs.init`` so each data-parallel rank gets its
     # own simulator device; ``None`` keeps Genesis' current/default device.
@@ -97,41 +92,6 @@ class EnvCfg:
     genesis_constraint_solver: Optional[str] = None
     genesis_friction_cone: Optional[str] = None
     genesis_solver_iterations: Optional[int] = None
-    # ``isaacsim`` runs IsaacLab/PhysX in a dedicated Python 3.11 worker.
-    # Keep its knobs separate from IsaacGym because the two runtimes have
-    # incompatible interpreters and installation roots.  The render intent is
-    # populated only by play/eval config materialization; training leaves it
-    # unset so the worker stays on the cheap headless experience.
-    isaacsim_device_id: Optional[int] = None
-    isaacsim_worker_timeout_s: Optional[float] = None
-    isaacsim_render_mode: Optional[str] = None
-    isaacsim_render_width: int = 1280
-    isaacsim_render_height: int = 720
-    # Opt in to the external-worker CUDA IPC tensor lifecycle.  The default
-    # remains false so legacy NumPy shared-memory behavior is unchanged until a
-    # task owner explicitly negotiates the candidate tensor contract.
-    isaacsim_tensor_cuda_ipc: bool = False
-    # Opt-in PhysX material sharing for large scenes.  Equal initial sliding
-    # friction values share a material and reset-time friction DR is disabled
-    # at capability negotiation.  Keep this false when complete per-geom/per-env
-    # friction DR is required.
-    isaacsim_share_friction_materials: bool = False
-    # ``isaacsim`` PhysX solver overrides, forwarded to UniSim's bounded,
-    # readback-validated PhysxSolverConfig (unilabsim/unisim#251, #259).
-    # ``None`` keeps the PhysX scene defaults; the backend validates each
-    # override and compares it against the engine readback fail-closed.
-    isaacsim_solver_position_iteration_count: Optional[int] = None
-    isaacsim_solver_velocity_iteration_count: Optional[int] = None
-    isaacsim_bounce_threshold_velocity: Optional[float] = None
-    isaacsim_contact_offset: Optional[float] = None
-    isaacsim_rest_offset: Optional[float] = None
-    isaacsim_max_depenetration_velocity: Optional[float] = None
-    # GPU rigid contact/patch stream buffer capacities (unilabsim/unisim#292).
-    # They are PhysX carb settings with no USD attribute, so the backend
-    # reports the authored value instead of an engine readback; the IsaacLab
-    # defaults overflow at large environment counts (patch buffer overflow).
-    isaacsim_gpu_max_rigid_contact_count: Optional[int] = None
-    isaacsim_gpu_max_rigid_patch_count: Optional[int] = None
 
     @property
     def max_episode_steps(self) -> Optional[int]:
@@ -217,24 +177,6 @@ class EnvCfg:
             raise ValueError(
                 f"newton_use_cuda_graph must be bool, got {self.newton_use_cuda_graph!r}"
             )
-        if self.isaacgym_device_id is not None and (
-            isinstance(self.isaacgym_device_id, bool)
-            or not isinstance(self.isaacgym_device_id, int)
-            or self.isaacgym_device_id < 0
-        ):
-            raise ValueError(
-                "isaacgym_device_id must be a non-negative integer or None, "
-                f"got {self.isaacgym_device_id!r}"
-            )
-        if self.isaacgym_worker_timeout_s is not None and (
-            not isinstance(self.isaacgym_worker_timeout_s, (int, float))
-            or isinstance(self.isaacgym_worker_timeout_s, bool)
-            or self.isaacgym_worker_timeout_s <= 0
-        ):
-            raise ValueError(
-                "isaacgym_worker_timeout_s must be a positive number or None, "
-                f"got {self.isaacgym_worker_timeout_s!r}"
-            )
         if self.genesis_device_id is not None and (
             isinstance(self.genesis_device_id, bool)
             or not isinstance(self.genesis_device_id, int)
@@ -260,87 +202,6 @@ class EnvCfg:
                 "genesis_solver_iterations must be a positive integer or None, "
                 f"got {self.genesis_solver_iterations!r}"
             )
-        if self.isaacsim_device_id is not None and (
-            isinstance(self.isaacsim_device_id, bool)
-            or not isinstance(self.isaacsim_device_id, int)
-            or self.isaacsim_device_id < 0
-        ):
-            raise ValueError(
-                "isaacsim_device_id must be a non-negative integer or None, "
-                f"got {self.isaacsim_device_id!r}"
-            )
-        if self.isaacsim_worker_timeout_s is not None and (
-            not isinstance(self.isaacsim_worker_timeout_s, (int, float))
-            or isinstance(self.isaacsim_worker_timeout_s, bool)
-            or self.isaacsim_worker_timeout_s <= 0
-        ):
-            raise ValueError(
-                "isaacsim_worker_timeout_s must be a positive number or None, "
-                f"got {self.isaacsim_worker_timeout_s!r}"
-            )
-        if self.isaacsim_render_mode is not None:
-            mode = str(self.isaacsim_render_mode).strip().lower()
-            if mode not in {"auto", "interactive", "record", "none"}:
-                raise ValueError(
-                    "isaacsim_render_mode must be one of auto, interactive, record, none, or None; "
-                    f"got {self.isaacsim_render_mode!r}"
-                )
-            self.isaacsim_render_mode = mode
-        for name, value in (
-            ("isaacsim_render_width", self.isaacsim_render_width),
-            ("isaacsim_render_height", self.isaacsim_render_height),
-        ):
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ValueError(f"{name} must be a positive integer, got {value!r}")
-        if not isinstance(self.isaacsim_tensor_cuda_ipc, bool):
-            raise ValueError(
-                f"isaacsim_tensor_cuda_ipc must be a boolean, got {self.isaacsim_tensor_cuda_ipc!r}"
-            )
-        if not isinstance(self.isaacsim_share_friction_materials, bool):
-            raise ValueError(
-                "isaacsim_share_friction_materials must be a boolean, got "
-                f"{self.isaacsim_share_friction_materials!r}"
-            )
-        # PhysX accepts zero velocity iterations (its scene minimum is 0) but
-        # requires at least one position iteration; mirror UniSim's
-        # PhysxSolverConfig bounds here so owner configs fail fast.
-        for name, value, minimum in (
-            (
-                "isaacsim_solver_position_iteration_count",
-                self.isaacsim_solver_position_iteration_count,
-                1,
-            ),
-            (
-                "isaacsim_solver_velocity_iteration_count",
-                self.isaacsim_solver_velocity_iteration_count,
-                0,
-            ),
-            (
-                "isaacsim_gpu_max_rigid_contact_count",
-                self.isaacsim_gpu_max_rigid_contact_count,
-                1,
-            ),
-            (
-                "isaacsim_gpu_max_rigid_patch_count",
-                self.isaacsim_gpu_max_rigid_patch_count,
-                1,
-            ),
-        ):
-            if value is not None and (
-                isinstance(value, bool) or not isinstance(value, int) or value < minimum
-            ):
-                raise ValueError(f"{name} must be an integer >= {minimum} or None, got {value!r}")
-        for name in (
-            "isaacsim_bounce_threshold_velocity",
-            "isaacsim_contact_offset",
-            "isaacsim_rest_offset",
-            "isaacsim_max_depenetration_velocity",
-        ):
-            value = getattr(self, name)
-            if value is not None and (
-                not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0
-            ):
-                raise ValueError(f"{name} must be a non-negative number or None, got {value!r}")
         if self.cpu_ids is not None:
             ids = list(self.cpu_ids)
             if not ids:

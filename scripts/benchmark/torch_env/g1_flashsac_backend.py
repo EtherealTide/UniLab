@@ -1009,9 +1009,7 @@ def _run_with_backend(
         "backend": backend,
         "isaacsim_owner": {
             "test_fixture_requested": isaacsim_test_fixture,
-            "production_owner": "src/unilab/conf/flashsac/task/g1_motion_tracking/isaacsim.yaml"
-            if backend == "isaacsim"
-            else None,
+            "production_owner": None,
         },
         "tensor_execution": mode,
         "tensor_process_topology": capabilities.process_topology.value,
@@ -1173,7 +1171,7 @@ def main() -> None:
         "process_isolation": "one_process_per_backend",
         "isaacsim_owner": {
             "test_fixture_requested": args.isaacsim_test_fixture,
-            "production_owner": "src/unilab/conf/flashsac/task/g1_motion_tracking/isaacsim.yaml",
+            "production_owner": None,
         },
         "acceptance_mode": args.acceptance,
         "torch_version": torch.__version__,

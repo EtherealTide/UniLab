@@ -197,10 +197,6 @@ class SACActor(nn.Module):
             dones: Unused for SAC; kept for API alignment with other off-policy actors.
             deterministic: Whether to return deterministic policy actions.
         """
-        # Backward compatibility: previous signature was explore(obs, deterministic=False).
-        if isinstance(dones, bool):
-            deterministic = dones
-            dones = None
         _ = dones
 
         _, mean, log_std = self.forward(obs)
@@ -411,7 +407,7 @@ class SACLearner(WholeCycleLearnerMixin):
                     f"got {amp_dtype!r}"
                 )
             return True
-        return bool(use_amp) and device_type in ("cuda", "xpu")
+        return bool(use_amp) and device_type == "cuda"
 
     @staticmethod
     def _validate_performance_paths(device_type: str, use_compile: bool, use_amp: bool) -> None:

@@ -236,7 +236,7 @@ class FlashSACLearner(WholeCycleLearnerMixin):
         self.update_count = 0
         self._device_type = self.device.type
         self._nvidia_cuda = self._device_type == "cuda" and not is_hip_runtime()
-        self.use_amp = bool(use_amp and self.device.type in ("cuda", "xpu"))
+        self.use_amp = bool(use_amp and self.device.type == "cuda")
         self.amp_dtype = amp_dtype
         self._amp_dtype = self._resolve_amp_dtype(amp_dtype, self.device.type)
         compile_requested = self._nvidia_cuda if use_compile is None else bool(use_compile)
@@ -358,7 +358,7 @@ class FlashSACLearner(WholeCycleLearnerMixin):
             else None
         )
 
-        # GradScaler is only needed for fp16 (cuda); bf16 on xpu doesn't need it.
+        # GradScaler is only needed for fp16 (cuda); bf16 doesn't need it.
         self.scaler: Any | None = (
             getattr(torch.amp, "GradScaler")("cuda")
             if self._should_use_grad_scaler(self.use_amp, self.device.type, self._amp_dtype)

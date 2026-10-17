@@ -17,7 +17,6 @@ from unilab.rl.runtime.ipc.replay_pipelines.gpu_resident import require_offpolic
 from unilab.rl.runtime.nan_guard import NanGuardCfg
 from unilab.rl.runtime.offpolicy.double_buffer_runner import (
     DoubleBufferOffPolicyRunner,
-    warn_deprecated_inference_request_timeout,
 )
 from unilab.rl.runtime.placement import InferencePlacement
 from unilab.rl.runtime.seed import apply_training_seed
@@ -85,7 +84,10 @@ def build_flashsac_double_buffer_runner(
         updates_per_step = int(cfg.algo.updates_per_step)
 
     if "inference_request_timeout_sec" in cfg.training:
-        warn_deprecated_inference_request_timeout(stacklevel=3)
+        raise ValueError(
+            "training.inference_request_timeout_sec was removed; off-policy "
+            "coordination is liveness/phase-aware. Remove it from owner YAML."
+        )
     env = env_factory(1, env_cfg_override)
     try:
         obs_dim, critic_obs_dim = get_obs_dims(dict(env.obs_groups_spec))

@@ -58,8 +58,6 @@ class BackendAdapter:
         sim_backend = str(OmegaConf.select(self.cfg, "training.sim_backend", default=""))
         play_render_mode = OmegaConf.select(self.cfg, "training.play_render_mode", default="auto")
         play_render_mode = "auto" if play_render_mode is None else str(play_render_mode)
-        if sim_backend == "isaacsim":
-            env_cfg_override["isaacsim_render_mode"] = play_render_mode
         if sim_backend == "superdex" and play_render_mode.strip().lower() == "interactive":
             # Interactive superdex play renders through the native Polyscope
             # viewer, which shares the scene's thread with stepping: force the
