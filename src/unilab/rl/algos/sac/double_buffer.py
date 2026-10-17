@@ -14,6 +14,7 @@ from unilab.rl.runtime.nan_guard import NanGuardCfg
 from unilab.rl.runtime.offpolicy.actor_adapter import import_actor_adapter_modules
 from unilab.rl.runtime.offpolicy.double_buffer_runner import (
     DoubleBufferOffPolicyRunner,
+    reject_removed_inference_request_timeout,
 )
 from unilab.rl.runtime.offpolicy.runtime import (
     resolve_actor_adapter_modules,
@@ -66,11 +67,7 @@ def build_sac_double_buffer_runner(
         batch_size = int(cfg.algo.batch_size)
         updates_per_step = int(cfg.algo.updates_per_step)
 
-    if "inference_request_timeout_sec" in cfg.training:
-        raise ValueError(
-            "training.inference_request_timeout_sec was removed; off-policy "
-            "coordination is liveness/phase-aware. Remove it from owner YAML."
-        )
+    reject_removed_inference_request_timeout(cfg.training)
     env = env_factory(1, env_cfg_override)
     try:
         action_shape = env.action_space.shape
