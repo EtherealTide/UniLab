@@ -633,6 +633,8 @@ class SceneTensorReadPlan:
             if self._host_plan_value is not None:
                 self._host_plan_value.close()
         finally:
+            self._aggregate_body_views.clear()
+            self._stable_sensor_views.clear()
             self._packet = MappingProxyType({})
             self._refreshed = False
             self._closed = True
@@ -2752,9 +2754,20 @@ class Entity:
     ) -> None:
         """Stage a full-width device-resident 13-D world-frame root state."""
         if self._physical_entity is not None:
-            raise NotImplementedError(
-                "mapped entity tensor root-state reset requires a public entity transaction"
+            assert self._reset_state is not None
+            assert self._reset_state.scene_layout is not None
+            owner = self._reset_state.scene_layout.get_entity(self._physical_entity)
+            layout = BackendRootStateLayout(
+                qpos_indices=tuple(owner.root_qpos_indices),
+                qvel_indices=tuple(owner.root_qvel_indices),
             )
+            self._reset_state.write_root_state_tensor(
+                reset_mask,
+                layout,
+                root_state.contiguous(),
+                term_name=f"{self.name}.write_root_state_tensor_to_sim",
+            )
+            return
         reset_state, layout = self._require_root_state_write()
         reset_state.write_root_state_tensor(
             reset_mask,

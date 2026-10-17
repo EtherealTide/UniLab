@@ -1,16 +1,16 @@
 # IsaacSim Backend
 
-> **IsaacSim is temporarily shelved.** This adapter is outside the tensor-only Manager runtime during #1811 and is not a production support claim. The train/eval CLI rejects it until new capability, parity, and support-matrix evidence is provided.
+> **IsaacSim is an explicit external-worker owner.** It requires the isolated
+> Python 3.11 IsaacSim/IsaacLab runtime, a mapped entity scene, and same-GPU
+> CUDA IPC. The first restored SAC owner is headless-training scoped.
 
 
 UniLab's `isaacsim` backend runs IsaacSim 5.1.0 and IsaacLab v2.3.0 in a
-dedicated Python 3.11 worker process. The host process keeps the regular
-`SimBackend` NumPy contract; pipe messages carry lifecycle commands and shared
-memory carries batched state. The current support boundary is headless physics
-plus eval-owned native rendering for the registered G1 flat task owners. The
-support matrix intentionally marks the PPO and SAC owners as `Configured`, not
-`Tested`, because the rendering protocol is covered by deterministic worker
-tests but has not completed playback on the currently available IsaacSim host.
+dedicated Python 3.11 worker process. Pipe messages carry lifecycle metadata
+while canonical qpos/qvel/control/reset arenas cross same-GPU CUDA IPC. The
+current restored boundary is headless SAC `g1_walk_flat` training with a mapped
+entity scene. Native interactive/record playback remains a separate runtime
+follow-up and is not part of the training support claim.
 
 ## Runtime boundary
 
@@ -61,7 +61,7 @@ closed.
 Use the top-level CLI to select the backend and owner:
 
 ```bash
-uv run train --algo ppo --task g1_walk_flat --sim isaacsim
+uv run train --algo sac --task g1_walk_flat --sim isaacsim
 uv run eval --algo sac --task g1_walk_flat --sim isaacsim \
   --load-run <run-id> --render-mode record \
   training.play_steps=120 training.play_env_num=1 training.export_onnx=false
@@ -71,8 +71,21 @@ uv run eval --algo sac --task g1_walk_flat --sim isaacsim \
 
 Record mode writes `play_video.mp4` in the selected run directory. These
 commands require the external runtime and an NVIDIA CUDA device. The repository
-does not claim completed full training or stable native playback; those claims
-require a maintainer validation entry.
+has a headless SAC training completion record below, while native playback
+remains a separate validation and is not claimed as stable.
+
+## Training Validation
+
+Issue #2387 made exactly one full headless SAC run on the restored owner
+(RTX 4090, IsaacSim 5.1.0 / IsaacLab 2.3.0). It completed 5000/5000 iterations
+and 10,260,480 environment steps in 350.03 seconds of tracked training wall
+time (7:32.82 end-to-end). Final/best mean reward was 15.021/18.840, mean
+episode length was 58.21, and final/tail throughput was 29,517/29,203 steps/s.
+
+This record establishes that the external worker, mapped scene, CUDA IPC
+arenas, tensor reset, and SAC training lifecycle complete a full run. The low
+reward and short episodes leave semantic policy quality open compared with the
+MuJoCo-family owners; they do not establish cross-backend gait parity.
 
 ## Current Runtime Validation
 
@@ -86,9 +99,9 @@ EGL initialization warnings. A minimal camera-enabled `AppLauncher` probe also
 failed with `multi_gpu=False`.
 
 This is a runtime blocker, not successful playback evidence. The backend keeps
-the render protocol and its fail-closed tests, while the support matrix remains
-at `Configured`. No placeholder video is generated when the real renderer does
-not initialize.
+the render protocol and its fail-closed tests; the SAC training cell is
+`Tested`, but renderer/playback capability remains unpromoted. No placeholder
+video is generated when the real renderer does not initialize.
 
 ## Inspecting The Contract
 
@@ -118,7 +131,7 @@ runtime; it is not a training or playback validation.
 | Position control | `set_joint_position_target`, `write_data_to_sim`, `SimulationContext.step` | Target moves the first joint over bounded steps | `step(ctrl)` carries position targets; gains/limits are materialized explicitly |
 | State getter boundary | `Articulation.data.*` tensors | All getters are batched with expected leading dimension | Worker copies tensors to host-owned shared-memory slots; hot getters do not parse assets |
 | Rendering startup | `AppLauncher` cold mode selection | Mock worker verifies none/record/interactive mode, dimensions, and graphics handshake | Mode cannot change after env materialization |
-| Offline RGB | IsaacLab `Camera` + `CameraCfg` | Protocol tests verify video writing and reject bad shape, dtype, or uniform frames; current real host crashes before camera creation | Require finite steps and keep support at `Configured` until real playback succeeds |
+| Offline RGB | IsaacLab `Camera` + `CameraCfg` | Protocol tests verify video writing and reject bad shape, dtype, or uniform frames; current real host crashes before camera creation | Require finite steps and keep renderer/playback claims unpromoted until real playback succeeds |
 | Interactive viewer | non-headless Kit + `SimulationContext.set_camera_view` | Protocol tests drive a frame and map window close to `RenderClosedError`; current host has no successful bounded GUI evidence | Explicit interactive requires a display; `auto` falls back to record without one |
 | Domain randomization | IsaacLab manager/event APIs | Not exercised | Non-empty unsupported plans must fail closed |
 

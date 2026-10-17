@@ -14,6 +14,7 @@ from unisim.backend.base import (
     TensorProcessTopology,
 )
 from unisim.backend.packed_reset import TorchPackedResetComposer
+from unisim.dr.types import RESET_TERM_KD, RESET_TERM_KP
 from unisim.scene_layout import CompiledSceneLayout, EntityLayout, JointLayout
 
 from unilab.base.reset_state import ResetStateTransaction
@@ -78,7 +79,7 @@ def fixture(num_envs: int = 5):
             device_reset_randomization=True,
             selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
             packed_reset=True,
-            packed_reset_fields=frozenset(),
+            packed_reset_fields=frozenset((RESET_TERM_KP, RESET_TERM_KD)),
         ),
     )
     backend.begin_packed_reset = lambda *, device=None: TorchPackedResetComposer(

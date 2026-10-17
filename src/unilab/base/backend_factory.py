@@ -8,6 +8,7 @@ factory. Physics implementations and their public contract live in the
 
 from __future__ import annotations
 
+import inspect
 import sys
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
@@ -26,6 +27,12 @@ if TYPE_CHECKING:
 
 _CUDA_BACKEND_INT_DEVICE_FIELDS = {
     "genesis": "genesis_device_id",
+    "isaacgym": "isaacgym_device_id",
+    "isaacsim": "isaacsim_device_id",
+}
+_EXTERNAL_WORKER_DEVICE_FIELDS = {
+    "isaacgym": "isaacgym_device_id",
+    "isaacsim": "isaacsim_device_id",
 }
 
 
@@ -45,8 +52,9 @@ def _requested_cuda_only_device(backend_type: str, kwargs: dict[str, Any]) -> st
     field = _CUDA_BACKEND_INT_DEVICE_FIELDS[backend_type]
     device_id = kwargs.get(field)
     if device_id is None:
-        # Genesis follows its current/default process device when unset.
-        return "cuda"
+        # Genesis follows its current/default process device when unset. Isaac
+        # workers default their payload to ordinal zero.
+        return "cuda:0" if backend_type in _EXTERNAL_WORKER_DEVICE_FIELDS else "cuda"
     if isinstance(device_id, bool) or not isinstance(device_id, int) or device_id < 0:
         raise ValueError(f"{field} must be a non-negative integer or None, got {device_id!r}")
     return f"cuda:{device_id}"
@@ -178,6 +186,40 @@ def _validate_cuda_only_backend_platform(backend_type: str, kwargs: dict[str, An
             "Use an index below torch.cuda.device_count() after CUDA_VISIBLE_DEVICES remapping.",
         )
 
+    field = _EXTERNAL_WORKER_DEVICE_FIELDS.get(backend_type)
+    if field is not None:
+        payload_id = kwargs.get(field)
+        payload_index = 0 if payload_id is None else int(payload_id)
+        if payload_index != current_device:
+            raise _fail_closed_cuda_only(
+                backend_type,
+                requested_device,
+                runtime_state,
+                (
+                    "the external worker payload device does not match the learner's "
+                    f"current Torch CUDA device ({payload_index} != {current_device})"
+                ),
+                "Bind the rank learner and its Isaac worker to the same CUDA ordinal "
+                "before construction.",
+            )
+        import torch
+
+        torch.cuda.set_device(payload_index)
+
+
+def _validate_isaacsim_tensor_cuda_ipc_runtime() -> None:
+    """Fail closed when UniSim does not understand its CUDA IPC option."""
+
+    from unisim.backend.isaacsim import IsaacSimBackend
+
+    parameter = inspect.signature(IsaacSimBackend.__init__).parameters.get("tensor_cuda_ipc")
+    if parameter is None or parameter.kind is inspect.Parameter.VAR_KEYWORD:
+        raise RuntimeError(
+            "isaacsim_tensor_cuda_ipc requires a unisim-core IsaacSim backend with the "
+            "tensor_cuda_ipc constructor contract; the installed unisim-core IsaacSim "
+            "backend does not provide it"
+        )
+
 
 def env_backend_kwargs(cfg: "EnvCfg") -> dict[str, Any]:
     """Translate ``EnvCfg`` backend knobs into UniSim adapter options."""
@@ -200,8 +242,19 @@ def env_backend_kwargs(cfg: "EnvCfg") -> dict[str, Any]:
         "genesis_solver_iterations": cfg.genesis_solver_iterations,
         "drake_backend_mode": cfg.drake_backend_mode,
         "drake_nthread": cfg.drake_nthread,
+        "isaacgym_device_id": cfg.isaacgym_device_id,
+        "isaacgym_worker_timeout_s": cfg.isaacgym_worker_timeout_s,
+        "isaacsim_device_id": cfg.isaacsim_device_id,
+        "isaacsim_worker_timeout_s": cfg.isaacsim_worker_timeout_s,
+        "isaacsim_render_mode": cfg.isaacsim_render_mode,
+        "isaacsim_render_width": cfg.isaacsim_render_width,
+        "isaacsim_render_height": cfg.isaacsim_render_height,
         "superdex_execution_mode": cfg.superdex_execution_mode,
     }
+    if cfg.isaacsim_tensor_cuda_ipc:
+        result["isaacsim_tensor_cuda_ipc"] = True
+    if cfg.isaacsim_share_friction_materials:
+        result["share_friction_materials"] = True
     # Forward the explicit Genesis device id only when a rank selected one;
     # when absent, unisim-core's factory default applies and Genesis picks
     # its own device.
@@ -224,6 +277,8 @@ def create_backend(
     if scene is None:
         raise ValueError("SceneCfg must be provided")
     _validate_cuda_only_backend_platform(backend_type, kwargs)
+    if backend_type == "isaacsim" and kwargs.get("isaacsim_tensor_cuda_ipc", False):
+        _validate_isaacsim_tensor_cuda_ipc_runtime()
     superdex_assets_root = kwargs.pop("superdex_assets_root", None)
     if backend_type == "superdex" and scene.model_file.endswith(".superdex_bot"):
         scene = replace(

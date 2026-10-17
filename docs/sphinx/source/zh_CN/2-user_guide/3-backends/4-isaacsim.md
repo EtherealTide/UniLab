@@ -1,14 +1,15 @@
 # IsaacSim 后端
 
-> **IsaacSim 暂时搁置。** 该适配器在 #1811 期间不属于 tensor-only Manager runtime，也不构成生产支持声明。在提供新的 capability、parity 与支持矩阵证据之前，train/eval CLI 会直接拒绝该后端。
+> **IsaacSim 是显式 external-worker owner。** 它需要隔离的 Python 3.11
+> IsaacSim/IsaacLab runtime、mapped entity scene 以及同 GPU CUDA IPC。首个
+> 恢复的 SAC owner 仅限 headless training。
 
 
 UniLab 的 `isaacsim` 后端在独立的 Python 3.11 worker 进程中运行 IsaacSim
-5.1.0 和 IsaacLab v2.3.0。主进程保留标准 `SimBackend` NumPy contract；管道
-传输生命周期命令，共享内存传输批量状态。当前支持边界是已注册 G1 flat
-task owner 的 headless physics 与 eval 专用原生渲染。支持矩阵仍将 PPO/SAC
-owner 标为 `Configured`，不是 `Tested`：渲染协议有确定性 worker 测试，但在
-当前可用 IsaacSim 主机上还没有完成真实 playback。
+5.1.0 和 IsaacLab v2.3.0。管道传输生命周期 metadata，canonical
+qpos/qvel/control/reset arena 通过同 GPU CUDA IPC 传输。当前恢复边界是使用
+mapped entity scene 的 headless SAC `g1_walk_flat` training。原生
+interactive/record playback 仍是独立后续项，不属于本次训练支持声明。
 
 ## 运行时边界
 
@@ -51,7 +52,7 @@ callback 仍不支持，并会 fail closed。
 使用顶层 CLI 选择 backend 和 owner：
 
 ```bash
-uv run train --algo ppo --task g1_walk_flat --sim isaacsim
+uv run train --algo sac --task g1_walk_flat --sim isaacsim
 uv run eval --algo sac --task g1_walk_flat --sim isaacsim \
   --load-run <run-id> --render-mode record \
   training.play_steps=120 training.play_env_num=1 training.export_onnx=false
@@ -60,8 +61,20 @@ uv run eval --algo sac --task g1_walk_flat --sim isaacsim \
 ```
 
 `record` 会在所选 run 目录写入 `play_video.mp4`。这些命令需要外部运行时和
-NVIDIA CUDA 设备。仓库不声称已完成完整训练或稳定的原生 playback；该声明
-需要 maintainer validation 记录。
+NVIDIA CUDA 设备。仓库已有上方的 headless SAC training 完整运行记录；原生
+playback 仍是独立验证，当前不声称稳定可用。
+
+## Training Validation
+
+Issue #2387 在恢复后的 owner 上只执行了一次完整 headless SAC 运行
+（RTX 4090，IsaacSim 5.1.0 / IsaacLab 2.3.0）。该运行完成 5000/5000
+iterations 与 10,260,480 environment steps，tracked training wall time 为
+350.03 秒（端到端 7:32.82）。final/best mean reward 为 15.021/18.840，mean
+episode length 为 58.21，final/tail throughput 为 29,517/29,203 steps/s。
+
+该记录证明 external worker、mapped scene、CUDA IPC arena、tensor reset 与
+SAC training lifecycle 可以完整跑完。低 reward 和短 episode 使语义策略质量
+相对 MuJoCo-family owner 仍保持开放；这不建立跨 backend 步态 parity。
 
 ## 当前运行时验证
 
@@ -74,8 +87,8 @@ Ubuntu 24.04.4、RTX 4090 和 NVIDIA driver 595.84 上分别执行有界 record 
 `AppLauncher` probe 即使设置 `multi_gpu=False` 也失败。
 
 这是真实 runtime blocker，不是 playback 成功证据。backend 保留渲染协议和
-fail-closed 测试，支持矩阵仍为 `Configured`；真实 renderer 未初始化时不会生成
-占位视频。
+fail-closed 测试；SAC training cell 为 `Tested`，renderer/playback 能力仍不
+提升。真实 renderer 未初始化时不会生成占位视频。
 
 ## 检查 Contract
 
@@ -104,7 +117,7 @@ uv run --active --no-project \
 | 位置控制 | `set_joint_position_target`、`write_data_to_sim`、`SimulationContext.step` | 有界步数内首个 joint 移动 | `step(ctrl)` 传位置 target；gain/limit 在 cold path 显式材质化 |
 | 状态 getter 边界 | `Articulation.data.*` tensor | getter 均为 batch，leading dimension 符合预期 | worker 将 tensor 拷贝到 host-owned shm；热路径不解析 asset |
 | 渲染启动 | `AppLauncher` 冷路径模式选择 | mock worker 验证 none/record/interactive mode、尺寸和 graphics 握手 | env 材质化后不能切换 mode |
-| 离线 RGB | IsaacLab `Camera` + `CameraCfg` | 协议测试验证视频写入，并拒绝错误 shape、dtype 或均匀帧；当前真实主机在 camera 创建前崩溃 | 要求有限步数；真实 playback 成功前支持等级保持 `Configured` |
+| 离线 RGB | IsaacLab `Camera` + `CameraCfg` | 协议测试验证视频写入，并拒绝错误 shape、dtype 或均匀帧；当前真实主机在 camera 创建前崩溃 | 要求有限步数；真实 playback 成功前 renderer/playback 声明不提升 |
 | 交互窗口 | 非 headless Kit + `SimulationContext.set_camera_view` | 协议测试驱动一帧并将关闭窗口映射为 `RenderClosedError`；当前主机没有成功的有界 GUI 证据 | 显式 interactive 需要 display；无 display 时 `auto` 回退到 record |
 | Domain randomization | IsaacLab manager/event API | 未探测 | 非空不支持 plan 必须 fail-closed |
 

@@ -1,6 +1,9 @@
 # IsaacGym Backend
 
-> **IsaacGym is temporarily shelved.** This adapter is outside the tensor-only Manager runtime during #1811 and is not a production support claim. The train/eval CLI rejects it until new capability, parity, and support-matrix evidence is provided.
+> **IsaacGym is an explicit external-worker owner.** It requires the isolated
+> Python 3.8 Preview 4 runtime and is never selected as an implicit fallback
+> backend. The generated support matrix is the source for task/algorithm
+> evidence.
 
 
 IsaacGym (NVIDIA Preview 4) is an end-of-life GPU physics simulator from NVIDIA
@@ -10,9 +13,9 @@ external, standalone Python 3.8 environment located purely via environment
 variables, with no machine-local paths written into the repository.
 
 Current status: `IsaacGymBackend` (a subprocess backend whose physics runs in
-the external Python 3.8 worker) is implemented and registered; `g1_walk_flat`
-ships isaacgym owner configs
-(`src/unilab/conf/{ppo,sac}/task/g1_walk_flat/isaacgym.yaml`), and the cross-backend
+the external Python 3.8 worker) is implemented and registered; SAC
+`g1_walk_flat` ships the isaacgym owner
+(`src/unilab/conf/sac/task/g1_walk_flat/isaacgym.yaml`), and the cross-backend
 contract audit (`scripts/audit_sim2sim_contracts.py`) covers the
 mujoco/isaacgym pair. Playback rendering uses IsaacGym's native rendering
 (viewer + camera sensor); both interactive and video-recording modes work
@@ -124,7 +127,7 @@ SAC:
 uv run train --algo sac --task g1_walk_flat --sim isaacgym
 
 # PPO
-uv run train --algo ppo --task g1_walk_flat --sim isaacgym
+uv run train --algo sac --task g1_walk_flat --sim isaacgym
 ```
 
 Playback rendering is provided natively by IsaacGym: the interactive mode

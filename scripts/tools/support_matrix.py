@@ -15,15 +15,24 @@ from unilab.base.registry import ensure_registries
 
 BEGIN_MARKER = "<!-- BEGIN GENERATED SUPPORT MATRIX -->"
 END_MARKER = "<!-- END GENERATED SUPPORT MATRIX -->"
-# UniSim owns the reviewed tensor adapter inventory. During issue #1811 the
-# production runtime exposes only the scoped tensor Manager backends; shelved
-# adapters remain in UniSim but are intentionally absent from this support
-# matrix until capability/parity evidence re-enables them.
+# UniSim owns the reviewed tensor adapter inventory. Isaac backends are explicit
+# external-worker owners whose task cells remain registry/config/evidence-gated.
 _ALL_BACKENDS: tuple[str, ...] = tuple(get_tensor_platform_profiles())
 BACKENDS: tuple[str, ...] = tuple(
     backend
     for backend in _ALL_BACKENDS
-    if backend in {"mujoco", "mjwarp", "genesis", "newton", "motrix", "superdex", "drake"}
+    if backend
+    in {
+        "mujoco",
+        "mjwarp",
+        "genesis",
+        "newton",
+        "motrix",
+        "superdex",
+        "drake",
+        "isaacgym",
+        "isaacsim",
+    }
 )
 SHELVED_BACKENDS = frozenset(_ALL_BACKENDS) - frozenset(BACKENDS)
 
@@ -69,11 +78,15 @@ _MAINTAINER_VALIDATED_GENESIS_ENTRYPOINT_TASKS: frozenset[tuple[str, str]] = fro
     }
 )
 
-# IsaacSim is a Python 3.11 worker integration with eval-owned Kit viewer and
-# RGB camera protocol coverage. No full training or successful real playback
-# validation is promoted here: the checked-in evidence remains owner/config,
-# protocol tests, and bounded backend smoke coverage.
-_MAINTAINER_VALIDATED_ISAACSIM_ENTRYPOINT_TASKS: frozenset[tuple[str, str]] = frozenset()
+# IsaacSim is a Python 3.11 worker integration. Issue #2387 completed one full
+# headless SAC g1_walk_flat training run (5000 iterations / 10,260,480 steps).
+# The run proves lifecycle and completion, not semantic policy parity; native
+# playback remains a separate renderer validation.
+_MAINTAINER_VALIDATED_ISAACSIM_ENTRYPOINT_TASKS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("sac_torch", "g1_walk_flat"),
+    }
+)
 
 # Maintainer-confirmed completed training validations for the newton
 # in-process backend (real hardware, newton extra + CUDA; not covered by

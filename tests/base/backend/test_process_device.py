@@ -75,7 +75,7 @@ def test_host_or_backend_owned_devices_do_not_receive_runner_binding(backend_typ
     assert resolve_backend_process_device(backend_type, "cuda:2") is None
 
 
-@pytest.mark.parametrize("backend_type", ["mjwarp", "newton"])
+@pytest.mark.parametrize("backend_type", ["mjwarp", "newton", "isaacgym", "isaacsim"])
 @pytest.mark.parametrize("device", [None, "cpu", "mps", "xpu:1"])
 def test_bound_process_device_fails_closed_without_cuda(
     backend_type: str, device: str | None
@@ -98,7 +98,7 @@ def test_mjwarp_binding_rejects_non_cuda_warp_resolution(
         mjwarp_runtime.bind_mjwarp_process_device("cuda:1")
 
 
-@pytest.mark.parametrize("backend_type", ["genesis", "newton"])
+@pytest.mark.parametrize("backend_type", ["genesis", "newton", "isaacgym", "isaacsim"])
 def test_explicit_single_device_fallback_routes_backend_payload(
     backend_type: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -106,6 +106,35 @@ def test_explicit_single_device_fallback_routes_backend_payload(
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
     assert resolve_backend_env_device_id(backend_type, learner_device="cuda:1") == 1
+
+
+@pytest.mark.parametrize("backend_type", ["isaacgym", "isaacsim"])
+def test_external_cuda_ipc_binding_matches_payload_device(
+    backend_type: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_devices: list[int] = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "set_device", set_devices.append)
+
+    assert (
+        configure_backend_process_device(
+            backend_type,
+            "cuda:1",
+            backend_device_id=1,
+        )
+        == "cuda:1"
+    )
+    assert set_devices == [1]
+
+    with pytest.raises(ValueError, match="does not match its backend payload device"):
+        configure_backend_process_device(
+            backend_type,
+            "cuda:1",
+            backend_device_id=0,
+        )
 
 
 def test_single_gpu_mjwarp_process_binding_needs_no_visibility_mask(

@@ -1,8 +1,5 @@
-# HISTORICAL SHELVED-BACKEND TOOL (#1811)
-# Retained only as adapter migration context. This tool does not install a
-# UniLab production runtime backend and must not be treated as a support
-# claim. The scoped tensor Manager runtime currently exposes mujoco, mjwarp,
-# and genesis.
+# External IsaacSim worker setup tool for the explicit tensor Manager owner.
+# It installs an isolated runtime and does not modify the main uv environment.
 
 #!/usr/bin/env bash
 # Install an external, self-contained IsaacSim + IsaacLab runtime for UniLab.

@@ -264,16 +264,15 @@ def test_register_env_invalid_backend_raises():
 
 
 @pytest.mark.parametrize("backend", ["isaacgym", "isaacsim"])
-def test_register_env_rejects_shelved_backend(backend):
-    """Shelved adapters fail closed instead of registering a runtime path."""
-    _name = "_TestShelvedBackendEnv"
+def test_register_env_accepts_explicit_isaac_backend(backend):
+    """External-worker adapters register only through an explicit owner choice."""
+    _name = f"_TestIsaacBackendEnv_{backend}"
     if not registry_mod.contains(_name):
         registry_mod.register_env_config(_name, _TestCfgA)
-    with pytest.raises(
-        ValueError,
-        match=r"temporarily out of the tensor-only Manager runtime scope",
-    ):
-        registry_mod.register_env(_name, _TestEnvA, backend)
+        registry_mod.register_env(_name, _TestEnvA, "mujoco")
+
+    assert registry_mod.register_env(_name, _TestEnvA, backend) is _TestEnvA
+    assert registry_mod.find_available_sim_backend(_name) == "mujoco"
 
 
 def test_default_backend_order_is_tensor_manager_scope():
@@ -388,11 +387,6 @@ def test_make_unsupported_backend_raises():
     """make() with an unsupported backend name raises ValueError."""
     with pytest.raises(ValueError, match="does not support simulation backend"):
         registry_mod.make(_TEST_ENV_A, sim_backend="not_a_backend")
-
-
-def test_make_rejects_shelved_backend_registration():
-    with pytest.raises(ValueError, match="temporarily out of the tensor-only"):
-        registry_mod.register_env(_TEST_ENV_A, lambda *args, **kwargs: None, "isaacgym")
 
 
 def test_make_no_env_factory_raises():

@@ -1,6 +1,8 @@
 # IsaacGym 后端
 
-> **IsaacGym 暂时搁置。** 该适配器在 #1811 期间不属于 tensor-only Manager runtime，也不构成生产支持声明。在提供新的 capability、parity 与支持矩阵证据之前，train/eval CLI 会直接拒绝该后端。
+> **IsaacGym 是显式 external-worker owner。** 它需要隔离的 Python 3.8
+> Preview 4 runtime，且不会作为隐式 fallback 后端。task/algorithm 证据以
+> 生成支持矩阵为准。
 
 
 IsaacGym（NVIDIA Preview 4）是 NVIDIA 已停止维护（EOL）的 GPU 物理仿真器，
@@ -9,8 +11,8 @@ IsaacGym（NVIDIA Preview 4）是 NVIDIA 已停止维护（EOL）的 GPU 物理�
 定位该环境，不写入任何机器本地路径。
 
 当前状态：`IsaacGymBackend`（subprocess 后端，物理跑在外部 Python 3.8
-worker 中）已实现并注册到 registry；`g1_walk_flat` 提供 isaacgym owner
-配置（`src/unilab/conf/{ppo,sac}/task/g1_walk_flat/isaacgym.yaml`），跨后端契约审计
+worker 中）已实现并注册到 registry；SAC `g1_walk_flat` 提供 isaacgym owner
+配置（`src/unilab/conf/sac/task/g1_walk_flat/isaacgym.yaml`），跨后端契约审计
 （`scripts/audit_sim2sim_contracts.py`）覆盖 mujoco↔isaacgym。回放渲染走
 IsaacGym 原生渲染（viewer + camera sensor），交互与录视频两种模式均可用
 （见下文「训练与评估」）。真机端到端
@@ -106,7 +108,7 @@ uv run --no-project "$UNILAB_BENCHMARK_HSGYM_PYTHON" \
 uv run train --algo sac --task g1_walk_flat --sim isaacgym
 
 # PPO
-uv run train --algo ppo --task g1_walk_flat --sim isaacgym
+uv run train --algo sac --task g1_walk_flat --sim isaacgym
 ```
 
 回放渲染由 IsaacGym 原生提供：交互模式在 worker 进程里打开 gym viewer，

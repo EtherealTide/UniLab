@@ -24,6 +24,8 @@ SUPPORTED_SIMS = (
     "motrix",
     "superdex",
     "drake",
+    "isaacsim",
+    "isaacgym",
 )
 SUPPORTED_RENDER_MODES = ("auto", "interactive", "record", "viser", "none")
 OFFPOLICY_ALGOS = {"sac", "flashsac"}
@@ -153,6 +155,24 @@ def _check_runtime_requirements(algo: str, sim: str) -> None:
             "`pip install unilab[motrix]` (or `uv sync --extra motrix` in a source "
             "checkout)."
         )
+    if sim == "isaacsim":
+        from unisim.backend.isaacsim.dependencies import isaacsim_runtime_available
+
+        if not isaacsim_runtime_available():
+            raise SystemExit(
+                "sim=isaacsim requires the external Python 3.11 IsaacSim/IsaacLab worker. "
+                "Run scripts/tools/setup_isaacsim_env.sh and set "
+                "UNISIM_ISAACSIM_HOME when using a non-default install root."
+            )
+    if sim == "isaacgym":
+        from unisim.backend.isaacgym.dependencies import isaacgym_runtime_available
+
+        if not isaacgym_runtime_available():
+            raise SystemExit(
+                "sim=isaacgym requires the external Python 3.8 IsaacGym Preview 4 worker. "
+                "Run scripts/tools/setup_isaacgym_env.sh and set "
+                "UNISIM_ISAACGYM_HOME when using a non-default install root."
+            )
     if sim == "superdex":
         from unisim.backend.superdex.dependencies import superdex_dependencies_available
 

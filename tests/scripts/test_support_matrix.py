@@ -21,12 +21,11 @@ from unisim.support import get_tensor_platform_profiles
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_shelved_adapters_have_no_support_cells() -> None:
-    """During #1811, shelved adapters are not production support claims."""
-    assert SHELVED_BACKENDS == frozenset({"isaacgym", "isaacsim"})
+def test_external_worker_adapters_have_evidence_gated_cells() -> None:
+    """Isaac cells are visible only when owner and validation evidence exist."""
+    assert SHELVED_BACKENDS == frozenset()
     for row in build_support_rows(ROOT):
         assert set(row.cells) == set(BACKENDS)
-        assert set(row.cells).isdisjoint(SHELVED_BACKENDS)
 
 
 # CPU-bound on the single-core CI runner; kept in the slow lane (make test-slow).
@@ -200,8 +199,10 @@ def test_platform_profiles_keep_host_and_device_boundaries_fail_closed() -> None
 
     assert profiles["mujoco"].reset_randomization is SupportLevel.UNKNOWN
     assert profiles["mujoco"].fixed_variants is SupportLevel.UNKNOWN
-    for backend in ("mjwarp", "newton", "genesis", "isaacgym", "isaacsim"):
-        assert profiles[backend].reset_randomization is SupportLevel.UNSUPPORTED
+    assert profiles["motrix"].reset_randomization is SupportLevel.UNKNOWN
+    assert profiles["mjwarp"].reset_randomization is SupportLevel.UNSUPPORTED
+    for backend in ("newton", "genesis", "isaacgym", "isaacsim"):
+        assert profiles[backend].reset_randomization is SupportLevel.EXACT
     for backend in ("motrix", "drake", "superdex", "isaacgym", "isaacsim"):
         assert profiles[backend].fixed_variants is SupportLevel.UNSUPPORTED
 
@@ -254,8 +255,21 @@ def test_issue_gated_motion_tracking_owners_do_not_promote_support_cells():
     """M9 candidate benchmark owners remain outside the public support matrix."""
     row = _row("FlashSAC (torch)", "g1_motion_tracking")
 
-    assert "isaacgym" not in row.cells
-    assert "isaacsim" not in row.cells
+    assert row.cells["isaacgym"].level == EvidenceLevel.MISSING
+    assert row.cells["isaacsim"].level == EvidenceLevel.MISSING
+
+
+def test_isaac_training_validation_stays_limited_to_sac_g1_walk_flat() -> None:
+    """Issue #2387 validates headless Isaac training without playback claims."""
+    rows = build_support_rows(Path(__file__).resolve().parents[2])
+
+    for backend in ("isaacgym", "isaacsim"):
+        tested = {
+            (row.entrypoint_label, row.task_slug)
+            for row in rows
+            if row.cells[backend].level >= EvidenceLevel.TESTED
+        }
+        assert tested == {("SAC (torch)", "g1_walk_flat")}
 
 
 def test_support_matrix_marks_g1_genesis_owner_configured_only():
@@ -318,7 +332,7 @@ def test_support_matrix_does_not_promote_unvalidated_mjwarp_entries():
     assert appo_row.cells["mjwarp"].level == EvidenceLevel.REGISTERED
 
 
-def test_generated_support_matrix_exposes_only_tensor_manager_backends() -> None:
+def test_generated_support_matrix_exposes_manager_owner_backends() -> None:
     from scripts.tools import support_matrix
 
     assert support_matrix.BACKENDS == (
@@ -329,6 +343,8 @@ def test_generated_support_matrix_exposes_only_tensor_manager_backends() -> None
         "newton",
         "superdex",
         "genesis",
+        "isaacgym",
+        "isaacsim",
     )
 
 

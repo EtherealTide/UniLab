@@ -133,6 +133,10 @@ explicit = true
 torch = [
     { index = "r2-cu130", marker = "sys_platform=='linux' or sys_platform=='win32'" },
 ]
+# Issue #2387 develops the required backend lifecycle in the sibling UniSim
+# checkout. Keep the integration reproducible from this branch without
+# installing a package into either repository's main worktree.
+unisim-core = { path = "../unisim-issue-2387-packed-reset-recovery", editable = true }
 
 [tool.uv]
 exclude-dependencies = ["torchvision"]
