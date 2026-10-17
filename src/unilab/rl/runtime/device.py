@@ -73,8 +73,9 @@ def _resolve_mps_alias(index: int | None, original: str) -> str:
 def resolve_torch_device_alias(device: str | None, *, default: str = "cpu") -> str:
     """Resolve a cross-platform torch device alias to a concrete device string.
 
-    ``gpu`` is an abstract accelerator alias. ``cuda`` is also accepted on
-    macOS/MPS for config portability and maps to ``mps`` when CUDA is absent.
+    ``gpu`` is an abstract accelerator alias and may resolve to an available
+    accelerator family. ``cuda`` is a concrete device family and fails closed
+    when CUDA is unavailable.
     The function validates the resolved device and never silently falls back to
     CPU for unavailable accelerators.
     """
@@ -97,8 +98,6 @@ def resolve_torch_device_alias(device: str | None, *, default: str = "cpu") -> s
     if base == "cuda":
         if torch.cuda.is_available():
             return _resolve_indexed_device("cuda", index, original)
-        if mps_available():
-            return _resolve_mps_alias(index, original)
         raise ValueError(f"Requested device {original!r} requires CUDA, but CUDA is unavailable")
 
     if base == "gpu":

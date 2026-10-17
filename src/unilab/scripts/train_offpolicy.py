@@ -21,7 +21,8 @@ from unilab.base.config_adapter import create_env
 from unilab.base.env_factory import registry_env_factory
 from unilab.base.process_device import (
     apply_backend_env_device_override,
-    apply_manager_torch_device_override,
+    apply_sim_carrier_device_override,
+    canonicalize_sim_carrier_device,
     configure_backend_process_device,
     pin_genesis_device_before_cuda_init,
     resolve_backend_env_device_id,
@@ -64,6 +65,7 @@ from unilab.training.seed import apply_configured_training_seed
 from unilab.training.tensor_runtime import (
     resolve_inference_transport,
     resolve_tensor_runtime_settings,
+    select_sim_carrier_device,
 )
 from unilab.utils.checkpoint import normalize_checkpoint_value
 from unilab.utils.checkpoint import (
@@ -213,12 +215,10 @@ def build_offpolicy_env_cfg_override(algo_name: str, cfg: DictConfig) -> dict[st
         str(cfg.training.sim_backend),
         learner_device=rank_device,
     )
-    return apply_manager_torch_device_override(
+    return apply_sim_carrier_device_override(
         routed,
         str(cfg.training.sim_backend),
-        collector_tensor_device=str(
-            OmegaConf.select(cfg, "training.collector_tensor_device", default="auto")
-        ),
+        sim_carrier_device=select_sim_carrier_device(cfg),
         learner_device=rank_device,
     )
 
@@ -234,12 +234,10 @@ def build_offpolicy_play_env_cfg_override(algo_name: str, cfg: DictConfig) -> di
         str(cfg.training.sim_backend),
         learner_device=rank_device,
     )
-    return apply_manager_torch_device_override(
+    return apply_sim_carrier_device_override(
         routed,
         str(cfg.training.sim_backend),
-        collector_tensor_device=str(
-            OmegaConf.select(cfg, "training.collector_tensor_device", default="auto")
-        ),
+        sim_carrier_device=select_sim_carrier_device(cfg),
         learner_device=rank_device,
     )
 
@@ -708,6 +706,13 @@ def main(cfg: DictConfig) -> None:
         # Spawned ranks reuse the canonical run directory but never create
         # logging backends, checkpoints, summaries, or traces there.
         log_dir = os.environ[UNILAB_DP_LOG_DIR]
+    resolved_sim_carrier = (
+        canonicalize_sim_carrier_device(
+            (build_offpolicy_env_cfg_override(algo_name, cfg) or {}).get("sim_carrier_device")
+        )
+        if str(cfg.training.sim_backend) == "mujoco"
+        else None
+    )
 
     supervisor: DpRankSupervisor | None = None
     if rank == 0 and world_size > 1:
@@ -715,6 +720,8 @@ def main(cfg: DictConfig) -> None:
 
     tracker = None
     if not cfg.training.play_only and rank == 0:
+        resolved_device = default_device(torch, rank_device)
+        configured_device = str(OmegaConf.select(cfg, "training.device", default="auto") or "auto")
         tracker = ExperimentTracker(
             root_dir=Path.cwd(),
             log_dir=log_dir,
@@ -723,7 +730,24 @@ def main(cfg: DictConfig) -> None:
             sim_backend=cfg.training.sim_backend,
             training_cfg=cfg.training,
             full_cfg=cfg,
-            device=default_device(torch, rank_device),
+            device=resolved_device,
+            configured_device=configured_device,
+            device_resolution={
+                "learner": {
+                    "configured": configured_device,
+                    "resolved": str(resolved_device),
+                },
+                **(
+                    {
+                        "sim_carrier": {
+                            "configured": select_sim_carrier_device(cfg),
+                            "resolved": resolved_sim_carrier,
+                        }
+                    }
+                    if resolved_sim_carrier is not None
+                    else {}
+                ),
+            },
             seed_info=seed_info,
         )
         tracker.start()

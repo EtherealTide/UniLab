@@ -89,7 +89,7 @@ def _manager_terms_field() -> Any:
 
 @dataclass
 class ManagerBasedRlEnvCfg(EnvCfg):
-    """Configuration for the manager-based NumPy environment.
+    """Configuration for the Manager-Based Torch environment.
 
     Production task owners declare these fields in Hydra. The Registry materializes
     them into this plain typed config on the cold path; Python factories do not mirror
@@ -111,7 +111,7 @@ class ManagerBasedRlEnvCfg(EnvCfg):
     # a training process may request accelerator Torch carriers shared with its
     # learner. This selects public-manager carrier placement only; it is neither a
     # physics-device claim nor a tensor/NumPy runtime compatibility switch.
-    manager_torch_device: str | None = None
+    sim_carrier_device: str | None = None
     seed: int | None = None
     is_finite_horizon: bool = False
     auto_reset: bool = True
@@ -120,26 +120,23 @@ class ManagerBasedRlEnvCfg(EnvCfg):
     critic_observation_group: str | None = None
 
     def validate(self) -> None:
-        if self.manager_torch_device is not None:
-            if (
-                not isinstance(self.manager_torch_device, str)
-                or not self.manager_torch_device.strip()
-            ):
+        if self.sim_carrier_device is not None:
+            if not isinstance(self.sim_carrier_device, str) or not self.sim_carrier_device.strip():
                 raise TypeError(
-                    "ManagerBasedRlEnvCfg manager_torch_device must be 'cpu', "
-                    f"'cuda', or 'cuda:<index>', or None; got {self.manager_torch_device!r}"
+                    "ManagerBasedRlEnvCfg sim_carrier_device must be 'cpu', "
+                    f"'cuda', or 'cuda:<index>', or None; got {self.sim_carrier_device!r}"
                 )
             try:
-                requested_device = torch.device(self.manager_torch_device)
+                requested_device = torch.device(self.sim_carrier_device)
             except (RuntimeError, TypeError, ValueError) as exc:
                 raise ValueError(
-                    "ManagerBasedRlEnvCfg manager_torch_device is not a valid Torch "
-                    f"device: {self.manager_torch_device!r}"
+                    "ManagerBasedRlEnvCfg sim_carrier_device is not a valid Torch "
+                    f"device: {self.sim_carrier_device!r}"
                 ) from exc
             if requested_device.type not in {"cpu", "cuda"}:
                 raise ValueError(
-                    "ManagerBasedRlEnvCfg manager_torch_device must be cpu, cuda, or "
-                    f"None; got {self.manager_torch_device!r}"
+                    "ManagerBasedRlEnvCfg sim_carrier_device must be cpu, cuda, or "
+                    f"None; got {self.sim_carrier_device!r}"
                 )
         for name, value in (("sim_dt", self.sim_dt), ("ctrl_dt", self.ctrl_dt)):
             if not _finite_real(value):
@@ -336,9 +333,7 @@ class ManagerBasedRlEnv(TorchEnv):
             )
 
         initial_capabilities = backend.get_tensor_capabilities()
-        runtime_device = self._resolve_runtime_device(
-            initial_capabilities, cfg.manager_torch_device
-        )
+        runtime_device = self._resolve_runtime_device(initial_capabilities, cfg.sim_carrier_device)
         super().__init__(cfg, backend, num_envs, device=runtime_device)
         actual_seed = cfg.seed if cfg.seed is not None else secrets.randbits(63)
         cfg.seed = actual_seed

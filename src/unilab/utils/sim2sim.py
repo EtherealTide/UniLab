@@ -20,7 +20,6 @@ ALLOWLIST: list[str] = [
     "env.scene",
     "training.play_steps",
     "env.noise_config",
-    "env.commands.vel_limit",
 ]
 
 WARNING_LIST: list[str] = [
@@ -29,7 +28,6 @@ WARNING_LIST: list[str] = [
     "reward.max_tilt_deg",
     "reward.min_base_height",
     "env.control_config.simulate_action_latency",
-    "env.ctrl_dt",
 ]
 
 DENYLIST: list[str] = [
@@ -44,6 +42,8 @@ DENYLIST: list[str] = [
     "algo.actor.obs_normalization",
     "algo.critic.obs_normalization",
     "algo.obs_normalization",
+    "env.ctrl_dt",
+    "env.commands.vel_limit",
     "env.commands.motion.params.sampling_mode",
 ]
 

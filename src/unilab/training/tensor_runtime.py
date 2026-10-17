@@ -39,6 +39,22 @@ def resolve_collector_tensor_native(
     ).collector_tensor_native
 
 
+def select_sim_carrier_device(cfg: DictConfig) -> str:
+    """Select the MuJoCo Manager carrier request and reject the removed key."""
+    training = OmegaConf.select(cfg, "training", default=None)
+    if training is not None and "collector_tensor_device" in training:
+        raise ValueError(
+            "training.collector_tensor_device was removed; use "
+            "training.sim_carrier_device (accepted values: auto, cpu, or cuda)"
+        )
+    value = OmegaConf.select(cfg, "training.sim_carrier_device", default="auto")
+    if value is None:
+        return "auto"
+    if not isinstance(value, str):
+        raise TypeError(f"training.sim_carrier_device must be a string or omitted, got {value!r}")
+    return value
+
+
 def resolve_inference_transport(
     cfg: DictConfig,
     *,
@@ -48,30 +64,22 @@ def resolve_inference_transport(
 ) -> InferencePlacement:
     """Resolve placement from the owner config's single config-source tree."""
     requested_transport = OmegaConf.select(cfg, "training.inference_transport", default=None)
-    env_device = OmegaConf.select(cfg, "env.tensor_runtime_device", default=None)
-    tensor_runtime = OmegaConf.select(cfg, "env.tensor_runtime", default=False)
-    if tensor_runtime is None:
-        tensor_runtime = False
-    if type(tensor_runtime) is not bool:
-        raise TypeError(
-            f"{algo_name} env.tensor_runtime must be a boolean or omitted, got {tensor_runtime!r}"
+    env_cfg = OmegaConf.select(cfg, "env", default=None)
+    if env_cfg is not None and ("tensor_runtime" in env_cfg or "tensor_runtime_device" in env_cfg):
+        raise ValueError(
+            "env.tensor_runtime and env.tensor_runtime_device were removed; "
+            "tensor-native inference follows the resolved learner device"
         )
     if requested_transport is not None and not isinstance(requested_transport, str):
         raise TypeError(
             f"{algo_name} training.inference_transport must be a string or omitted, "
             f"got {requested_transport!r}"
         )
-    if tensor_runtime and env_device is None:
-        env_device = device
-    if tensor_runtime and env_device is not None and not isinstance(env_device, str):
-        raise TypeError(
-            f"{algo_name} env.tensor_runtime_device must be a string or omitted, got {env_device!r}"
-        )
+    env_device = None
     return resolve_inference_placement(
         learner_device=device,
         transport=requested_transport,
-        tensor_runtime=tensor_runtime,
-        tensor_runtime_device=env_device,
+        resolved_tensor_runtime_device=env_device,
         env_tensor_native=env_tensor_native,
         algo_name=algo_name,
     )
@@ -122,7 +130,7 @@ def resolve_collector_metrics_interval(cfg: DictConfig, *, algo_name: str) -> in
     )
 
 
-def _resolved_training_int(
+def _resolve_configured_training_int(
     cfg: DictConfig,
     *,
     key: str,
@@ -157,28 +165,28 @@ def resolve_tensor_runtime_settings(
     num_envs: int,
 ) -> TensorRuntimeSettings:
     """Resolve all spawn-facing tensor-runtime knobs and learner sampling."""
-    inference_capacity, configured_inference_capacity = _resolved_training_int(
+    inference_capacity, configured_inference_capacity = _resolve_configured_training_int(
         cfg,
         key="inference_slot_capacity",
         default=DEFAULT_INFERENCE_SLOT_CAPACITY,
         algo_name=algo_name,
         maximum=MAX_INFERENCE_SLOT_CAPACITY,
     )
-    metrics_interval, configured_metrics_interval = _resolved_training_int(
+    metrics_interval, configured_metrics_interval = _resolve_configured_training_int(
         cfg,
         key="collector_metrics_interval",
         default=DEFAULT_COLLECTOR_METRICS_INTERVAL,
         algo_name=algo_name,
         maximum=MAX_COLLECTOR_METRICS_INTERVAL,
     )
-    ingress_depth, configured_ingress_depth = _resolved_training_int(
+    ingress_depth, configured_ingress_depth = _resolve_configured_training_int(
         cfg,
         key="replay_ingress_depth",
         default=DEFAULT_REPLAY_INGRESS_DEPTH,
         algo_name=algo_name,
         maximum=MAX_REPLAY_INGRESS_DEPTH,
     )
-    ingress_slot_rows, configured_ingress_slot_rows = _resolved_training_int(
+    ingress_slot_rows, configured_ingress_slot_rows = _resolve_configured_training_int(
         cfg,
         key="replay_ingress_slot_rows",
         default=num_envs,

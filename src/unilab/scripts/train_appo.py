@@ -20,7 +20,8 @@ from unilab.base.config_adapter import (
 from unilab.base.env_factory import registry_env_factory
 from unilab.base.process_device import (
     apply_backend_env_device_override,
-    apply_manager_torch_device_override,
+    apply_sim_carrier_device_override,
+    canonicalize_sim_carrier_device,
     configure_backend_process_device,
     pin_genesis_device_before_cuda_init,
 )
@@ -39,6 +40,7 @@ from unilab.training import (
 from unilab.training.experiment import ExperimentTracker
 from unilab.training.onnx_export import export_policy_onnx, verify_policy_onnx
 from unilab.training.seed import apply_configured_training_seed
+from unilab.training.tensor_runtime import select_sim_carrier_device
 from unilab.utils.checkpoint import resolve_appo_checkpoint_path
 from unilab.visualization.interactive_playback import (
     RslRlPlaybackConfig,
@@ -100,12 +102,10 @@ def build_appo_runner_kwargs(
         str(cfg.training.sim_backend),
         learner_device=_env_carrier_device(cfg, collector_device),
     )
-    routed_env_cfg_override = apply_manager_torch_device_override(
+    routed_env_cfg_override = apply_sim_carrier_device_override(
         routed_env_cfg_override,
         str(cfg.training.sim_backend),
-        collector_tensor_device=str(
-            OmegaConf.select(cfg, "training.collector_tensor_device", default="auto")
-        ),
+        sim_carrier_device=select_sim_carrier_device(cfg),
         learner_device=_env_carrier_device(cfg, collector_device),
     )
 
@@ -289,12 +289,10 @@ def play_appo(
         str(cfg.training.sim_backend),
         learner_device=device,
     )
-    play_env_cfg_override = apply_manager_torch_device_override(
+    play_env_cfg_override = apply_sim_carrier_device_override(
         play_env_cfg_override,
         str(cfg.training.sim_backend),
-        collector_tensor_device=str(
-            OmegaConf.select(cfg, "training.collector_tensor_device", default="auto")
-        ),
+        sim_carrier_device=select_sim_carrier_device(cfg),
         learner_device=device,
     )
     session, _policy_obs_mode, _checkpoint_path = create_appo_playback_session(
@@ -435,15 +433,18 @@ def main(cfg: DictConfig) -> None:
         str(cfg.training.sim_backend),
         learner_device=_env_carrier_device(cfg, collector_device, runner_device=learner_device),
     )
-    env_cfg_override = apply_manager_torch_device_override(
+    env_cfg_override = apply_sim_carrier_device_override(
         env_cfg_override,
         str(cfg.training.sim_backend),
-        collector_tensor_device=str(
-            OmegaConf.select(cfg, "training.collector_tensor_device", default="auto")
-        ),
+        sim_carrier_device=select_sim_carrier_device(cfg),
         learner_device=_env_carrier_device(cfg, collector_device, runner_device=learner_device),
     )
     seed_info = apply_configured_training_seed(cfg, torch_runtime=True, cuda=True)
+    resolved_sim_carrier = (
+        canonicalize_sim_carrier_device(env_cfg_override.get("sim_carrier_device"))
+        if str(cfg.training.sim_backend) == "mujoco"
+        else None
+    )
 
     tracker = None
     if not cfg.training.play_only:
@@ -456,7 +457,34 @@ def main(cfg: DictConfig) -> None:
             training_cfg=cfg.training,
             full_cfg=cfg,
             device=learner_device,
+            configured_device=str(cfg.training.device or "auto"),
             collector_device=collector_device,
+            device_resolution={
+                "learner": {
+                    "configured": str(cfg.training.device or "auto"),
+                    "resolved": str(learner_device),
+                },
+                **(
+                    {
+                        "collector": {
+                            "configured": str(cfg.training.collector_device or "auto"),
+                            "resolved": str(collector_device),
+                        }
+                    }
+                    if collector_device is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "sim_carrier": {
+                            "configured": select_sim_carrier_device(cfg),
+                            "resolved": resolved_sim_carrier,
+                        }
+                    }
+                    if resolved_sim_carrier is not None
+                    else {}
+                ),
+            },
             seed_info=seed_info,
         )
         tracker.start()
