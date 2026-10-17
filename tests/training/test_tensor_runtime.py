@@ -265,6 +265,13 @@ def test_default_owner_config_resolves_cpu_transport_with_explicit_cuda_learner(
         "ring_device": "cpu",
         "learner_device": "cuda:3",
         "staging_policy": "cpu_ring_explicit_learner_actor_h2d_action_d2h",
+        "transport_table": {
+            "ring_device_type": "cpu",
+            "requires_tensor_native": False,
+            "requires_rank_local_device_match": False,
+            "publication_sync": "cpu_synchronous",
+            "evidence": "policy",
+        },
     }
 
 

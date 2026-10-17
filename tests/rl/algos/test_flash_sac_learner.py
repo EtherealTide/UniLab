@@ -469,6 +469,57 @@ def test_flashsac_amp_dtype_resolution_and_scaler_rules() -> None:
         FlashSACLearner._resolve_amp_dtype("tf32", "cuda")
 
 
+def test_flashsac_amp_policy_matches_sac_mps_semantics() -> None:
+    amp_policy = flash_sac_module.resolve_amp_selection(
+        device_type="mps", use_amp=True, amp_dtype="bf16", learner_name="FlashSAC"
+    ).policy
+    assert amp_policy.explicit_only is True
+    assert torch.bfloat16 in amp_policy.dtypes
+    assert amp_policy.requires_runtime_probe is True
+    assert amp_policy.compile_mutually_exclusive is True
+    cpu_selection = flash_sac_module.resolve_amp_selection(
+        device_type="cpu", use_amp=True, amp_dtype="bf16", learner_name="FlashSAC"
+    )
+    assert cpu_selection.policy.enabled is False
+    assert cpu_selection.use_amp is False
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS runtime required")
+def test_flashsac_mps_bf16_amp_is_enabled_when_runtime_supports_it(monkeypatch) -> None:
+    monkeypatch.setattr(flash_sac_module, "mps_bf16_autocast_supported", lambda: True)
+
+    learner = _make_small_learner(device="mps", use_amp=True, amp_dtype="bf16")
+
+    assert learner.use_amp is True
+    assert learner._amp_dtype is torch.bfloat16
+    assert learner.amp_policy["enabled"] is True
+    assert learner.amp_policy["use_amp"] is True
+    assert learner.amp_policy["resolved_dtype"] == "bfloat16"
+    assert learner.amp_policy["requires_runtime_probe"] is True
+
+
+def test_flashsac_mps_amp_and_compile_gates_are_mutually_exclusive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(flash_sac_module, "mps_bf16_autocast_supported", lambda: True)
+    monkeypatch.setattr(
+        flash_sac_module,
+        "get_torch_compile_for_device",
+        lambda *_args, **_kwargs: lambda fn, **_kwargs: fn,
+    )
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        _make_small_learner(device="mps", use_compile=True, use_amp=True, amp_dtype="bf16")
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS runtime required")
+def test_flashsac_mps_bf16_fails_closed_without_runtime_support(monkeypatch) -> None:
+    monkeypatch.setattr(flash_sac_module, "mps_bf16_autocast_supported", lambda: False)
+
+    with pytest.raises(RuntimeError, match="FlashSAC MPS BF16 AMP"):
+        _make_small_learner(device="mps", use_amp=True, amp_dtype="bf16")
+
+
 def test_flashsac_actor_explore_and_forward_shapes():
     learner = FlashSACLearner(obs_dim=98, action_dim=29, critic_obs_dim=101, device="cpu")
     obs = torch.randn(4, 98)

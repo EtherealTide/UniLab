@@ -6,6 +6,8 @@ from typing import Any
 
 import torch
 
+from ..native_h2d import get_diagnostic, is_available
+
 
 class CudaLikeReplayTransferBackend:
     """Pinned host to CUDA-like device transfer backend.
@@ -23,7 +25,21 @@ class CudaLikeReplayTransferBackend:
         self.device = device
         torch_version = getattr(torch, "version", None)
         self.device_family = "rocm" if getattr(torch_version, "hip", None) else "cuda"
-        self.h2d_submitter = "torch_copy_stream" if self.device_family == "rocm" else "pybind11"
+        self.supports_pinned = True
+        native_h2d_available = is_available()
+        self.native_h2d_available = native_h2d_available
+        self.native_h2d_unavailable_reason = None if native_h2d_available else get_diagnostic()
+        self.h2d_submitter = "pybind11" if native_h2d_available else "torch_copy_stream"
+        if not native_h2d_available:
+            import sys
+
+            print(
+                f"[ReplayTransfer] Native H2D unavailable, using torch_copy_stream.\n"
+                f"  Reason: {get_diagnostic()}\n"
+                f"  Performance impact: negligible for pinned-memory transfers.",
+                file=sys.stderr,
+                flush=True,
+            )
         self._cudart: Any = torch.cuda.cudart()
         if self._cudart is None:
             raise RuntimeError("torch.cuda.cudart() is required for replay host registration")
@@ -31,24 +47,6 @@ class CudaLikeReplayTransferBackend:
         self._registered_shared_ptrs: list[int] = []
         self.host_pinned = False
         self.direct_pinned_shared = False
-
-        if self.h2d_submitter == "pybind11":
-            from unilab.rl.runtime.ipc.replay_pipelines.native_h2d import (
-                get_diagnostic,
-                is_available,
-            )
-
-            if not is_available():
-                import sys
-
-                print(
-                    f"[ReplayTransfer] Native H2D unavailable, using torch_copy_stream.\n"
-                    f"  Reason: {get_diagnostic()}\n"
-                    f"  Performance impact: negligible for pinned-memory transfers.",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                self.h2d_submitter = "torch_copy_stream"
 
     def register_host_slots(self, slots: list[torch.Tensor]) -> None:
         for slot in slots:

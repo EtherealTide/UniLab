@@ -12,13 +12,17 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from unilab.rl.algos.common.compile import get_torch_compile_for_device, is_hip_runtime
+from unilab.rl.algos.common.compile import get_torch_compile_for_device
 from unilab.rl.algos.common.learner_boilerplate import (
     WholeCycleLearnerMixin,
     fused_adam_supported,
+    mps_bf16_autocast_supported,
+    resolve_amp_selection,
     resolve_finite_check_flags,
+    validate_amp_compile_paths,
 )
 from unilab.rl.algos.common.normalization import EmpiricalNormalization
+from unilab.rl.algos.common.performance import resolve_learner_performance_tier
 from unilab.rl.algos.flash_sac.actor_spec import (
     FlashSACActorSpec,
     build_custom_actor,
@@ -235,8 +239,21 @@ class FlashSACLearner(WholeCycleLearnerMixin):
         self.action_dim = action_dim
         self.update_count = 0
         self._device_type = self.device.type
-        self._nvidia_cuda = self._device_type == "cuda" and not is_hip_runtime()
-        self.use_amp = bool(use_amp and self.device.type == "cuda")
+        self._performance_tier = resolve_learner_performance_tier(self.device)
+        self._nvidia_cuda = self._performance_tier.supports_whole_cycle_graph
+        amp_selection = resolve_amp_selection(
+            device_type=self._device_type,
+            use_amp=use_amp,
+            amp_dtype=amp_dtype,
+            learner_name="FlashSAC",
+        )
+        self.use_amp = amp_selection.use_amp
+        self.amp_policy = amp_selection.manifest()
+        if self._device_type == "mps" and self.use_amp and not mps_bf16_autocast_supported():
+            raise RuntimeError(
+                "FlashSAC MPS BF16 AMP was requested, but this Torch/MPS runtime "
+                "cannot execute BF16 autocast"
+            )
         self.amp_dtype = amp_dtype
         self._amp_dtype = self._resolve_amp_dtype(amp_dtype, self.device.type)
         compile_requested = self._nvidia_cuda if use_compile is None else bool(use_compile)
@@ -250,6 +267,12 @@ class FlashSACLearner(WholeCycleLearnerMixin):
         # ``None`` preserves the historical auto-enabled NVIDIA default, while
         # an explicit ``False`` is a real debugging/compatibility opt-out.
         self.use_compile = bool(compile_requested and compile_fn is not None)
+        validate_amp_compile_paths(
+            device_type=self._device_type,
+            use_compile=self.use_compile,
+            use_amp=self.use_amp,
+            learner_name="FlashSAC",
+        )
         full_objectives_requested = (
             self._nvidia_cuda if compile_full_objectives is None else bool(compile_full_objectives)
         )
@@ -370,7 +393,7 @@ class FlashSACLearner(WholeCycleLearnerMixin):
         # stays CUDA-only.
         _fused = fused_adam_supported(self.device.type)
         optimizer_kwargs: dict[str, Any] = {"fused": _fused}
-        if _fused and self.device.type == "cuda":
+        if _fused and self._performance_tier.supports_capturable_optimizer:
             optimizer_kwargs["capturable"] = True
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr_peak, **optimizer_kwargs)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=lr_peak, **optimizer_kwargs)
