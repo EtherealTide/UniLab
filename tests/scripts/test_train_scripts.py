@@ -256,7 +256,7 @@ def test_offpolicy_hydra_default_sim_backend():
 
 
 @pytest.mark.parametrize("algo", ["sac", "flashsac", "ppo", "appo"])
-def test_hydra_default_collector_tensor_device_is_auto(algo: str):
+def test_hydra_default_sim_carrier_device_is_auto(algo: str):
     if algo in {"sac", "flashsac"}:
         cfg = _offpolicy_cfg(algo=algo)
     elif algo == "ppo":
@@ -264,7 +264,14 @@ def test_hydra_default_collector_tensor_device_is_auto(algo: str):
     else:
         cfg = _appo_cfg()
 
-    assert cfg.training.collector_tensor_device == "auto"
+    assert cfg.training.sim_carrier_device == "auto"
+
+
+def test_removed_collector_tensor_device_hydra_override_fails_closed() -> None:
+    cfg = _offpolicy_cfg(["task=g1_walk_flat/mujoco", "+training.collector_tensor_device=cpu"])
+
+    with pytest.raises(ValueError, match="training.sim_carrier_device"):
+        _offpolicy().build_offpolicy_env_cfg_override("sac", cfg)
 
 
 def test_ppo_hydra_default_wandb_fields():
@@ -331,19 +338,17 @@ def test_host_bridge_env_overrides_auto_follow_automatic_learner_cuda(monkeypatc
     ppo_override = ppo_mod.build_ppo_env_cfg_override(ppo_cfg)
 
     assert offpolicy_override is not None
-    assert offpolicy_override["manager_torch_device"] == "cuda:2"
-    assert ppo_override["manager_torch_device"] == "cuda:2"
+    assert offpolicy_override["sim_carrier_device"] == "cuda:2"
+    assert ppo_override["sim_carrier_device"] == "cuda:2"
 
 
-def test_host_bridge_env_overrides_explicit_collector_tensor_cpu_still_wins(monkeypatch):
-    offpolicy_cfg = _offpolicy_cfg(
-        ["task=g1_walk_flat/mujoco", "training.collector_tensor_device=cpu"]
-    )
+def test_host_bridge_env_overrides_explicit_sim_carrier_cpu_still_wins(monkeypatch):
+    offpolicy_cfg = _offpolicy_cfg(["task=g1_walk_flat/mujoco", "training.sim_carrier_device=cpu"])
     ppo_cfg = _ppo_cfg(
         [
             "task=g1_walk_flat/mujoco",
             "training.device=cuda:2",
-            "training.collector_tensor_device=cpu",
+            "training.sim_carrier_device=cpu",
         ]
     )
     ppo_mod = _train_rsl_rl(monkeypatch)
@@ -356,19 +361,17 @@ def test_host_bridge_env_overrides_explicit_collector_tensor_cpu_still_wins(monk
     ppo_override = ppo_mod.build_ppo_env_cfg_override(ppo_cfg)
 
     assert offpolicy_override is not None
-    assert offpolicy_override["manager_torch_device"] == "cpu"
-    assert ppo_override["manager_torch_device"] == "cpu"
+    assert offpolicy_override["sim_carrier_device"] == "cpu"
+    assert ppo_override["sim_carrier_device"] == "cpu"
 
 
-def test_host_bridge_env_overrides_route_explicit_collector_tensor_device(monkeypatch):
-    offpolicy_cfg = _offpolicy_cfg(
-        ["task=g1_walk_flat/mujoco", "training.collector_tensor_device=cuda"]
-    )
+def test_host_bridge_env_overrides_route_explicit_sim_carrier_device(monkeypatch):
+    offpolicy_cfg = _offpolicy_cfg(["task=g1_walk_flat/mujoco", "training.sim_carrier_device=cuda"])
     ppo_cfg = _ppo_cfg(
         [
             "task=g1_walk_flat/mujoco",
             "training.device=cuda:2",
-            "training.collector_tensor_device=cuda",
+            "training.sim_carrier_device=cuda",
         ]
     )
     ppo_mod = _train_rsl_rl(monkeypatch)
@@ -381,8 +384,8 @@ def test_host_bridge_env_overrides_route_explicit_collector_tensor_device(monkey
     ppo_override = ppo_mod.build_ppo_env_cfg_override(ppo_cfg)
 
     assert offpolicy_override is not None
-    assert offpolicy_override["manager_torch_device"] == "cuda"
-    assert ppo_override["manager_torch_device"] == "cuda"
+    assert offpolicy_override["sim_carrier_device"] == "cuda"
+    assert ppo_override["sim_carrier_device"] == "cuda"
 
 
 @pytest.mark.parametrize(
@@ -1013,13 +1016,13 @@ def test_build_appo_runner_kwargs_forwards_sim_backend():
     assert runner_kwargs["env_cfg_overrides"]["rewards"] == {}
 
 
-def test_appo_host_bridge_carriers_follow_collector_tensor_device_auto(monkeypatch):
+def test_appo_host_bridge_carriers_follow_sim_carrier_device_auto(monkeypatch):
     mod = _train_appo()
     cfg = _appo_cfg(["task=g1_motion_tracking/mujoco"])
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
 
     auto = mod.build_appo_runner_kwargs(cfg, env_cfg_override={}, collector_device=None)
-    assert "manager_torch_device" not in auto["env_cfg_overrides"]
+    assert "sim_carrier_device" not in auto["env_cfg_overrides"]
 
     cpu_learner_cfg = _appo_cfg(["task=g1_motion_tracking/mujoco", "training.device=cpu"])
     collector_cpu = mod.build_appo_runner_kwargs(
@@ -1027,24 +1030,24 @@ def test_appo_host_bridge_carriers_follow_collector_tensor_device_auto(monkeypat
         env_cfg_override={},
         collector_device="cpu",
     )
-    assert collector_cpu["env_cfg_overrides"]["manager_torch_device"] == "cpu"
+    assert collector_cpu["env_cfg_overrides"]["sim_carrier_device"] == "cpu"
 
     collector_cuda = mod.build_appo_runner_kwargs(
         cfg,
         env_cfg_override={},
         collector_device="cuda:1",
     )
-    assert collector_cuda["env_cfg_overrides"]["manager_torch_device"] == "cuda:1"
+    assert collector_cuda["env_cfg_overrides"]["sim_carrier_device"] == "cuda:1"
 
     explicit_cuda_cfg = _appo_cfg(
-        ["task=g1_motion_tracking/mujoco", "training.collector_tensor_device=cuda"]
+        ["task=g1_motion_tracking/mujoco", "training.sim_carrier_device=cuda"]
     )
     explicit_cuda = mod.build_appo_runner_kwargs(
         explicit_cuda_cfg,
         env_cfg_override={},
         collector_device="cuda:1",
     )
-    assert explicit_cuda["env_cfg_overrides"]["manager_torch_device"] == "cuda"
+    assert explicit_cuda["env_cfg_overrides"]["sim_carrier_device"] == "cuda"
 
 
 def test_run_motrix_play_loop_runs_without_physics_state():

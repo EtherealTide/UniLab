@@ -53,5 +53,6 @@ def test_registry_reward_resolver_has_no_legacy_target() -> None:
 
 
 def test_sac_actor_explore_has_no_bool_positional_shim() -> None:
-    source = (SRC_ROOT / "rl" / "algos" / "sac" / "learner.py").read_text(encoding="utf-8")
-    assert "isinstance(dones, bool)" not in source
+    for relative_path in ("rl/algos/sac/learner.py", "rl/algos/flash_sac/network.py"):
+        source = (SRC_ROOT / relative_path).read_text(encoding="utf-8")
+        assert "isinstance(dones, bool)" not in source

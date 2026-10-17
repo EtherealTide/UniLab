@@ -10,13 +10,12 @@ Hyperparameters aligned with holosoma SACConfig defaults.
 
 from __future__ import annotations
 
-import copy
 import math
 import sys
 import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from typing import Any, Dict, Tuple, cast
+from typing import Any, Dict, Sequence, Tuple, cast
 
 import torch
 import torch.nn as nn
@@ -25,19 +24,13 @@ import torch.optim as optim
 
 from unilab.rl.algos.common.compile import get_torch_compile_for_device, is_hip_runtime
 from unilab.rl.algos.common.learner_boilerplate import (
-    LearnerBoilerplateMixin,
+    WholeCycleLearnerMixin,
     fused_adam_supported,
     mps_bf16_autocast_supported,
-    polyak_update_target,
     resolve_finite_check_flags,
 )
 from unilab.rl.algos.common.normalization import EmpiricalNormalization
-from unilab.rl.runtime.offpolicy.warmup import (
-    OffPolicyWarmupContext,
-    capture_rng_state,
-    make_offpolicy_warmup_batch,
-    restore_rng_state,
-)
+from unilab.rl.runtime.offpolicy.warmup import capture_rng_state, restore_rng_state
 
 
 @contextmanager
@@ -388,7 +381,7 @@ class SACCritic(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-class SACLearner(LearnerBoilerplateMixin):
+class SACLearner(WholeCycleLearnerMixin):
     """SAC learner with holosoma-aligned hyperparameters.
 
     Key hyperparameters (aligned with holosoma SACConfig):
@@ -634,74 +627,42 @@ class SACLearner(LearnerBoilerplateMixin):
         """Whether this learner owns the whole-cycle update orchestration."""
         return bool(self._compile_full_update_cycle and self._gradient_sync is None)
 
-    def prepare_for_collection(self, warmup_context: OffPolicyWarmupContext) -> None:
-        """Compile/capture all learner-owned update cold paths before collection.
+    def _prepare_training_methods_for_collection(
+        self, large_batch: Dict[str, torch.Tensor], batch_size: int
+    ) -> None:
+        self._select_mps_training_methods(large_batch, batch_size=batch_size)
 
-        The whole-cycle path delegates to the owner's zero-learning-rate warmup
-        and graph capture helper, which restores model, optimizer, RNG, and
-        gradient state. Compatibility paths use synthetic replay data and then
-        restore the complete checkpointable learner state and all RNG streams.
-        The resulting compiled-code cache is intentionally retained.
-        """
-        large_batch = warmup_context.replay_batch or make_offpolicy_warmup_batch(
-            warmup_context,
-            obs_dim=self.obs_dim,
-            critic_obs_dim=self.critic_obs_dim,
-            action_dim=self.action_dim,
-            device=self.device,
-        )
-        self._select_mps_training_methods(
-            large_batch,
-            batch_size=max(1, int(warmup_context.batch_size)),
-        )
-        if self.use_update_cycle:
-            self._ensure_update_cycle_graph(
-                large_batch,
-                updates_per_step=warmup_context.updates_per_step,
-                policy_frequency=warmup_context.policy_frequency,
-                target_frequency=warmup_context.target_frequency,
-                policy_before_critic=warmup_context.policy_before_critic,
-            )
-            return
+    def _clear_compatibility_warmup_state(self) -> None:
+        super()._clear_compatibility_warmup_state()
+        self._pending_update_finite_values = None
 
-        saved_state = copy.deepcopy(self.get_state_dict())
-        saved_scaler = copy.deepcopy(self.scaler.state_dict()) if self.scaler is not None else None
-        saved_found_inf = self._optimizer_found_inf.detach().clone()
-        saved_q_finite = self._q_update_finite.detach().clone()
-        rng_state = capture_rng_state(self.device)
-        try:
-            batch_size = max(1, int(warmup_context.batch_size))
-            for update_idx in range(max(1, int(warmup_context.updates_per_step))):
-                start = update_idx * batch_size
-                batch = {
-                    key: value[start : start + batch_size] for key, value in large_batch.items()
-                }
-                do_actor_update = update_idx % max(1, warmup_context.policy_frequency) == 0
-                if warmup_context.policy_before_critic and do_actor_update:
-                    self.update_actor(batch, read_metrics=False)
-                self.update_critic(batch, read_metrics=False)
-                if not warmup_context.policy_before_critic and do_actor_update:
-                    self.update_actor(batch, read_metrics=False)
-                if update_idx % max(1, warmup_context.target_frequency) == 0:
-                    self.soft_update_target()
-        finally:
-            self.load_state_dict(saved_state)
-            if self.scaler is not None and saved_scaler is not None:
-                self.scaler.load_state_dict(saved_scaler)
-            self._optimizer_found_inf.copy_(saved_found_inf)
-            self._q_update_finite.copy_(saved_q_finite)
-            self._pending_actor_metric_values = None
-            self._pending_cycle_critic_metric_values = None
-            self._pending_cycle_metric_values = None
-            self._pending_update_finite_values = None
-            restore_rng_state(rng_state)
-            self._zero_optimizer_gradients(self.q_optimizer)
-            self._zero_optimizer_gradients(self.actor_optimizer)
-            self._zero_optimizer_gradients(self.alpha_optimizer)
-            if self._device_type == "cuda":
-                torch.cuda.synchronize(self.device)
-            elif self._device_type == "mps":
-                torch.mps.synchronize()
+    def _synchronize_compatibility_warmup(self) -> None:
+        super()._synchronize_compatibility_warmup()
+        if self._device_type == "mps":
+            torch.mps.synchronize()
+
+    def _whole_cycle_optimizers(self) -> tuple[optim.Optimizer, ...]:
+        return (self.q_optimizer, self.actor_optimizer, self.alpha_optimizer)
+
+    def _whole_cycle_modules(self) -> tuple[nn.Module, ...]:
+        return (self.actor, self.qnet, self.qnet_target)
+
+    def _whole_cycle_finite_gate(self) -> torch.Tensor:
+        return self._q_update_finite
+
+    def _whole_cycle_target_modules(self) -> tuple[nn.Module, nn.Module]:
+        return self.qnet_target, self.qnet
+
+    def _whole_cycle_warmup_hyperparameters(self) -> tuple[str, ...]:
+        return ("lr", "weight_decay")
+
+    def _materialize_optimizer_hyperparameters(self) -> tuple[str, ...]:
+        return ("lr", "weight_decay")
+
+    @contextmanager
+    def _whole_cycle_target_update_range(self) -> Iterator[None]:
+        with _cuda_nvtx_range("target/soft_update_loop", self.nvtx_profile_ranges):
+            yield
 
     def set_gradient_sync(self, sync: Callable[[Iterable[torch.Tensor]], None] | None) -> None:
         """Attach DP reduction and leave the unsupported whole-cycle graph.
@@ -941,53 +902,6 @@ class SACLearner(LearnerBoilerplateMixin):
         self.use_compile = False
         self.compile_backend = "eager"
 
-    def _materialize_capturable_optimizer_state(self) -> None:
-        """Create fused AdamW state before the whole-cycle graph is captured."""
-        optimizers = (self.q_optimizer, self.actor_optimizer, self.alpha_optimizer)
-        saved_groups = [
-            [(group["lr"], group["weight_decay"]) for group in optimizer.param_groups]
-            for optimizer in optimizers
-        ]
-        try:
-            for optimizer in optimizers:
-                for group in optimizer.param_groups:
-                    group["lr"] = 0.0
-                    group["weight_decay"] = 0.0
-                    for parameter in group["params"]:
-                        parameter.grad = torch.zeros_like(parameter)
-                optimizer.step()
-        finally:
-            for optimizer, saved_group in zip(optimizers, saved_groups, strict=True):
-                for group, (lr, weight_decay) in zip(
-                    optimizer.param_groups,
-                    saved_group,
-                    strict=True,
-                ):
-                    group["lr"] = lr
-                    group["weight_decay"] = weight_decay
-                    for parameter in group["params"]:
-                        if parameter.grad is not None:
-                            parameter.grad.zero_()
-            for optimizer in optimizers:
-                for state in optimizer.state.values():
-                    for value in state.values():
-                        if isinstance(value, torch.Tensor):
-                            value.zero_()
-
-    def _zero_optimizer_gradients(self, optimizer: optim.Optimizer) -> None:
-        """Zero gradients without the optimizer's graph-skipped Python entrypoint."""
-        if not self._compile_full_update_cycle:
-            optimizer.zero_grad(set_to_none=True)
-            return
-        gradients = [
-            parameter.grad
-            for group in optimizer.param_groups
-            for parameter in group["params"]
-            if parameter.grad is not None
-        ]
-        if gradients:
-            torch._foreach_zero_(gradients)
-
     def _get_actions_and_log_probs_for_critic(
         self,
         actor_obs: torch.Tensor,
@@ -1203,40 +1117,11 @@ class SACLearner(LearnerBoilerplateMixin):
             for name, value in zip(metric_names, values.cpu().tolist(), strict=True)
         }
 
-    def _run_update_cycle_core(
-        self,
-        large_batch: Dict[str, torch.Tensor],
-        *,
-        updates_per_step: int,
-        policy_frequency: int,
-        target_frequency: int,
-        policy_before_critic: bool,
-    ) -> None:
+    def _begin_update_cycle_metrics(self) -> None:
         self.begin_deferred_update_metrics()
-        batch_size = int(next(iter(large_batch.values())).shape[0]) // updates_per_step
-        for update_idx in range(updates_per_step):
-            start = update_idx * batch_size
-            end = start + batch_size
-            batch = {key: value[start:end] for key, value in large_batch.items()}
-            do_actor_update = update_idx % policy_frequency == 0
-            if policy_before_critic and do_actor_update:
-                self.update_actor(batch, read_metrics=False)
-            self.update_critic(batch, read_metrics=False)
-            if not policy_before_critic and do_actor_update:
-                self.update_actor(batch, read_metrics=False)
-            if update_idx % target_frequency == 0:
-                self.soft_update_target()
 
-        critic_values = self._pending_cycle_critic_metric_values
-        actor_values = self._pending_actor_metric_values
-        if critic_values is None:
-            return
-        self._pending_cycle_metric_values = (
-            torch.cat((critic_values, actor_values)) if actor_values is not None else critic_values
-        )
-
-    @staticmethod
     def _update_cycle_graph_key(
+        self,
         large_batch: Dict[str, torch.Tensor],
         *,
         updates_per_step: int,
@@ -1253,116 +1138,24 @@ class SACLearner(LearnerBoilerplateMixin):
             shapes,
         )
 
-    def _warm_update_cycle_graph(
+    def _before_update_cycle_capture(
         self,
-        large_batch: Dict[str, torch.Tensor],
+        saved_groups: Sequence[dict[str, Any]],
         *,
         updates_per_step: int,
         policy_frequency: int,
-        target_frequency: int,
-        policy_before_critic: bool,
-    ) -> None:
-        """Compile and dry-run all captured kernels without changing training state."""
-        modules: tuple[nn.Module, ...] = (self.actor, self.qnet, self.qnet_target)
-        optimizers = (self.q_optimizer, self.actor_optimizer, self.alpha_optimizer)
-        saved_models = [copy.deepcopy(module.state_dict()) for module in modules]
-        saved_optimizers = [copy.deepcopy(optimizer.state_dict()) for optimizer in optimizers]
-        saved_groups = [
-            [(group["lr"], group["weight_decay"]) for group in optimizer.param_groups]
-            for optimizer in optimizers
-        ]
-        cpu_rng_state = torch.random.get_rng_state()
-        cuda_rng_state = torch.cuda.get_rng_state(self.device)
-        stream = torch.cuda.Stream(device=self.device)
-        try:
-            for optimizer in optimizers:
-                for group in optimizer.param_groups:
-                    group["lr"] = 0.0
-                    group["weight_decay"] = 0.0
-            stream.wait_stream(torch.cuda.current_stream(self.device))
-            with torch.cuda.stream(stream):
-                self._run_update_cycle_core(
-                    large_batch,
-                    updates_per_step=updates_per_step,
-                    policy_frequency=policy_frequency,
-                    target_frequency=target_frequency,
-                    policy_before_critic=policy_before_critic,
-                )
-            torch.cuda.current_stream(self.device).wait_stream(stream)
-            torch.cuda.synchronize(self.device)
-        finally:
-            for optimizer, saved_group in zip(optimizers, saved_groups, strict=True):
-                for group, (lr, weight_decay) in zip(
-                    optimizer.param_groups,
-                    saved_group,
-                    strict=True,
-                ):
-                    group["lr"] = lr
-                    group["weight_decay"] = weight_decay
-            for module, state_dict in zip(modules, saved_models, strict=True):
-                module.load_state_dict(state_dict)
-            for optimizer, state_dict in zip(optimizers, saved_optimizers, strict=True):
-                optimizer.load_state_dict(state_dict)
-            torch.random.set_rng_state(cpu_rng_state)
-            torch.cuda.set_rng_state(cuda_rng_state, self.device)
-            self._zero_optimizer_gradients(self.q_optimizer)
-            self._zero_optimizer_gradients(self.actor_optimizer)
-            self._zero_optimizer_gradients(self.alpha_optimizer)
-            torch.cuda.synchronize(self.device)
-
-    def _ensure_update_cycle_graph(
-        self,
-        large_batch: Dict[str, torch.Tensor],
-        *,
-        updates_per_step: int,
-        policy_frequency: int,
-        target_frequency: int,
-        policy_before_critic: bool,
-    ) -> None:
-        key = self._update_cycle_graph_key(
-            large_batch,
-            updates_per_step=updates_per_step,
-            policy_frequency=policy_frequency,
-            target_frequency=target_frequency,
-            policy_before_critic=policy_before_critic,
-        )
-        if self._update_cycle_graph_cache_key == key and self._update_cycle_graph is not None:
-            assert self._update_cycle_static_batch is not None
-            for input_key, tensor in self._update_cycle_static_batch.items():
-                tensor.copy_(large_batch[input_key])
-            return
-
-        self._update_cycle_graph_cache_key = key
-        self._update_cycle_graph = None
-        self._update_cycle_static_batch = {
-            key: value.detach().clone() for key, value in large_batch.items()
-        }
-        static_batch = self._update_cycle_static_batch
+    ) -> tuple[dict[str, Any], ...]:
+        del saved_groups, updates_per_step, policy_frequency
         hooks = self._gradient_graph_hooks
         if hooks is not None:
             hooks[0]()
-        try:
-            self._warm_update_cycle_graph(
-                static_batch,
-                updates_per_step=updates_per_step,
-                policy_frequency=policy_frequency,
-                target_frequency=target_frequency,
-                policy_before_critic=policy_before_critic,
-            )
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.device(self.device), torch.cuda.graph(graph):
-                self._run_update_cycle_core(
-                    static_batch,
-                    updates_per_step=updates_per_step,
-                    policy_frequency=policy_frequency,
-                    target_frequency=target_frequency,
-                    policy_before_critic=policy_before_critic,
-                )
-            self._update_cycle_graph = graph
-            self._update_cycle_graph_metric_values = self._pending_cycle_metric_values
-        finally:
-            if hooks is not None:
-                hooks[1]()
+        return ()
+
+    def _finish_update_cycle_capture(self, saved_groups: Sequence[dict[str, Any]]) -> None:
+        del saved_groups
+        hooks = self._gradient_graph_hooks
+        if hooks is not None:
+            hooks[1]()
 
     def update_cycle(
         self,
@@ -1582,21 +1375,6 @@ class SACLearner(LearnerBoilerplateMixin):
             ),
             actor_metric_tensors,
         )
-
-    def soft_update_target(self) -> None:
-        """Polyak-average update of the target Q-network."""
-        with _cuda_nvtx_range("target/soft_update_loop", self.nvtx_profile_ranges):
-            if self._device_type == "cuda":
-                with torch.no_grad():
-                    tau = self._target_tau * self._q_update_finite.to(self._target_tau.dtype)
-                    for target, source in zip(
-                        self.qnet_target.parameters(),
-                        self.qnet.parameters(),
-                        strict=True,
-                    ):
-                        target.lerp_(source, tau)
-            else:
-                polyak_update_target(self.qnet_target, self.qnet, self.tau)
 
     def _reset_update_cycle_graph(self) -> None:
         """Invalidate a raw cycle graph after checkpoint state storage changes."""

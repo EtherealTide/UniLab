@@ -4,20 +4,18 @@ from __future__ import annotations
 
 import copy
 import os
-import warnings
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Sequence, cast
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from unilab.rl.algos.common.compile import get_torch_compile_for_cuda, is_hip_runtime
+from unilab.rl.algos.common.compile import get_torch_compile_for_device, is_hip_runtime
 from unilab.rl.algos.common.learner_boilerplate import (
-    LearnerBoilerplateMixin,
+    WholeCycleLearnerMixin,
     fused_adam_supported,
-    polyak_update_target,
     resolve_finite_check_flags,
 )
 from unilab.rl.algos.common.normalization import EmpiricalNormalization
@@ -40,12 +38,6 @@ from unilab.rl.algos.flash_sac.update import (
     compute_categorical_td_target,
     resolve_target_entropy,
     select_min_q_log_probs,
-)
-from unilab.rl.runtime.offpolicy.warmup import (
-    OffPolicyWarmupContext,
-    capture_rng_state,
-    make_offpolicy_warmup_batch,
-    restore_rng_state,
 )
 
 
@@ -180,7 +172,7 @@ def _noop_normalize_parameters() -> None:
     """Instance-level no-op used when parameter normalization is disabled."""
 
 
-class FlashSACLearner(LearnerBoilerplateMixin):
+class FlashSACLearner(WholeCycleLearnerMixin):
     supports_deferred_update_metrics = True
 
     def inference_startup_memory_categories(self, batch_size: int) -> dict[str, int]:
@@ -249,7 +241,7 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         self._amp_dtype = self._resolve_amp_dtype(amp_dtype, self.device.type)
         compile_requested = self._nvidia_cuda if use_compile is None else bool(use_compile)
         compile_fn = (
-            get_torch_compile_for_cuda(self.device, warn=not self._nvidia_cuda)
+            get_torch_compile_for_device(self.device, warn=not self._nvidia_cuda)
             if compile_requested
             else None
         )
@@ -442,67 +434,20 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         """Whether this learner owns the whole-cycle update orchestration."""
         return bool(self._compile_full_update_cycle and self._gradient_sync is None)
 
-    def prepare_for_collection(self, warmup_context: OffPolicyWarmupContext) -> None:
-        """Compile/capture learner update cold paths before collection starts.
+    def _whole_cycle_optimizers(self) -> tuple[optim.Optimizer, ...]:
+        return (self.critic_optimizer, self.actor_optimizer, self.temperature_optimizer)
 
-        On NVIDIA CUDA the owner-managed whole-cycle graph is captured by the
-        existing state-preserving warmup helper. Compatibility paths exercise
-        compiled critic/actor objectives with synthetic replay rows and restore
-        model, optimizer, scheduler, normalizer, update-counter, gradient, and
-        RNG state. Compiled code and graph caches are the only retained effects.
-        """
-        large_batch = warmup_context.replay_batch or make_offpolicy_warmup_batch(
-            warmup_context,
-            obs_dim=self.obs_dim,
-            critic_obs_dim=self.critic_obs_dim,
-            action_dim=self.action_dim,
-            device=self.device,
-        )
-        if self.use_update_cycle:
-            self._ensure_update_cycle_graph(
-                large_batch,
-                updates_per_step=warmup_context.updates_per_step,
-                policy_frequency=warmup_context.policy_frequency,
-                target_frequency=warmup_context.target_frequency,
-                policy_before_critic=warmup_context.policy_before_critic,
-            )
-            return
+    def _whole_cycle_modules(self) -> tuple[nn.Module, ...]:
+        return (self.actor, self.critic, self.target_critic, self.temperature)
 
-        saved_state = copy.deepcopy(self.get_state_dict())
-        saved_scaler = copy.deepcopy(self.scaler.state_dict()) if self.scaler is not None else None
-        saved_found_inf = self._optimizer_found_inf.detach().clone()
-        saved_critic_finite = self._critic_update_finite.detach().clone()
-        rng_state = capture_rng_state(self.device)
-        try:
-            batch_size = max(1, int(warmup_context.batch_size))
-            for update_idx in range(max(1, int(warmup_context.updates_per_step))):
-                start = update_idx * batch_size
-                batch = {
-                    key: value[start : start + batch_size] for key, value in large_batch.items()
-                }
-                do_actor_update = update_idx % max(1, warmup_context.policy_frequency) == 0
-                if warmup_context.policy_before_critic and do_actor_update:
-                    self.update_actor(batch, read_metrics=False)
-                self.update_critic(batch, read_metrics=False)
-                if not warmup_context.policy_before_critic and do_actor_update:
-                    self.update_actor(batch, read_metrics=False)
-                if update_idx % max(1, warmup_context.target_frequency) == 0:
-                    self.soft_update_target()
-        finally:
-            self.load_state_dict(saved_state)
-            if self.scaler is not None and saved_scaler is not None:
-                self.scaler.load_state_dict(saved_scaler)
-            self._optimizer_found_inf.copy_(saved_found_inf)
-            self._critic_update_finite.copy_(saved_critic_finite)
-            self._pending_actor_metric_values = None
-            self._pending_cycle_critic_metric_values = None
-            self._pending_cycle_metric_values = None
-            restore_rng_state(rng_state)
-            self._zero_optimizer_gradients(self.critic_optimizer)
-            self._zero_optimizer_gradients(self.actor_optimizer)
-            self._zero_optimizer_gradients(self.temperature_optimizer)
-            if self._device_type == "cuda":
-                torch.cuda.synchronize(self.device)
+    def _whole_cycle_schedulers(self) -> tuple[Any, ...]:
+        return (self.critic_scheduler, self.actor_scheduler, self.temperature_scheduler)
+
+    def _whole_cycle_finite_gate(self) -> torch.Tensor:
+        return self._critic_update_finite
+
+    def _whole_cycle_target_modules(self) -> tuple[nn.Module, nn.Module]:
+        return self.target_critic, self.critic
 
     def set_gradient_sync(self, sync: Callable[[Iterable[torch.Tensor]], None] | None) -> None:
         """Attach DP reduction and permanently leave the whole-cycle graph."""
@@ -512,7 +457,7 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         self._gradient_sync = sync
 
     def _compile_training_methods(self) -> None:
-        compile_fn = get_torch_compile_for_cuda(self.device, warn=True)
+        compile_fn = get_torch_compile_for_device(self.device, warn=True)
         if compile_fn is None:
             return
 
@@ -550,47 +495,6 @@ class FlashSACLearner(LearnerBoilerplateMixin):
             self._actor_loss_tensors,
             **compile_kwargs,
         )
-
-    def _materialize_capturable_optimizer_state(self) -> None:
-        """Create fused Adam state before the whole-cycle graph is captured."""
-        optimizers = (self.critic_optimizer, self.actor_optimizer, self.temperature_optimizer)
-        saved_groups = [
-            [group["lr"] for group in optimizer.param_groups] for optimizer in optimizers
-        ]
-        try:
-            for optimizer in optimizers:
-                for group in optimizer.param_groups:
-                    group["lr"] = 0.0
-                    for parameter in group["params"]:
-                        parameter.grad = torch.zeros_like(parameter)
-                optimizer.step()
-        finally:
-            for optimizer, saved_group in zip(optimizers, saved_groups, strict=True):
-                for group, lr in zip(optimizer.param_groups, saved_group, strict=True):
-                    group["lr"] = lr
-                for group in optimizer.param_groups:
-                    for parameter in group["params"]:
-                        if parameter.grad is not None:
-                            parameter.grad.zero_()
-            for optimizer in optimizers:
-                for state in optimizer.state.values():
-                    for value in state.values():
-                        if isinstance(value, torch.Tensor):
-                            value.zero_()
-
-    def _zero_optimizer_gradients(self, optimizer: optim.Optimizer) -> None:
-        """Zero gradients without the graph-skipped optimizer Python entrypoint."""
-        if not self._compile_full_update_cycle:
-            optimizer.zero_grad(set_to_none=True)
-            return
-        gradients = [
-            parameter.grad
-            for group in optimizer.param_groups
-            for parameter in group["params"]
-            if parameter.grad is not None
-        ]
-        if gradients:
-            torch._foreach_zero_(gradients)
 
     def _arm_optimizer_finite_gate(
         self,
@@ -960,40 +864,11 @@ class FlashSACLearner(LearnerBoilerplateMixin):
             for name, value in zip(metric_names, values.cpu().tolist(), strict=True)
         }
 
-    def _run_update_cycle_core(
-        self,
-        large_batch: dict[str, torch.Tensor],
-        *,
-        updates_per_step: int,
-        policy_frequency: int,
-        target_frequency: int,
-        policy_before_critic: bool,
-    ) -> None:
+    def _begin_update_cycle_metrics(self) -> None:
         self._pending_actor_metric_values = None
         self._pending_cycle_critic_metric_values = None
         self._pending_cycle_metric_values = None
         self._update_cycle_lr_cursors = {}
-        batch_size = int(next(iter(large_batch.values())).shape[0]) // updates_per_step
-        for update_idx in range(updates_per_step):
-            start = update_idx * batch_size
-            end = start + batch_size
-            batch = {key: value[start:end] for key, value in large_batch.items()}
-            do_actor_update = update_idx % policy_frequency == 0
-            if policy_before_critic and do_actor_update:
-                self.update_actor(batch, read_metrics=False)
-            self.update_critic(batch, read_metrics=False)
-            if not policy_before_critic and do_actor_update:
-                self.update_actor(batch, read_metrics=False)
-            if update_idx % target_frequency == 0:
-                self.soft_update_target()
-
-        critic_values = self._pending_cycle_critic_metric_values
-        actor_values = self._pending_actor_metric_values
-        if critic_values is None:
-            return
-        self._pending_cycle_metric_values = (
-            torch.cat((critic_values, actor_values)) if actor_values is not None else critic_values
-        )
 
     def _update_cycle_graph_key(
         self,
@@ -1052,181 +927,47 @@ class FlashSACLearner(LearnerBoilerplateMixin):
             for _ in range(count):
                 scheduler.step()
 
-    def _restore_update_cycle_group_lrs(self, saved_groups: list[list[object]]) -> None:
-        optimizers = (self.critic_optimizer, self.actor_optimizer, self.temperature_optimizer)
-        for optimizer, saved_group in zip(optimizers, saved_groups, strict=True):
-            for group, lr in zip(optimizer.param_groups, saved_group, strict=True):
-                group["lr"] = lr
-
-    def soft_update_target(self) -> None:
-        if self._device_type == "cuda":
-            with torch.no_grad():
-                tau = self._target_tau * self._critic_update_finite.to(self._target_tau.dtype)
-                for target, source in zip(
-                    self.target_critic.parameters(),
-                    self.critic.parameters(),
-                    strict=True,
-                ):
-                    target.lerp_(source, tau)
-        else:
-            polyak_update_target(self.target_critic, self.critic, self.tau)
-
-    def _warm_update_cycle_graph(
-        self,
-        large_batch: dict[str, torch.Tensor],
-        *,
-        updates_per_step: int,
-        policy_frequency: int,
-        target_frequency: int,
-        policy_before_critic: bool,
-    ) -> None:
-        """Compile/dry-run captured kernels without changing training state."""
-        modules: tuple[nn.Module, ...] = (
-            self.actor,
-            self.critic,
-            self.target_critic,
-            self.temperature,
-        )
-        optimizers = (self.critic_optimizer, self.actor_optimizer, self.temperature_optimizer)
-        schedulers = (self.critic_scheduler, self.actor_scheduler, self.temperature_scheduler)
-        saved_models = [copy.deepcopy(module.state_dict()) for module in modules]
-        saved_optimizers = [copy.deepcopy(optimizer.state_dict()) for optimizer in optimizers]
-        saved_schedulers = [copy.deepcopy(scheduler.state_dict()) for scheduler in schedulers]
-        saved_groups = [
-            [group["lr"] for group in optimizer.param_groups] for optimizer in optimizers
-        ]
-        saved_obs = (
-            copy.deepcopy(self.obs_normalizer.state_dict())
-            if not isinstance(self.obs_normalizer, nn.Identity)
-            else None
-        )
-        cpu_rng_state = torch.random.get_rng_state()
-        cuda_rng_state = torch.cuda.get_rng_state(self.device)
-        stream = torch.cuda.Stream(device=self.device)
+    def _prepare_update_cycle_warmup(self, *, updates_per_step: int, policy_frequency: int) -> None:
         self._prepare_update_cycle_lr_specs(
             updates_per_step=updates_per_step,
             policy_frequency=policy_frequency,
         )
         self._fill_update_cycle_lr_specs(zero=True)
-        try:
-            self._capture_update_cycle = True
-            stream.wait_stream(torch.cuda.current_stream(self.device))
-            with torch.cuda.stream(stream):
-                self._run_update_cycle_core(
-                    large_batch,
-                    updates_per_step=updates_per_step,
-                    policy_frequency=policy_frequency,
-                    target_frequency=target_frequency,
-                    policy_before_critic=policy_before_critic,
-                )
-            torch.cuda.current_stream(self.device).wait_stream(stream)
-            torch.cuda.synchronize(self.device)
-        finally:
-            self._capture_update_cycle = False
-            self._restore_update_cycle_group_lrs(saved_groups)
-            for module, state_dict in zip(modules, saved_models, strict=True):
-                module.load_state_dict(state_dict)
-            for optimizer, state_dict in zip(optimizers, saved_optimizers, strict=True):
-                optimizer.load_state_dict(state_dict)
-            for scheduler, state_dict in zip(schedulers, saved_schedulers, strict=True):
-                scheduler.load_state_dict(state_dict)
-            if saved_obs is not None:
-                self.obs_normalizer.load_state_dict(saved_obs)
-            torch.random.set_rng_state(cpu_rng_state)
-            torch.cuda.set_rng_state(cuda_rng_state, self.device)
-            self._zero_optimizer_gradients(self.critic_optimizer)
-            self._zero_optimizer_gradients(self.actor_optimizer)
-            self._zero_optimizer_gradients(self.temperature_optimizer)
-            torch.cuda.synchronize(self.device)
 
-    def _ensure_update_cycle_graph(
+    def _before_update_cycle_capture(
         self,
-        large_batch: dict[str, torch.Tensor],
+        saved_groups: Sequence[dict[str, Any]],
         *,
         updates_per_step: int,
         policy_frequency: int,
-        target_frequency: int,
-        policy_before_critic: bool,
-    ) -> None:
-        key = self._update_cycle_graph_key(
-            large_batch,
-            updates_per_step=updates_per_step,
-            policy_frequency=policy_frequency,
-            target_frequency=target_frequency,
-            policy_before_critic=policy_before_critic,
-        )
-        if self._update_cycle_graph_cache_key == key and self._update_cycle_graph is not None:
-            assert self._update_cycle_static_batch is not None
-            for input_key, tensor in self._update_cycle_static_batch.items():
-                tensor.copy_(large_batch[input_key])
-            return
+    ) -> tuple[int, ...]:
+        del saved_groups
+        return (updates_per_step, policy_frequency)
 
-        self._update_cycle_graph_cache_key = key
-        self._update_cycle_graph = None
-        self._update_cycle_static_batch = {
-            key: value.detach().clone() for key, value in large_batch.items()
-        }
-        static_batch = self._update_cycle_static_batch
-        self._warm_update_cycle_graph(
-            static_batch,
-            updates_per_step=updates_per_step,
-            policy_frequency=policy_frequency,
-            target_frequency=target_frequency,
-            policy_before_critic=policy_before_critic,
-        )
+    def _prepare_update_cycle_capture(self, *capture_state: Any) -> None:
+        updates_per_step, policy_frequency = capture_state
         self._prepare_update_cycle_lr_specs(
             updates_per_step=updates_per_step,
             policy_frequency=policy_frequency,
         )
         self._fill_update_cycle_lr_specs(zero=False)
-        saved_groups = [
-            [group["lr"] for group in optimizer.param_groups]
-            for optimizer in (
-                self.critic_optimizer,
-                self.actor_optimizer,
-                self.temperature_optimizer,
-            )
-        ]
-        graph = torch.cuda.CUDAGraph()
-        try:
-            self._capture_update_cycle = True
-            # thread_local: with the legacy "global" mode, a capture-unsafe CUDA
-            # call from ANY thread (replay ingress daemon, in-process sim
-            # backend, ...) silently invalidates the capture. The graph only
-            # records this thread's update-cycle work, so thread_local is both
-            # correct and robust against unrelated background CUDA activity.
-            with (
-                torch.cuda.device(self.device),
-                torch.cuda.graph(
-                    graph,
-                    capture_error_mode=os.environ.get("UNI_RL_CAPTURE_ERROR_MODE", "thread_local"),
-                ),
-            ):
-                self._run_update_cycle_core(
-                    static_batch,
-                    updates_per_step=updates_per_step,
-                    policy_frequency=policy_frequency,
-                    target_frequency=target_frequency,
-                    policy_before_critic=policy_before_critic,
-                )
-        except torch.AcceleratorError:
-            # Capture only records kernels without executing them, so a failed
-            # capture leaves training state untouched. Warn once and fall back
-            # to running the update cycle eagerly for the rest of training;
-            # the compiled objectives stay active, only graph replay is lost.
-            self._update_cycle_capture_failed = True
-            self._update_cycle_graph = None
-            warnings.warn(
-                "FlashSAC whole-cycle CUDA graph capture failed; falling back to "
-                "eager update-cycle execution for the rest of training.",
-                stacklevel=2,
-            )
-            return
-        finally:
-            self._capture_update_cycle = False
-            self._restore_update_cycle_group_lrs(saved_groups)
-        self._update_cycle_graph = graph
-        self._update_cycle_graph_metric_values = self._pending_cycle_metric_values
+
+    def _finish_update_cycle_capture(self, saved_groups: Sequence[dict[str, Any]]) -> None:
+        self._restore_optimizer_groups(self._whole_cycle_optimizers(), saved_groups)
+
+    @property
+    def _update_cycle_capture_error_mode(self) -> str:
+        return os.environ.get("UNI_RL_CAPTURE_ERROR_MODE", "thread_local")
+
+    @property
+    def _whole_cycle_capture_fallback(self) -> bool:
+        return True
+
+    def _whole_cycle_capture_failure_message(self) -> str:
+        return (
+            "FlashSAC whole-cycle CUDA graph capture failed; falling back to "
+            "eager update-cycle execution for the rest of training."
+        )
 
     def update_cycle(
         self,

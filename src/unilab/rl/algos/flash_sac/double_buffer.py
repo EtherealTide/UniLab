@@ -15,7 +15,9 @@ from unilab.rl.contracts.observations import get_obs_dims
 from unilab.rl.runtime.device import get_default_device
 from unilab.rl.runtime.ipc.replay_pipelines.gpu_resident import require_offpolicy_replay_device
 from unilab.rl.runtime.nan_guard import NanGuardCfg
-from unilab.rl.runtime.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
+from unilab.rl.runtime.offpolicy.double_buffer_runner import (
+    DoubleBufferOffPolicyRunner,
+)
 from unilab.rl.runtime.placement import InferencePlacement
 from unilab.rl.runtime.seed import apply_training_seed
 from unilab.rl.runtime.settings import TensorRuntimeSettings

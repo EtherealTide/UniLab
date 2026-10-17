@@ -16,21 +16,9 @@ from typing import cast
 
 import torch
 
-from unilab.utils.device import get_default_device
+from unilab.utils.device import get_default_device, mps_available, xpu_available
 
 __all__ = ["get_default_device", "resolve_torch_device_alias"]
-
-
-def _xpu_available() -> bool:
-    xpu = getattr(torch, "xpu", None)
-    is_available = getattr(xpu, "is_available", None)
-    return bool(callable(is_available) and is_available())
-
-
-def _mps_available() -> bool:
-    mps = getattr(torch.backends, "mps", None)
-    is_available = getattr(mps, "is_available", None)
-    return bool(callable(is_available) and is_available())
 
 
 def _device_count(device_type: str) -> int | None:
@@ -73,7 +61,7 @@ def _resolve_indexed_device(device_type: str, index: int | None, original: str) 
 
 
 def _resolve_mps_alias(index: int | None, original: str) -> str:
-    if not _mps_available():
+    if not mps_available():
         raise ValueError(f"Requested device {original!r} requires MPS, but MPS is unavailable")
     if index not in (None, 0):
         raise ValueError(
@@ -85,8 +73,9 @@ def _resolve_mps_alias(index: int | None, original: str) -> str:
 def resolve_torch_device_alias(device: str | None, *, default: str = "cpu") -> str:
     """Resolve a cross-platform torch device alias to a concrete device string.
 
-    ``gpu`` is an abstract accelerator alias. ``cuda`` is also accepted on
-    macOS/MPS for config portability and maps to ``mps`` when CUDA is absent.
+    ``gpu`` is an abstract accelerator alias and may resolve to an available
+    accelerator family. ``cuda`` is a concrete device family and fails closed
+    when CUDA is unavailable.
     The function validates the resolved device and never silently falls back to
     CPU for unavailable accelerators.
     """
@@ -102,23 +91,21 @@ def resolve_torch_device_alias(device: str | None, *, default: str = "cpu") -> s
         return _resolve_mps_alias(index, original)
 
     if base == "xpu":
-        if not _xpu_available():
+        if not xpu_available():
             raise ValueError(f"Requested device {original!r} requires XPU, but XPU is unavailable")
         return _resolve_indexed_device("xpu", index, original)
 
     if base == "cuda":
         if torch.cuda.is_available():
             return _resolve_indexed_device("cuda", index, original)
-        if _mps_available():
-            return _resolve_mps_alias(index, original)
         raise ValueError(f"Requested device {original!r} requires CUDA, but CUDA is unavailable")
 
     if base == "gpu":
         if torch.cuda.is_available():
             return _resolve_indexed_device("cuda", index, original)
-        if _xpu_available():
+        if xpu_available():
             return _resolve_indexed_device("xpu", index, original)
-        if _mps_available():
+        if mps_available():
             return _resolve_mps_alias(index, original)
         raise ValueError(
             f"Requested device {original!r} requires an accelerator, but none is available"

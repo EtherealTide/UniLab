@@ -134,9 +134,6 @@ class FlashSACActor(nn.Module):
         dones: torch.Tensor | None = None,
         deterministic: bool = False,
     ) -> torch.Tensor:
-        if isinstance(dones, bool):
-            deterministic = dones
-            dones = None
         mean, std = self.get_mean_and_std(obs, training=False)
         if deterministic:
             return torch.tanh(mean)

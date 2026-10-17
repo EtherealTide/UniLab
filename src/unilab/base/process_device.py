@@ -20,7 +20,7 @@ from unilab.process_context import visible_cuda_entries
 # These backends consume an explicit integer device id while materializing
 # their simulator.  MuJoCo/Motrix/Drake run CPU-authoritative physics; their
 # optional accelerator Manager buffers are selected separately through
-# ``manager_torch_device``.
+# ``env.sim_carrier_device``.
 BACKEND_ENV_DEVICE_FIELDS: dict[str, str] = {
     "genesis": "genesis_device_id",
 }
@@ -39,7 +39,7 @@ BACKEND_ENV_DEVICE_STR_FIELDS: dict[str, str] = {
 
 # MuJoCo is the scoped HOST_BRIDGE backend whose training collector may explicitly
 # request accelerator Torch carriers across its packed boundary.
-_COLLECTOR_TENSOR_BACKENDS = {"mujoco"}
+_SIM_CARRIER_BACKENDS = {"mujoco"}
 
 
 # Set once ``bind_genesis_process_device`` has pinned CUDA_VISIBLE_DEVICES for
@@ -160,18 +160,18 @@ def apply_backend_env_device_override(
     return result
 
 
-def apply_manager_torch_device_override(
+def apply_sim_carrier_device_override(
     env_cfg_override: Mapping[str, Any] | None,
     backend_type: str,
     *,
-    collector_tensor_device: str | None = None,
+    sim_carrier_device: str | None = None,
     learner_device: str | None = None,
 ) -> dict[str, Any]:
     """Return an env override selecting optional HOST_BRIDGE Torch carriers.
 
-    The input mapping is never mutated. ``collector_tensor_device`` is the explicit
-    training contract: ``cpu`` remains on CPU and unindexed ``cuda`` is resolved to
-    the current device by the environment. ``auto`` follows the learner device: a
+    The input mapping is never mutated. ``training.sim_carrier_device`` is the
+    explicit training contract: ``cpu`` remains on CPU and unindexed ``cuda`` is
+    resolved to the current device by the environment. ``auto`` follows the learner device: a
     CUDA learner routes the rank-local (indexed) learner device string, while a CPU
     or torch.mps learner keeps the CPU carrier. ``auto`` is a no-op for backends
     outside the MuJoCo HOST_BRIDGE scope and when no learner device is known. The
@@ -180,41 +180,46 @@ def apply_manager_torch_device_override(
     """
 
     result = dict(env_cfg_override) if env_cfg_override is not None else {}
+    if "manager_torch_device" in result:
+        raise ValueError(
+            "env.manager_torch_device was removed; use env.sim_carrier_device "
+            "(accepted values: cpu, cuda, or cuda:<index>)"
+        )
     backend = _normalize_backend(backend_type)
-    if collector_tensor_device is not None:
-        device = str(collector_tensor_device).strip().lower()
+    if sim_carrier_device is not None:
+        device = str(sim_carrier_device).strip().lower()
         if device not in {"auto", "cpu", "cuda"}:
             raise ValueError(
-                "training.collector_tensor_device must be 'auto', 'cpu', or 'cuda'; "
-                f"got {collector_tensor_device!r}"
+                "training.sim_carrier_device must be 'auto', 'cpu', or 'cuda'; "
+                f"got {sim_carrier_device!r}"
             )
-        if backend not in _COLLECTOR_TENSOR_BACKENDS:
+        if backend not in _SIM_CARRIER_BACKENDS:
             if device == "cuda":
                 raise ValueError(
-                    "training.collector_tensor_device=cuda is supported only for "
+                    "training.sim_carrier_device=cuda is supported only for "
                     f"the MuJoCo HOST_BRIDGE backend; got {backend_type!r}"
                 )
             return result
         if device == "auto":
-            return _apply_manager_torch_device_auto(result, learner_device)
-        result["manager_torch_device"] = device
+            return _apply_sim_carrier_device_auto(result, learner_device)
+        result["sim_carrier_device"] = device
         return result
 
-    if backend not in _COLLECTOR_TENSOR_BACKENDS:
+    if backend not in _SIM_CARRIER_BACKENDS:
         return result
     if learner_device is None:
         return result
     device = str(learner_device).strip()
     if not device or device.lower() == "cpu":
-        result["manager_torch_device"] = "cpu"
+        result["sim_carrier_device"] = "cpu"
         return result
     if device.split(":", 1)[0].lower() != "cuda":
         return result
-    result["manager_torch_device"] = device
+    result["sim_carrier_device"] = device
     return result
 
 
-def _apply_manager_torch_device_auto(
+def _apply_sim_carrier_device_auto(
     result: dict[str, Any],
     learner_device: str | None,
 ) -> dict[str, Any]:
@@ -229,10 +234,39 @@ def _apply_manager_torch_device_auto(
         return result
     device = str(learner_device).strip()
     if not device or device.split(":", 1)[0].lower() != "cuda":
-        result["manager_torch_device"] = "cpu"
+        result["sim_carrier_device"] = "cpu"
         return result
-    result["manager_torch_device"] = device
+    result["sim_carrier_device"] = device
     return result
+
+
+def canonicalize_sim_carrier_device(requested_device: str | None) -> str:
+    """Return the concrete public-manager carrier device for a request."""
+    import torch
+
+    if requested_device is None:
+        return "cpu"
+    try:
+        device = torch.device(str(requested_device).strip())
+    except (RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"sim_carrier_device is not a valid Torch device: {requested_device!r}"
+        ) from exc
+    if device.type != "cuda":
+        if device.type != "cpu":
+            raise ValueError(f"sim_carrier_device must be cpu or cuda; got {requested_device!r}")
+        return "cpu"
+    if not torch.cuda.is_available():
+        raise ValueError(
+            f"sim_carrier_device {requested_device!r} requires CUDA, but CUDA is unavailable"
+        )
+    index = device.index if device.index is not None else int(torch.cuda.current_device())
+    if index >= int(torch.cuda.device_count()):
+        raise ValueError(
+            f"sim_carrier_device index {index} is out of range; "
+            f"torch.cuda.device_count()={torch.cuda.device_count()}"
+        )
+    return f"cuda:{index}"
 
 
 def resolve_backend_process_device(backend_type: str, learner_device: str | None) -> str | None:
@@ -280,17 +314,6 @@ def bind_backend_process_device_for_backend(backend_type: str, resolved: str) ->
 
         return cast(str | None, bind_mjwarp_process_device(resolved))
     return None
-
-
-def bind_backend_process_device(resolved: str) -> str | None:
-    """Bind a resolved backend process device in the current process.
-
-    Top-level on purpose: off-policy collector setups can inject this binder
-    and pickle it by reference into spawn-based subprocesses. The mjwarp
-    import stays lazy so the binder is importable without the ``mjwarp``
-    extra installed.
-    """
-    return bind_backend_process_device_for_backend("mjwarp", resolved)
 
 
 def _pin_cuda_visible_devices(index: int) -> None:
@@ -408,9 +431,9 @@ def _reset_genesis_device_pin_for_tests() -> None:
 
 __all__ = [
     "BACKEND_ENV_DEVICE_FIELDS",
+    "canonicalize_sim_carrier_device",
     "apply_backend_env_device_override",
-    "apply_manager_torch_device_override",
-    "bind_backend_process_device",
+    "apply_sim_carrier_device_override",
     "bind_backend_process_device_for_backend",
     "bind_genesis_process_device",
     "configure_backend_process_device",

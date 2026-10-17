@@ -8,9 +8,15 @@ from functools import lru_cache
 import torch
 
 
-def _xpu_available() -> bool:
+def xpu_available() -> bool:
     xpu = getattr(torch, "xpu", None)
     is_available = getattr(xpu, "is_available", None)
+    return bool(callable(is_available) and is_available())
+
+
+def mps_available() -> bool:
+    mps = getattr(torch.backends, "mps", None)
+    is_available = getattr(mps, "is_available", None)
     return bool(callable(is_available) and is_available())
 
 
@@ -18,9 +24,9 @@ def get_default_device() -> str:
     """Detect the best available device."""
     if torch.cuda.is_available():
         return f"cuda:{torch.cuda.current_device()}"
-    if _xpu_available():
+    if xpu_available():
         return "xpu"
-    if torch.backends.mps.is_available():
+    if mps_available():
         return "mps"
     return "cpu"
 

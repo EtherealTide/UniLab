@@ -12,7 +12,9 @@ from unilab.rl.contracts.env import EnvFactory
 from unilab.rl.contracts.observations import get_obs_dims
 from unilab.rl.runtime.nan_guard import NanGuardCfg
 from unilab.rl.runtime.offpolicy.actor_adapter import import_actor_adapter_modules
-from unilab.rl.runtime.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
+from unilab.rl.runtime.offpolicy.double_buffer_runner import (
+    DoubleBufferOffPolicyRunner,
+)
 from unilab.rl.runtime.offpolicy.runtime import (
     resolve_actor_adapter_modules,
     resolve_custom_offpolicy_runtime,
