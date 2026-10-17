@@ -35,7 +35,7 @@ def test_torch_compile_cuda_fallback_warns_when_triton_missing(monkeypatch, caps
     monkeypatch.setattr(importlib.util, "find_spec", _without_triton)
     compile_helper._WARNED_REASONS.clear()
 
-    assert compile_helper.get_torch_compile_for_cuda("cuda", warn=True) is None
+    assert compile_helper.get_torch_compile_for_device("cuda", warn=True) is None
 
     stderr = capsys.readouterr().err
     assert "WARNING: torch.compile is unavailable for CUDA" in stderr
@@ -52,8 +52,8 @@ def test_torch_compile_cuda_fallback_warning_is_once(monkeypatch, capsys) -> Non
     monkeypatch.setattr(importlib.util, "find_spec", _without_triton)
     compile_helper._WARNED_REASONS.clear()
 
-    compile_helper.get_torch_compile_for_cuda("cuda", warn=True)
-    compile_helper.get_torch_compile_for_cuda("cuda", warn=True)
+    compile_helper.get_torch_compile_for_device("cuda", warn=True)
+    compile_helper.get_torch_compile_for_device("cuda", warn=True)
 
     assert capsys.readouterr().err.count("torch.compile is unavailable") == 1
 
@@ -66,7 +66,7 @@ def test_torch_compile_cuda_returns_available_compile_without_warning(monkeypatc
     monkeypatch.setattr(torch, "compile", fake_compile)
     compile_helper._WARNED_REASONS.clear()
 
-    assert compile_helper.get_torch_compile_for_cuda("cuda", warn=True) is fake_compile
+    assert compile_helper.get_torch_compile_for_device("cuda", warn=True) is fake_compile
     assert capsys.readouterr().err == ""
 
 

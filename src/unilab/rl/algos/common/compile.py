@@ -27,13 +27,6 @@ def _warn_once(device_type: str, reason: str) -> None:
         print(message, file=sys.stderr)
 
 
-def get_torch_compile_for_cuda(
-    device: torch.device | str, *, warn: bool = False
-) -> Callable[..., Any] | None:
-    """Backward-compatible CUDA alias for :func:`get_torch_compile_for_device`."""
-    return get_torch_compile_for_device(device, warn=warn)
-
-
 def get_torch_compile_for_device(
     device: torch.device | str, *, warn: bool = False
 ) -> Callable[..., Any] | None:

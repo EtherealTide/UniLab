@@ -102,7 +102,7 @@ def test_flashsac_cuda_adam_optimizers_are_capturable(monkeypatch) -> None:
     monkeypatch.setattr(torch.optim.lr_scheduler, "LambdaLR", _FakeLambdaLR)
     monkeypatch.setattr(
         flash_sac_module,
-        "get_torch_compile_for_cuda",
+        "get_torch_compile_for_device",
         lambda *_args, **_kwargs: lambda fn: fn,
     )
     monkeypatch.setattr(
@@ -221,7 +221,7 @@ def test_flashsac_capture_failure_warns_and_falls_back(monkeypatch) -> None:
 def test_flashsac_nvidia_cuda_honors_compile_opt_out(monkeypatch) -> None:
     monkeypatch.setattr(
         flash_sac_module,
-        "get_torch_compile_for_cuda",
+        "get_torch_compile_for_device",
         lambda *_args, **_kwargs: pytest.fail("explicit opt-out queried torch.compile"),
     )
     monkeypatch.setattr(
@@ -245,7 +245,7 @@ def test_flashsac_nvidia_cuda_honors_compile_opt_out(monkeypatch) -> None:
 def test_flashsac_nvidia_cuda_keeps_accelerated_default(monkeypatch) -> None:
     monkeypatch.setattr(
         flash_sac_module,
-        "get_torch_compile_for_cuda",
+        "get_torch_compile_for_device",
         lambda *_args, **_kwargs: lambda fn, **_compile_kwargs: fn,
     )
     monkeypatch.setattr(
@@ -264,7 +264,7 @@ def test_flashsac_nvidia_cuda_keeps_accelerated_default(monkeypatch) -> None:
 def test_flashsac_nvidia_cuda_graph_opt_out_keeps_objective_compile(monkeypatch) -> None:
     monkeypatch.setattr(
         flash_sac_module,
-        "get_torch_compile_for_cuda",
+        "get_torch_compile_for_device",
         lambda *_args, **_kwargs: lambda fn, **_compile_kwargs: fn,
     )
     monkeypatch.setattr(FlashSACLearner, "_compile_training_methods", lambda _self: None)
@@ -285,7 +285,7 @@ def test_flashsac_nvidia_cuda_graph_opt_out_keeps_objective_compile(monkeypatch)
 def test_flashsac_whole_cycle_does_not_override_compile_scope(monkeypatch) -> None:
     monkeypatch.setattr(
         flash_sac_module,
-        "get_torch_compile_for_cuda",
+        "get_torch_compile_for_device",
         lambda *_args, **_kwargs: lambda fn, **_compile_kwargs: fn,
     )
     monkeypatch.setattr(
@@ -320,7 +320,7 @@ def test_flashsac_hip_cuda_keeps_compatible_compile_opt_out(monkeypatch) -> None
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="NVIDIA CUDA runtime required")
 def test_flashsac_nvidia_cuda_fails_closed_without_inductor(monkeypatch) -> None:
     monkeypatch.setattr(
-        flash_sac_module, "get_torch_compile_for_cuda", lambda *_args, **_kwargs: None
+        flash_sac_module, "get_torch_compile_for_device", lambda *_args, **_kwargs: None
     )
 
     with pytest.raises(RuntimeError, match="requires CUDA Inductor/Triton"):
@@ -337,7 +337,7 @@ def test_flashsac_nvidia_cuda_fails_closed_without_inductor(monkeypatch) -> None
 def test_flashsac_nvidia_cuda_fails_closed_for_graph_incompatible_options(monkeypatch) -> None:
     monkeypatch.setattr(
         flash_sac_module,
-        "get_torch_compile_for_cuda",
+        "get_torch_compile_for_device",
         lambda *_args, **_kwargs: lambda fn: fn,
     )
 
@@ -436,7 +436,7 @@ def test_flashsac_whole_cycle_uses_max_autotune_without_nested_graphs(monkeypatc
     learner._compile_full_update_cycle = True
     monkeypatch.setattr(
         flash_sac_module,
-        "get_torch_compile_for_cuda",
+        "get_torch_compile_for_device",
         lambda *_args, **_kwargs: fake_compile,
     )
 

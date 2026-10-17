@@ -117,6 +117,16 @@ def algo_display_name(algo_type: str) -> str:
     return _ALGO_DISPLAY_NAMES.get(algo_type, algo_type.upper())
 
 
+def warn_deprecated_inference_request_timeout(*, stacklevel: int = 2) -> None:
+    warnings.warn(
+        "inference_request_timeout_sec is deprecated and has no effect; "
+        "off-policy coordination is liveness/phase-aware. Remove it from "
+        "runner calls and owner YAML.",
+        DeprecationWarning,
+        stacklevel=stacklevel,
+    )
+
+
 class _CollectorDiedError(RuntimeError):
     """Raised when an inference response cannot be delivered to the collector.
 
@@ -284,13 +294,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                     "inference_request_timeout_sec must be a positive number or None, "
                     f"got {inference_request_timeout_sec!r}"
                 )
-            warnings.warn(
-                "inference_request_timeout_sec is deprecated and has no effect; "
-                "off-policy coordination is liveness/phase-aware. Remove it from "
-                "runner calls and owner YAML.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+            warn_deprecated_inference_request_timeout(stacklevel=3)
         # Kept only for source-compatible construction. It is
         # intentionally not retained as a latency SLA anywhere in the runtime.
         self.learner_prepare_hook = learner_prepare_hook
