@@ -811,6 +811,18 @@ def resolve_play_actor_spec(
     return actor_algo_type, actor_kwargs
 
 
+def _flashsac_actor_kwargs(cfg: DictConfig) -> dict[str, Any]:
+    kwargs = {
+        "actor_num_blocks": cfg.algo.algo_params.actor_num_blocks,
+        "actor_noise_zeta_mu": cfg.algo.algo_params.actor_noise_zeta_mu,
+        "actor_noise_zeta_max": cfg.algo.algo_params.actor_noise_zeta_max,
+    }
+    actor_config = cfg.algo.algo_params.get("actor_config")
+    if actor_config is not None:
+        kwargs["actor_config"] = actor_config
+    return kwargs
+
+
 def build_play_actor(
     algo_name: str,
     cfg: DictConfig,
@@ -841,6 +853,7 @@ def build_play_actor(
             **actor_kwargs,
         )
     elif algo_name == "flashsac":
+        build_actor_kwargs = _flashsac_actor_kwargs(cfg)
         actor = build_actor(
             algo_name,
             obs_dim,
@@ -848,10 +861,7 @@ def build_play_actor(
             cfg.algo.actor_hidden_dim,
             cfg.algo.use_layer_norm,
             device,
-            actor_num_blocks=cfg.algo.algo_params.actor_num_blocks,
-            actor_noise_zeta_mu=cfg.algo.algo_params.actor_noise_zeta_mu,
-            actor_noise_zeta_max=cfg.algo.algo_params.actor_noise_zeta_max,
-            actor_config=cfg.algo.algo_params.get("actor_config"),
+            **build_actor_kwargs,
         )
         if cfg.algo.obs_normalization:
             from unilab.rl.algos.common.normalization import EmpiricalNormalization
@@ -1003,14 +1013,7 @@ def create_sac_playback_session(
         critic_obs_dim=critic_obs_dim,
     )
     if algo_name == "flashsac":
-        actor_kwargs.update(
-            {
-                "actor_num_blocks": cfg.algo.algo_params.actor_num_blocks,
-                "actor_noise_zeta_mu": cfg.algo.algo_params.actor_noise_zeta_mu,
-                "actor_noise_zeta_max": cfg.algo.algo_params.actor_noise_zeta_max,
-                "actor_config": cfg.algo.algo_params.get("actor_config"),
-            }
-        )
+        actor_kwargs.update(_flashsac_actor_kwargs(cfg))
 
     actor = None
     checkpoint_path: str | None = None

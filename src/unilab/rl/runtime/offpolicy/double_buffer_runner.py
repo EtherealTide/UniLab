@@ -84,6 +84,15 @@ _ALGO_DISPLAY_NAMES = {
     "flashsac": "FlashSAC",
 }
 
+
+def reject_removed_inference_request_timeout(training: Mapping[str, Any]) -> None:
+    if "inference_request_timeout_sec" in training:
+        raise ValueError(
+            "training.inference_request_timeout_sec was removed; off-policy "
+            "coordination is liveness/phase-aware. Remove it from owner YAML."
+        )
+
+
 _DP_METRIC_PREFIX = "metric::"
 _DP_REWARD_COMPONENT_PREFIX = "reward_component::"
 _DP_COLLECTOR_TIMING_PREFIX = "collector_timing::"
