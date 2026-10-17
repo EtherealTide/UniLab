@@ -14,6 +14,7 @@ import os
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any, cast
 
 import torch
@@ -21,6 +22,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from unilab.rl.algos.common.normalization import EmpiricalNormalization
+from unilab.rl.runtime.device import sync_device
 from unilab.rl.runtime.offpolicy.warmup import (
     OffPolicyWarmupContext,
     capture_rng_state,
@@ -29,16 +31,27 @@ from unilab.rl.runtime.offpolicy.warmup import (
 )
 
 
-def polyak_update_target(target: nn.Module, source: nn.Module, tau: float) -> None:
-    """Polyak-average ``target`` parameters toward ``source`` in place."""
+def polyak_update_target(target: nn.Module, source: nn.Module, tau: float | torch.Tensor) -> None:
+    """Polyak-average ``target`` parameters toward ``source`` in place.
+
+    ``tau`` may be a device scalar.  The CUDA whole-cycle graph uses that form
+    to keep the finite-update gate on-device.
+    """
     with torch.no_grad():
         target_params = cast(list[torch.Tensor], list(target.parameters()))
         source_params = cast(list[torch.Tensor], list(source.parameters()))
-        try:
-            torch._foreach_lerp_(target_params, source_params, tau)
-        except RuntimeError:
-            for tgt, src in zip(target_params, source_params):
+        if isinstance(tau, torch.Tensor):
+            # Tensor-weight foreach_lerp_ performs a prohibited host sync while
+            # CUDA graph capture is active.  Per-parameter lerp_ is capture-safe
+            # and preserves the finite-gated device scalar.
+            for tgt, src in zip(target_params, source_params, strict=True):
                 tgt.lerp_(src, tau)
+        else:
+            try:
+                torch._foreach_lerp_(target_params, source_params, tau)
+            except RuntimeError:
+                for tgt, src in zip(target_params, source_params, strict=True):
+                    tgt.lerp_(src, tau)
 
 
 def fused_adam_supported(device_type: str) -> bool:
@@ -66,6 +79,146 @@ def fused_adam_supported(device_type: str) -> bool:
 _MPS_BF16_AUTOCAST_SUPPORTED: bool | None = None
 
 
+@dataclass(frozen=True)
+class AmpPolicy:
+    """Per-device AMP enablement and validation policy."""
+
+    enabled: bool
+    dtypes: frozenset[torch.dtype]
+    auto_dtype: torch.dtype | None
+    grad_scaler_dtypes: frozenset[torch.dtype] = frozenset()
+    explicit_only: bool = False
+    requires_runtime_probe: bool = False
+    compile_mutually_exclusive: bool = False
+
+    def manifest(self, amp_dtype: str) -> dict[str, object]:
+        return {
+            "enabled": self.enabled,
+            "requested_dtype": amp_dtype,
+            "supported_dtypes": [str(dtype).removeprefix("torch.") for dtype in self.dtypes],
+            "grad_scaler_dtypes": [
+                str(dtype).removeprefix("torch.") for dtype in self.grad_scaler_dtypes
+            ],
+            "auto_dtype": (
+                str(self.auto_dtype).removeprefix("torch.") if self.auto_dtype is not None else None
+            ),
+            "explicit_only": self.explicit_only,
+            "requires_runtime_probe": self.requires_runtime_probe,
+            "evidence": "policy",
+        }
+
+
+_AMP_POLICIES: dict[str, AmpPolicy] = {
+    "cuda": AmpPolicy(
+        enabled=True,
+        dtypes=frozenset((torch.float16, torch.bfloat16)),
+        auto_dtype=torch.bfloat16,
+        grad_scaler_dtypes=frozenset((torch.float16,)),
+    ),
+    "mps": AmpPolicy(
+        enabled=True,
+        dtypes=frozenset((torch.bfloat16,)),
+        auto_dtype=None,
+        explicit_only=True,
+        requires_runtime_probe=True,
+        compile_mutually_exclusive=True,
+    ),
+    "xpu": AmpPolicy(
+        enabled=True,
+        dtypes=frozenset((torch.bfloat16,)),
+        auto_dtype=torch.bfloat16,
+    ),
+    "cpu": AmpPolicy(enabled=False, dtypes=frozenset(), auto_dtype=None),
+}
+
+
+@dataclass(frozen=True)
+class AmpSelection:
+    """Resolved AMP enablement for one learner construction."""
+
+    policy: AmpPolicy
+    use_amp: bool
+    requested_dtype: str
+
+    @property
+    def dtype(self) -> torch.dtype | None:
+        if not self.use_amp:
+            return None
+        normalized = self.requested_dtype.strip().lower()
+        if normalized == "fp16":
+            return torch.float16
+        if normalized == "bf16":
+            return torch.bfloat16
+        return self.policy.auto_dtype
+
+    def manifest(self) -> dict[str, object]:
+        resolved_dtype = self.dtype
+        return {
+            **self.policy.manifest(self.requested_dtype),
+            "use_amp": self.use_amp,
+            "resolved_dtype": (
+                str(resolved_dtype).removeprefix("torch.") if resolved_dtype is not None else None
+            ),
+        }
+
+
+def resolve_amp_policy(device_type: str) -> AmpPolicy:
+    """Return the per-device AMP policy, failing closed for unknown devices."""
+    try:
+        return _AMP_POLICIES[device_type]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported learner AMP device type: {device_type!r}") from exc
+
+
+def resolve_amp_selection(
+    *,
+    device_type: str,
+    use_amp: bool,
+    amp_dtype: str,
+    learner_name: str,
+) -> AmpSelection:
+    """Resolve AMP enablement from the single cross-learner policy table."""
+    policy = resolve_amp_policy(device_type)
+    normalized_amp_dtype = amp_dtype.strip().lower()
+    if normalized_amp_dtype not in {"auto", "fp16", "bf16"}:
+        raise ValueError(f"Unsupported {learner_name} AMP dtype: {amp_dtype!r}")
+    enabled = bool(use_amp and policy.enabled)
+    if enabled and policy.explicit_only and normalized_amp_dtype == "auto":
+        enabled = False
+    resolved_dtype = {
+        "fp16": torch.float16,
+        "bf16": torch.bfloat16,
+    }.get(normalized_amp_dtype, policy.auto_dtype)
+    if enabled and resolved_dtype not in policy.dtypes:
+        supported = ", ".join(
+            str(dtype).removeprefix("torch.") for dtype in sorted(policy.dtypes, key=str)
+        )
+        raise ValueError(
+            f"{learner_name} {device_type.upper()} AMP requires one of the explicitly "
+            f"validated dtypes {supported}; got amp_dtype={amp_dtype!r}"
+        )
+    return AmpSelection(
+        policy=policy,
+        use_amp=enabled,
+        requested_dtype=amp_dtype,
+    )
+
+
+def validate_amp_compile_paths(
+    *,
+    device_type: str,
+    use_compile: bool,
+    use_amp: bool,
+    learner_name: str,
+) -> None:
+    """Reject initially unsupported compile/AMP combinations."""
+    if resolve_amp_policy(device_type).compile_mutually_exclusive and use_compile and use_amp:
+        raise ValueError(
+            f"{learner_name} MPS torch.compile and BF16 AMP are initially mutually "
+            "exclusive; enable exactly one path"
+        )
+
+
 def mps_bf16_autocast_supported() -> bool:
     """Probe whether this Torch/MPS runtime can execute BF16 autocast ops.
 
@@ -89,7 +242,7 @@ def mps_bf16_autocast_supported() -> bool:
                 outputs = probe(values)
                 loss = outputs.square().mean()
             loss.backward()
-            torch.mps.synchronize()
+            sync_device("mps")
             supported = (
                 outputs.dtype == torch.bfloat16
                 and bool(torch.isfinite(outputs).all().item())
@@ -163,7 +316,8 @@ class LearnerBoilerplateMixin:
         device_type: str,
         amp_dtype: torch.dtype,
     ) -> bool:
-        return bool(use_amp) and device_type == "cuda" and amp_dtype == torch.float16
+        """Whether the selected AMP dtype needs loss scaling on this device."""
+        return bool(use_amp) and amp_dtype in resolve_amp_policy(device_type).grad_scaler_dtypes
 
     def _autocast(self):
         return torch.autocast(
@@ -273,8 +427,7 @@ class WholeCycleLearnerMixin(LearnerBoilerplateMixin):
         self._pending_cycle_metric_values = None
 
     def _synchronize_compatibility_warmup(self) -> None:
-        if self._device_type == "cuda":
-            torch.cuda.synchronize(self.device)
+        sync_device(self.device)
 
     def _prepare_update_cycle_warmup(self, *, updates_per_step: int, policy_frequency: int) -> None:
         for optimizer in self._whole_cycle_optimizers():
@@ -458,21 +611,13 @@ class WholeCycleLearnerMixin(LearnerBoilerplateMixin):
     def soft_update_target(self) -> None:
         """Polyak-average the target critic, gated by critic-update finiteness."""
         with self._whole_cycle_target_update_range():
+            tau: float | torch.Tensor
             if self._device_type == "cuda":
-                with torch.no_grad():
-                    tau = self._target_tau * self._whole_cycle_finite_gate().to(
-                        self._target_tau.dtype
-                    )
-                    target, source = self._whole_cycle_target_modules()
-                    for target_parameter, source_parameter in zip(
-                        target.parameters(),
-                        source.parameters(),
-                        strict=True,
-                    ):
-                        target_parameter.lerp_(source_parameter, tau)
+                tau = self._target_tau * self._whole_cycle_finite_gate().to(self._target_tau.dtype)
             else:
-                target, source = self._whole_cycle_target_modules()
-                polyak_update_target(target, source, self.tau)
+                tau = self.tau
+            target, source = self._whole_cycle_target_modules()
+            polyak_update_target(target, source, tau)
 
     def _warm_update_cycle_graph(
         self,
@@ -515,7 +660,7 @@ class WholeCycleLearnerMixin(LearnerBoilerplateMixin):
                     policy_before_critic=policy_before_critic,
                 )
             torch.cuda.current_stream(self.device).wait_stream(stream)
-            torch.cuda.synchronize(self.device)
+            sync_device(self.device)
         finally:
             self._capture_update_cycle = False
             self._restore_optimizer_groups(optimizers, saved_groups)
@@ -531,7 +676,7 @@ class WholeCycleLearnerMixin(LearnerBoilerplateMixin):
             torch.cuda.set_rng_state(cuda_rng_state, self.device)
             for optimizer in optimizers:
                 self._zero_optimizer_gradients(optimizer)
-            torch.cuda.synchronize(self.device)
+            sync_device(self.device)
 
     def _ensure_update_cycle_graph(
         self,

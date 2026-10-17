@@ -22,14 +22,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-from unilab.rl.algos.common.compile import get_torch_compile_for_device, is_hip_runtime
+from unilab.rl.algos.common.compile import get_torch_compile_for_device
 from unilab.rl.algos.common.learner_boilerplate import (
     WholeCycleLearnerMixin,
     fused_adam_supported,
     mps_bf16_autocast_supported,
+    resolve_amp_selection,
     resolve_finite_check_flags,
+    validate_amp_compile_paths,
 )
 from unilab.rl.algos.common.normalization import EmpiricalNormalization
+from unilab.rl.algos.common.performance import resolve_learner_performance_tier
+from unilab.rl.runtime.device import sync_device
 from unilab.rl.runtime.offpolicy.warmup import capture_rng_state, restore_rng_state
 
 
@@ -397,26 +401,22 @@ class SACLearner(WholeCycleLearnerMixin):
     @staticmethod
     def _resolve_use_amp(use_amp: bool, amp_dtype: str, device_type: str) -> bool:
         """Resolve device-specific AMP enablement without runtime probing."""
-        if device_type == "mps" and use_amp:
-            normalized_amp_dtype = amp_dtype.strip().lower()
-            if normalized_amp_dtype == "auto":
-                return False
-            if normalized_amp_dtype != "bf16":
-                raise ValueError(
-                    "SAC MPS AMP requires the explicitly validated amp_dtype='bf16'; "
-                    f"got {amp_dtype!r}"
-                )
-            return True
-        return bool(use_amp) and device_type == "cuda"
+        return resolve_amp_selection(
+            device_type=device_type,
+            use_amp=use_amp,
+            amp_dtype=amp_dtype,
+            learner_name="SAC",
+        ).use_amp
 
     @staticmethod
     def _validate_performance_paths(device_type: str, use_compile: bool, use_amp: bool) -> None:
         """Reject initially unsupported MPS compile/AMP combinations."""
-        if device_type == "mps" and use_compile and use_amp:
-            raise ValueError(
-                "SAC MPS torch.compile and BF16 AMP are initially mutually exclusive; "
-                "enable exactly one path"
-            )
+        validate_amp_compile_paths(
+            device_type=device_type,
+            use_compile=use_compile,
+            use_amp=use_amp,
+            learner_name="SAC",
+        )
 
     def __init__(
         self,
@@ -457,8 +457,16 @@ class SACLearner(WholeCycleLearnerMixin):
         self.tau = tau
         self.max_grad_norm = max_grad_norm
         self.use_autotune = use_autotune
-        self._nvidia_cuda = self._device_type == "cuda" and not is_hip_runtime()
-        self.use_amp = self._resolve_use_amp(use_amp, amp_dtype, self._device_type)
+        self._performance_tier = resolve_learner_performance_tier(device)
+        self._nvidia_cuda = self._performance_tier.supports_whole_cycle_graph
+        amp_selection = resolve_amp_selection(
+            device_type=self._device_type,
+            use_amp=use_amp,
+            amp_dtype=amp_dtype,
+            learner_name="SAC",
+        )
+        self.use_amp = amp_selection.use_amp
+        self.amp_policy = amp_selection.manifest()
         if self._device_type == "mps" and self.use_amp and not mps_bf16_autocast_supported():
             raise RuntimeError(
                 "SAC MPS BF16 AMP was requested, but this Torch/MPS runtime "
@@ -554,7 +562,9 @@ class SACLearner(WholeCycleLearnerMixin):
         # `capturable` stays CUDA-only (rejected by torch on other devices).
         _fused = fused_adam_supported(self._device_type)
         _optimizer_cuda_kwargs = (
-            {"capturable": True} if _fused and self._device_type == "cuda" else {}
+            {"capturable": True}
+            if _fused and self._performance_tier.supports_capturable_optimizer
+            else {}
         )
 
         # Optimizers (AdamW with holosoma betas)
@@ -637,9 +647,7 @@ class SACLearner(WholeCycleLearnerMixin):
         self._pending_update_finite_values = None
 
     def _synchronize_compatibility_warmup(self) -> None:
-        super()._synchronize_compatibility_warmup()
-        if self._device_type == "mps":
-            torch.mps.synchronize()
+        return super()._synchronize_compatibility_warmup()
 
     def _whole_cycle_optimizers(self) -> tuple[optim.Optimizer, ...]:
         return (self.q_optimizer, self.actor_optimizer, self.alpha_optimizer)
@@ -805,10 +813,7 @@ class SACLearner(WholeCycleLearnerMixin):
             self._compiled_actor_loss_tensors = self._actor_loss_tensors
 
     def _synchronize_compile_selection(self) -> None:
-        if self._device_type == "cuda":
-            torch.cuda.synchronize(self.device)
-        elif self._device_type == "mps":
-            torch.mps.synchronize()
+        sync_device(self.device)
 
     def _benchmark_critic_loss_tensors(self) -> float:
         assert self._mps_selection_batch is not None

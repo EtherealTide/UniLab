@@ -12,11 +12,205 @@ flag.
 from __future__ import annotations
 
 import multiprocessing as mp
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import torch
 
+from unilab.rl.runtime.device import sync_device
+
 _SPAWN_CTX = mp.get_context("spawn")
+
+
+class RingTransport(Protocol):
+    """Device-specific staging and event mechanics for an inference ring.
+
+    Placement/topology policy remains in :mod:`unilab.rl.runtime.placement`;
+    implementations here only consume an already allocated ring.
+    """
+
+    def validate_observation_inputs(
+        self, ring: "SharedInferenceRing", observations: torch.Tensor, dones: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]: ...
+
+    def validate_action_input(
+        self, ring: "SharedInferenceRing", actions: torch.Tensor
+    ) -> torch.Tensor: ...
+
+    def stage_observation(
+        self,
+        ring: "SharedInferenceRing",
+        slot: int,
+        observations: torch.Tensor,
+        dones: torch.Tensor,
+    ) -> None: ...
+
+    def record_observation_ready(self, ring: "SharedInferenceRing", slot: int) -> None: ...
+
+    def wait_observation_ready(self, ring: "SharedInferenceRing", slot: int) -> None: ...
+
+    def publish_action(
+        self,
+        ring: "SharedInferenceRing",
+        slot: int,
+        actions: torch.Tensor,
+        *,
+        non_blocking: bool,
+    ) -> None: ...
+
+    def clone_action(self, ring: "SharedInferenceRing", slot: int) -> torch.Tensor: ...
+
+    def wait_action_ready(self, ring: "SharedInferenceRing", slot: int) -> None: ...
+
+    def wait_consumer_done(self, ring: "SharedInferenceRing", slot: int) -> None: ...
+
+    def record_action_ready(self, ring: "SharedInferenceRing", slot: int) -> None: ...
+
+    def record_consumer_done(self, ring: "SharedInferenceRing", slot: int) -> None: ...
+
+    def record_consumer_done_tick(
+        self, ring: "SharedInferenceRing", slot: int, tick_id: int
+    ) -> None: ...
+
+
+class CpuRingTransport:
+    """Synchronous staging transport for a CPU inference ring."""
+
+    def validate_observation_inputs(
+        self, ring: "SharedInferenceRing", observations: torch.Tensor, dones: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if observations.device.type != "cpu" or dones.device.type != "cpu":
+            raise ValueError("CPU inference rings require CPU tensor observations")
+        return observations, dones
+
+    def validate_action_input(
+        self, ring: "SharedInferenceRing", actions: torch.Tensor
+    ) -> torch.Tensor:
+        if actions.device.type not in {"cpu", "cuda"}:
+            raise ValueError("CPU inference actions must live on CPU or CUDA")
+        return actions
+
+    def stage_observation(
+        self,
+        ring: "SharedInferenceRing",
+        slot: int,
+        observations: torch.Tensor,
+        dones: torch.Tensor,
+    ) -> None:
+        ring.observations[slot].copy_(observations)
+        ring.dones[slot].copy_(dones)
+
+    def record_observation_ready(self, ring: "SharedInferenceRing", slot: int) -> None:
+        del ring, slot
+
+    def wait_observation_ready(self, ring: "SharedInferenceRing", slot: int) -> None:
+        del ring, slot
+
+    def publish_action(
+        self,
+        ring: "SharedInferenceRing",
+        slot: int,
+        actions: torch.Tensor,
+        *,
+        non_blocking: bool,
+    ) -> None:
+        ring.actions[slot].copy_(actions, non_blocking=non_blocking)
+        if actions.device.type == "cuda":
+            # The shared CPU storage cannot be released to a new producer until
+            # the async device-to-host copy has completed.
+            sync_device(actions.device, stream=True)
+
+    def clone_action(self, ring: "SharedInferenceRing", slot: int) -> torch.Tensor:
+        return ring.actions[slot].clone()
+
+    def wait_action_ready(self, ring: "SharedInferenceRing", slot: int) -> None:
+        del ring, slot
+
+    def wait_consumer_done(self, ring: "SharedInferenceRing", slot: int) -> None:
+        del ring, slot
+
+    def record_action_ready(self, ring: "SharedInferenceRing", slot: int) -> None:
+        del ring, slot
+
+    def record_consumer_done(self, ring: "SharedInferenceRing", slot: int) -> None:
+        del ring, slot
+
+    def record_consumer_done_tick(
+        self, ring: "SharedInferenceRing", slot: int, tick_id: int
+    ) -> None:
+        del ring, slot, tick_id
+
+
+class CudaRingTransport:
+    """Per-slot IPC-event staging transport for a CUDA inference ring."""
+
+    def validate_observation_inputs(
+        self, ring: "SharedInferenceRing", observations: torch.Tensor, dones: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if observations.device != ring.device or dones.device != ring.device:
+            raise ValueError("CUDA inference rings require tensors on the ring device")
+        return observations, dones
+
+    def validate_action_input(
+        self, ring: "SharedInferenceRing", actions: torch.Tensor
+    ) -> torch.Tensor:
+        if actions.device != ring.device:
+            raise ValueError("CUDA inference actions must live on the ring device")
+        return actions
+
+    def stage_observation(
+        self,
+        ring: "SharedInferenceRing",
+        slot: int,
+        observations: torch.Tensor,
+        dones: torch.Tensor,
+    ) -> None:
+        ring.observations[slot].copy_(observations)
+        ring.dones[slot].copy_(dones)
+
+    def record_observation_ready(self, ring: "SharedInferenceRing", slot: int) -> None:
+        ring._observation_event(slot).record(torch.cuda.current_stream(ring.device))
+
+    def wait_observation_ready(self, ring: "SharedInferenceRing", slot: int) -> None:
+        ring._observation_event(slot).wait(torch.cuda.current_stream(ring.device))
+
+    def publish_action(
+        self,
+        ring: "SharedInferenceRing",
+        slot: int,
+        actions: torch.Tensor,
+        *,
+        non_blocking: bool,
+    ) -> None:
+        ring.actions[slot].copy_(actions, non_blocking=non_blocking)
+
+    def clone_action(self, ring: "SharedInferenceRing", slot: int) -> torch.Tensor:
+        return ring.actions[slot].clone()
+
+    def wait_action_ready(self, ring: "SharedInferenceRing", slot: int) -> None:
+        ring._action_event(slot).wait(torch.cuda.current_stream(ring.device))
+
+    def wait_consumer_done(self, ring: "SharedInferenceRing", slot: int) -> None:
+        ring._consumer_done_event(slot).wait(torch.cuda.current_stream(ring.device))
+
+    def record_action_ready(self, ring: "SharedInferenceRing", slot: int) -> None:
+        ring._action_event(slot).record(torch.cuda.current_stream(ring.device))
+
+    def record_consumer_done(self, ring: "SharedInferenceRing", slot: int) -> None:
+        del ring, slot
+
+    def record_consumer_done_tick(
+        self, ring: "SharedInferenceRing", slot: int, tick_id: int
+    ) -> None:
+        ring._consumer_done_event(slot).record(torch.cuda.current_stream(ring.device))
+        ring._consumer_done_ticks[slot] = int(tick_id)
+
+
+def _build_ring_transport(device: torch.device) -> RingTransport:
+    if device.type == "cpu":
+        return CpuRingTransport()
+    if device.type == "cuda":
+        return CudaRingTransport()
+    raise ValueError(f"inference rings support CPU and CUDA only, got {device.type!r}")
 
 
 def estimate_inference_ring_bytes(
@@ -96,6 +290,7 @@ class SharedInferenceRing:
 
         self._shared_semaphores: list = []
         self._shared_locks: list = []
+        self._transport = _build_ring_transport(target)
         self._local_observation_events: dict[int, torch.cuda.Event] = {}
         self._local_action_events: dict[int, torch.cuda.Event] = {}
         self._local_consumer_done_events: dict[int, torch.cuda.Event] = {}
@@ -180,6 +375,7 @@ class SharedInferenceRing:
         # CUDA event wrappers are process-local. Their IPC handles are copied to
         # the spawn process and reconstructed lazily after CUDA initialization.
         state = self.__dict__.copy()
+        state["_transport"] = _build_ring_transport(self.device)
         state["_local_observation_events"] = {}
         state["_local_action_events"] = {}
         state["_local_consumer_done_events"] = {}
@@ -248,10 +444,8 @@ class SharedInferenceRing:
             slot = self._slot_index(tick_id)
             self._request_ticks[slot] = -1
             self._request_epochs[slot] = -1
-            self.observations[slot].copy_(observation_tensor)
-            self.dones[slot].copy_(done_tensor)
-            if self.device.type == "cuda":
-                self._observation_event(slot).record(torch.cuda.current_stream(self.device))
+            self._transport.stage_observation(self, slot, observation_tensor, done_tensor)
+            self._transport.record_observation_ready(self, slot)
             self._request_ticks[slot] = int(tick_id)
             self._request_epochs[slot] = int(self._epoch.value)
             self._published_tick.value = int(tick_id)
@@ -320,8 +514,7 @@ class SharedInferenceRing:
                 int(self._epoch.value),
                 "observation",
             )
-            if self.device.type == "cuda":
-                self._observation_event(slot).wait(torch.cuda.current_stream(self.device))
+            self._transport.wait_observation_ready(self, slot)
             observations.copy_(self.observations[slot], non_blocking=non_blocking)
             dones.copy_(self.dones[slot], non_blocking=non_blocking)
             self._observation_tick.value = int(tick_id)
@@ -359,16 +552,17 @@ class SharedInferenceRing:
                     f"Inference action response already published for tick {tick_id}"
                 )
 
-            if self.device.type == "cuda":
-                if int(self._consumer_done_ticks[slot]) != -1:
-                    self._consumer_done_event(slot).wait(torch.cuda.current_stream(self.device))
+            if int(self._consumer_done_ticks[slot]) != -1:
+                self._transport.wait_consumer_done(self, slot)
             self._response_ticks[slot] = -1
             self._policy_versions[slot] = -1
-            self.actions[slot].copy_(action_tensor, non_blocking=non_blocking)
-            if self.device.type == "cpu" and action_tensor.device.type == "cuda":
-                torch.cuda.current_stream(action_tensor.device).synchronize()
-            elif self.device.type == "cuda":
-                self._action_event(slot).record(torch.cuda.current_stream(self.device))
+            self._transport.publish_action(
+                self,
+                slot,
+                action_tensor,
+                non_blocking=non_blocking,
+            )
+            self._transport.record_action_ready(self, slot)
             self._response_ticks[slot] = int(tick_id)
             self._policy_versions[slot] = int(policy_version)
             self._action_tick.value = int(tick_id)
@@ -407,12 +601,10 @@ class SharedInferenceRing:
                 raise RuntimeError(
                     f"Inference action tick mismatch: expected {tick_id}, got {actual_tick}"
                 )
-            if self.device.type == "cuda":
-                self._action_event(slot).wait(torch.cuda.current_stream(self.device))
-            actions = self._clone_action(slot)
-            if self.device.type == "cuda":
-                self._consumer_done_event(slot).record(torch.cuda.current_stream(self.device))
-                self._consumer_done_ticks[slot] = int(tick_id)
+            self._transport.wait_action_ready(self, slot)
+            actions = self._transport.clone_action(self, slot)
+            self._transport.record_consumer_done(self, slot)
+            self._transport.record_consumer_done_tick(self, slot, tick_id)
             policy_version = int(self._policy_versions[slot])
             self._response_ticks[slot] = -1
             self._policy_versions[slot] = -1
@@ -464,7 +656,7 @@ class SharedInferenceRing:
 
     def _clone_action(self, slot: int) -> torch.Tensor:
         """Clone the slot's action storage (on the consumer's stream for CUDA)."""
-        return self.actions[slot].clone()
+        return self._transport.clone_action(self, slot)
 
     def _observation_inputs(
         self, observations: torch.Tensor, dones: torch.Tensor
@@ -473,14 +665,9 @@ class SharedInferenceRing:
             raise TypeError("inference observations and dones must be Torch tensors")
         observation_tensor = observations.to(dtype=torch.float32)
         done_tensor = dones.to(dtype=torch.float32).reshape(-1)
-        if self.device.type == "cuda" and (
-            observation_tensor.device != self.device or done_tensor.device != self.device
-        ):
-            raise ValueError("CUDA inference rings require tensors on the ring device")
-        if self.device.type == "cpu" and (
-            observation_tensor.device.type != "cpu" or done_tensor.device.type != "cpu"
-        ):
-            raise ValueError("CPU inference rings require CPU tensor observations")
+        observation_tensor, done_tensor = self._transport.validate_observation_inputs(
+            self, observation_tensor, done_tensor
+        )
         if tuple(observation_tensor.shape) != (self.num_envs, self.obs_dim):
             raise ValueError(
                 f"Inference observation shape must be {(self.num_envs, self.obs_dim)}, "
@@ -501,10 +688,7 @@ class SharedInferenceRing:
                 f"Inference action shape must be {(self.num_envs, self.action_dim)}, "
                 f"got {tuple(action_tensor.shape)}"
             )
-        if self.device.type == "cuda" and action_tensor.device != self.device:
-            raise ValueError("inference actions must live on the ring device")
-        if self.device.type == "cpu" and action_tensor.device.type not in {"cpu", "cuda"}:
-            raise ValueError("inference actions must live on CPU or CUDA")
+        action_tensor = self._transport.validate_action_input(self, action_tensor)
         return action_tensor
 
     def _acquire(self, semaphore: Any, timeout_sec: float | None) -> bool:
@@ -592,4 +776,10 @@ class SharedInferenceRing:
         return event
 
 
-__all__ = ["SharedInferenceRing", "estimate_inference_ring_bytes"]
+__all__ = [
+    "CpuRingTransport",
+    "CudaRingTransport",
+    "RingTransport",
+    "SharedInferenceRing",
+    "estimate_inference_ring_bytes",
+]

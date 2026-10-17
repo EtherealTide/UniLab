@@ -14,6 +14,7 @@ import torch
 from unilab.rl.algos.flash_sac.learner import FlashSACLearner
 from unilab.rl.algos.sac.learner import SACLearner
 from unilab.rl.runtime.offpolicy.warmup import (
+    CudaRngStateApi,
     OffPolicyWarmupContext,
     capture_rng_state,
     restore_rng_state,
@@ -74,6 +75,47 @@ def test_rng_state_capture_restores_mps_generator(monkeypatch: pytest.MonkeyPatc
     restore_rng_state(state)
 
     torch.testing.assert_close(current, torch.tensor([1, 2, 3]))
+
+
+def test_rng_state_api_table_skips_cuda_before_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(torch.cuda, "is_initialized", lambda: False)
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_rng_state",
+        lambda *_args, **_kwargs: calls.append("get") or torch.empty(0),
+    )
+
+    assert CudaRngStateApi().state_available(torch.device("cuda:0")) is False
+    assert calls == []
+
+
+def test_rng_state_api_table_dispatches_initialized_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, torch.device]] = []
+    state = torch.tensor([4, 5])
+
+    def fake_get(device: torch.device) -> torch.Tensor:
+        calls.append(("get", device))
+        return state
+
+    def fake_set(value: torch.Tensor, device: torch.device) -> None:
+        assert value is state
+        calls.append(("set", device))
+
+    monkeypatch.setattr(torch.cuda, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_rng_state", fake_get)
+    monkeypatch.setattr(torch.cuda, "set_rng_state", fake_set)
+    api = CudaRngStateApi()
+    device = torch.device("cuda:3")
+
+    captured = api.get(device)
+    api.set(captured, device)
+
+    assert calls == [("get", device), ("set", device)]
 
 
 @pytest.mark.parametrize(

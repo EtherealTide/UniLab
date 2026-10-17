@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Tuple, cast
 
 import torch
 
+from unilab.rl.runtime.device import sync_device
 from unilab.rl.runtime.ipc.completion import wait_completion
 from unilab.rl.runtime.ipc.replay_buffer import ReplayBuffer
 from unilab.rl.runtime.ipc.replay_pipelines.base import ReplayTickMetadata
@@ -251,8 +252,18 @@ class GPUResidentReplayPipeline:
             "ingress_slot_rows": self._replay_buffer._ingress_slot_rows,
             "ingress_diagnostics": ingress_diagnostics,
             "h2d_submitter": self.h2d_submitter,
+            "h2d_submitter_kind": self._transfer_backend.h2d_submitter,
             "device_submission_thread": "learner" if self._main_thread_submission else "daemon",
             "ring_depth": 2,
+            "supports_pinned": self._transfer_backend.supports_pinned,
+            "supports_timing_events": self._transfer_backend.supports_timing_events,
+            "capability_evidence": {
+                "h2d_submitter_kind": "capability",
+                "host_pinned": "capability",
+                "supports_pinned": "policy",
+                "supports_timing_events": "capability",
+                "device_family": "policy",
+            },
         }
 
     def ingress_diagnostics(self) -> dict[str, int | float]:
@@ -671,7 +682,7 @@ class GPUResidentReplayPipeline:
             event.synchronize()
         else:
             self._gather_rows(visible_size=visible_size, slot=slot, gen=generator)
-            torch.mps.synchronize()
+            sync_device(self._device)
         self._gpu_packed[slot].zero_()
         return self._large_batch_view(slot)
 

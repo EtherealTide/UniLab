@@ -12,6 +12,7 @@ class TorchCopyReplayTransferBackend:
     host_memory_kind = "pageable_shared"
     host_pinned = False
     direct_pinned_shared = False
+    supports_pinned = False
     supports_timing_events = False
 
     def __init__(self, *, device: torch.device, ring_depth: int) -> None:

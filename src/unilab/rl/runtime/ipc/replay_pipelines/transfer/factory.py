@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import cast
+
 import torch
 
 from unilab.rl.runtime.ipc.replay_pipelines.transfer.base import ReplayTransferBackend
@@ -17,8 +20,14 @@ def build_replay_transfer_backend(
     ring_depth: int,
 ) -> ReplayTransferBackend:
     """Build the transfer backend for a learner device."""
-    if device.type == "cuda":
-        return CudaLikeReplayTransferBackend(device=device, ring_depth=ring_depth)
-    if device.type == "mps":
-        return TorchCopyReplayTransferBackend(device=device, ring_depth=ring_depth)
-    raise ValueError(f"Replay transfer requires a CUDA or MPS device, got {device.type!r}")
+    builders = {
+        "cuda": CudaLikeReplayTransferBackend,
+        "mps": TorchCopyReplayTransferBackend,
+    }
+    try:
+        backend_type = cast(Callable[..., ReplayTransferBackend], builders[device.type])
+    except KeyError as exc:
+        raise ValueError(
+            f"Replay transfer requires a CUDA or MPS device, got {device.type!r}"
+        ) from exc
+    return backend_type(device=device, ring_depth=ring_depth)
