@@ -49,7 +49,6 @@ from unilab.base.process_device import (
     apply_backend_env_device_override,
     apply_manager_torch_device_override,
     configure_backend_process_device,
-    resolve_backend_env_device_id,
 )
 from unilab.training import (
     algo_config_dict,
@@ -828,12 +827,7 @@ def create_playback_session(
     # No-op for backends without a device binding requirement.  A non-zero
     # Genesis request pins CUDA_VISIBLE_DEVICES; the bound in-process device
     # replaces the requested one for the policy and the env overrides below.
-    backend_device_id = resolve_backend_env_device_id(sim_backend, learner_device=device)
-    bound_device = configure_backend_process_device(
-        sim_backend,
-        device,
-        backend_device_id=backend_device_id,
-    )
+    bound_device = configure_backend_process_device(sim_backend, device)
     if bound_device is not None:
         device = bound_device
 

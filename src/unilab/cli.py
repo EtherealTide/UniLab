@@ -25,12 +25,6 @@ SUPPORTED_SIMS = (
     "superdex",
     "drake",
 )
-# Adapters retained by UniSim but outside the scoped tensor Manager runtime
-# during issue #1811. They must remain unroutable through public CLI.
-_SHELVED_SIMS = (
-    "isaacgym",
-    "isaacsim",
-)
 SUPPORTED_RENDER_MODES = ("auto", "interactive", "record", "viser", "none")
 OFFPOLICY_ALGOS = {"sac", "flashsac"}
 # Built-in algos whose entrypoint script does not follow the train_<algo>.py
@@ -44,7 +38,7 @@ MUJOCO_VIEWER_PHYSICS_SIMS = frozenset({"mujoco", "mjwarp"})
 # playback contract the viser viewer renders from (they expose native
 # renderers instead). Supporting viser there requires upstream unisim
 # capability work, so these sims fail closed with an actionable message.
-VISER_UNSUPPORTED_SIMS = frozenset({"genesis", "isaacgym", "isaacsim"})
+VISER_UNSUPPORTED_SIMS = frozenset({"genesis"})
 RESERVED_OVERRIDE_KEYS = {
     "algo",
     "task",
@@ -365,9 +359,8 @@ def _uses_viser_play(
     """Return whether eval should use the browser-based viser viewer script.
 
     Any physics owner whose backend declares physics-state playback is
-    routable; :data:`VISER_UNSUPPORTED_SIMS` sims are rejected earlier with a
-    targeted message, and the viewer itself fails closed on the runtime
-    capability check.
+    routable; unsupported sims are rejected with a targeted message, and the
+    viewer itself fails closed on the runtime capability check.
     """
     del sim  # routing is sim-agnostic; capability gating happens at runtime
     if mode != "eval" or algo not in INTERACTIVE_PLAY_ALGOS:

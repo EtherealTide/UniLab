@@ -312,16 +312,24 @@ def test_sac_builder_forwards_custom_runtime_preparation_hook(
     monkeypatch.setattr(module, "DoubleBufferOffPolicyRunner", _FakeRunner)
     monkeypatch.setattr(module, "resolve_custom_offpolicy_runtime", lambda rl_cfg: runtime)
 
-    with pytest.warns(DeprecationWarning, match="inference_request_timeout_sec is deprecated"):
-        cfg = _sac_cfg()
-        cfg.training.inference_request_timeout_sec = 17.0
-        runner = module.build_sac_double_buffer_runner(
+    cfg = _sac_cfg()
+    runner = module.build_sac_double_buffer_runner(
+        cfg,
+        env_factory=_fake_env_factory,
+        env_cfg_override=None,
+        replay_prefetch_mode="one_tick",
+        device="cpu",
+    )
+
+    assert runner.kwargs["learner_prepare_hook"] is prepare_hook
+
+    cfg = _sac_cfg()
+    cfg.training.inference_request_timeout_sec = 17.0
+    with pytest.raises(ValueError, match="inference_request_timeout_sec was removed"):
+        module.build_sac_double_buffer_runner(
             cfg,
             env_factory=_fake_env_factory,
             env_cfg_override=None,
             replay_prefetch_mode="one_tick",
             device="cpu",
         )
-
-    assert runner.kwargs["learner_prepare_hook"] is prepare_hook
-    assert "inference_request_timeout_sec" not in runner.kwargs

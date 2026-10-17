@@ -23,7 +23,7 @@ def test_check_runtime_requirements_mujoco_needs_mjbatch(
         cli._check_runtime_requirements("ppo", "mujoco")
 
 
-@pytest.mark.parametrize("sim", cli._SHELVED_SIMS)
+@pytest.mark.parametrize("sim", ["isaacgym", "isaacsim"])
 def test_shelved_sims_fail_closed_before_dependency_detection(sim: str) -> None:
     with pytest.raises(SystemExit, match="temporarily outside the tensor-only Manager runtime"):
         cli._check_runtime_requirements("ppo", sim)

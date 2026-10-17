@@ -855,26 +855,6 @@ class ManagerBasedRlEnv(TorchEnv):
             )
         return [SceneTensorReadSpec(entity="robot", sensor_names=tuple(sensor_names))]
 
-    def _warm_external_cuda_ipc_views(self) -> None:
-        """Materialize IsaacGym's post-step view aliases before Manager reads."""
-
-        # IsaacGym's worker CUDA IPC projection does not publish rigid-body
-        # state during its reset stale window. The public selected-reset path
-        # therefore performs one untimed zero-control tensor step after commit,
-        # matching the documented phase-local benchmark warm-up, before Manager
-        # observation terms read the stable views.
-        if self._backend.backend_type != "isaacgym" or self.device.type != "cuda":
-            return
-        try:
-            self._backend.step_tensor(
-                torch.zeros_like(self._control), nsteps=self._cfg.sim_substeps
-            )
-        except (AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
-            raise RuntimeError(
-                "ManagerBasedRlEnv could not materialize IsaacGym CUDA IPC sensor "
-                f"views after reset: {exc}"
-            ) from exc
-
     def _initial_backend_control(self) -> torch.Tensor:
         """Return mapped-scene initial control without assuming a ctrl state view."""
 

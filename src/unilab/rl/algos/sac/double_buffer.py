@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
@@ -66,11 +65,9 @@ def build_sac_double_buffer_runner(
         updates_per_step = int(cfg.algo.updates_per_step)
 
     if "inference_request_timeout_sec" in cfg.training:
-        warnings.warn(
-            "training.inference_request_timeout_sec is deprecated and ignored; "
-            "remove it from owner YAML.",
-            DeprecationWarning,
-            stacklevel=2,
+        raise ValueError(
+            "training.inference_request_timeout_sec was removed; off-policy "
+            "coordination is liveness/phase-aware. Remove it from owner YAML."
         )
     env = env_factory(1, env_cfg_override)
     try:

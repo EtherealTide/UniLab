@@ -6,7 +6,6 @@ import os
 import queue as queue_module
 import statistics
 import time
-import warnings
 from collections import defaultdict, deque
 from collections.abc import Callable, Mapping
 from contextlib import nullcontext
@@ -185,7 +184,6 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         replay_prefetch_mode: str = "one_tick",
         collector_cpu_ids: list[int] | None = None,
         dp_sync: DpParameterSync | None = None,
-        inference_request_timeout_sec: float | None = None,
         learner_prepare_hook: Callable[[Any, OffPolicyWarmupContext], None] | None = None,
         backend_device_resolver: Callable[[str, str | None], str | None] | None = None,
         backend_device_configurer: Callable[[str, str | None], str | None] | None = None,
@@ -193,7 +191,6 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         target_frequency: int = 1,
         policy_before_critic: bool = False,
         inference_placement: InferencePlacement | None = None,
-        collector_tensor_native: bool | None = None,
         tensor_runtime_settings: TensorRuntimeSettings | None = None,
         inference_slot_capacity: int | None = None,
         inference_epoch: int = 0,
@@ -274,23 +271,6 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                 "DoubleBufferOffPolicyRunner only supports replay_prefetch_mode='one_tick'"
             )
         self.replay_prefetch_mode = replay_prefetch_mode
-        if inference_request_timeout_sec is not None:
-            if (
-                isinstance(inference_request_timeout_sec, bool)
-                or not isinstance(inference_request_timeout_sec, (int, float))
-                or inference_request_timeout_sec <= 0
-            ):
-                raise ValueError(
-                    "inference_request_timeout_sec must be a positive number or None, "
-                    f"got {inference_request_timeout_sec!r}"
-                )
-            warnings.warn(
-                "inference_request_timeout_sec is deprecated and has no effect; "
-                "off-policy coordination is liveness/phase-aware. Remove it from "
-                "runner calls and owner YAML.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         # Kept only for source-compatible construction. It is
         # intentionally not retained as a latency SLA anywhere in the runtime.
         self.learner_prepare_hook = learner_prepare_hook
@@ -300,37 +280,6 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         # merged into the collector-only env override at collector startup.
         self.collector_cpu_ids = list(collector_cpu_ids) if collector_cpu_ids is not None else None
         self.collector_backend_device = collector_backend_device
-        if isinstance(collector_tensor_native, bool) and inference_placement is None:
-            inference_placement = InferencePlacement(
-                mode=(
-                    InferenceTransport.CUDA if collector_tensor_native else InferenceTransport.CPU
-                ),
-                env_device=(
-                    str(kwargs["device"])
-                    if collector_tensor_native
-                    and torch.device(str(kwargs["device"])).type == "cuda"
-                    else "cpu"
-                ),
-                ring_device=(
-                    str(kwargs["device"])
-                    if collector_tensor_native
-                    and torch.device(str(kwargs["device"])).type == "cuda"
-                    else "cpu"
-                ),
-                learner_device=str(kwargs["device"]),
-                collector_tensor_native=collector_tensor_native,
-                staging_policy=(
-                    "cuda_no_host_boundary"
-                    if collector_tensor_native
-                    else cpu_ring_staging_policy(str(kwargs["device"]))
-                ),
-            )
-            warnings.warn(
-                "collector_tensor_native is deprecated; construct DoubleBufferOffPolicyRunner "
-                "with resolve_inference_transport()'s inference_placement",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         if inference_placement is None:
             inference_placement = InferencePlacement(
                 mode=InferenceTransport.CPU,

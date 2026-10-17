@@ -137,6 +137,7 @@ def test_sac_mps_amp_and_compile_gates_are_explicit_and_mutually_exclusive() -> 
     assert SACLearner._resolve_use_amp(True, "auto", "mps") is False
     assert SACLearner._resolve_use_amp(True, "bf16", "mps") is True
     assert SACLearner._resolve_use_amp(True, "bf16", "cuda") is True
+    assert SACLearner._resolve_use_amp(True, "bf16", "xpu") is False
 
     with pytest.raises(ValueError, match="amp_dtype='bf16'"):
         SACLearner._resolve_use_amp(True, "fp16", "mps")
