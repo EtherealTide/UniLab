@@ -181,7 +181,7 @@ def _patch_flashsac_host_gates(monkeypatch: pytest.MonkeyPatch, module: Any) -> 
         lambda device: device,
         raising=False,
     )
-    monkeypatch.setattr(module, "apply_training_seed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "apply_worker_seed", lambda *args, **kwargs: None)
 
 
 @pytest.mark.parametrize("with_injection", [False, True])

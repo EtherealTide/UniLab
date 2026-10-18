@@ -11,9 +11,8 @@ from unilab.rl.logging import OffPolicyLogger
 from unilab.rl.logging.metrics_drain import RewardComponentWindow, drain_collector_metrics
 from unilab.rl.runtime.async_runner import AsyncRunner
 from unilab.rl.runtime.device import get_default_device
-from unilab.rl.runtime.nan_guard import NanGuardCfg
 from unilab.rl.runtime.offpolicy.actor_adapter import import_actor_adapter_modules
-from unilab.rl.runtime.seed import apply_training_seed
+from unilab.rl.runtime.seed import apply_worker_seed
 
 
 def compute_train_start_threshold(batch_size: int, learning_starts: int, num_envs: int) -> int:
@@ -119,8 +118,8 @@ class OffPolicyRunner(AsyncRunner):
         trace_output_dir: str | None = None,
         trace_thread_time: bool = False,
         trace_cuda_events: bool = True,
-        nan_guard_cfg: NanGuardCfg | None = None,
-        nan_guard_factory: Callable[[NanGuardCfg, int, bool], Any] | None = None,
+        nan_guard_cfg: Any | None = None,
+        nan_guard_factory: Callable[[Any, int, bool], Any] | None = None,
         torch_thread_runtime: dict[str, Any] | None = None,
         actor_adapter_modules: Iterable[str] | None = None,
         log_interval: int = 1,
@@ -169,7 +168,7 @@ class OffPolicyRunner(AsyncRunner):
         self.actor_adapter_modules = tuple(str(m) for m in (actor_adapter_modules or ()))
         import_actor_adapter_modules(self.actor_adapter_modules)
 
-        apply_training_seed(self.seed, torch_runtime=True, cuda=True)
+        apply_worker_seed(self.seed, torch_runtime=True, cuda=True)
         probe = probe_env_contract(
             self.env_factory,
             self.env_cfg_override,

@@ -9,7 +9,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from typing import Any, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
+
+PhysicalCpuGroupDiscovery = Callable[[Sequence[int]], list[list[int]]]
 
 
 def resolve_collector_cpu_ids(
@@ -17,6 +20,7 @@ def resolve_collector_cpu_ids(
     rank: int,
     cpu_count: int | None = None,
     explicit: Any = None,
+    physical_cpu_group_discovery: PhysicalCpuGroupDiscovery | None = None,
 ) -> list[int] | None:
     """Resolve the CPU ids exclusively owned by this rank's collector.
 
@@ -41,6 +45,8 @@ def resolve_collector_cpu_ids(
         raise ValueError(f"data-parallel rank {rank} is out of range for world_size={world_size}")
     groups: list[list[int]] | None = None
     if cpu_count is None:
+        if physical_cpu_group_discovery is None:
+            physical_cpu_group_discovery = discover_physical_cpu_groups
         sched_getaffinity = getattr(os, "sched_getaffinity", None)
         if sched_getaffinity is not None:
             try:
@@ -49,7 +55,7 @@ def resolve_collector_cpu_ids(
                 available_ids = list(range(os.cpu_count() or 1))
         else:
             available_ids = list(range(os.cpu_count() or 1))
-        groups = _discover_physical_cpu_groups(available_ids)
+        groups = physical_cpu_group_discovery(available_ids)
         cpu_count = len(available_ids)
     cpu_count = int(cpu_count or 0)
     if cpu_count < world_size:
@@ -100,8 +106,13 @@ def resolve_collector_cpu_ids(
     return list(range(rank * size, rank * size + size))
 
 
-def _discover_physical_cpu_groups(cpu_ids: Sequence[int]) -> list[list[int]]:
-    """Discover physical-core groups for the unified CPU partition helper."""
+def discover_physical_cpu_groups(cpu_ids: Sequence[int]) -> list[list[int]]:
+    """Discover physical-core groups for topology-aware CPU partitioning.
+
+    This is the public test/assembly seam for the host-topology reader. Prefer
+    injecting a deterministic provider into ``resolve_collector_cpu_ids``; patch
+    this function only for callers that cannot thread the parameter through.
+    """
     ids = list(cpu_ids)
     if os.name == "posix" and os.path.isdir("/sys/devices/system/cpu"):
         groups: dict[tuple[str, str], list[int]] = {}
@@ -131,3 +142,10 @@ def _discover_physical_cpu_groups(cpu_ids: Sequence[int]) -> list[list[int]]:
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
     return [[cpu_id] for cpu_id in ids]
+
+
+__all__ = [
+    "PhysicalCpuGroupDiscovery",
+    "discover_physical_cpu_groups",
+    "resolve_collector_cpu_ids",
+]

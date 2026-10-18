@@ -590,7 +590,7 @@ def test_build_runner_binds_mjwarp_rank_process_to_learner_device(
 
 def test_build_runner_partitions_collector_cpus_per_rank(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
-        "unilab.rl.runtime.distributed.affinity._discover_physical_cpu_groups",
+        "unilab.rl.runtime.distributed.affinity.discover_physical_cpu_groups",
         lambda _: [[core, core + 64] for core in range(64)],
     )
     # Spawned rank/world size come from the launcher environment.
@@ -622,7 +622,7 @@ def test_build_runner_rank_zero_partitions_without_dp_env(monkeypatch: pytest.Mo
     monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     monkeypatch.setattr(
-        "unilab.rl.runtime.distributed.affinity._discover_physical_cpu_groups",
+        "unilab.rl.runtime.distributed.affinity.discover_physical_cpu_groups",
         lambda _: [[core, core + 64] for core in range(64)],
     )
     runner, _ = _build_sac_runner_with_fakes(
