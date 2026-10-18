@@ -43,6 +43,7 @@ def test_resolve_collector_cpu_ids_keeps_physical_siblings_together(
     monkeypatch: pytest.MonkeyPatch,
 ):
     groups = [[0, 4], [1, 5], [2, 6], [3, 7]]
+    monkeypatch.setattr(affinity.os, "sched_getaffinity", lambda _: set(range(8)), raising=False)
     assert resolve_collector_cpu_ids(2, 0, physical_cpu_group_discovery=lambda _: groups) == [
         0,
         4,
