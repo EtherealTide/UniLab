@@ -18,6 +18,8 @@ env:
   # This throughput fixture does not use geom-friction reset DR. Sharing equal
   # initial native materials keeps 2048 clones below PhysX's 64K material cap.
   isaacsim_share_friction_materials: true
+  # Keep the fixture's production-sized 48 m support boxes from overlapping.
+  isaacsim_env_spacing: 50.0
   scene:
     # IsaacSim consumes the mapped physical-scene profile.  The task source,
     # not an all-zero EntityInitialState, remains authoritative for the 29

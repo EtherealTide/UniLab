@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import fields, is_dataclass
@@ -503,6 +505,47 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
                 )
 
     _assert_no_omegaconf(env_cfg)
+
+
+def test_isaacsim_flat_floor_covers_reset_and_nominal_command_reach() -> None:
+    """Keep the mapped finite floor as broad as the canonical nominal reach."""
+
+    _, env_cfg, _ = _materialize("sac", ("task=g1_walk_flat/isaacsim",), "G1WalkFlat")
+    assert env_cfg.scene is not None
+    floor_asset = next(asset for asset in env_cfg.scene.entity_assets if asset.name == "floor")
+    floor_path = ROOT_DIR / floor_asset.source.model_file
+    floor = ET.parse(floor_path).getroot().find("./worldbody/body/geom")
+    assert floor is not None
+    half_x, half_y = (float(value) for value in floor.attrib["size"].split()[:2])
+
+    command = env_cfg.commands["twist"]
+    assert isinstance(command, g1_terms.G1VelocityCommandCfg)
+    reset = env_cfg.events["reset_root_state_uniform"].params
+    max_reset = math.hypot(
+        max(
+            abs(float(reset["pose_range"]["x"][0])),
+            abs(float(reset["pose_range"]["x"][1])),
+        ),
+        max(
+            abs(float(reset["pose_range"]["y"][0])),
+            abs(float(reset["pose_range"]["y"][1])),
+        ),
+    )
+    max_speed = math.hypot(
+        max(
+            abs(float(command.ranges.lin_vel_x[0])),
+            abs(float(command.ranges.lin_vel_x[1])),
+        ),
+        max(
+            abs(float(command.ranges.lin_vel_y[0])),
+            abs(float(command.ranges.lin_vel_y[1])),
+        ),
+    )
+    required_half_extent = max_reset + float(env_cfg.max_episode_seconds) * max_speed
+    assert min(half_x, half_y) == pytest.approx(24.0)
+    assert min(half_x, half_y) >= required_half_extent
+    assert env_cfg.isaacsim_env_spacing == pytest.approx(50.0)
+    assert env_cfg.isaacsim_env_spacing > 2.0 * min(half_x, half_y)
 
 
 def test_g1_walk_registries_are_manager_only() -> None:

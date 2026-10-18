@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from unilab.base.backend_factory import env_backend_kwargs
 from unilab.base.base import EnvCfg
 
@@ -17,6 +19,7 @@ def test_env_backend_kwargs_maps_isaac_owner_options() -> None:
         isaacsim_render_height=480,
         isaacsim_tensor_cuda_ipc=True,
         isaacsim_share_friction_materials=True,
+        isaacsim_env_spacing=50.0,
     )
     kwargs = env_backend_kwargs(cfg)
 
@@ -29,6 +32,7 @@ def test_env_backend_kwargs_maps_isaac_owner_options() -> None:
     assert kwargs["isaacsim_render_height"] == 480
     assert kwargs["isaacsim_tensor_cuda_ipc"] is True
     assert kwargs["share_friction_materials"] is True
+    assert kwargs["isaacsim_env_spacing"] == 50.0
 
 
 def test_isaac_opt_in_keys_are_not_sent_when_disabled() -> None:
@@ -36,3 +40,13 @@ def test_isaac_opt_in_keys_are_not_sent_when_disabled() -> None:
 
     assert "isaacsim_tensor_cuda_ipc" not in kwargs
     assert "share_friction_materials" not in kwargs
+    assert "isaacsim_env_spacing" not in kwargs
+
+
+@pytest.mark.parametrize(
+    "value",
+    [True, "50", 0.0, -1.0, float("nan"), float("inf")],
+)
+def test_isaacsim_env_spacing_validation_fails_closed(value):
+    with pytest.raises(ValueError, match="isaacsim_env_spacing"):
+        EnvCfg(isaacsim_env_spacing=value).validate()

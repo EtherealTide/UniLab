@@ -105,6 +105,9 @@ class EnvCfg:
     isaacsim_render_height: int = 720
     isaacsim_tensor_cuda_ipc: bool = False
     isaacsim_share_friction_materials: bool = False
+    # Mapped IsaacSim scenes may need a grid wider than the worker default when
+    # an owner uses a large task-local support surface. ``None`` keeps 2 m.
+    isaacsim_env_spacing: Optional[float] = None
 
     @property
     def max_episode_steps(self) -> Optional[int]:
@@ -285,6 +288,17 @@ class EnvCfg:
                 "isaacsim_share_friction_materials must be bool, "
                 f"got {self.isaacsim_share_friction_materials!r}"
             )
+        if self.isaacsim_env_spacing is not None:
+            spacing = self.isaacsim_env_spacing
+            if (
+                isinstance(spacing, bool)
+                or not isinstance(spacing, (int, float))
+                or not np.isfinite(spacing)
+                or float(spacing) <= 0.0
+            ):
+                raise ValueError(
+                    f"isaacsim_env_spacing must be a finite positive number, got {spacing!r}"
+                )
         if self.cpu_ids is not None:
             ids = list(self.cpu_ids)
             if not ids:

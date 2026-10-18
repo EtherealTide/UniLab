@@ -52,6 +52,12 @@ video. Width and height default to 1280 x 720 in the IsaacSim owner YAML and
 can be overridden through `env.isaacsim_render_width` and
 `env.isaacsim_render_height` before env creation.
 
+Mapped scenes are cloned on a grid with a 2 m backend default. A finite,
+positive `env.isaacsim_env_spacing` can widen that grid before env creation;
+large task-local support surfaces should use more than twice the surface's
+half-width so adjacent clones cannot overlap. IsaacSim reports the effective
+spacing and environment origins back to the host, which rejects a mismatch.
+
 The current worker supports MJCF materialization, batched articulation state,
 position-target stepping, masked root/joint resets, a native Kit viewer, and
 headless IsaacLab RGB camera capture. Contact-force sensors, reset or interval
@@ -76,16 +82,16 @@ remains a separate validation and is not claimed as stable.
 
 ## Training Validation
 
-Issue #2387 made exactly one full headless SAC run on the restored owner
-(RTX 4090, IsaacSim 5.1.0 / IsaacLab 2.3.0). It completed 5000/5000 iterations
-and 10,260,480 environment steps in 350.03 seconds of tracked training wall
-time (7:32.82 end-to-end). Final/best mean reward was 15.021/18.840, mean
-episode length was 58.21, and final/tail throughput was 29,517/29,203 steps/s.
+Issue #2387's semantic-quality follow-up completed one full headless SAC run on
+the restored owner (RTX 4090, IsaacSim 5.1.0 / IsaacLab 2.3.0) after fixing
+derived-sensor refresh and the mapped finite floor. It completed 5000/5000
+iterations and 10,260,480 environment steps in 363.04 seconds of tracked
+training wall time. Final/best mean reward was 291.201/298.049, mean episode
+length was 993.99/1000, and final/tail throughput was 28,673/29,314 steps/s.
 
-This record establishes that the external worker, mapped scene, CUDA IPC
-arenas, tensor reset, and SAC training lifecycle complete a full run. The low
-reward and short episodes leave semantic policy quality open compared with the
-MuJoCo-family owners; they do not establish cross-backend gait parity.
+The reward and episode length reach the range of the validated MuJoCo-family
+SAC runs for this canonical training workload. Native playback remains a
+separate renderer validation and is not claimed here.
 
 ## Current Runtime Validation
 

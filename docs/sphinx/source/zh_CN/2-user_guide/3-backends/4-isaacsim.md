@@ -44,6 +44,11 @@ headless、camera-disabled Kit experience。eval 在 Kit 启动前选择以下�
 会 fail closed，不会写出伪视频。IsaacSim owner 默认 1280 x 720，可在 env 创建前
 通过 `env.isaacsim_render_width` 和 `env.isaacsim_render_height` 覆盖。
 
+mapped scene 使用 backend 默认 2 m 的网格克隆间距。可在 env 创建前用有限正数
+`env.isaacsim_env_spacing` 扩大该间距；较大的任务局部支撑面应使用大于其半宽
+两倍的间距，避免相邻 clone 重叠。IsaacSim 会把生效间距和 environment origin
+回报给 host，host 检测到不一致时拒绝启动。
+
 当前 worker 支持 MJCF 材质化、批量 articulation 状态、位置 target 步进和
 masked root/joint reset，以及 Kit 原生 viewer 和 headless IsaacLab RGB camera。
 contact-force sensor、reset/interval domain randomization 和 host pre-step
@@ -75,6 +80,16 @@ episode length 为 58.21，final/tail throughput 为 29,517/29,203 steps/s。
 该记录证明 external worker、mapped scene、CUDA IPC arena、tensor reset 与
 SAC training lifecycle 可以完整跑完。低 reward 和短 episode 使语义策略质量
 相对 MuJoCo-family owner 仍保持开放；这不建立跨 backend 步态 parity。
+
+### 2026-10-18 语义质量复测
+
+修复 derived-sensor refresh 与 mapped finite floor 后，canonical SAC
+`g1_walk_flat` 重新完成 5000/5000 iterations / 10,260,480 environment
+steps。final/best mean reward 为 291.201/298.049，mean episode length 为
+993.99/1000，tracked training wall time 为 363.04 秒，final/tail
+throughput 为 28,673/29,314 steps/s。该结果的 reward 与 episode length 进入
+已验证 MuJoCo-family SAC run 的区间；上方早期低 reward 记录已被本次语义修复
+复测取代。native playback 仍是独立 renderer 验证。
 
 ## 当前运行时验证
 

@@ -50,6 +50,9 @@ env:
   isaacsim_render_height: 720
   isaacsim_tensor_cuda_ipc: true
   isaacsim_share_friction_materials: true
+  # The mapped finite floor is 48 m wide; separate clone origins by 50 m so
+  # adjacent support boxes do not flood broadphase while still spanning a 20 s walk.
+  isaacsim_env_spacing: 50.0
   scene:
     model_file: null
     primary_entity: robot

@@ -59,7 +59,9 @@ _MAINTAINER_VALIDATED_MJWARP_ENTRYPOINT_TASKS = frozenset(
 
 # Maintainer-confirmed completed training validations for the isaacgym
 # subprocess backend (real hardware, external Python 3.8 worker runtime;
-# not covered by repo CI).
+# not covered by repo CI). Issue #2387's semantic-quality follow-up restored
+# live derived sensors and XML-bound position targets; the 2026-10-18 SAC
+# g1_walk_flat run reached reward/mean 296.83 with episode length 1000/1000.
 _MAINTAINER_VALIDATED_ISAACGYM_ENTRYPOINT_TASKS: frozenset[tuple[str, str]] = frozenset(
     {
         ("sac_torch", "g1_walk_flat"),
@@ -79,9 +81,10 @@ _MAINTAINER_VALIDATED_GENESIS_ENTRYPOINT_TASKS: frozenset[tuple[str, str]] = fro
 )
 
 # IsaacSim is a Python 3.11 worker integration. Issue #2387 completed one full
-# headless SAC g1_walk_flat training run (5000 iterations / 10,260,480 steps).
-# The run proves lifecycle and completion, not semantic policy parity; native
-# playback remains a separate renderer validation.
+# headless SAC g1_walk_flat semantic-quality run (5000 iterations / 10,260,480
+# steps) after derived-sensor refresh and mapped-floor support fixes. The
+# 2026-10-18 run reached reward/mean 291.20 with episode length 993.99/1000;
+# native playback remains a separate renderer validation.
 _MAINTAINER_VALIDATED_ISAACSIM_ENTRYPOINT_TASKS: frozenset[tuple[str, str]] = frozenset(
     {
         ("sac_torch", "g1_walk_flat"),

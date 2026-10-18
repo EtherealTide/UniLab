@@ -255,6 +255,8 @@ def env_backend_kwargs(cfg: "EnvCfg") -> dict[str, Any]:
         result["isaacsim_tensor_cuda_ipc"] = True
     if cfg.isaacsim_share_friction_materials:
         result["share_friction_materials"] = True
+    if cfg.isaacsim_env_spacing is not None:
+        result["isaacsim_env_spacing"] = cfg.isaacsim_env_spacing
     # Forward the explicit Genesis device id only when a rank selected one;
     # when absent, unisim-core's factory default applies and Genesis picks
     # its own device.

@@ -46,10 +46,12 @@ parameter is parsed from the XML rather than read from the importer.
   self-collision entirely is the ecosystem-standard approximation and a
   superset of the exclusions. Models that rely on self-contact are not
   faithfully reproduced.
-- **Joint limits**: the importer drops them, so PhysX applies no joint stops;
-  `get_joint_range()` still reports the XML values. Joint `armature` and
-  `frictionloss` (resolved through MJCF default classes) are applied to the
-  PhysX dofs.
+- **Joint limits**: the importer drops native joint stops. The worker carries
+  the host-scanned XML bounds and clamps every position target to them;
+  `get_joint_range()` reports the same source values. This restores the
+  commanded boundary but is not a native hard-stop emulation, and dynamics can
+  still overshoot under external momentum. Joint `armature` and `frictionloss`
+  (resolved through MJCF default classes) are applied to the PhysX dofs.
 - **Fixed model variants**: `env.fixed_model_variants` is realized by
   actor-level asset selection. Each complete MJCF source is loaded once and
   every environment's actor is created from its immutable assignment row;
