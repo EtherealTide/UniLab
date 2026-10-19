@@ -46,7 +46,11 @@ Environment:
 EOF
 }
 
-ISAACGYM_HOME="${UNISIM_ISAACGYM_HOME:-${UNILAB_ISAACGYM_HOME:-$HOME/.cache/unisim/isaacgym}}"
+if [ -z "${UNISIM_ISAACGYM_HOME:-}" ] && [ -n "${UNILAB_ISAACGYM_HOME:-}" ]; then
+  echo "[setup_isaacgym_env] error: UNILAB_ISAACGYM_HOME is no longer supported; set UNISIM_ISAACGYM_HOME instead" >&2
+  exit 1
+fi
+ISAACGYM_HOME="${UNISIM_ISAACGYM_HOME:-$HOME/.cache/unisim/isaacgym}"
 TARBALL_ARG=""
 
 while [ "$#" -gt 0 ]; do
@@ -210,12 +214,9 @@ export UNILAB_BENCHMARK_HSGYM_LIB="$ENV_ROOT/lib"
 # URDF 模型树（go2_description/ 等）需自备，指向其根目录：
 export UNILAB_BENCHMARK_MODELS_ROOT="<path-to-your-urdf-models-root>"
 
-# 训练后端（task=<task>/isaacgym）默认从 ~/.unilab/isaacgym 自动发现运行时；
+# 训练后端（task=<task>/isaacgym）默认从 ~/.cache/unisim/isaacgym 自动发现运行时；
 # 若用了自定义 UNISIM_ISAACGYM_HOME，训练时同名导出即可：
 export UNISIM_ISAACGYM_HOME="$ISAACGYM_HOME"
-
-# Legacy UniLab variable (optional for older launch scripts):
-# export UNILAB_ISAACGYM_HOME="$ISAACGYM_HOME"
 
 然后在仓库根目录用 benchmark 脚本验证：
 

@@ -41,7 +41,11 @@
 # Reference: https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html
 set -euo pipefail
 
-ISAACSIM_HOME=${UNISIM_ISAACSIM_HOME:-${UNILAB_ISAACSIM_HOME:-$HOME/.cache/unisim/isaacsim}}
+if [[ -z ${UNISIM_ISAACSIM_HOME:-} && -n ${UNILAB_ISAACSIM_HOME:-} ]]; then
+  echo "[setup_isaacsim_env] error: UNILAB_ISAACSIM_HOME is no longer supported; set UNISIM_ISAACSIM_HOME instead" >&2
+  exit 1
+fi
+ISAACSIM_HOME=${UNISIM_ISAACSIM_HOME:-$HOME/.cache/unisim/isaacsim}
 ISAACLAB_VERSION=${ISAACLAB_VERSION:-v2.3.0}
 ISAACSIM_VERSION=${ISAACSIM_VERSION:-5.1.0}
 TORCH_VERSION=${TORCH_VERSION:-2.7.0}
@@ -316,9 +320,6 @@ export UNISIM_ISAACSIM_HOME="$ISAACSIM_HOME"
 export OMNI_KIT_ACCEPT_EULA=1
 # 交互调试时激活 venv：
 source "\$UNISIM_ISAACSIM_HOME/venv/bin/activate"
-
-# Legacy UniLab variable (optional for older launch scripts):
-# export UNILAB_ISAACSIM_HOME="$ISAACSIM_HOME"
 
   venv:     $VENV_DIR
   IsaacLab: $ISAACLAB_DIR
