@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from types import SimpleNamespace
 
@@ -210,8 +211,18 @@ def test_sim_carrier_device_override_is_explicit_and_rank_local() -> None:
     with pytest.raises(ValueError, match="training.sim_carrier_device"):
         apply_sim_carrier_device_override(owner_override, "mujoco", sim_carrier_device="cuda:3")
 
-    with pytest.raises(ValueError, match="supported only for the MuJoCo"):
-        apply_sim_carrier_device_override(owner_override, "motrix", sim_carrier_device="cuda")
+    for backend_type in ("motrix", "drake", "superdex"):
+        routed = apply_sim_carrier_device_override(
+            owner_override,
+            backend_type,
+            sim_carrier_device="cuda",
+            learner_device="cuda:3",
+        )
+        assert routed["sim_carrier_device"] == "cuda"
+        assert owner_override["sim_carrier_device"] == "owner-cpu"
+
+    with pytest.raises(ValueError, match="requires a HOST_BRIDGE"):
+        apply_sim_carrier_device_override(owner_override, "mjwarp", sim_carrier_device="cuda")
 
 
 def test_sim_carrier_device_auto_follows_the_learner_device() -> None:
@@ -234,7 +245,8 @@ def test_sim_carrier_device_auto_follows_the_learner_device() -> None:
             sim_carrier_device="auto",
             learner_device=learner_device,
         )
-        assert routed["sim_carrier_device"] == "cpu"
+        expected = "cpu" if learner_device == "cpu" else owner_override["sim_carrier_device"]
+        assert routed["sim_carrier_device"] == expected
 
     routed = apply_sim_carrier_device_override(
         owner_override,
@@ -244,14 +256,51 @@ def test_sim_carrier_device_auto_follows_the_learner_device() -> None:
     )
     assert routed == owner_override
 
-    # Backends outside the MuJoCo HOST_BRIDGE scope ignore the auto request.
+    for backend_type in ("motrix", "drake", "superdex"):
+        routed = apply_sim_carrier_device_override(
+            owner_override,
+            backend_type,
+            sim_carrier_device="auto",
+            learner_device="cuda:3",
+        )
+        assert routed["sim_carrier_device"] == "cuda:3"
+
+    # Backends outside the HOST_BRIDGE scope ignore the auto request.
     routed = apply_sim_carrier_device_override(
         owner_override,
-        "motrix",
+        "mjwarp",
         sim_carrier_device="auto",
         learner_device="cuda:3",
     )
     assert routed == owner_override
+
+
+def test_sim_carrier_device_fails_closed_on_capability_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = process_device._host_bridge_profile("motrix")
+    assert profile is not None
+    cpu_only = dataclasses.replace(profile, torch_devices=("cpu",))
+    monkeypatch.setattr(
+        process_device,
+        "_host_bridge_profile",
+        lambda backend_type: cpu_only if backend_type == "motrix" else None,
+    )
+
+    with pytest.raises(ValueError, match="accepted Torch devices are 'cpu'"):
+        apply_sim_carrier_device_override({}, "motrix", sim_carrier_device="cuda")
+
+    with pytest.raises(ValueError, match="backend capability declaration"):
+        apply_sim_carrier_device_override(
+            {}, "motrix", sim_carrier_device="auto", learner_device="cuda:3"
+        )
+
+    assert (
+        apply_sim_carrier_device_override({}, "motrix", sim_carrier_device="cpu")[
+            "sim_carrier_device"
+        ]
+        == "cpu"
+    )
 
 
 def test_playback_device_uses_sim_carrier_device_without_training_request() -> None:

@@ -67,9 +67,11 @@ training:
   wandb_notes: null
   wandb_mode: null
   sim_backend: mujoco
-  # MuJoCo HOST_BRIDGE Manager carrier family. 'auto' follows the learner
-  # device (CUDA learner -> CUDA carrier; CPU/torch.mps learner -> CPU).
-  # Explicit 'cpu'/'cuda' values win over 'auto'.
+  # HOST_BRIDGE Manager carrier family follows backend capability
+  # declarations. 'auto' follows the learner device (CUDA learner -> CUDA
+  # carrier; CPU learner -> CPU; torch.mps learner keeps the owner CPU
+  # placement). Explicit 'cpu'/'cuda' wins over 'auto' and fails closed
+  # when the backend does not declare the device.
   sim_carrier_device: auto
   nan_guard:
     enabled: true
