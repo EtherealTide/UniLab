@@ -1,7 +1,7 @@
 """Fast smoke tests for representative SimBackend contracts.
 
 These tests stay in the default lane to cover the owner-layer backend
-contract without running the full backend matrix in `test_sim_backend.py`.
+contract without duplicating the adapter-owned full backend matrix.
 """
 
 from __future__ import annotations
