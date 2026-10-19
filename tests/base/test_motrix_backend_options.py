@@ -15,7 +15,6 @@ from unisim.dr.types import (
     RESET_TERM_KP,
     IntervalRandomizationPlan,
     IntervalTermOp,
-    ResetRandomizationPayload,
 )
 
 from unilab.base.scene import SceneCfg
@@ -391,16 +390,16 @@ def test_motrix_backend_applies_body_mass_and_ipos_reset_payload() -> None:
     backend._apply_reset_randomization(
         object(),
         np.asarray([0, 1], dtype=np.int32),
-        ResetRandomizationPayload(
-            body_mass=np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64),
-            body_ipos=np.asarray(
+        {
+            RESET_TERM_BODY_MASS: np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64),
+            RESET_TERM_BODY_IPOS: np.asarray(
                 [
                     [[0.0, 0.1, 0.2], [0.3, 0.4, 0.5]],
                     [[0.6, 0.7, 0.8], [0.9, 1.0, 1.1]],
                 ],
                 dtype=np.float64,
             ),
-        ),
+        },
     )
 
     np.testing.assert_allclose(link0.mass_override, [1.0, 3.0])
@@ -428,15 +427,15 @@ def test_motrix_backend_applies_geom_friction_reset_payload() -> None:
     backend._apply_reset_randomization(
         object(),
         np.asarray([0, 1], dtype=np.int32),
-        ResetRandomizationPayload(
-            geom_friction=np.asarray(
+        {
+            RESET_TERM_GEOM_FRICTION: np.asarray(
                 [
                     [[1.0, 0.1, 0.01], [2.0, 0.2, 0.02]],
                     [[3.0, 0.3, 0.03], [4.0, 0.4, 0.04]],
                 ],
                 dtype=np.float64,
             ),
-        ),
+        },
     )
 
     np.testing.assert_allclose(geom0.friction_override, [[1.0, 0.1, 0.01], [3.0, 0.3, 0.03]])
@@ -491,9 +490,9 @@ def test_motrix_backend_applies_gravity_reset_payload() -> None:
     backend._apply_reset_randomization(
         object(),
         np.asarray([0, 1], dtype=np.int32),
-        ResetRandomizationPayload(
-            gravity=np.asarray([[0.0, 0.0, -8.0], [1.0, 2.0, -3.0]], dtype=np.float64),
-        ),
+        {
+            RESET_TERM_GRAVITY: np.asarray([[0.0, 0.0, -8.0], [1.0, 2.0, -3.0]], dtype=np.float64),
+        },
     )
 
     assert fake_model.gravity_override is not None

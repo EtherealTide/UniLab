@@ -3462,7 +3462,7 @@ class Entity:
 
     def apply_root_linear_velocity_delta_to_sim(
         self,
-        values: np.ndarray,
+        values: np.ndarray | torch.Tensor,
         env_ids: torch.Tensor | slice | None = None,
         *,
         term_name: str = "push_by_setting_velocity",
@@ -3508,7 +3508,7 @@ class Entity:
                 IntervalTermOp(
                     INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
                     linear_plan,
-                    body_ids=self._root_body_ids,
+                    body_ids=self._interval_root_body_ids(),
                 )
             )
         if angular_plan is not None:
@@ -3516,7 +3516,7 @@ class Entity:
                 IntervalTermOp(
                     INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
                     angular_plan,
-                    body_ids=self._root_body_ids,
+                    body_ids=self._interval_root_body_ids(),
                 )
             )
         try:
@@ -3527,43 +3527,45 @@ class Entity:
                 f"EventManager term '{term_name}': {exc}",
             ) from exc
 
+    def _interval_root_body_ids(self) -> torch.Tensor:
+        """Return the immutable root body IDs as a torch-first host int64 tensor."""
+        assert self._root_body_ids is not None
+        return torch.tensor(self._root_body_ids, dtype=torch.int64)
+
     def _validate_root_velocity_delta(
         self,
         values: np.ndarray | torch.Tensor | None,
         ids: torch.Tensor,
         *,
         term_name: str,
-    ) -> np.ndarray | None:
+    ) -> torch.Tensor | None:
         if values is None:
             return None
-        if isinstance(values, torch.Tensor):
-            if values.device.type != "cpu":
-                raise TypeError(
-                    f"EventManager term '{term_name}' root velocity delta host plan "
-                    f"requires a CPU Torch tensor; got {values.device}"
-                )
-            values = values.contiguous().numpy()
-        if not isinstance(values, np.ndarray):
+        if isinstance(values, np.ndarray):
+            # Legacy cold leaf: host arrays are lifted once, then stay torch.
+            values = torch.as_tensor(np.ascontiguousarray(values))
+        if not isinstance(values, torch.Tensor):
             raise TypeError(
                 f"EventManager term '{term_name}' root velocity delta must be np.ndarray "
-                f"or a CPU torch.Tensor, got {type(values).__name__}"
+                f"or a torch.Tensor, got {type(values).__name__}"
             )
         expected = (ids.numel(), 3)
-        if values.shape != expected:
+        if tuple(values.shape) != expected:
             raise ValueError(
                 f"EventManager term '{term_name}' root velocity delta has shape "
-                f"{values.shape}; expected {expected}"
+                f"{tuple(values.shape)}; expected {expected}"
             )
-        if not np.issubdtype(values.dtype, np.floating) or not np.isfinite(values).all():
+        if not values.is_floating_point() or not bool(torch.isfinite(values).all()):
             raise ValueError(
                 f"EventManager term '{term_name}' root velocity delta must be finite floating data"
             )
         assert self._root_body_ids is not None
-        delta = np.zeros(
+        delta = torch.zeros(
             (self._backend.num_envs, len(self._root_body_ids), 3),
             dtype=values.dtype,
+            device=values.device,
         )
-        delta[ids, 0, :] = values
+        delta[ids.to(device=values.device, dtype=torch.int64), 0, :] = values
         return delta
 
     def bind_body_wrench(
@@ -3635,10 +3637,15 @@ class Entity:
             term_name=term_name,
         )
         ops = []
+        torch_body_ids = torch.tensor(np.asarray(body_ids), dtype=torch.int64)
         if force_values is not None:
-            ops.append(IntervalTermOp(INTERVAL_TERM_BODY_FORCE, force_values, body_ids=body_ids))
+            ops.append(
+                IntervalTermOp(INTERVAL_TERM_BODY_FORCE, force_values, body_ids=torch_body_ids)
+            )
         if torque_values is not None:
-            ops.append(IntervalTermOp(INTERVAL_TERM_BODY_TORQUE, torque_values, body_ids=body_ids))
+            ops.append(
+                IntervalTermOp(INTERVAL_TERM_BODY_TORQUE, torque_values, body_ids=torch_body_ids)
+            )
         try:
             self._backend.apply_interval_randomization(IntervalRandomizationPlan(ops=tuple(ops)))
         except NotImplementedError as exc:
@@ -3655,34 +3662,33 @@ class Entity:
         *,
         label: str,
         term_name: str,
-    ) -> np.ndarray | None:
+    ) -> torch.Tensor | None:
         if values is None:
             return None
-        if isinstance(values, torch.Tensor):
-            if values.device.type != "cpu":
-                raise TypeError(
-                    f"EventManager term '{term_name}' body {label} host plan requires a "
-                    f"CPU Torch tensor; got {values.device}"
-                )
-            values = values.contiguous().numpy()
-        if not isinstance(values, np.ndarray):
+        if isinstance(values, np.ndarray):
+            # Legacy cold leaf: host arrays are lifted once, then stay torch.
+            values = torch.as_tensor(np.ascontiguousarray(values))
+        if not isinstance(values, torch.Tensor):
             raise TypeError(
                 f"EventManager term '{term_name}' body {label} must be np.ndarray or a "
-                f"CPU torch.Tensor, got {type(values).__name__}"
+                f"torch.Tensor, got {type(values).__name__}"
             )
-        host_ids = ids.detach().cpu().numpy()
-        expected = (host_ids.size, body_ids.size, 3)
-        if values.shape != expected:
+        expected = (ids.numel(), body_ids.size, 3)
+        if tuple(values.shape) != expected:
             raise ValueError(
-                f"EventManager term '{term_name}' body {label} has shape {values.shape}; "
-                f"expected {expected}"
+                f"EventManager term '{term_name}' body {label} has shape "
+                f"{tuple(values.shape)}; expected {expected}"
             )
-        if not np.issubdtype(values.dtype, np.floating) or not np.isfinite(values).all():
+        if not values.is_floating_point() or not bool(torch.isfinite(values).all()):
             raise ValueError(
                 f"EventManager term '{term_name}' body {label} must be finite floating data"
             )
-        full = np.zeros((self._backend.num_envs, body_ids.size, 3), dtype=values.dtype)
-        full[host_ids] = values
+        full = torch.zeros(
+            (self._backend.num_envs, body_ids.size, 3),
+            dtype=values.dtype,
+            device=values.device,
+        )
+        full[ids.to(device=values.device, dtype=torch.int64)] = values
         return full
 
     def write_root_link_pose_to_sim(

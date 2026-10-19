@@ -24,6 +24,7 @@ from unisim.backend.base import (
 from unisim.dr.types import (
     RESET_TERM_BODY_INERTIA,
     RESET_TERM_BODY_IPOS,
+    RESET_TERM_BODY_IQUAT,
     RESET_TERM_BODY_MASS,
     RESET_TERM_DOF_ARMATURE,
     RESET_TERM_DOF_DAMPING,
@@ -35,6 +36,8 @@ from unisim.dr.types import (
     RESET_TERM_GRAVITY,
     RESET_TERM_KD,
     RESET_TERM_KP,
+    RESET_TERM_SPECS,
+    DataPlaneName,
 )
 from unisim.entities import EntityStatePatch, SceneResetRequest
 from unisim.scene_layout import CompiledSceneLayout
@@ -44,20 +47,29 @@ from unilab.base.rotation import quat_apply_inverse
 if TYPE_CHECKING:
     from unisim.backend.packed_reset import TorchPackedResetComposer
 
+# Concrete trailing widths for the two-dimensional canonical model tables.
+# ``RESET_TERM_SPECS`` is the single source for term names, canonical table
+# ranks, and delta semantics, but it carries ranks only; these pin the
+# per-column width each 2-D term's tail resolves to.
+_RANDOMIZATION_TERM_WIDTHS: dict[str, int] = {
+    RESET_TERM_BODY_INERTIA: 3,
+    RESET_TERM_BODY_IPOS: 3,
+    RESET_TERM_BODY_IQUAT: 4,
+    RESET_TERM_GEOM_FRICTION: 3,
+    RESET_TERM_GEOM_SIZE: 3,
+    RESET_TERM_GEOM_SOLIMP: 5,
+    RESET_TERM_GEOM_SOLREF: 2,
+}
+
+# Per-column value tails derived from the authoritative ``RESET_TERM_SPECS``
+# ranks: a canonical table of rank ``tail_ndim`` keeps ``tail_ndim - 1``
+# trailing dims once the column axis is selected. Delta terms are excluded:
+# the packed composer merges them with the baseline, so this transaction never
+# stages direct writes for them.
 _RANDOMIZATION_TERM_TAILS: dict[str, tuple[int, ...]] = {
-    RESET_TERM_BODY_INERTIA: (3,),
-    RESET_TERM_BODY_MASS: (),
-    RESET_TERM_BODY_IPOS: (3,),
-    RESET_TERM_DOF_ARMATURE: (),
-    RESET_TERM_DOF_DAMPING: (),
-    RESET_TERM_DOF_FRICTIONLOSS: (),
-    RESET_TERM_GEOM_FRICTION: (3,),
-    RESET_TERM_GEOM_SIZE: (3,),
-    RESET_TERM_GEOM_SOLIMP: (5,),
-    RESET_TERM_GEOM_SOLREF: (2,),
-    RESET_TERM_GRAVITY: (),
-    RESET_TERM_KD: (),
-    RESET_TERM_KP: (),
+    spec.name: () if spec.tail_ndim == 1 else (_RANDOMIZATION_TERM_WIDTHS[spec.name],)
+    for spec in RESET_TERM_SPECS
+    if not spec.is_delta
 }
 
 
@@ -119,7 +131,7 @@ class ResetStateTransaction:
         self._tensor_owner_subset = False
         self._mask_count = torch.zeros((), dtype=torch.int64)
         self._begin_rows: torch.Tensor | None = None
-        self._begin_ids: np.ndarray | None = None
+        self._begin_ids: torch.Tensor | None = None
         self._host_has_writes = False
         self._default_qpos: np.ndarray | None = None
         self._default_qvel: np.ndarray | None = None
@@ -174,8 +186,8 @@ class ResetStateTransaction:
     def scoped_startup(self, env_ids: torch.Tensor) -> Iterator[ResetStateTransaction]:
         """Begin the all-row startup transaction and commit after all terms succeed."""
         ids = self._validate_ids(env_ids, capability="startup")
-        expected_ids = np.arange(self._num_envs, dtype=np.int64)
-        if not np.array_equal(ids, expected_ids):
+        expected_ids = torch.arange(self._num_envs, dtype=torch.int64, device=ids.device)
+        if not torch.equal(ids, expected_ids):
             raise ValueError("startup reset-state transaction must include every environment row")
         self.begin(env_ids)
         try:
@@ -250,7 +262,7 @@ class ResetStateTransaction:
         device = self._packed_reset_device
         assert device is not None
         self._ensure_packed_state_default("begin")
-        rows = torch.as_tensor(ids, dtype=torch.int64, device=device)
+        rows = self._packed_rows(ids)
         transaction.begin_state(rows)
         self._begin_rows = rows
         self._begin_ids = ids
@@ -327,7 +339,7 @@ class ResetStateTransaction:
             raise NotImplementedError("physical entity patches require a compiled scene layout")
         ids = self._validate_ids(env_ids, capability=term_name)
         begin_ids = self._begin_ids
-        if begin_ids is None or not np.isin(ids, begin_ids).all():
+        if begin_ids is None or not bool(torch.isin(ids, begin_ids).all()):
             raise ValueError("entity write is outside the active reset")
         if not len(ids):
             return
@@ -374,12 +386,15 @@ class ResetStateTransaction:
         self._require_active()
         ids = self._validate_ids(env_ids, capability="read_entity_root_pose")
         begin_ids = self._begin_ids
-        if begin_ids is None or not np.isin(ids, begin_ids).all():
+        if begin_ids is None or not bool(torch.isin(ids, begin_ids).all()):
             raise ValueError("entity state read is outside the active reset")
+        # Host staging path: entity patches and the public snapshot live in
+        # NumPy, so this boundary materializes host rows once.
+        host_ids = ids.detach().cpu().numpy()
         if "root_pose" in self._entity_values.get(entity, {}):
-            rows = [self._entity_row_index[int(i)] for i in ids]
+            rows = [self._entity_row_index[int(i)] for i in host_ids]
             return self._entity_values[entity]["root_pose"][rows].copy()
-        return self._backend.get_entity_state(entity)["root_pose"][ids].copy()
+        return self._backend.get_entity_state(entity)["root_pose"][host_ids].copy()
 
     def _commit_entities(self) -> None:
         assert self.scene_layout is not None
@@ -861,13 +876,13 @@ class ResetStateTransaction:
         self._require_randomization_default(RESET_TERM_GRAVITY, term_name)
         gravity = self._validate_values(
             values,
-            shape=(ids.size, 3),
+            shape=(ids.numel(), 3),
             capability="gravity",
             term_name=term_name,
         )
         self._require_packed_transaction().write_model_field(
             RESET_TERM_GRAVITY,
-            self._host_rows(ids),
+            self._packed_rows(ids),
             self._packed_values(gravity),
         )
         self._host_has_writes = True
@@ -962,7 +977,7 @@ class ResetStateTransaction:
             term_name=term_name,
         )
         self._materialize_default_actuator_gains(term_name)
-        gains_shape = (ids.size, columns.size)
+        gains_shape = (ids.numel(), columns.size)
         kp_values = self._validate_values(
             kp,
             shape=gains_shape,
@@ -976,7 +991,7 @@ class ResetStateTransaction:
             term_name=term_name,
         )
         transaction = self._require_packed_transaction()
-        rows = self._host_rows(ids)
+        rows = self._packed_rows(ids)
         transaction.write_model_field(
             RESET_TERM_KP, rows, self._packed_values(kp_values), columns=columns
         )
@@ -1098,8 +1113,8 @@ class ResetStateTransaction:
         ids = self._validate_ids(env_ids, capability="write_joint_state")
         begin_ids = self._begin_ids
         assert begin_ids is not None
-        outside = ids[~np.isin(ids, begin_ids)]
-        if outside.size:
+        outside = ids[~torch.isin(ids, begin_ids)]
+        if outside.numel():
             raise ValueError(
                 f"EventManager term '{term_name}' attempted joint-state mutation outside "
                 f"the active reset: {outside.tolist()}"
@@ -1128,19 +1143,19 @@ class ResetStateTransaction:
             )
         positions = self._validate_values(
             position,
-            shape=(ids.size, pos_columns.size),
+            shape=(ids.numel(), pos_columns.size),
             capability="joint position",
             term_name=term_name,
         )
         velocities = self._validate_values(
             velocity,
-            shape=(ids.size, vel_columns.size),
+            shape=(ids.numel(), vel_columns.size),
             capability="joint velocity",
             term_name=term_name,
         )
 
         self._require_packed_transaction().write_state(
-            self._host_rows(ids),
+            self._packed_rows(ids),
             qpos_columns=pos_columns,
             qpos_values=self._packed_values(positions),
             qvel_columns=vel_columns,
@@ -1235,22 +1250,17 @@ class ResetStateTransaction:
         ids = self._validate_ids(env_ids, capability="write_root_state")
         values = self._validate_values(
             root_state,
-            shape=(ids.size, 13),
+            shape=(ids.numel(), 13),
             capability="root state",
             term_name=term_name,
         )
-        self.write_root_pose(
-            env_ids,
-            layout,
-            torch.from_numpy(values[:, :7]),
-            term_name=term_name,
-        )
-        self.write_root_velocity(
-            env_ids,
-            layout,
-            torch.from_numpy(values[:, 7:]),
-            term_name=term_name,
-        )
+        if isinstance(values, torch.Tensor):
+            pose, velocity = values[:, :7], values[:, 7:]
+        else:
+            pose = torch.from_numpy(values[:, :7])
+            velocity = torch.from_numpy(values[:, 7:])
+        self.write_root_pose(env_ids, layout, pose, term_name=term_name)
+        self.write_root_velocity(env_ids, layout, velocity, term_name=term_name)
 
     def _validate_motion_tensor_payload(
         self,
@@ -1474,14 +1484,14 @@ class ResetStateTransaction:
         ids = self._prepare_state_write(env_ids, capability="root-pose", term_name=term_name)
         positions = self._validate_values(
             pose,
-            shape=(ids.size, 7),
+            shape=(ids.numel(), 7),
             capability="root pose",
             term_name=term_name,
         )
         self._validate_quaternions(positions[:, 3:7], term_name=term_name)
         qpos_columns, _ = self._validate_root_layout(layout, term_name=term_name)
         self._require_packed_transaction().write_state(
-            self._host_rows(ids),
+            self._packed_rows(ids),
             qpos_columns=qpos_columns,
             qpos_values=self._packed_values(positions),
         )
@@ -1504,16 +1514,16 @@ class ResetStateTransaction:
         ids = self._prepare_state_write(env_ids, capability="root-velocity", term_name=term_name)
         velocities = self._validate_values(
             velocity_w,
-            shape=(ids.size, 6),
+            shape=(ids.numel(), 6),
             capability="root velocity",
             term_name=term_name,
         )
         qpos_columns, qvel_columns = self._validate_root_layout(layout, term_name=term_name)
-        if ids.size:
+        if ids.numel():
             transaction = self._require_packed_transaction()
             device = self._packed_reset_device
             assert device is not None
-            rows = self._host_rows(ids)
+            rows = self._packed_rows(ids)
             qpos, _ = transaction.state_views()
             quaternion_columns = torch.as_tensor(
                 qpos_columns[3:7], dtype=torch.int64, device=device
@@ -1526,9 +1536,7 @@ class ResetStateTransaction:
                     f"EventManager term '{term_name}' root quaternion must be unit length; "
                     f"norms={norms[invalid].detach().cpu().tolist()}"
                 )
-            velocity_tensor = torch.as_tensor(
-                np.ascontiguousarray(velocities, dtype=np.float32), device=device
-            )
+            velocity_tensor = self._packed_values(velocities)
             encoded = velocity_tensor.clone()
             encoded[:, 3:6] = quat_apply_inverse(quaternions, velocity_tensor[:, 3:6])
             transaction.write_state(rows, qvel_columns=qvel_columns, qvel_values=encoded)
@@ -1553,7 +1561,7 @@ class ResetStateTransaction:
         transaction = self._require_packed_transaction()
         device = self._packed_reset_device
         assert device is not None
-        rows = self._host_rows(ids)
+        rows = self._packed_rows(ids)
         qpos, _ = transaction.state_views()
         columns = torch.as_tensor(qpos_columns, dtype=torch.int64, device=device)
         staged = qpos.index_select(0, rows).index_select(1, columns)
@@ -1596,11 +1604,11 @@ class ResetStateTransaction:
         else:
             begin_ids = self._begin_ids
             assert begin_ids is not None
-            outside = not np.isin(ids, begin_ids).all()
+            outside = not bool(torch.isin(ids, begin_ids).all())
         if outside:
             raise ValueError(f"{term_name}: mocap mutation outside the active reset")
         values = self._validate_values(
-            poses, shape=(ids.size, 7), capability="mocap pose", term_name=term_name
+            poses, shape=(ids.numel(), 7), capability="mocap pose", term_name=term_name
         )
         self._validate_quaternions(values[:, 3:], term_name=term_name)
         capabilities = self._backend.get_tensor_capabilities()
@@ -1610,12 +1618,8 @@ class ResetStateTransaction:
                 "declaring 'packed_reset_mocap'"
             )
         transaction = self._require_packed_transaction()
-        device = self._packed_reset_device
-        assert device is not None
-        rows_tensor = torch.as_tensor(ids, dtype=torch.int64, device=device)
-        poses_tensor = torch.as_tensor(
-            np.ascontiguousarray(values, dtype=np.float32), device=device
-        )
+        rows_tensor = self._packed_rows(ids)
+        poses_tensor = self._packed_values(values)
         transaction.write_mocap_pose(body_name, rows_tensor, poses_tensor)
         previous = self._mocap_pending.get(body_name)
         if previous is None:
@@ -1790,16 +1794,31 @@ class ResetStateTransaction:
         )
         self._packed_state_default_installed = True
 
-    def _host_rows(self, ids: np.ndarray) -> torch.Tensor:
-        """Convert validated host env IDs to packed-composer device rows."""
+    def _packed_rows(self, ids: torch.Tensor) -> torch.Tensor:
+        """Move validated env IDs onto the packed-composer device without a host detour."""
         device = self._packed_reset_device
         assert device is not None
-        return torch.as_tensor(ids, dtype=torch.int64, device=device)
+        return ids.to(dtype=torch.int64, device=device)
 
-    def _packed_values(self, values: np.ndarray) -> torch.Tensor:
-        """Move validated host values into the packed composer as float32."""
+    def _packed_reset_plane(self) -> DataPlaneName:
+        """Data plane of the packed composer for capability checks.
+
+        Torch tensors on ``torch.cpu`` form the host plane; any other device
+        forms the device plane. Before the packed device is declared (cold-path
+        binds run before ``declare_packed_reset_device``) the check falls back
+        to the host plane, matching the historical declaration semantics.
+        """
+        device = self._packed_reset_device
+        if device is None or device.type == "cpu":
+            return "host"
+        return "device"
+
+    def _packed_values(self, values: np.ndarray | torch.Tensor) -> torch.Tensor:
+        """Move validated values into the packed composer as float32, on device."""
         device = self._packed_reset_device
         assert device is not None
+        if isinstance(values, torch.Tensor):
+            return values.to(dtype=torch.float32, device=device)
         return torch.as_tensor(np.ascontiguousarray(values, dtype=np.float32), device=device)
 
     def _materialize_default_state(self, term_name: str) -> None:
@@ -1854,7 +1873,9 @@ class ResetStateTransaction:
         except (AttributeError, NotImplementedError) as exc:
             raise self._capability_error(term_name, "actuator gain randomization", exc) from exc
         required = frozenset((RESET_TERM_KP, RESET_TERM_KD))
-        unsupported = capabilities.get_unsupported_reset_terms(required)
+        unsupported = capabilities.get_unsupported_reset_terms(
+            required, plane=self._packed_reset_plane()
+        )
         if unsupported:
             detail = ", ".join(sorted(unsupported))
             raise self._capability_error(
@@ -1897,7 +1918,9 @@ class ResetStateTransaction:
             capabilities = self._backend.get_dr_capabilities()
         except (AttributeError, NotImplementedError) as exc:
             raise self._capability_error(term_name, f"{field} randomization", exc) from exc
-        unsupported = capabilities.get_unsupported_reset_terms(frozenset((field,)))
+        unsupported = capabilities.get_unsupported_reset_terms(
+            frozenset((field,)), plane=self._packed_reset_plane()
+        )
         if unsupported:
             raise self._capability_error(
                 term_name,
@@ -2035,7 +2058,8 @@ class ResetStateTransaction:
                 "before recording startup randomization"
             )
         ids = self._validate_ids(env_ids, capability="startup randomization")
-        if ids.size != self._num_envs or not np.array_equal(ids, np.arange(self._num_envs)):
+        expected = torch.arange(self._num_envs, dtype=torch.int64, device=ids.device)
+        if ids.numel() != self._num_envs or not torch.equal(ids, expected):
             raise ValueError(
                 f"EventManager term '{term_name}' startup randomization field '{field}' "
                 f"requires all {self._num_envs} environment rows; got {ids.tolist()}"
@@ -2082,13 +2106,13 @@ class ResetStateTransaction:
         )
         selected = self._validate_values(
             values,
-            shape=(ids.size, columns.size, *value_tail),
+            shape=(ids.numel(), columns.size, *value_tail),
             capability=field,
             term_name=term_name,
         )
         self._require_packed_transaction().write_model_field(
             field,
-            self._host_rows(ids),
+            self._packed_rows(ids),
             self._packed_values(selected),
             columns=columns,
         )
@@ -2100,7 +2124,7 @@ class ResetStateTransaction:
         *,
         capability: str,
         term_name: str,
-    ) -> np.ndarray:
+    ) -> torch.Tensor:
         self._require_active()
         if self._tensor_active:
             return self._prepare_tensor_randomization_write(
@@ -2109,8 +2133,8 @@ class ResetStateTransaction:
         ids = self._validate_ids(env_ids, capability=f"write_{capability}")
         begin_ids = self._begin_ids
         assert begin_ids is not None
-        outside = ids[~np.isin(ids, begin_ids)]
-        if outside.size:
+        outside = ids[~torch.isin(ids, begin_ids)]
+        if outside.numel():
             raise ValueError(
                 f"EventManager term '{term_name}' attempted {capability} mutation outside "
                 f"the active reset: {outside.tolist()}"
@@ -2125,7 +2149,7 @@ class ResetStateTransaction:
         *,
         capability: str,
         term_name: str,
-    ) -> np.ndarray:
+    ) -> torch.Tensor:
         """Validate a host DR write against the active packed reset rows."""
         if self._tensor_owner_subset:
             raise RuntimeError(
@@ -2221,7 +2245,10 @@ class ResetStateTransaction:
         self._tensor_joint_columns = (*key, qpos_tensor, qvel_tensor)
         return qpos_tensor, qvel_tensor
 
-    def _validate_quaternions(self, values: np.ndarray, *, term_name: str) -> None:
+    def _validate_quaternions(self, values: np.ndarray | torch.Tensor, *, term_name: str) -> None:
+        if isinstance(values, torch.Tensor):
+            self._validate_tensor_root_quaternions(values, term_name=term_name)
+            return
         norms = np.linalg.norm(values, axis=1)
         invalid = ~np.isclose(norms, 1.0, rtol=1e-5, atol=1e-6)
         if np.any(invalid):
@@ -2261,7 +2288,14 @@ class ResetStateTransaction:
         result.setflags(write=False)
         return result
 
-    def _validate_ids(self, env_ids: torch.Tensor, *, capability: str) -> np.ndarray:
+    def _validate_ids(self, env_ids: torch.Tensor, *, capability: str) -> torch.Tensor:
+        """Validate env IDs on their device and return packed-device int64 rows.
+
+        Torch IDs on any device are validated in place (range and duplicate
+        checks run as device reductions); the result moves straight to the
+        packed-composer device, so a device reset performs no D2H→H2D round
+        trip through this boundary.
+        """
         if not isinstance(env_ids, torch.Tensor):
             raise TypeError(
                 f"ManagerBased reset-state {capability} env_ids must be torch.Tensor, "
@@ -2284,17 +2318,19 @@ class ResetStateTransaction:
                 f"ManagerBased reset-state {capability} env_ids out of range for "
                 f"{self._num_envs} environments: {rows.tolist()}"
             )
-        ids = rows.detach().cpu().numpy().astype(np.int32, copy=False)
-        # Duplicate check via bincount instead of np.unique: identical semantics
-        # (ids are already range-checked above) but avoids the sort — ~30x faster
-        # at num_envs=4096 and ~4x at typical partial-reset widths. This runs on
+        # Duplicate check via bincount instead of a sort-based unique: identical
+        # semantics (ids are already range-checked above) at a fraction of the
+        # cost, and it runs on whatever device the IDs live on. This runs on
         # every reset-state write (~6x per env step), so the sort cost was
         # measurable in the collector host phase (issue #1352).
-        if ids.size > 1 and np.bincount(ids, minlength=self._num_envs).max() > 1:
+        if rows.numel() > 1 and int(torch.bincount(rows, minlength=self._num_envs).max()) > 1:
             raise ValueError(
-                f"ManagerBased reset-state {capability} env_ids contain duplicates: {ids.tolist()}"
+                f"ManagerBased reset-state {capability} env_ids contain duplicates: {rows.tolist()}"
             )
-        return ids
+        device = self._packed_reset_device
+        if device is not None and rows.device != device:
+            rows = rows.to(device)
+        return rows
 
     def _validate_columns(
         self,
@@ -2361,19 +2397,33 @@ class ResetStateTransaction:
         shape: tuple[int, ...],
         capability: str,
         term_name: str,
-    ) -> np.ndarray:
+    ) -> np.ndarray | torch.Tensor:
+        """Validate one staged write payload, keeping Torch tensors on their device.
+
+        Torch tensors on any device are accepted (the packed composer and the
+        backend own the device contract downstream); NumPy arrays remain
+        accepted as the legacy cold leaf. Either way the result feeds
+        :meth:`_packed_values`, which moves it to the packed device directly.
+        """
         if isinstance(values, torch.Tensor):
-            if values.device.type != "cpu":
-                raise TypeError(
-                    f"EventManager term '{term_name}' {capability} host write requires a "
-                    f"CPU Torch tensor; got {values.device}"
+            if tuple(values.shape) != shape:
+                raise ValueError(
+                    f"EventManager term '{term_name}' {capability} has shape "
+                    f"{tuple(values.shape)}; expected {shape}"
                 )
-            if not values.is_contiguous():
-                values = values.contiguous()
-            values = values.numpy()
+            if not values.is_floating_point():
+                raise TypeError(
+                    f"EventManager term '{term_name}' {capability} must be floating, "
+                    f"got {values.dtype}"
+                )
+            if not bool(torch.isfinite(values).all()):
+                raise ValueError(
+                    f"EventManager term '{term_name}' {capability} contains NaN or Inf"
+                )
+            return values.contiguous()
         if not isinstance(values, np.ndarray):
             raise TypeError(
-                f"EventManager term '{term_name}' {capability} must be np.ndarray or a CPU "
+                f"EventManager term '{term_name}' {capability} must be np.ndarray or a "
                 f"torch.Tensor, got {type(values).__name__}"
             )
         if values.shape != shape:

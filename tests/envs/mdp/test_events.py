@@ -34,7 +34,7 @@ from unisim.dr.types import (
     RESET_TERM_KP,
     DomainRandomizationCapabilities,
     IntervalRandomizationPlan,
-    ResetRandomizationPayload,
+    TensorResetRandomizationPayload,
 )
 
 from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadSpec
@@ -238,7 +238,7 @@ class _Backend:
         self.default_qpos = np.asarray([0.0, 0.0, 0.5, 1.0, 0.0, 0.0, 0.0])
         self.init_qvel = np.zeros(6)
         self.set_state_calls: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-        self.randomization_calls: list[ResetRandomizationPayload | None] = []
+        self.randomization_calls: list[TensorResetRandomizationPayload | None] = []
         self.body_pos = np.zeros((self.num_envs, 1, 3))
         self.body_quat = np.zeros((self.num_envs, 1, 4))
         self.body_quat[:, :, 0] = 1.0
@@ -1608,9 +1608,16 @@ def test_randomize_body_mass_inertia_rejects_invalid_scale_range(scale_range) ->
 class _TensorBackend(_Backend):
     """Fake backend exposing the public selected tensor-reset boundary."""
 
-    def __init__(self, *, device_reset_randomization: bool = False, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        device_reset_randomization: bool = False,
+        device_plane: bool = False,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self.device_reset_randomization = device_reset_randomization
+        self.device_plane = device_plane
         self.tensor_reset_calls: list[tuple[Any, Any, Any, Any]] = []
         self.body_tensor_views = {
             "pos_w": torch.zeros((self.num_envs, 1, 3), dtype=torch.float32),
@@ -1642,6 +1649,16 @@ class _TensorBackend(_Backend):
             device_reset_randomization=self.device_reset_randomization,
             packed_reset=True,
             packed_reset_fields=packed_fields,
+        )
+
+    def get_dr_capabilities(self) -> DomainRandomizationCapabilities:
+        capabilities = super().get_dr_capabilities()
+        if not self.device_plane:
+            return capabilities
+        return DomainRandomizationCapabilities(
+            supported_reset_terms=capabilities.supported_reset_terms,
+            supported_interval_terms=capabilities.supported_interval_terms,
+            supported_device_reset_terms=capabilities.supported_reset_terms,
         )
 
     def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> dict:
@@ -1677,7 +1694,13 @@ def _tensor_dr_env(
     device_reset_randomization: bool,
     device: torch.device,
 ) -> tuple[ManagerBasedRlEnv, _TensorBackend, ResetStateTransaction]:
-    backend = _TensorBackend(device_reset_randomization=device_reset_randomization)
+    device = torch.device(device)
+    if device.type == "cuda" and device.index is None:
+        device = torch.device("cuda", index=torch.cuda.current_device())
+    backend = _TensorBackend(
+        device_reset_randomization=device_reset_randomization,
+        device_plane=device.type != "cpu",
+    )
     transaction = ResetStateTransaction(cast(SimBackend, backend))
     scene = EntityScene(
         {
@@ -1757,3 +1780,33 @@ def _dr_event_cfg() -> dict[str, EventTermCfg]:
             },
         ),
     }
+
+
+@requires_cuda
+def test_reset_randomization_payload_commits_on_cuda_without_host_detour() -> None:
+    env, backend, transaction = _tensor_dr_env(
+        device_reset_randomization=True, device=torch.device("cuda")
+    )
+    manager = EventManager(_dr_event_cfg(), env)
+    reset_mask = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+
+    with transaction.scoped_device_event_tensor(reset_mask):
+        manager.apply_reset(reset_mask, global_env_step_count=0)
+        assert backend.tensor_reset_calls == []
+
+    assert len(backend.tensor_reset_calls) == 1
+    env_indices, qpos, qvel, payload = backend.tensor_reset_calls[0]
+    assert env_indices.device.type == "cuda"
+    assert qpos.device.type == "cuda"
+    assert qvel.device.type == "cuda"
+    assert isinstance(payload, TensorResetRandomizationPayload)
+    requested = payload.requested_terms()
+    assert {
+        RESET_TERM_BODY_MASS,
+        RESET_TERM_BODY_IPOS,
+        RESET_TERM_GEOM_FRICTION,
+        RESET_TERM_KP,
+        RESET_TERM_KD,
+    } <= requested
+    for term in requested:
+        assert getattr(payload, term).device.type == "cuda", term

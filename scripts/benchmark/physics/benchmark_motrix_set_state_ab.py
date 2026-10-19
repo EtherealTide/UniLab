@@ -40,12 +40,13 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from unisim.dr.types import ResetRandomizationPayload  # noqa: E402
+from unisim.dr.types import TensorResetRandomizationPayload  # noqa: E402
 
 from unilab.assets import ASSETS_ROOT_PATH  # noqa: E402
 from unilab.base.scene import SceneCfg  # noqa: E402
@@ -79,7 +80,7 @@ def _baseline_set_state(
     env_indices: np.ndarray,
     qpos: np.ndarray,
     qvel: np.ndarray,
-    randomization: ResetRandomizationPayload | None = None,
+    randomization: TensorResetRandomizationPayload | None = None,
 ) -> dict:
     """Inline copy of the pre-#679 body, monkey-patched onto the backend.
 
@@ -120,7 +121,9 @@ def _baseline_set_state(
     timing["set_state_geom_overrides_ms"] = (time.perf_counter() - t0) * 1000.0
 
     t0 = time.perf_counter()
-    self._apply_reset_randomization(data_slice, env_indices, randomization)
+    self._apply_reset_randomization(
+        data_slice, env_indices, self._host_reset_randomization_dict(randomization)
+    )
     timing["set_state_reset_rand_ms"] = (time.perf_counter() - t0) * 1000.0
 
     t0 = time.perf_counter()
@@ -204,7 +207,7 @@ def _run_variant(
     warmup: int,
     iters: int,
     rng: np.random.Generator,
-    randomization: ResetRandomizationPayload | None,
+    randomization: TensorResetRandomizationPayload | None,
 ) -> dict[str, Any]:
     """Drive set_state ``warmup+iters`` times; report per-key mean/median ms."""
     nq = backend.get_dof_pos().shape[-1] + 7
@@ -219,7 +222,7 @@ def _run_variant(
         return rng.choice(num_envs, size=num_reset, replace=False).astype(np.int32)
 
     fn = (
-        backend.set_state
+        backend._host_set_state
         if variant == "optimized"
         else lambda *a, **kw: _baseline_set_state(backend, *a, **kw)
     )
@@ -324,8 +327,10 @@ def main(argv: list[str] | None = None) -> int:
     for ratio in ratios:
         num_reset = max(1, int(args.num_envs * ratio))
         payload = (
-            ResetRandomizationPayload(
-                gravity=np.tile(np.asarray([0.0, 0.0, -9.81], dtype=np.float32), (num_reset, 1)),
+            TensorResetRandomizationPayload(
+                gravity=torch.as_tensor(
+                    np.tile(np.asarray([0.0, 0.0, -9.81], dtype=np.float32), (num_reset, 1))
+                ),
             )
             if args.randomization
             else None
