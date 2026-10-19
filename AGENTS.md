@@ -86,6 +86,9 @@ make test                  # non-slow tests
 make test-all              # required before creating/updating a PR
 ```
 
+Dependency pin changes must keep the ROCm track in sync: apply the same bump
+to `pyproject.rocm.toml` and regenerate `uv.rocm.lock` in the same PR.
+
 Use focused tests for contract, IPC/runner, config, backend, asset, or docs
 changes. Docs-only validation is defined in `docs/sphinx/AGENTS.md`. Record the
 exact commands and outcomes in the PR. Do not run expensive benchmarks unless
