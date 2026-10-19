@@ -260,7 +260,7 @@ class TestCheckpointSemantics:
         with pytest.raises(ValueError, match="actor semantics"):
             builtin.load_state_dict(state)
 
-    def test_custom_config_rejects_legacy_checkpoint_without_semantics(self) -> None:
+    def test_custom_config_rejects_checkpoint_without_semantics(self) -> None:
         builtin = _make_learner()
         state = builtin.get_state_dict()
         state.pop("actor_semantics")
@@ -276,21 +276,33 @@ class TestCheckpointSemantics:
                 {"schema_version": 1, "kind": "builtin"},
             )
 
-    # #2414 transition evidence: this missing-semantics checkpoint is synthetic
-    # and immutable. The built-in tolerance currently loads; #2416 must replace
-    # this success assertion with fail-closed rejection.
-    def test_pre_contract_builtin_checkpoint_currently_loads(self) -> None:
+    def test_non_mapping_semantics_fails_closed(self) -> None:
+        with pytest.raises(TypeError, match="must be a mapping"):
+            validate_actor_semantics(
+                "legacy-string",
+                {"schema_version": 1, "kind": "builtin"},
+            )
+
+    def test_null_semantics_fails_closed_for_builtin_actor(self) -> None:
+        learner = _make_learner()
+        state = learner.get_state_dict()
+        state["actor_semantics"] = None
+
+        with pytest.raises(ValueError, match="does not record actor semantics"):
+            _make_learner().load_state_dict(state)
+
+    # #2416: pre-contract checkpoints (no actor_semantics entry) are rejected
+    # for every actor kind, including the built-in actor; retrain to migrate.
+    def test_pre_contract_builtin_checkpoint_fails_closed(self) -> None:
         learner = _make_learner()
         canonical = learner.get_state_dict()
         pre_contract = learner.get_state_dict()
         pre_contract.pop("actor_semantics")
 
-        restored = _make_learner()
-        restored.load_state_dict(pre_contract)
-
         assert "actor_semantics" in canonical
         assert "actor_semantics" not in pre_contract
-        torch.testing.assert_close(restored.actor.state_dict(), learner.actor.state_dict())
+        with pytest.raises(ValueError, match="pre-contract FlashSAC checkpoints"):
+            _make_learner().load_state_dict(pre_contract)
 
 
 class TestDefaultActorRegression:
@@ -312,7 +324,7 @@ class TestDefaultActorRegression:
         obs = torch.randn(8, _OBS_DIM)
         assert learner.actor.explore(obs, deterministic=False).abs().max() <= 1.0
 
-    def test_default_actor_round_trip_and_legacy_load(self) -> None:
+    def test_default_actor_round_trip(self) -> None:
         learner = _make_learner()
         learner.update_actor(_make_batch())
         state = learner.get_state_dict()
@@ -320,10 +332,7 @@ class TestDefaultActorRegression:
         restored = _make_learner()
         restored.load_state_dict(state)
 
-        legacy = learner.get_state_dict()
-        legacy.pop("actor_semantics")
-        legacy_restored = _make_learner()
-        legacy_restored.load_state_dict(legacy)
+        torch.testing.assert_close(restored.actor.state_dict(), learner.actor.state_dict())
 
 
 class TestSpawnSafety:

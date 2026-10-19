@@ -17,6 +17,17 @@ PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完
 
 ### Breaking changes / 破坏性变更
 
+- FlashSAC pre-contract checkpoints (a missing or null `actor_semantics`
+  entry) are no longer supported: training resume and play loading fail
+  closed for every actor, including the built-in actor, with an error that
+  states the minimum supported checkpoint format. The only migration path is
+  to retrain the policy with a current release; the change is not backported
+  to any 1.3.5 patch release
+  ([#2416](https://github.com/Motphys/UniLab/issues/2416)).
+  FlashSAC pre-contract checkpoint（缺失或为 null 的 `actor_semantics` 条目）
+  不再受支持：训练续训与 play 加载对所有 actor（包括内置 actor）一律 fail
+  closed，错误信息说明最低支持的 checkpoint 格式。唯一迁移路径是使用当前
+  版本重新训练策略；该变更不回 port 到任何 1.3.5 patch release（#2416）。
 - The training seed contract no longer falls back to `training.seed`; only the
   algorithm-level `algo.seed` is honored. A config that sets `training.seed`
   without `algo.seed` fails closed with an error pointing to `algo.seed`
