@@ -104,8 +104,6 @@ def test_build_train_command_matches_production_overrides(tmp_path: Path) -> Non
     assert "training.no_play=true" in command
     assert "algo.max_iterations=300" in command
     assert any(arg.startswith("training.log_dir=") for arg in command)
-    assert not any(arg.startswith("training.devices") for arg in command)
-
     command_dp = bench.build_train_command(
         tmp_path / "runs" / "n2",
         iterations=300,

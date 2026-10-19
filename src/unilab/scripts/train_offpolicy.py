@@ -58,7 +58,7 @@ from unilab.training.cuda_process_sharing import (
     CudaProcessSharingEvidence,
     probe_cuda_process_sharing,
 )
-from unilab.training.dp_config import apply_dp_rank_config, reject_removed_device_config
+from unilab.training.dp_config import apply_dp_rank_config
 from unilab.training.experiment import ExperimentTracker
 from unilab.training.onnx_export import export_policy_onnx, verify_policy_onnx
 from unilab.training.seed import apply_configured_training_seed
@@ -652,7 +652,6 @@ def main(cfg: DictConfig) -> None:
     enable_faulthandler()
     import torch
 
-    reject_removed_device_config(OmegaConf.select(cfg, "training.devices", default=None))
     rank = current_dp_rank()
     world_size = current_dp_world_size()
     if world_size == 1 and rank == 0:

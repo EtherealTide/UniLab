@@ -30,7 +30,6 @@ if TYPE_CHECKING:
         current_torch_distributed_world_size,
     )
     from unilab.rl.runtime.distributed.launcher import launch_torchrun_workers
-    from unilab.training.dp_config import reject_removed_device_config
 
 _LAZY_ATTRS: dict[str, tuple[str, str]] = {
     "UNILAB_DP_LOG_DIR": ("unilab.rl.runtime.distributed.context", "UNILAB_DP_LOG_DIR"),
@@ -61,7 +60,6 @@ _LAZY_ATTRS: dict[str, tuple[str, str]] = {
         "unilab.rl.adapters.rsl_rl.distributed",
         "ppo_samples_per_iteration",
     ),
-    "reject_removed_device_config": ("unilab.training.dp_config", "reject_removed_device_config"),
     "resolve_collector_cpu_ids": (
         "unilab.rl.runtime.distributed.affinity",
         "resolve_collector_cpu_ids",
@@ -84,7 +82,6 @@ __all__ = [
     "get_policy_obs_dims",
     "launch_torchrun_workers",
     "ppo_samples_per_iteration",
-    "reject_removed_device_config",
     "resolve_collector_cpu_ids",
     "resolve_rsl_rl_device",
     "rsl_rl_single_process_topology",
