@@ -30,15 +30,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CONF_ROOT = REPO_ROOT / "src" / "unilab" / "conf"
 ABSENT = "<absent>"
 
-# Audited backend pairs. During the #1811 tensor-only Manager migration the
-# production runtime is scoped to MuJoCo host-bridge and the two device-native
-# adapters. Other UniSim adapters remain shelved and are intentionally absent
-# from this production audit until re-enabled with capability and parity
-# evidence.
+# Audited backend pairs. MuJoCo is the policy-transfer baseline; external-worker
+# Isaac owners are compared against it when their task YAML is present.
 CONTRACT_PAIRS: tuple[tuple[str, str], ...] = (
     ("mujoco", "genesis"),
     ("mujoco", "mjwarp"),
     ("mjwarp", "genesis"),
+    ("mujoco", "isaacgym"),
+    ("mujoco", "isaacsim"),
 )
 
 

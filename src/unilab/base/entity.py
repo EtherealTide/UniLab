@@ -299,7 +299,6 @@ class SceneTensorReadPlan:
                 for _, prefix in _TENSOR_BODY_SENSOR_FIELDS:
                     self._packet_sensor_owners.setdefault(prefix + body_name, entity_name)
         self._packet: Mapping[str, torch.Tensor] = MappingProxyType({})
-        self._stable_sensor_views: dict[str, torch.Tensor] = {}
         self._refreshed = False
         self._closed = False
 
@@ -343,7 +342,7 @@ class SceneTensorReadPlan:
         if self._host_plan_value is not None:
             packet = self._read_packet(self._host_plan_value.read_state_sensors)
         else:
-            packet = self._reuse_stable_device_packet()
+            packet = self._read_device_resident_packet()
         self._publish_packet(packet)
 
     def refresh_selected(self) -> None:
@@ -357,20 +356,19 @@ class SceneTensorReadPlan:
         if self._host_plan_value is not None:
             packet = self._read_packet(self._host_plan_value.read_selected_state_sensors)
         else:
-            packet = self._reuse_stable_device_packet()
+            packet = self._read_device_resident_packet()
         self._publish_packet(packet)
 
-    def _reuse_stable_device_packet(self) -> dict[str, torch.Tensor]:
-        """Publish stable device-resident views without another sensor crossing.
+    def _read_device_resident_packet(self) -> dict[str, torch.Tensor]:
+        """Publish one authoritative device-resident packet for this phase.
 
-        The first device-resident refresh owns the public adapter projection
-        crossing. Stable aliases remain live after mask reset, so a
-        subsequent read phase can republish them without repeating one
-        Python/DLPack boundary per sensor family.
+        Some device-resident backends materialize derived sensors into
+        adapter-owned outputs when their public ``get_sensor_view`` boundary is
+        crossed. Those outputs are stable storage, but they are not necessarily
+        aliases of native physics state. Refresh every compiled sensor name so
+        post-step and post-reset packets cannot republish stale projections.
         """
-        if not self._refreshed:
-            return self._read_packet(None)
-        return dict(self._packet)
+        return self._read_packet(None)
 
     def invalidate(self) -> None:
         """Drop phase values after an in-phase simulation mutation."""
@@ -633,6 +631,7 @@ class SceneTensorReadPlan:
             if self._host_plan_value is not None:
                 self._host_plan_value.close()
         finally:
+            self._aggregate_body_views.clear()
             self._packet = MappingProxyType({})
             self._refreshed = False
             self._closed = True
@@ -659,18 +658,13 @@ class SceneTensorReadPlan:
                 ) from exc
         else:
             try:
-                # DEVICE_RESIDENT views alias stable backend storage. Crossing
-                # one named-sensor boundary per phase refreshes adapter-owned
-                # projections; the remaining live views are reusable without a
-                # second Python/DLPack boundary per sensor term.
-                if self._packet_names:
-                    backend.get_sensor_view(self._packet_names[0], device=self._device)
+                # Every sensor must cross its public backend boundary. Genesis,
+                # Newton, and Isaac workers may project derived values into
+                # stable adapter-owned storage here; only a fresh call proves
+                # that storage reflects the current post-step/post-reset state.
                 raw = dict(backend.get_state_views(("qpos", "qvel"), device=self._device))
                 for name in self._packet_names:
-                    view = self._stable_sensor_views.get(name)
-                    if view is None:
-                        view = backend.get_sensor_view(name, device=self._device)
-                        self._stable_sensor_views[name] = view
+                    view = backend.get_sensor_view(name, device=self._device)
                     raw[name] = view
             except (AttributeError, KeyError, TypeError, ValueError, NotImplementedError) as exc:
                 raise type(exc)(
@@ -2752,9 +2746,20 @@ class Entity:
     ) -> None:
         """Stage a full-width device-resident 13-D world-frame root state."""
         if self._physical_entity is not None:
-            raise NotImplementedError(
-                "mapped entity tensor root-state reset requires a public entity transaction"
+            assert self._reset_state is not None
+            assert self._reset_state.scene_layout is not None
+            owner = self._reset_state.scene_layout.get_entity(self._physical_entity)
+            layout = BackendRootStateLayout(
+                qpos_indices=tuple(owner.root_qpos_indices),
+                qvel_indices=tuple(owner.root_qvel_indices),
             )
+            self._reset_state.write_root_state_tensor(
+                reset_mask,
+                layout,
+                root_state.contiguous(),
+                term_name=f"{self.name}.write_root_state_tensor_to_sim",
+            )
+            return
         reset_state, layout = self._require_root_state_write()
         reset_state.write_root_state_tensor(
             reset_mask,

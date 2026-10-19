@@ -1703,11 +1703,6 @@ class ResetStateTransaction:
                 }
                 self._merge_backend_timing(result)
                 return None
-            if self.scene_layout is not None:
-                raise NotImplementedError(
-                    "fixed-width tensor reset supports scalar qpos/qvel rows only; mapped "
-                    "entity writes remain an explicit migration boundary"
-                )
             if self._tensor_owner_subset:
                 write_mask = self._tensor_write_mask
                 assert write_mask is not None

@@ -495,7 +495,6 @@ def test_named_sensor_runtime_drift_reports_term_and_backend() -> None:
     )
     backend.sensor_values["gyro"] = np.full((2, 3), np.nan, dtype=np.float32)
     env.scene._tensor_read_plan.invalidate()
-    env.scene._tensor_read_plan._stable_sensor_views.clear()
     env.scene._tensor_read_plan.refresh()
 
     with pytest.raises(ValueError, match="builtin_sensor.*gyro.*backend 'fake'.*NaN or Inf"):

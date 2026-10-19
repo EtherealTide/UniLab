@@ -37,6 +37,7 @@ from unisim.dr.types import (
     IntervalRandomizationPlan,
     IntervalTermOp,
     ResetRandomizationPayload,
+    TensorResetRandomizationPayload,
 )
 
 import unilab.base.backend_factory as backend_factory
@@ -534,16 +535,31 @@ def test_dr_capabilities_and_tensor_reset_randomization_boundary(
 
     rows = torch.tensor([1, 3], dtype=torch.int64, device="cuda")
     qpos, qvel = _stand_state(backend, 2)
-    payload = ResetRandomizationPayload(
-        gravity=np.zeros((2, 3)),
-        kp=np.full((2, 2), 55.0),
-        kd=np.full((2, 2), 6.5),
-    )
     backend.set_state_tensor(rows, qpos, qvel)
     with pytest.raises(
-        NotImplementedError, match="genesis tensor reset does not support randomization"
+        TypeError,
+        match="genesis tensor reset randomization requires a TensorResetRandomizationPayload",
     ):
-        backend.set_state_tensor(rows, qpos, qvel, randomization=payload)
+        backend.set_state_tensor(
+            rows,
+            qpos,
+            qvel,
+            randomization=ResetRandomizationPayload(
+                gravity=np.zeros((2, 3)),
+                kp=np.full((2, 2), 55.0),
+                kd=np.full((2, 2), 6.5),
+            ),
+        )
+    with pytest.raises(
+        NotImplementedError,
+        match="genesis tensor reset randomization does not support terms: gravity",
+    ):
+        backend.set_state_tensor(
+            rows,
+            qpos,
+            qvel,
+            randomization=TensorResetRandomizationPayload(gravity=torch.zeros((2, 3))),
+        )
 
 
 def test_interval_randomization_and_body_force(fake_genesis, tiny_model_file: str) -> None:

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import fields, is_dataclass
@@ -67,7 +69,7 @@ _OFFPOLICY_REWARDS = (
     "feet_phase",
     "alive",
 )
-_TENSOR_RESET_EVENT_BACKENDS = {"mujoco", "mjwarp", "newton"}
+_TENSOR_RESET_EVENT_BACKENDS = {"mujoco", "mjwarp", "newton", "isaacgym", "isaacsim"}
 _MOTRIX_PACKED_HOST_BRIDGE_BACKENDS = {"motrix"}
 
 _OBSERVATION_TERMS = (
@@ -203,6 +205,32 @@ _OWNER_CASES = (
         id="sac-motrix",
     ),
     pytest.param(
+        "sac",
+        ("task=g1_walk_flat/isaacgym",),
+        "G1WalkFlat",
+        "isaacgym",
+        29,
+        1.0,
+        "scene_flat.xml",
+        _OFFPOLICY_REWARDS,
+        _RESET_EVENTS,
+        True,
+        id="sac-isaacgym",
+    ),
+    pytest.param(
+        "sac",
+        ("task=g1_walk_flat/isaacsim",),
+        "G1WalkFlat",
+        "isaacsim",
+        29,
+        1.0,
+        "g1_stand_entity.xml",
+        _OFFPOLICY_REWARDS,
+        _RESET_EVENTS,
+        True,
+        id="sac-isaacsim",
+    ),
+    pytest.param(
         "flashsac",
         ("task=g1_walk_flat/mujoco",),
         "G1WalkFlat",
@@ -223,6 +251,8 @@ _WALK_PROFILE_IDS = {
     "sac-genesis",
     "sac-newton",
     "sac-motrix",
+    "sac-isaacgym",
+    "sac-isaacsim",
     "flashsac-mujoco",
 }
 
@@ -294,13 +324,15 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
     assert env_cfg.scale_rewards_by_dt is True
 
     assert env_cfg.scene is not None
-    assert env_cfg.scene.model_file.endswith(f"robots/g1/{model_suffix}")
+    if env_cfg.scene.model_file is not None:
+        assert env_cfg.scene.model_file.endswith(f"robots/g1/{model_suffix}")
     assert env_cfg.scene.default_keyframe_name == "stand"
     robot = env_cfg.scene.entities["robot"]
-    assert robot.root_body_name == "pelvis"
+    expected_root_name = "robot/pelvis" if backend == "isaacsim" else "pelvis"
+    assert robot.root_body_name == expected_root_name
     assert len(robot.joint_names or ()) == num_dof
     assert len(robot.actuator_names or ()) == num_dof
-    assert robot.body_names == ["pelvis"]
+    assert robot.body_names == [expected_root_name]
 
     assert list(env_cfg.observations) == ["policy", "critic"]
     assert list(env_cfg.observations["policy"].terms) == list(_OBSERVATION_TERMS)
@@ -352,7 +384,14 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
     assert env_cfg.actions["joint_pos"].scale == pytest.approx(action_scale)
     assert env_cfg.actions["joint_pos"].use_default_offset is True
 
-    uses_fused_termination = case_id in {"sac-mjwarp", "sac-genesis", "sac-newton", "sac-motrix"}
+    uses_fused_termination = case_id in {
+        "sac-mjwarp",
+        "sac-genesis",
+        "sac-newton",
+        "sac-motrix",
+        "sac-isaacgym",
+        "sac-isaacsim",
+    }
     expected_terminations = (
         ["time_out", "tilt", "base_height", "g1_walk_termination_pack"]
         if uses_fused_termination
@@ -424,6 +463,17 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
         assert env_cfg.scene.terrain is None
         assert env_cfg.events["pd_gains"] is None
         assert hydra_cfg.training.play_render_mode == "record"
+    if backend == "isaacgym":
+        assert env_cfg.isaacgym_device_id == 0
+        assert env_cfg.events["pd_gains"] is None
+        assert hydra_cfg.training.play_render_mode == "record"
+    if backend == "isaacsim":
+        assert env_cfg.scene.model_file is None
+        assert env_cfg.scene.primary_entity == "robot"
+        assert env_cfg.scene.entity_assets[0].source.model_file.endswith("g1_stand_entity.xml")
+        assert env_cfg.isaacsim_tensor_cuda_ipc is True
+        assert env_cfg.events["pd_gains"] is None
+        assert hydra_cfg.training.play_render_mode == "none"
 
     pose = env_cfg.rewards["pose"]
     expected_weights = _POSE_WEIGHTS_29
@@ -449,10 +499,53 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
                         ".genesis",
                         ".newton",
                         ".motrix",
+                        ".isaacgym",
+                        ".isaacsim",
                     )
                 )
 
     _assert_no_omegaconf(env_cfg)
+
+
+def test_isaacsim_flat_floor_covers_reset_and_nominal_command_reach() -> None:
+    """Keep the mapped finite floor as broad as the canonical nominal reach."""
+
+    _, env_cfg, _ = _materialize("sac", ("task=g1_walk_flat/isaacsim",), "G1WalkFlat")
+    assert env_cfg.scene is not None
+    floor_asset = next(asset for asset in env_cfg.scene.entity_assets if asset.name == "floor")
+    floor_path = ROOT_DIR / floor_asset.source.model_file
+    floor = ET.parse(floor_path).getroot().find("./worldbody/body/geom")
+    assert floor is not None
+    half_x, half_y = (float(value) for value in floor.attrib["size"].split()[:2])
+
+    command = env_cfg.commands["twist"]
+    assert isinstance(command, g1_terms.G1VelocityCommandCfg)
+    reset = env_cfg.events["reset_root_state_uniform"].params
+    max_reset = math.hypot(
+        max(
+            abs(float(reset["pose_range"]["x"][0])),
+            abs(float(reset["pose_range"]["x"][1])),
+        ),
+        max(
+            abs(float(reset["pose_range"]["y"][0])),
+            abs(float(reset["pose_range"]["y"][1])),
+        ),
+    )
+    max_speed = math.hypot(
+        max(
+            abs(float(command.ranges.lin_vel_x[0])),
+            abs(float(command.ranges.lin_vel_x[1])),
+        ),
+        max(
+            abs(float(command.ranges.lin_vel_y[0])),
+            abs(float(command.ranges.lin_vel_y[1])),
+        ),
+    )
+    required_half_extent = max_reset + float(env_cfg.max_episode_seconds) * max_speed
+    assert min(half_x, half_y) == pytest.approx(24.0)
+    assert min(half_x, half_y) >= required_half_extent
+    assert env_cfg.isaacsim_env_spacing == pytest.approx(50.0)
+    assert env_cfg.isaacsim_env_spacing > 2.0 * min(half_x, half_y)
 
 
 def test_g1_walk_registries_are_manager_only() -> None:
@@ -467,6 +560,8 @@ def test_g1_walk_registries_are_manager_only() -> None:
             "genesis",
             "newton",
             "motrix",
+            "isaacsim",
+            "isaacgym",
         ],
     }
 
@@ -515,6 +610,26 @@ def test_g1_walk_registries_are_manager_only() -> None:
             101,
             id="sac-motrix",
         ),
+        pytest.param(
+            "sac",
+            ("task=g1_walk_flat/isaacgym",),
+            "G1WalkFlat",
+            "isaacgym",
+            29,
+            98,
+            101,
+            id="sac-isaacgym",
+        ),
+        pytest.param(
+            "sac",
+            ("task=g1_walk_flat/isaacsim",),
+            "G1WalkFlat",
+            "isaacsim",
+            29,
+            98,
+            101,
+            id="sac-isaacsim",
+        ),
     ),
 )
 def test_g1_registry_executes_real_manager_runtime(
@@ -527,6 +642,13 @@ def test_g1_registry_executes_real_manager_runtime(
     critic_dim: int,
 ) -> None:
     registry.ensure_registries()
+    if backend in {"isaacgym", "isaacsim"}:
+        module = __import__(
+            f"unisim.backend.{backend}.dependencies",
+            fromlist=[f"{backend}_runtime_available"],
+        )
+        if not getattr(module, f"{backend}_runtime_available")():
+            pytest.skip(f"{backend} external worker runtime unavailable")
     _, env_cfg, env_override = _materialize(config_group, overrides, task_name)
     try:
         env = registry.make(
@@ -612,7 +734,7 @@ def test_g1_walk_newton_mask_reset_preserves_rows_and_rng() -> None:
         for group, values in reset_obs.items():
             assert values.shape == env.state.obs[group].shape
             assert torch.isfinite(values).all()
-            torch.testing.assert_close(env.state.obs[group][rows], values)
+            torch.testing.assert_close(env.state.obs[group][rows], values[rows])
             torch.testing.assert_close(
                 env.state.obs[group][keep],
                 obs_before[group][keep],
@@ -715,10 +837,16 @@ def test_g1_walk_profile_runtime_obs_scaling_matches_legacy_layout() -> None:
     try:
         env.reset(seed=3)
         state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
-        gyro = env._backend.get_sensor_data("torso_gyro")
-        upvector = env._backend.get_sensor_data("torso_upvector")
-        dof_vel = env._backend.get_dof_vel()
-        linvel = env._backend.get_sensor_data("pelvis_local_linvel")
+        gyro = env._backend.get_sensor_view("torso_gyro", device=env.device).cpu().numpy()
+        upvector = env._backend.get_sensor_view("torso_upvector", device=env.device)
+        upvector = upvector.cpu().numpy()
+        robot = env.scene["robot"]
+        joint_vel_ids = env._backend.get_joint_state_qvel_indices(robot.joint_names)
+        dof_vel = env._backend.get_state_views(("qvel",), device=env.device)["qvel"][
+            :, joint_vel_ids
+        ].cpu()
+        linvel = env._backend.get_sensor_view("pelvis_local_linvel", device=env.device)
+        linvel = linvel.cpu().numpy()
         np.testing.assert_allclose(state.obs["obs"][:, :3], 0.25 * gyro, rtol=0.0, atol=1.0e-6)
         np.testing.assert_allclose(state.obs["obs"][:, 3:6], -upvector, rtol=0.0, atol=1.0e-6)
         np.testing.assert_allclose(
@@ -751,9 +879,14 @@ def test_g1_legacy_profile_runtime_obs_scaling_matches_legacy_layout() -> None:
     try:
         env.reset(seed=3)
         state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
-        gyro = env._backend.get_sensor_data("torso_gyro")
-        dof_vel = env._backend.get_dof_vel()
-        linvel = env._backend.get_sensor_data("pelvis_local_linvel")
+        gyro = env._backend.get_sensor_view("torso_gyro", device=env.device).cpu().numpy()
+        robot = env.scene["robot"]
+        joint_vel_ids = env._backend.get_joint_state_qvel_indices(robot.joint_names)
+        dof_vel = env._backend.get_state_views(("qvel",), device=env.device)["qvel"][
+            :, joint_vel_ids
+        ].cpu()
+        linvel = env._backend.get_sensor_view("pelvis_local_linvel", device=env.device)
+        linvel = linvel.cpu().numpy()
         np.testing.assert_allclose(state.obs["obs"][:, :3], gyro, rtol=0.0, atol=1.0e-6)
         np.testing.assert_allclose(state.obs["obs"][:, 35:64], dof_vel, rtol=0.0, atol=1.0e-6)
         np.testing.assert_allclose(state.obs["critic"][:, 98:101], linvel, rtol=0.0, atol=1.0e-6)
@@ -796,8 +929,8 @@ def test_g1_penalty_curriculum_scales_negative_weights_from_start() -> None:
         # The shared override dict is never mutated in place.
         assert env_override == override_snapshot
 
-        state = env.step(torch.zeros((2, 29), dtype=torch.float32))
-        log = state.info["log"]
+        env.step(torch.zeros((2, 29), dtype=torch.float32))
+        log = env.publish_reward_log()
         for name in _OFFPOLICY_REWARDS:
             assert f"reward/{name}" in log
         assert log["reward/penalty_action_rate"] == pytest.approx(0.0)

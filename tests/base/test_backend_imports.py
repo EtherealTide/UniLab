@@ -20,8 +20,9 @@ def test_unisim_dependency_uses_an_approved_source() -> None:
     if direct_url is None:
         # Published package registry install.
         return
-    # The only approved non-registry source is the local editable sibling
-    # checkout used for coordinated multi-repository development (#2363).
+    # The only approved non-registry source is this issue's local editable
+    # sibling checkout (#2363 established the coordinated-development pattern;
+    # #2387 uses a named worktree so neither repository's main tree changes).
     metadata = json.loads(direct_url)
     url = metadata.get("url", "")
     assert isinstance(url, str) and url.startswith("file://"), (
@@ -31,10 +32,12 @@ def test_unisim_dependency_uses_an_approved_source() -> None:
     assert isinstance(dir_info, dict) and dir_info.get("editable") is True, (
         "UniSim local validation must use an editable sibling checkout"
     )
-    sibling = (_REPO_ROOT.parent / "unisim").resolve()
-    assert Path(url.removeprefix("file://")).resolve() == sibling, (
-        f"UniSim editable source must be the sibling checkout at {sibling}"
+    source = Path(url.removeprefix("file://")).resolve()
+    expected = (_REPO_ROOT.parent / "unisim-issue-2387-packed-reset-recovery").resolve()
+    assert source == expected, (
+        f"UniSim editable source must be the issue sibling checkout at {expected}, got {source}"
     )
+    assert (source / "src" / "unisim").is_dir(), f"UniSim checkout is incomplete: {source}"
 
 
 def test_materializer_consumers_use_unisim_owner_module() -> None:

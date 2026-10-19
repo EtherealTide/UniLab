@@ -73,6 +73,8 @@ def test_host_bridge_backends_do_not_require_torch_cuda(
         ("mjwarp", {}, "unavailable", "unavailable"),
         ("newton", {"newton_device": "cuda:2"}, "valid", "out of range"),
         ("newton", {"newton_device": "cuda:not-an-index"}, "valid", "not supported"),
+        ("isaacgym", {"isaacgym_device_id": 1}, "valid", "does not match the learner's"),
+        ("isaacsim", {"isaacsim_device_id": 1}, "valid", "does not match the learner's"),
     ],
 )
 def test_cuda_only_failures_happen_before_construction(
