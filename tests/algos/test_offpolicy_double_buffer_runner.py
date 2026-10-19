@@ -690,6 +690,15 @@ def test_collector_env_cfg_override_from_none_base():
     assert runner._collector_env_cfg_override() == {"cpu_ids": [4, 5]}
 
 
+@pytest.mark.parametrize("field", ["tensor_runtime", "tensor_runtime_device"])
+def test_collector_env_cfg_override_rejects_removed_tensor_runtime_fields(field: str):
+    runner = _bare_runner()
+    runner.env_cfg_override = {field: None}
+    runner.collector_cpu_ids = None
+    with pytest.raises(ValueError, match="removed tensor_runtime fields"):
+        runner._collector_env_cfg_override()
+
+
 def test_train_resume_defaults_disabled():
     module = _offpolicy()
     cfg = _offpolicy_cfg()

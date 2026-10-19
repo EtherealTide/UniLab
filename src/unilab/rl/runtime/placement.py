@@ -135,41 +135,23 @@ def resolve_inference_placement(
     *,
     learner_device: str,
     transport: str | None = None,
-    tensor_runtime: bool = False,
-    resolved_tensor_runtime_device: str | None = None,
     env_tensor_native: bool | None = None,
     algo_name: str,
 ) -> InferencePlacement:
     """Resolve one explicit topology and reject mixed placement before spawn.
 
-    ``transport`` is authoritative when supplied. ``tensor_runtime`` is the
-    legacy Manager request for CUDA public tensors; combining it with host
-    transport is incoherent and fails closed. The explicit
-    ``resolved_tensor_runtime_device`` and implicit ``learner_device`` requests
-    must also agree when both are present. Host-transport staging policies are
-    selected by ``cpu_ring_staging_policy`` from the learner device type.
+    ``transport`` is authoritative when supplied. ``env_tensor_native`` is the
+    owner's probe-derived carrier fact; combining tensor-native observations
+    with host transport is incoherent and fails closed. Host-transport staging
+    policies are selected by ``cpu_ring_staging_policy`` from the learner device
+    type.
     """
     learner = _canonical_device(learner_device, label="learner device", algo_name=algo_name)
-    if resolved_tensor_runtime_device is not None and not isinstance(
-        resolved_tensor_runtime_device, str
-    ):
-        raise TypeError(
-            f"{algo_name} resolved tensor-runtime device must be a string, "
-            f"got {resolved_tensor_runtime_device!r}"
-        )
-    if env_tensor_native is None and resolved_tensor_runtime_device is not None:
-        env_tensor_native = True
-    if env_tensor_native is None and tensor_runtime:
-        env_tensor_native = True
     if env_tensor_native is None and transport == InferenceTransport.CUDA.value:
         env_tensor_native = True
     if env_tensor_native is None:
         env_tensor_native = False
-    requested_env_device = resolved_tensor_runtime_device
-    if env_tensor_native and requested_env_device is None:
-        requested_env_device = learner
-    if requested_env_device is None:
-        requested_env_device = "cpu"
+    requested_env_device = learner if env_tensor_native else "cpu"
     env_resolved = _canonical_device(requested_env_device, label="env device", algo_name=algo_name)
 
     if env_tensor_native and transport is None:
