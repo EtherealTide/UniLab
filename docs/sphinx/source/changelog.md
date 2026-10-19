@@ -70,6 +70,53 @@ PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完
   训练 seed 契约不再 fallback 到 `training.seed`，仅认可算法级
   `algo.seed`。配置了 `training.seed` 但缺少 `algo.seed` 的配置会 fail
   closed，错误信息指向 `algo.seed`（#2415）。
+- `render_play_mode()` no longer accepts the ignored `sim_backend` keyword;
+  backend routing belongs to `env.run_playback()`. Callers that still pass the
+  argument now get a `TypeError`; deleting the argument migrates the call with
+  unchanged behavior
+  ([#2415](https://github.com/Motphys/UniLab/issues/2415)).
+  `render_play_mode()` 不再接受无效的 `sim_backend` 关键字参数；backend 路由
+  归属 `env.run_playback()`。仍传该参数的调用方会得到 `TypeError`；删除该
+  实参即可完成迁移，行为不变（#2415）。
+- Interactive playback no longer supports the non-Hydra `cfg=None` path:
+  `create_playback_session()` requires a composed Hydra `DictConfig`, and the
+  sim2sim preflight fails closed instead of being silently skipped when the
+  config is missing or is not a `DictConfig`
+  ([#2415](https://github.com/Motphys/UniLab/issues/2415)).
+  交互式回放不再支持非 Hydra 的 `cfg=None` 路径：`create_playback_session()`
+  要求组合后的 Hydra `DictConfig`；config 缺失或不是 `DictConfig` 时
+  sim2sim preflight fail closed，不再静默跳过（#2415）。
+- The Isaac setup scripts accept only `UNISIM_ISAACGYM_HOME` /
+  `UNISIM_ISAACSIM_HOME`; the retired `UNILAB_ISAACGYM_HOME` /
+  `UNILAB_ISAACSIM_HOME` spellings fail closed with an error naming the current
+  variables ([#2415](https://github.com/Motphys/UniLab/issues/2415)).
+  Isaac 安装脚本仅接受 `UNISIM_ISAACGYM_HOME` / `UNISIM_ISAACSIM_HOME`；已
+  退役的 `UNILAB_ISAACGYM_HOME` / `UNILAB_ISAACSIM_HOME` 拼写会 fail
+  closed，错误信息指向当前变量名（#2415）。
+- `unilab-pull-assets` no longer accepts the no-op `--verbose` option; passing
+  it now fails argument parsing. Output stays compact by default
+  ([#2415](https://github.com/Motphys/UniLab/issues/2415)).
+  `unilab-pull-assets` 删除 no-op 的 `--verbose` 选项；传入该选项会导致参数
+  解析失败。输出默认保持紧凑（#2415）。
+- Benchmark tooling drops its legacy compatibility surface: physics benchmarks
+  accept only the canonical owner task ids (`go2_joystick_flat`,
+  `g1_walk_flat`; env-class names, route forms, and short names are rejected),
+  replay placement accepts only `--tasks` (the singular `--task` alias is
+  removed), the SAC replay-sampling benchmark's legacy defaults and positional
+  sim argument are removed, the IsaacGym/IsaacSim benchmark scripts drop the
+  `UNILAB_ISAACGYM_DEPS_ROOT` / `UNILAB_ISAACGYM_MODELS_ROOT` environment
+  aliases and machine-local path defaults (unset paths fail closed), and the
+  Torch benchmark workloads publish a single `final_observation` carrier
+  instead of the dual-written `compat_final_obs` buffer
+  ([#2413](https://github.com/Motphys/UniLab/issues/2413)).
+  benchmark 工具链删除 legacy 兼容面：physics benchmark 仅接受 canonical
+  owner task id（`go2_joystick_flat`、`g1_walk_flat`；env-class 名、路由形式
+  与短名一律拒绝）；replay placement 仅接受 `--tasks`（删除单数 `--task`
+  别名）；SAC replay sampling benchmark 删除旧默认值与位置参数 sim 解释；
+  IsaacGym/IsaacSim benchmark 脚本删除 `UNILAB_ISAACGYM_DEPS_ROOT` /
+  `UNILAB_ISAACGYM_MODELS_ROOT` 环境变量别名与机器本地路径默认值（未设置时
+  fail closed）；Torch benchmark 工作负载只发布单一 `final_observation`
+  载体，不再双写 `compat_final_obs` 缓冲（#2413）。
 - `training.collector_tensor_device`, `manager_torch_device`, `env.tensor_runtime`,
   and `env.tensor_runtime_device` are removed. Use `training.sim_carrier_device`
   (routed to `env.sim_carrier_device`) and the resolved learner device for
