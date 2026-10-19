@@ -1,7 +1,7 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681),
 # src/mjlab/envs/mdp/events.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy reset transactions; Apache-2.0.
+# Modified by UniLab for Torch reset transactions; Apache-2.0.
 # The mass/CoM/gravity public names and signatures follow Isaac Lab v2.2.0;
 # their implementation here is UniLab's original payload adapter, not vendored PhysX code.
 """Community-style reset event terms for UniLab's torch-first manager runtime."""
@@ -1100,7 +1100,7 @@ randomize_rigid_body_mass = RandomizeRigidBodyMass
 class RandomizeBodyMassInertia(_ResetRandomizationTerm):
     """Startup-style mass+inertia scaling via one shared per-env factor.
 
-    NumPy adapter for the alpha-only slice of mjlab's ``dr.pseudo_inertia``:
+    Device-tensor adapter for the alpha-only slice of mjlab's ``dr.pseudo_inertia``:
     mass and principal inertia of the selected bodies are multiplied by the
     same factor s = e^{2α} with α ~ U(ln(lo)/2, ln(hi)/2) — i.e. s is
     log-uniform in ``scale_range``; the CoM (``body_ipos``) and the principal
@@ -1390,7 +1390,7 @@ class RandomizePhysicsSceneGravity(_ResetRandomizationTerm):
         del gravity_distribution_params, operation, distribution
         ids = resolve_env_ids(env, env_ids)
         sampled = _sample_distribution(
-            _require_torch_rng(env, "randomize_gravity"),
+            _require_torch_rng(env, "randomize_physics_scene_gravity"),
             self._distribution_params,
             (ids.numel(), 3),
             self._distribution,
@@ -1560,7 +1560,7 @@ def _time_range(
 class ApplyBodyImpulse(ManagerTermBase):
     """Transient random body impulses with a cooldown->trigger->sustain->expire lifecycle.
 
-    NumPy adaptation of the pinned mjlab ``apply_body_impulse`` term. Each
+    Device-tensor adaptation of the pinned mjlab ``apply_body_impulse`` term. Each
     environment runs an independent timer: after a sampled cooldown, a
     uniformly sampled world-frame wrench is staged on the selected bodies and
     re-staged every step for a sampled duration, then expires back into
@@ -1906,7 +1906,7 @@ def reset_root_state_uniform(
 ) -> None:
     """Reset a floating root from defaults plus uniformly sampled SE(3) offsets.
 
-    This is the NumPy adaptation of the pinned mjlab event. UniLab currently has
+    This is the Torch adaptation of the pinned mjlab event. UniLab currently has
     no public mocap-pose write contract, so fixed-base/mocap requests fail through
     the entity's cached floating-root capability instead of falling back.
     """
@@ -2045,21 +2045,20 @@ def _bind_tensor_root_reset() -> _TensorRootResetFn:
     return _tensor_root_reset_compiled
 
 
-def reset_root_state_uniform_tensor(
+def reset_root_state_uniform_fused(
     env: ManagerBasedRlEnv,
     reset_mask: torch.Tensor,
     pose_range: dict[str, tuple[float, float]],
     velocity_range: dict[str, tuple[float, float]] | None = None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
-    """Full-width root reset."""
+    """Full-width fused root reset."""
     if env.torch_rng is None:
         raise NotImplementedError(
-            "reset_root_state_uniform_tensor requires env.torch_rng on a CUDA "
-            "Manager tensor runtime"
+            "reset_root_state_uniform_fused requires env.torch_rng on a CUDA Manager tensor runtime"
         )
     if reset_mask.device != torch.device(env.device):
-        raise ValueError("reset_root_state_uniform_tensor mask must live on env.device")
+        raise ValueError("reset_root_state_uniform_fused mask must live on env.device")
     asset = cast("Entity", env.scene[asset_cfg.name])
     device = torch.device(env.device)
     asset.data.default_root_state_torch(device)
@@ -2099,10 +2098,10 @@ def reset_root_state_uniform_tensor(
     asset.write_root_state_tensor_to_sim(root_state, reset_mask)
 
 
-setattr(reset_root_state_uniform_tensor, "reset", reset_root_state_uniform_tensor)
+setattr(reset_root_state_uniform_fused, "reset", reset_root_state_uniform_fused)
 
 
-def reset_scene_to_default_tensor(
+def skip_scene_reset(
     env: ManagerBasedRlEnv,
     reset_mask: torch.Tensor,
 ) -> None:
@@ -2110,7 +2109,7 @@ def reset_scene_to_default_tensor(
     del env, reset_mask
 
 
-setattr(reset_scene_to_default_tensor, "reset", reset_scene_to_default_tensor)
+setattr(skip_scene_reset, "reset", skip_scene_reset)
 
 
 __all__ = [
@@ -2126,8 +2125,8 @@ __all__ = [
     "randomize_rigid_body_com",
     "randomize_rigid_body_mass",
     "reset_root_state_uniform",
-    "reset_root_state_uniform_tensor",
+    "reset_root_state_uniform_fused",
     "reset_scene_to_default",
-    "reset_scene_to_default_tensor",
+    "skip_scene_reset",
     "resolve_env_ids",
 ]
