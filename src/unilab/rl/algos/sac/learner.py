@@ -398,26 +398,6 @@ class SACLearner(WholeCycleLearnerMixin):
 
     supports_deferred_update_metrics = True
 
-    @staticmethod
-    def _resolve_use_amp(use_amp: bool, amp_dtype: str, device_type: str) -> bool:
-        """Resolve device-specific AMP enablement without runtime probing."""
-        return resolve_amp_selection(
-            device_type=device_type,
-            use_amp=use_amp,
-            amp_dtype=amp_dtype,
-            learner_name="SAC",
-        ).use_amp
-
-    @staticmethod
-    def _validate_performance_paths(device_type: str, use_compile: bool, use_amp: bool) -> None:
-        """Reject initially unsupported MPS compile/AMP combinations."""
-        validate_amp_compile_paths(
-            device_type=device_type,
-            use_compile=use_compile,
-            use_amp=use_amp,
-            learner_name="SAC",
-        )
-
     def __init__(
         self,
         obs_dim: int,
@@ -479,7 +459,12 @@ class SACLearner(WholeCycleLearnerMixin):
         # ``use_compile=False`` opt-out applies only on the compatibility tiers
         # (ROCm/HIP, MPS, CPU, XPU).
         self.use_compile = self._nvidia_cuda or (bool(use_compile) and compile_fn is not None)
-        self._validate_performance_paths(self._device_type, self.use_compile, self.use_amp)
+        validate_amp_compile_paths(
+            device_type=self._device_type,
+            use_compile=self.use_compile,
+            use_amp=self.use_amp,
+            learner_name="SAC",
+        )
         self.compile_backend = (
             ("inductor" if self._nvidia_cuda else "torch_compile") if self.use_compile else "eager"
         )

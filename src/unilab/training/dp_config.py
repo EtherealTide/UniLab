@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from unilab.rl.runtime.distributed.context import resolve_dp_rank_device
+from unilab.rl.runtime.distributed.context import rank_local_cuda_device
 
 
 def apply_dp_rank_config(cfg: Any, rank: int) -> str | None:
@@ -21,7 +21,7 @@ def apply_dp_rank_config(cfg: Any, rank: int) -> str | None:
     returned instead of being written back into a synthetic ``training.device``
     key; with rank-local CUDA visibility this is always ``cuda:0``.
     """
-    device = resolve_dp_rank_device(rank)
+    device = rank_local_cuda_device(rank=rank)
     if device is None:
         return None
     from omegaconf import open_dict

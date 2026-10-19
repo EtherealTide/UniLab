@@ -2,29 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from os import PathLike
 from pathlib import Path
 
 _TEST_LOG_ROOT_ENV = "UNILAB_TEST_LOG_ROOT"
-
-
-def get_entrypoint_log_root(
-    root_dir: str | Path,
-    *,
-    algo_log_name: str,
-    log_root: str | Path | None = None,
-) -> Path:
-    """Resolve the log root for non-Hydra entrypoints using training helper semantics."""
-    if log_root is not None:
-        configured_root = Path(log_root)
-        return (
-            configured_root if configured_root.is_absolute() else Path(root_dir) / configured_root
-        )
-    test_log_root = os.environ.get(_TEST_LOG_ROOT_ENV)
-    if test_log_root:
-        return Path(test_log_root) / algo_log_name
-    return Path(root_dir) / "logs" / algo_log_name
 
 
 def get_latest_run(log_dir: str | Path) -> Path | None:
@@ -74,60 +55,34 @@ def normalize_checkpoint_value(value: object) -> str | None:
 
 
 def resolve_checkpoint_path(
-    base_log_dir: str | Path,
+    task_log_root: str | Path,
     load_run: str | int | PathLike[str],
     *,
+    checkpoint: str | int | None = None,
     suffix: str = ".pt",
 ) -> tuple[Path | None, Path | None]:
-    """Resolve a latest or explicit checkpoint path from a task log root."""
-    base_dir = Path(base_log_dir)
+    """Resolve a checkpoint from a task log root.
+
+    ``load_run`` selects the run: ``"-1"`` picks the latest run under
+    ``task_log_root``; any other value is first tried as a direct path and
+    then relative to ``task_log_root``, and may name either a run directory
+    or a checkpoint file. ``checkpoint`` optionally selects one checkpoint
+    inside the resolved run (an iteration number or a filename).
+
+    Returns ``(checkpoint_path, run_dir)``. A resolved run that lacks the
+    requested (or any) checkpoint yields ``(None, run_dir)``; an
+    unresolvable run yields ``(None, None)``.
+    """
+    base_dir = Path(task_log_root)
     selected_run = _normalize_load_run(load_run)
-    if selected_run == "-1":
-        run_dir = get_latest_run(base_dir)
-        if run_dir is None:
-            return None, None
-        checkpoint = get_latest_checkpoint(run_dir, suffix=suffix)
-        return (checkpoint, run_dir) if checkpoint is not None else (None, None)
-
-    candidate = Path(selected_run)
-    if not candidate.exists():
-        candidate = base_dir / selected_run
-    if candidate.is_file():
-        return candidate, candidate.parent
-    if candidate.is_dir():
-        checkpoint = get_latest_checkpoint(candidate, suffix=suffix)
-        return (checkpoint, candidate) if checkpoint is not None else (None, None)
-    return None, None
-
-
-def resolve_task_checkpoint_path(
-    root_dir: str | Path,
-    *,
-    task_name: str,
-    load_run: str | int | PathLike[str],
-    algo_log_name: str,
-    checkpoint: str | None = None,
-    suffix: str = ".pt",
-    log_root: str | Path | None = None,
-) -> tuple[Path | None, Path | None]:
-    """Resolve checkpoint paths for auxiliary entrypoints through shared training semantics."""
-    task_log_root = (
-        get_entrypoint_log_root(
-            root_dir,
-            algo_log_name=algo_log_name,
-            log_root=log_root,
-        )
-        / task_name
-    )
 
     run_dir: Path | None
-    selected_run = _normalize_load_run(load_run)
     if selected_run == "-1":
-        run_dir = get_latest_run(task_log_root)
+        run_dir = get_latest_run(base_dir)
     else:
         candidate = Path(selected_run)
         if not candidate.exists():
-            candidate = task_log_root / selected_run
+            candidate = base_dir / selected_run
         if candidate.is_file():
             return candidate, candidate.parent
         run_dir = candidate if candidate.is_dir() else None
@@ -145,53 +100,3 @@ def resolve_task_checkpoint_path(
 
     checkpoint_path = get_latest_checkpoint(run_dir, suffix=suffix)
     return (checkpoint_path, run_dir) if checkpoint_path is not None else (None, run_dir)
-
-
-def resolve_appo_checkpoint_path(
-    base_log_dir: str | Path,
-    load_run: str | int | PathLike[str],
-) -> tuple[str | None, str | None]:
-    """Resolve an APPO checkpoint under a task log root, returning string paths."""
-    checkpoint_path, checkpoint_dir = resolve_checkpoint_path(
-        base_log_dir,
-        str(load_run),
-        suffix=".pt",
-    )
-    return (
-        str(checkpoint_path) if checkpoint_path is not None else None,
-        str(checkpoint_dir) if checkpoint_dir is not None else None,
-    )
-
-
-def resolve_offpolicy_checkpoint_path(
-    root_dir: str | Path,
-    algo_log_name: str,
-    task: str,
-    load_run: str | int | PathLike[str],
-    *,
-    checkpoint: str | int | None = None,
-    suffix: str = ".pt",
-    log_root: str | Path | None = None,
-) -> tuple[str | None, str | None]:
-    """Resolve an off-policy checkpoint through the shared task resolver.
-
-    Without an explicit ``log_root`` the lookup stays on the repo-rooted
-    ``<root_dir>/logs/<algo_log_name>`` tree; the test-only
-    ``UNILAB_TEST_LOG_ROOT`` override is reserved for cfg-driven resolution
-    (``training.parse_checkpoint_path``).
-    """
-    if log_root is None:
-        log_root = (Path(root_dir) / "logs" / algo_log_name).absolute()
-    checkpoint_path, checkpoint_dir = resolve_task_checkpoint_path(
-        root_dir,
-        task_name=task,
-        load_run=load_run,
-        algo_log_name=algo_log_name,
-        checkpoint=normalize_checkpoint_value(checkpoint),
-        suffix=suffix,
-        log_root=log_root,
-    )
-    return (
-        str(checkpoint_path) if checkpoint_path is not None else None,
-        str(checkpoint_dir) if checkpoint_dir is not None else None,
-    )

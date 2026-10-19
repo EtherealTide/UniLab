@@ -179,7 +179,7 @@ def test_appo_runner_kwargs_default_load_run_does_not_resume(
         del args, kwargs
         raise AssertionError("training default load_run=-1 must not request resume")
 
-    monkeypatch.setattr(mod, "resolve_appo_checkpoint_path", fail_resolve)
+    monkeypatch.setattr(mod.checkpoint_utils, "resolve_checkpoint_path", fail_resolve)
 
     kwargs = mod.build_appo_runner_kwargs(
         cfg,
@@ -201,7 +201,7 @@ def test_appo_runner_kwargs_explicit_load_run_sets_resume_path(
     run_dir.mkdir(parents=True)
     (run_dir / "model_3.pt").write_bytes(b"")
     (run_dir / "model_9.pt").write_bytes(b"")
-    monkeypatch.setattr(mod, "_get_log_root", lambda _cfg: str(log_root))
+    monkeypatch.setattr(mod, "get_log_root", lambda *_args, **_kwargs: log_root)
 
     kwargs = mod.build_appo_runner_kwargs(
         cfg,
@@ -218,7 +218,7 @@ def test_appo_runner_kwargs_missing_explicit_load_run_fails(
 ) -> None:
     mod = _train_appo()
     cfg = _appo_cfg(["task=g1_walk_flat/mujoco", "algo.load_run=missing_run"])
-    monkeypatch.setattr(mod, "_get_log_root", lambda _cfg: str(tmp_path / "logs" / "appo"))
+    monkeypatch.setattr(mod, "get_log_root", lambda *_args, **_kwargs: tmp_path / "logs" / "appo")
 
     with pytest.raises(FileNotFoundError, match="missing_run"):
         mod.build_appo_runner_kwargs(
@@ -331,7 +331,7 @@ def test_host_bridge_env_overrides_auto_follow_automatic_learner_cuda(monkeypatc
     ppo_mod = _train_rsl_rl(monkeypatch)
     offpolicy_mod = _offpolicy()
 
-    monkeypatch.setattr(offpolicy_mod, "resolve_dp_rank_device", lambda rank: "cuda:2")
+    monkeypatch.setattr(offpolicy_mod, "rank_local_cuda_device", lambda rank: "cuda:2")
     monkeypatch.setattr("unilab.utils.device.get_default_device", lambda: "cuda:2", raising=False)
 
     offpolicy_override = offpolicy_mod.build_offpolicy_env_cfg_override("sac", offpolicy_cfg)
@@ -354,7 +354,7 @@ def test_host_bridge_env_overrides_explicit_sim_carrier_cpu_still_wins(monkeypat
     ppo_mod = _train_rsl_rl(monkeypatch)
     offpolicy_mod = _offpolicy()
 
-    monkeypatch.setattr(offpolicy_mod, "resolve_dp_rank_device", lambda rank: "cuda:2")
+    monkeypatch.setattr(offpolicy_mod, "rank_local_cuda_device", lambda rank: "cuda:2")
     monkeypatch.setattr("unilab.utils.device.get_default_device", lambda: "cuda:2", raising=False)
 
     offpolicy_override = offpolicy_mod.build_offpolicy_env_cfg_override("sac", offpolicy_cfg)
@@ -377,7 +377,7 @@ def test_host_bridge_env_overrides_route_explicit_sim_carrier_device(monkeypatch
     ppo_mod = _train_rsl_rl(monkeypatch)
     offpolicy_mod = _offpolicy()
 
-    monkeypatch.setattr(offpolicy_mod, "resolve_dp_rank_device", lambda rank: "cuda:2")
+    monkeypatch.setattr(offpolicy_mod, "rank_local_cuda_device", lambda rank: "cuda:2")
     monkeypatch.setattr("unilab.utils.device.get_default_device", lambda: "cuda:2", raising=False)
 
     offpolicy_override = offpolicy_mod.build_offpolicy_env_cfg_override("sac", offpolicy_cfg)
@@ -627,7 +627,7 @@ def _build_rsl_lifecycle_case(
     monkeypatch.setattr(mod, "build_ppo_env_cfg_override", lambda _cfg: {})
     monkeypatch.setattr(mod, "get_default_device", lambda: "cpu")
     monkeypatch.setattr(mod, "resolve_rsl_rl_device", lambda **kwargs: "cpu")
-    monkeypatch.setattr(mod, "resolve_ppo_log_dir", lambda _cfg, world_size: str(tmp_path))
+    monkeypatch.setattr(mod, "resolve_run_log_dir", lambda _cfg, world_size: str(tmp_path))
     monkeypatch.setattr(mod, "ExperimentTracker", FakeTracker)
 
     def create_env(*args: Any, **kwargs: Any) -> FakeEnv:
@@ -1131,21 +1131,21 @@ def test_run_motrix_play_loop_runs_without_physics_state():
     assert env._renderer.render_calls == 3
 
 
-def test_resolve_appo_checkpoint_path_prefers_latest_model_in_explicit_dir(tmp_path):
+def test_resolve_checkpoint_path_prefers_latest_model_in_explicit_dir(tmp_path):
     mod = _train_appo()
     run_dir = tmp_path / "logs" / "appo" / "MyTask" / "run1"
     run_dir.mkdir(parents=True)
     (run_dir / "model_1.pt").write_bytes(b"")
     (run_dir / "model_7.pt").write_bytes(b"")
 
-    checkpoint_path, checkpoint_dir = mod.resolve_appo_checkpoint_path(
-        base_log_dir=tmp_path / "logs" / "appo" / "MyTask",
-        load_run=str(run_dir),
+    checkpoint_path, checkpoint_dir = mod.checkpoint_utils.resolve_checkpoint_path(
+        tmp_path / "logs" / "appo" / "MyTask",
+        str(run_dir),
     )
 
     assert checkpoint_path is not None
-    assert checkpoint_path.endswith("model_7.pt")
-    assert checkpoint_dir == str(run_dir)
+    assert checkpoint_path.name == "model_7.pt"
+    assert checkpoint_dir == run_dir
 
 
 # ---------------------------------------------------------------------------
@@ -1318,11 +1318,11 @@ def test_offpolicy_build_failure_summary_preserves_failed_status():
 
 
 def test_offpolicy_build_run_dir_name_uses_timestamp_and_backend():
-    mod = _offpolicy()
+    from unilab.training import build_run_dir_name
 
-    assert mod.build_run_dir_name("2026-06-22_22-31-24", "mujoco") == ("2026-06-22_22-31-24_mujoco")
+    assert build_run_dir_name("2026-06-22_22-31-24", "mujoco") == ("2026-06-22_22-31-24_mujoco")
     assert (
-        mod.build_run_dir_name("2026-06-22_22-31-24", "mujoco", world_size=2)
+        build_run_dir_name("2026-06-22_22-31-24", "mujoco", world_size=2)
         == "2026-06-22_22-31-24_mujoco_gpux2"
     )
 
@@ -1398,13 +1398,15 @@ def test_offpolicy_main_failure_summary_and_skips_playback(
 
 
 # ---------------------------------------------------------------------------
-# train_offpolicy.py — resolve_checkpoint_path()
+# train_offpolicy.py — checkpoint resolution (unilab.utils.checkpoint)
 # ---------------------------------------------------------------------------
 
 
 def test_resolve_checkpoint_no_base_dir(tmp_path):
     """load_run='-1' with no log directory → (None, None)."""
-    path, path_dir = _offpolicy().resolve_checkpoint_path(tmp_path, "sac", "MyTask", "-1")
+    path, path_dir = _offpolicy().resolve_checkpoint_path(
+        tmp_path / "logs" / "sac" / "MyTask", "-1"
+    )
     assert path is None
     assert path_dir is None
 
@@ -1414,10 +1416,10 @@ def test_resolve_checkpoint_explicit_existing_file(tmp_path):
     model_file = tmp_path / "model_100.pt"
     model_file.write_bytes(b"")
     path, path_dir = _offpolicy().resolve_checkpoint_path(
-        tmp_path, "sac", "MyTask", str(model_file)
+        tmp_path / "logs" / "sac" / "MyTask", str(model_file)
     )
-    assert path == str(model_file)
-    assert path_dir == str(tmp_path)
+    assert path == model_file
+    assert path_dir == tmp_path
 
 
 def test_resolve_checkpoint_latest_picks_highest_iter(tmp_path):
@@ -1428,9 +1430,11 @@ def test_resolve_checkpoint_latest_picks_highest_iter(tmp_path):
     (task_dir / "model_50.pt").write_bytes(b"")
     (task_dir / "model_100.pt").write_bytes(b"")
 
-    path, path_dir = _offpolicy().resolve_checkpoint_path(tmp_path, "sac", "MyTask", "-1")
+    path, path_dir = _offpolicy().resolve_checkpoint_path(
+        tmp_path / "logs" / "sac" / "MyTask", "-1"
+    )
     assert path is not None
-    assert "model_100.pt" in path
+    assert "model_100.pt" in str(path)
 
 
 def test_resolve_checkpoint_accepts_integer_latest_run(tmp_path):
@@ -1440,11 +1444,11 @@ def test_resolve_checkpoint_accepts_integer_latest_run(tmp_path):
     (task_dir / "model_10.pt").write_bytes(b"")
     (task_dir / "model_50.pt").write_bytes(b"")
 
-    path, path_dir = _offpolicy().resolve_checkpoint_path(tmp_path, "sac", "MyTask", -1)
+    path, path_dir = _offpolicy().resolve_checkpoint_path(tmp_path / "logs" / "sac" / "MyTask", -1)
 
     assert path is not None
-    assert "model_50.pt" in path
-    assert path_dir == str(task_dir)
+    assert "model_50.pt" in str(path)
+    assert path_dir == task_dir
 
 
 def test_resolve_checkpoint_explicit_run_name(tmp_path):
@@ -1453,27 +1457,31 @@ def test_resolve_checkpoint_explicit_run_name(tmp_path):
     task_dir.mkdir(parents=True)
     (task_dir / "model_5.pt").write_bytes(b"")
 
-    path, path_dir = _offpolicy().resolve_checkpoint_path(tmp_path, "sac", "MyTask", "myrun")
+    path, path_dir = _offpolicy().resolve_checkpoint_path(
+        tmp_path / "logs" / "sac" / "MyTask", "myrun"
+    )
     assert path is not None
-    assert "model_5.pt" in path
-    assert path_dir == str(task_dir)
+    assert "model_5.pt" in str(path)
+    assert path_dir == task_dir
 
 
 def test_resolve_checkpoint_nonexistent_explicit_path(tmp_path):
     """load_run points to a path that doesn't exist → (None, None)."""
     path, path_dir = _offpolicy().resolve_checkpoint_path(
-        tmp_path, "sac", "MyTask", "/nonexistent/model.pt"
+        tmp_path / "logs" / "sac" / "MyTask", "/nonexistent/model.pt"
     )
     assert path is None
     assert path_dir is None
 
 
 def test_resolve_checkpoint_empty_run_dir(tmp_path):
-    """Run directory exists but has no model_*.pt → (None, None)."""
+    """Run directory exists but has no model_*.pt → no checkpoint path."""
     task_dir = tmp_path / "logs" / "sac" / "MyTask" / "run1"
     task_dir.mkdir(parents=True)
 
-    path, path_dir = _offpolicy().resolve_checkpoint_path(tmp_path, "sac", "MyTask", "-1")
+    path, path_dir = _offpolicy().resolve_checkpoint_path(
+        tmp_path / "logs" / "sac" / "MyTask", "-1"
+    )
     assert path is None
 
 
@@ -1496,10 +1504,10 @@ def test_offpolicy_extract_reset_obs_rejects_three_tuple():
         extract_reset_obs(("ignored", obs, {"info": 1}))
 
 
-def test_offpolicy_resolve_play_obs_dim_ignores_critic():
-    from unilab.visualization.interactive_playback import resolve_play_obs_dim
+def test_offpolicy_resolve_play_obs_dims_ignore_critic():
+    from unilab.visualization.interactive_playback import resolve_play_obs_dims
 
-    obs_dim = resolve_play_obs_dim({"obs": 98, "critic": 101})
+    obs_dim = resolve_play_obs_dims({"obs": 98, "critic": 101})[0]
 
     assert obs_dim == 98
 
@@ -1700,7 +1708,7 @@ def test_play_offpolicy_can_skip_onnx_export_and_still_record_video(
 
     monkeypatch.setattr(
         checkpoint_utils,
-        "resolve_offpolicy_checkpoint_path",
+        "resolve_checkpoint_path",
         lambda *args, **kwargs: (str(checkpoint), str(run_dir)),
     )
     monkeypatch.setattr(
@@ -1752,7 +1760,7 @@ def _patch_offpolicy_play_session(
     )
     monkeypatch.setattr(
         checkpoint_utils,
-        "resolve_offpolicy_checkpoint_path",
+        "resolve_checkpoint_path",
         lambda *args, **kwargs: (str(checkpoint), str(run_dir)),
     )
     monkeypatch.setattr(actor_factory, "build_actor", lambda *args, **kwargs: fake_actor)
@@ -1952,26 +1960,26 @@ def test_play_resolve_checkpoint_empty_dir(tmp_path):
 def test_play_resolve_checkpoint_delegates_to_shared_helper(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
+    monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
     mod = _load_script("play_interactive")
     model_path = tmp_path / "resolved" / "model_12.pt"
     model_path.parent.mkdir(parents=True)
     model_path.write_bytes(b"")
     captured: dict[str, object] = {}
 
-    def _fake_resolver(root_dir, **kwargs):
-        captured["root_dir"] = root_dir
+    def _fake_resolver(task_log_root, load_run, **kwargs):
+        captured["task_log_root"] = task_log_root
+        captured["load_run"] = load_run
         captured.update(kwargs)
         return model_path, model_path.parent
 
-    monkeypatch.setattr(mod, "resolve_task_checkpoint_path", _fake_resolver)
+    monkeypatch.setattr(mod, "resolve_checkpoint_path", _fake_resolver)
 
     result = mod.resolve_checkpoint("MyTask", "-1", checkpoint="12", algo_log_name="custom_ppo")
 
     assert result == str(model_path)
-    assert captured["root_dir"] == Path.cwd()
-    assert captured["task_name"] == "MyTask"
+    assert captured["task_log_root"] == Path.cwd() / "logs" / "custom_ppo" / "MyTask"
     assert captured["load_run"] == "-1"
-    assert captured["algo_log_name"] == "custom_ppo"
     assert captured["checkpoint"] == "12"
 
 
@@ -2287,7 +2295,7 @@ def test_offpolicy_rejects_algo_argument_mismatch():
 
 
 def test_train_rsl_rl_get_log_root_uses_algo_log_name(monkeypatch: pytest.MonkeyPatch):
-    """Verify _get_log_root uses algo.algo_log_name (issue #168)."""
+    """Verify get_log_root uses algo.algo_log_name (issue #168)."""
     monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
     mod = _train_rsl_rl(monkeypatch)
     cfg = _ppo_cfg()
@@ -2295,8 +2303,8 @@ def test_train_rsl_rl_get_log_root_uses_algo_log_name(monkeypatch: pytest.Monkey
     # Override algo_log_name to test
     cfg.algo.algo_log_name = "test_rsl_rl_ppo"
 
-    log_root = mod._get_log_root(cfg)
-    assert "logs/test_rsl_rl_ppo" in log_root.replace("\\", "/")
+    log_root = mod.get_log_root(Path.cwd(), cfg)
+    assert "logs/test_rsl_rl_ppo" in str(log_root).replace("\\", "/")
 
 
 def test_train_rsl_rl_play_missing_checkpoint_skips_env_creation_and_prints_context(
@@ -2436,7 +2444,9 @@ def test_train_rsl_rl_auto_play_is_interactive(monkeypatch: pytest.MonkeyPatch, 
     captured: dict[str, Any] = {}
 
     monkeypatch.setattr(mod, "EXPORT_POLICY", False, raising=False)
-    monkeypatch.setattr(mod, "parse_checkpoint_path", lambda *args, **kwargs: (checkpoint, run_dir))
+    monkeypatch.setattr(
+        mod, "resolve_configured_checkpoint_path", lambda *args, **kwargs: (checkpoint, run_dir)
+    )
     monkeypatch.setattr(mod, "build_ppo_play_env_cfg_override", lambda cfg: {})
     monkeypatch.setattr(mod, "create_env", lambda *args, **kwargs: FakeEnv())
     create_session = mod.create_rsl_rl_playback_session
@@ -2535,7 +2545,9 @@ def test_train_rsl_rl_record_play_uses_backend_plan(
     captured: dict[str, Any] = {}
 
     monkeypatch.setattr(mod, "EXPORT_POLICY", False, raising=False)
-    monkeypatch.setattr(mod, "parse_checkpoint_path", lambda *args, **kwargs: (checkpoint, run_dir))
+    monkeypatch.setattr(
+        mod, "resolve_configured_checkpoint_path", lambda *args, **kwargs: (checkpoint, run_dir)
+    )
     monkeypatch.setattr(mod, "build_ppo_play_env_cfg_override", lambda cfg: {})
     monkeypatch.setattr(mod, "create_env", lambda *args, **kwargs: FakeEnv())
     create_session = mod.create_rsl_rl_playback_session
@@ -2557,15 +2569,15 @@ def test_train_rsl_rl_record_play_uses_backend_plan(
 
 
 def test_train_appo_get_log_root_uses_algo_log_name(monkeypatch: pytest.MonkeyPatch):
-    """Verify APPO _get_log_root uses algo.algo_log_name (issue #168)."""
+    """Verify APPO get_log_root uses algo.algo_log_name (issue #168)."""
     monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
     mod = _train_appo()
     cfg = _appo_cfg()
 
     cfg.algo.algo_log_name = "test_appo"
 
-    log_root = mod._get_log_root(cfg)
-    assert "logs/test_appo" in log_root.replace("\\", "/")
+    log_root = mod.get_log_root(Path.cwd(), cfg)
+    assert "logs/test_appo" in str(log_root).replace("\\", "/")
 
 
 def test_play_resolve_checkpoint_uses_algo_log_name(
@@ -2830,8 +2842,10 @@ def test_play_interactive_runner_log_dir_uses_algo_log_name(monkeypatch: pytest.
     monkeypatch.setattr(mod, "make_sim2sim_preflight", lambda cfg, *, algo_name: None)
     monkeypatch.setattr(
         mod,
-        "get_entrypoint_log_root",
-        lambda root_dir, *, algo_log_name, log_root=None: Path("/tmp") / algo_log_name,
+        "get_log_root",
+        lambda root_dir, cfg=None, *, algo_log_name=None, log_root=None: (
+            Path("/tmp") / str(algo_log_name)
+        ),
     )
     create_session = mod.create_rsl_rl_playback_session
     monkeypatch.setattr(
@@ -2892,6 +2906,7 @@ def test_play_interactive_import_does_not_swallow_registry_bootstrap_errors(
 
     training_mod.ensure_registries = _fail_bootstrap
     training_mod.algo_config_dict = lambda cfg: {}
+    training_mod.get_log_root = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "unilab.training", training_mod)
 
     mujoco_mod = cast(Any, types.ModuleType("mujoco"))
@@ -2968,7 +2983,9 @@ def test_train_rsl_rl_play_uses_shared_playback_session_factory(
         return fake_session, "flat", str(checkpoint)
 
     monkeypatch.setattr(mod, "EXPORT_POLICY", False, raising=False)
-    monkeypatch.setattr(mod, "parse_checkpoint_path", lambda *args, **kwargs: (checkpoint, run_dir))
+    monkeypatch.setattr(
+        mod, "resolve_configured_checkpoint_path", lambda *args, **kwargs: (checkpoint, run_dir)
+    )
     monkeypatch.setattr(mod, "create_rsl_rl_playback_session", fake_create_session)
 
     result = mod.play_rsl_rl(cfg, device="cpu")
@@ -3163,7 +3180,8 @@ def test_play_offpolicy_uses_shared_playback_session_factory(
 
     monkeypatch.setattr(mod, "default_device", lambda torch_module, preferred=None: "cpu")
 
-    def fake_resolve_checkpoint_path(_root, _algo, _task, selected_run):
+    def fake_resolve_checkpoint_path(task_log_root, selected_run, **kwargs):
+        del task_log_root, kwargs
         captured["selected_run"] = selected_run
         return str(checkpoint), str(run_dir)
 

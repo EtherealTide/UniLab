@@ -388,7 +388,7 @@ class ExperimentTracker:
                 payload.update(self.seed_info)
             else:
                 payload["effective_seed"] = self.seed_info
-        self._write_json(self.log_dir / "run_summary.json", _json_safe(payload))
+        _write_json(self.log_dir / "run_summary.json", _json_safe(payload))
 
         if self._run is not None:
             for key, value in payload.items():
@@ -415,10 +415,6 @@ class ExperimentTracker:
             self._wandb.finish()
         self._run = None
         self._wandb = None
-
-    @staticmethod
-    def _write_json(path: Path, payload: Any) -> None:
-        _write_json(path, payload)
 
 
 def patch_rsl_rl_action_std_logging(runner: Any) -> None:

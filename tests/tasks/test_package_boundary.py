@@ -46,7 +46,6 @@ _PRODUCTION_NUMPY_IMPORT_ALLOWLIST = {
     "src/unilab/visualization/playback.py",
     "src/unilab/visualization/playback_session.py",
     "src/unilab/visualization/playback_state.py",
-    "src/unilab/visualization/render_many.py",
     "src/unilab/visualization/viser_playback.py",
     "src/unilab/visualization/viser_scene.py",
     # Cold NPZ motion ingestion.

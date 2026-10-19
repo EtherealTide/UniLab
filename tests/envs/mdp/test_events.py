@@ -650,7 +650,7 @@ def test_pd_gains_reset_randomization_commits_in_one_packed_transaction() -> Non
             np.asarray([[0.0, 0.0, -10.0]]),
         ),
         (
-            mdp.joint_armature,
+            mdp.dof_armature,
             {"ranges": (2.0, 2.0), "operation": "scale"},
             "dof_armature",
             np.asarray([[0.0] * 6 + [2.0, 4.0, 6.0]]),
@@ -799,13 +799,12 @@ def test_pd_gains_commits_masked_packed_model_fields() -> None:
     np.testing.assert_allclose(payload.kd.numpy(), [[3.0] * 3, [3.0] * 3])
 
 
-def test_model_field_aliases_are_identical_and_capability_gaps_fail_cold() -> None:
-    assert mdp.dof_armature is mdp.joint_armature
+def test_model_field_capability_gaps_fail_cold() -> None:
     env, backend, _ = _transaction_env(randomization_supported=False)
 
     with pytest.raises(
         NotImplementedError,
-        match="joint_armature:robot.*dof_armature randomization.*backend 'fake'",
+        match="dof_armature:robot.*dof_armature randomization.*backend 'fake'",
     ):
         EventManager(
             {
@@ -824,7 +823,7 @@ def test_model_field_aliases_are_identical_and_capability_gaps_fail_cold() -> No
     ("func", "params", "match"),
     [
         (mdp.geom_friction, {"ranges": (0.5, 1.0), "axes": [3]}, "invalid axes"),
-        (mdp.joint_armature, {"ranges": (-1.0, -0.5)}, "produced negative"),
+        (mdp.dof_armature, {"ranges": (-1.0, -0.5)}, "produced negative"),
     ],
 )
 def test_model_field_invalid_requests_fail_explicitly(func, params, match: str) -> None:

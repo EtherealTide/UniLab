@@ -23,8 +23,3 @@ def tensor_nan_guard_factory(
         num_envs=num_envs,
         supports_state_playback=supports_state_playback,
     )
-
-
-def build_tensor_nan_guard_factory() -> Any:
-    """Return the pickleable constructor used by spawn collectors."""
-    return tensor_nan_guard_factory

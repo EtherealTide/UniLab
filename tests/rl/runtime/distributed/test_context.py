@@ -20,7 +20,6 @@ from unilab.rl.runtime.distributed.context import (
     current_torch_distributed_rank,
     current_torch_distributed_world_size,
     rank_local_cuda_device,
-    resolve_dp_rank_device,
     selected_visible_entries,
     visible_cuda_entries,
 )
@@ -77,7 +76,7 @@ def test_rank_device_uses_single_visibility_entry(
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3")
     monkeypatch.delenv(context.UNILAB_DP_WORLD_SIZE, raising=False)
 
-    assert resolve_dp_rank_device() == "cuda:0"
+    assert rank_local_cuda_device() == "cuda:0"
 
 
 def test_selected_visibility_preserves_parent_entries(monkeypatch):
@@ -93,11 +92,11 @@ def test_selected_visibility_requires_exact_rank_count(monkeypatch):
         selected_visible_entries(world_size=3)
 
 
-def test_resolve_dp_rank_device_rejects_multiple_visible_entries(monkeypatch):
+def test_rank_local_cuda_device_rejects_multiple_visible_entries(monkeypatch):
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b")
 
     with pytest.raises(ValueError, match="exactly one CUDA_VISIBLE_DEVICES"):
-        resolve_dp_rank_device(rank=1)
+        rank_local_cuda_device(rank=1)
 
 
 def test_unset_mask_with_one_visible_cuda_device_is_rank_local(

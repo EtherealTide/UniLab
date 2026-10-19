@@ -1,9 +1,9 @@
 """RSL-RL (PPO) distributed-training helpers.
 
 Torchrun environment readers and the ``UNILAB_DP_LOG_DIR`` contract are owned
-by :mod:`unilab.rl.runtime.distributed.context` and imported here; this module
-only holds the PPO-specific rank seed, device, sample-count, shutdown, and
-playback-topology helpers.
+by :mod:`unilab.rl.runtime.distributed.context`; this module only holds the
+PPO-specific rank seed, device, sample-count, shutdown, and playback-topology
+helpers.
 """
 
 from __future__ import annotations
@@ -17,19 +17,9 @@ import torch
 from omegaconf import open_dict
 
 from unilab.process_context import visible_cuda_entries
-from unilab.rl.runtime.distributed.context import (
-    UNILAB_DP_LOG_DIR,
-    current_torch_distributed_local_rank,
-    current_torch_distributed_rank,
-    current_torch_distributed_world_size,
-)
 
 __all__ = [
-    "UNILAB_DP_LOG_DIR",
     "apply_rsl_rl_rank_seed",
-    "current_torch_distributed_local_rank",
-    "current_torch_distributed_rank",
-    "current_torch_distributed_world_size",
     "finish_rsl_rl_distributed",
     "ppo_samples_per_iteration",
     "resolve_rsl_rl_device",

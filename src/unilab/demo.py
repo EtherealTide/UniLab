@@ -122,20 +122,10 @@ def _play_interactive_command_prefix() -> list[str]:
     if platform.system() != "Darwin":
         return [sys.executable]
 
+    from unilab.cli import _ensure_mujoco_mjpython_app, _mjpython_executable
+
     _ensure_mujoco_mjpython_app()
-    return [_current_env_mjpython()]
-
-
-def _ensure_mujoco_mjpython_app() -> None:
-    from unilab.cli import _ensure_mujoco_mjpython_app as ensure_app
-
-    ensure_app()
-
-
-def _current_env_mjpython() -> str:
-    from unilab.cli import _mjpython_executable as resolve_mjpython
-
-    return resolve_mjpython()
+    return [_mjpython_executable()]
 
 
 def build_demo_command(

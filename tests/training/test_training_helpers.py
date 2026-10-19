@@ -26,16 +26,12 @@ from unilab.base.scene import SceneCfg
 from unilab.training import (
     get_log_root,
     nonfatal_play_step,
-    parse_checkpoint_path,
+    resolve_configured_checkpoint_path,
 )
 from unilab.utils.checkpoint import (
-    get_entrypoint_log_root,
     get_latest_checkpoint,
     get_latest_run,
-    resolve_appo_checkpoint_path,
     resolve_checkpoint_path,
-    resolve_offpolicy_checkpoint_path,
-    resolve_task_checkpoint_path,
 )
 from unilab.visualization.playback import render_play_mode
 
@@ -130,34 +126,23 @@ def test_resolve_checkpoint_path_accepts_integer_latest_run(tmp_path: Path):
     assert checkpoint_dir == run_dir
 
 
-def test_resolve_appo_checkpoint_path_returns_string_paths(tmp_path: Path):
-    task_dir = tmp_path / "logs" / "appo" / "MyTask"
-    run_dir = task_dir / "2024-02-01_00-00-00_mujoco"
-    run_dir.mkdir(parents=True)
-    selected_model = run_dir / "model_9.pt"
-    selected_model.write_bytes(b"")
-
-    checkpoint_path, checkpoint_dir = resolve_appo_checkpoint_path(task_dir, "-1")
-
-    assert checkpoint_path == str(selected_model)
-    assert checkpoint_dir == str(run_dir)
-
-
-def test_resolve_offpolicy_checkpoint_path_reads_repo_log_tree(tmp_path: Path):
+def test_resolve_checkpoint_path_reads_repo_log_tree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
     run_dir = tmp_path / "logs" / "sac" / "MyTask" / "2024-02-01_00-00-00_mujoco"
     run_dir.mkdir(parents=True)
     selected_model = run_dir / "model_9.pt"
     selected_model.write_bytes(b"")
 
-    checkpoint_path, checkpoint_dir = resolve_offpolicy_checkpoint_path(
-        tmp_path, "sac", "MyTask", "-1"
-    )
+    task_log_root = get_log_root(tmp_path, algo_log_name="sac") / "MyTask"
+    checkpoint_path, checkpoint_dir = resolve_checkpoint_path(task_log_root, "-1")
 
-    assert checkpoint_path == str(selected_model)
-    assert checkpoint_dir == str(run_dir)
+    assert checkpoint_path == selected_model
+    assert checkpoint_dir == run_dir
 
 
-def test_parse_checkpoint_path_uses_algo_log_name_from_cfg(
+def test_resolve_configured_checkpoint_path_uses_algo_log_name_from_cfg(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
@@ -171,7 +156,7 @@ def test_parse_checkpoint_path_uses_algo_log_name_from_cfg(
     model_path = run_dir / "model_12.pt"
     model_path.write_bytes(b"")
 
-    checkpoint_path, checkpoint_dir = parse_checkpoint_path(cfg, root_dir=tmp_path)
+    checkpoint_path, checkpoint_dir = resolve_configured_checkpoint_path(cfg, root_dir=tmp_path)
 
     assert checkpoint_path == model_path
     assert checkpoint_dir == run_dir
@@ -201,17 +186,17 @@ def test_get_log_root_keeps_configured_log_root_ahead_of_test_env(
     assert log_root == tmp_path / "repo" / "explicit_logs"
 
 
-def test_get_entrypoint_log_root_uses_test_log_root_env_when_unconfigured(
+def test_get_log_root_accepts_explicit_algo_log_name_without_cfg(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     monkeypatch.setenv("UNILAB_TEST_LOG_ROOT", str(tmp_path / "test-logs"))
 
-    log_root = get_entrypoint_log_root(tmp_path / "repo", algo_log_name="custom_ppo")
+    log_root = get_log_root(tmp_path / "repo", algo_log_name="custom_ppo")
 
     assert log_root == tmp_path / "test-logs" / "custom_ppo"
 
 
-def test_parse_checkpoint_path_supports_explicit_checkpoint_from_cfg(
+def test_resolve_configured_checkpoint_path_supports_explicit_checkpoint_from_cfg(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
@@ -227,13 +212,13 @@ def test_parse_checkpoint_path_supports_explicit_checkpoint_from_cfg(
     selected_model = run_dir / "model_12.pt"
     selected_model.write_bytes(b"")
 
-    checkpoint_path, checkpoint_dir = parse_checkpoint_path(cfg, root_dir=tmp_path)
+    checkpoint_path, checkpoint_dir = resolve_configured_checkpoint_path(cfg, root_dir=tmp_path)
 
     assert checkpoint_path == selected_model
     assert checkpoint_dir == run_dir
 
 
-def test_parse_checkpoint_path_returns_run_dir_when_requested_checkpoint_is_missing(
+def test_resolve_configured_checkpoint_path_returns_run_dir_when_requested_checkpoint_is_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
@@ -247,13 +232,13 @@ def test_parse_checkpoint_path_returns_run_dir_when_requested_checkpoint_is_miss
     run_dir.mkdir(parents=True)
     (run_dir / "model_9.pt").write_bytes(b"")
 
-    checkpoint_path, checkpoint_dir = parse_checkpoint_path(cfg, root_dir=tmp_path)
+    checkpoint_path, checkpoint_dir = resolve_configured_checkpoint_path(cfg, root_dir=tmp_path)
 
     assert checkpoint_path is None
     assert checkpoint_dir == run_dir
 
 
-def test_resolve_task_checkpoint_path_supports_explicit_checkpoint(
+def test_resolve_checkpoint_path_supports_explicit_checkpoint(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
@@ -263,11 +248,9 @@ def test_resolve_task_checkpoint_path_supports_explicit_checkpoint(
     selected_model = run_dir / "model_12.pt"
     selected_model.write_bytes(b"")
 
-    checkpoint_path, checkpoint_dir = resolve_task_checkpoint_path(
-        tmp_path,
-        task_name="MyTask",
-        load_run="-1",
-        algo_log_name="custom_ppo",
+    checkpoint_path, checkpoint_dir = resolve_checkpoint_path(
+        tmp_path / "logs" / "custom_ppo" / "MyTask",
+        "-1",
         checkpoint="12",
     )
 
@@ -275,42 +258,20 @@ def test_resolve_task_checkpoint_path_supports_explicit_checkpoint(
     assert checkpoint_dir == run_dir
 
 
-def test_resolve_task_checkpoint_path_returns_run_dir_when_checkpoint_missing(
+def test_resolve_checkpoint_path_returns_run_dir_when_checkpoint_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
     run_dir = tmp_path / "logs" / "custom_ppo" / "MyTask" / "2024-01-01_00-00-00_mujoco"
     run_dir.mkdir(parents=True)
 
-    checkpoint_path, checkpoint_dir = resolve_task_checkpoint_path(
-        tmp_path,
-        task_name="MyTask",
-        load_run="-1",
-        algo_log_name="custom_ppo",
+    checkpoint_path, checkpoint_dir = resolve_checkpoint_path(
+        tmp_path / "logs" / "custom_ppo" / "MyTask",
+        "-1",
         checkpoint="12",
     )
 
     assert checkpoint_path is None
-    assert checkpoint_dir == run_dir
-
-
-def test_resolve_task_checkpoint_path_accepts_integer_latest_run(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
-    monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
-    run_dir = tmp_path / "logs" / "custom_ppo" / "MyTask" / "2024-01-01_00-00-00_mujoco"
-    run_dir.mkdir(parents=True)
-    selected_model = run_dir / "model_12.pt"
-    selected_model.write_bytes(b"")
-
-    checkpoint_path, checkpoint_dir = resolve_task_checkpoint_path(
-        tmp_path,
-        task_name="MyTask",
-        load_run=-1,
-        algo_log_name="custom_ppo",
-    )
-
-    assert checkpoint_path == selected_model
     assert checkpoint_dir == run_dir
 
 

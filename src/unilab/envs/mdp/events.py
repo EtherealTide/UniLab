@@ -750,10 +750,10 @@ class GeomFriction(_ModelFieldRandomizer):
         )
 
 
-class JointArmature(_ModelFieldRandomizer):
-    """Pinned mjlab-style joint armature randomization through the reset payload."""
+class DofArmature(_ModelFieldRandomizer):
+    """Pinned mjlab-style dof armature randomization through the reset payload."""
 
-    _term_name = "joint_armature"
+    _term_name = "dof_armature"
 
     def _bind(
         self,
@@ -777,8 +777,7 @@ class JointArmature(_ModelFieldRandomizer):
 
 
 geom_friction = GeomFriction
-joint_armature = JointArmature
-dof_armature = joint_armature
+dof_armature = DofArmature
 
 
 class PdGains(_ResetRandomizationTerm):
@@ -2110,7 +2109,6 @@ __all__ = [
     "apply_body_impulse",
     "dof_armature",
     "geom_friction",
-    "joint_armature",
     "pd_gains",
     "push_by_setting_velocity",
     "randomize_body_mass_inertia",

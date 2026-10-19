@@ -24,7 +24,7 @@ def test_resolve_reward_dict_reads_task_reward():
             overrides=["task=go2_joystick_flat/mujoco"],
         )
 
-    reward_dict = resolve_reward_dict(cfg)
+    reward_dict = resolve_reward_dict(cfg)["reward_config"]
 
     assert reward_dict["tracking_lin_vel"]["weight"] == 1.0
     assert reward_dict["tracking_ang_vel"]["weight"] == 0.2
