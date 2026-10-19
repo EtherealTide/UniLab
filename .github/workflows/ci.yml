@@ -261,6 +261,9 @@ jobs:
         env:
           COVERAGE_SOURCE: ${{ matrix.shard.name == 'rl' && 'src/unilab/rl' || 'src/unilab' }}
           COVERAGE_FAIL_UNDER: ${{ matrix.shard.name == 'rl' && '50' || '0' }}
+          # Some tests change the process working directory; keep shard data at
+          # a stable absolute path instead of relying on a relative .coverage.
+          COVERAGE_FILE: ${{ github.workspace }}/coverage-${{ matrix.shard.name }}.dat
         run: >-
           uv run --no-sync pytest
           ${{ matrix.shard.paths }}
@@ -272,7 +275,7 @@ jobs:
         uses: actions/upload-artifact@v4.6.2
         with:
           name: coverage-data-${{ matrix.shard.name }}
-          path: .coverage
+          path: coverage-${{ matrix.shard.name }}.dat
           retention-days: 1
 
   coverage:
@@ -303,8 +306,9 @@ jobs:
         # download-artifact keeps one directory per artifact, while coverage
         # combine expects sibling files named ".coverage.<suffix>".
         run: |
-          for shard_dir in coverage-data/*; do
-            mv "$shard_dir/.coverage" "coverage-data/.coverage.${shard_dir##*/}"
+          for shard_dir in coverage-data/coverage-data-*; do
+            shard="${shard_dir##*/coverage-data-}"
+            mv "$shard_dir/coverage-${shard}.dat" "coverage-data/.coverage.${shard}"
           done
       - name: Combine and enforce repository coverage
         # The repository-wide gate is evaluated after all shard data is combined;
