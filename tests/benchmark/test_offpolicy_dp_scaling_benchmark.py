@@ -195,6 +195,26 @@ def test_parse_run_rejects_mixed_canonical_and_legacy_tags(tmp_path: Path) -> No
         bench.parse_run(run_dir, world_size=1)
 
 
+@pytest.mark.parametrize("retired_tag", sorted(bench._REJECTED_RETIRED_TAGS))
+def test_parse_run_rejects_each_retired_tag(
+    tmp_path: Path,
+    retired_tag: str,
+) -> None:
+    run_dir = tmp_path / "retired"
+    _make_canonical_run_dir(run_dir, total_fps=[100.0], iteration_time=[0.5])
+    _replace_tfevents(
+        run_dir,
+        {
+            "Perf/total_fps": [100.0],
+            "Perf/iteration_time": [0.5],
+            retired_tag: [1.0],
+        },
+    )
+
+    with pytest.raises(bench.RunParseError, match="must not contain legacy tags"):
+        bench.parse_run(run_dir, world_size=1)
+
+
 def test_parse_run_rejects_missing_metric_schema(tmp_path: Path) -> None:
     run_dir = tmp_path / "missing-schema"
     _make_canonical_run_dir(run_dir, total_fps=[100.0], iteration_time=[0.5])

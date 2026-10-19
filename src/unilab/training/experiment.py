@@ -650,7 +650,7 @@ def patch_rsl_rl_wandb_writer() -> None:
 
 
 def patch_rsl_rl_resume_state() -> None:
-    """Persist + restore UniLab progress through rsl-rl checkpoints.
+    """Persist and restore UniLab progress through rsl-rl checkpoints.
 
     Without this patch, rsl-rl's ``Logger.__init__`` writes ``tot_time = 0`` and
     ``tot_timesteps = 0`` and ``OnPolicyRunner.load`` never refreshes them, so the
@@ -665,9 +665,11 @@ def patch_rsl_rl_resume_state() -> None:
     - ``unilab_env_training_state``: the wrapped TorchEnv's versioned training
       state, if it publishes ``export_training_state``.
 
-    Legacy checkpoints (without either key) load unchanged. Environment state is
-    plain versioned JSON data; no Torch tensor, backend, environment, or manager
-    object is serialized through this path.
+    Checkpoints are immutable load inputs. The loader never repairs, rewrites,
+    upgrades, or migrates a checkpoint file; a pre-patch checkpoint without
+    either key currently loads unchanged. Environment state is plain versioned
+    JSON data; no Torch tensor, backend, environment, or manager object is
+    serialized through this path.
     """
     try:
         from rsl_rl.runners.on_policy_runner import OnPolicyRunner

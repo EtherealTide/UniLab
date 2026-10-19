@@ -95,7 +95,9 @@ _CANONICAL_TAGS = frozenset(
     for candidates in (STEPS_PER_SEC_TAGS, REWARD_TAGS, DP_SYNC_TIME_TAGS, ITERATION_TIME_TAGS)
     for tag, _ in candidates
 )
-_LEGACY_TAGS = _RETIRED_LEARNER_THROUGHPUT_TAGS | frozenset(
+# Rejected retired tags, not a historical-artifact compatibility set. This
+# executable benchmark writes current schema-v1 runs and has no legacy mode.
+_REJECTED_RETIRED_TAGS = _RETIRED_LEARNER_THROUGHPUT_TAGS | frozenset(
     (
         "perf/steps_per_sec",
         "reward/mean",
@@ -110,7 +112,12 @@ class RunParseError(RuntimeError):
 
 
 def _validate_metric_schema(summary: dict[str, Any], scalar_tags: set[str]) -> None:
-    """Validate the current metric schema consumed by this benchmark."""
+    """Validate a current schema-v1 run and reject retired benchmark tags.
+
+    This executable benchmark generates and overwrites current runs. It is not a
+    historical-artifact reader: retired tags are rejected fail-closed and are
+    never parsed as a compatibility fallback.
+    """
     metric_version = summary.get("metric_schema_version")
     if metric_version is None:
         raise RunParseError("run summary is missing metric_schema_version")
@@ -121,10 +128,11 @@ def _validate_metric_schema(summary: dict[str, Any], scalar_tags: set[str]) -> N
             f"unsupported metric_schema_version {metric_version!r}; expected "
             f"{_SUPPORTED_METRIC_SCHEMA_VERSION}"
         )
-    present_legacy = sorted(_LEGACY_TAGS & scalar_tags)
-    if present_legacy:
+    present_rejected_retired = sorted(_REJECTED_RETIRED_TAGS & scalar_tags)
+    if present_rejected_retired:
         raise RunParseError(
-            "schema-v1 event file must not contain legacy tags: " + ", ".join(present_legacy)
+            "schema-v1 event file must not contain legacy tags: "
+            + ", ".join(present_rejected_retired)
         )
     if not _CANONICAL_TAGS & scalar_tags:
         raise RunParseError("schema-v1 event file has no canonical Perf/ or Train/ tags")

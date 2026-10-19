@@ -332,7 +332,8 @@ def validate_actor_semantics(saved: Any, expected: Mapping[str, Any]) -> None:
     ``saved`` is the ``actor_semantics`` payload stored in the checkpoint (or
     ``None`` for checkpoints written before this contract existed). Legacy
     payloads only load into the built-in actor; any configured ``actor_config``
-    requires a matching recorded payload.
+    requires a matching recorded payload. Checkpoints are immutable load inputs;
+    this validator never writes, repairs, upgrades, or migrates them.
     """
     if saved is None:
         if expected.get("kind") != "builtin":

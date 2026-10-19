@@ -125,6 +125,36 @@ def test_snapshot_json_round_trips():
     assert json.loads(json.dumps(snapshot)) == snapshot
 
 
+def test_hidden_dims_snapshot_uses_only_canonical_paths() -> None:
+    legacy_source = OmegaConf.create(
+        {
+            "algo": {
+                "policy": {
+                    "actor_hidden_dims": [512, 256, 128],
+                    "critic_hidden_dims": [256, 128],
+                }
+            }
+        }
+    )
+    canonical_source = OmegaConf.create(
+        {
+            "algo": {
+                "actor": {"hidden_dims": [512, 256, 128]},
+                "critic": {"hidden_dims": [256, 128]},
+            }
+        }
+    )
+    expected = {
+        "algo.actor.hidden_dims": [512, 256, 128],
+        "algo.critic.hidden_dims": [256, 128],
+    }
+
+    # A legacy-shaped source config is canonicalized on extraction. New current
+    # snapshots still emit only canonical keys; no alias key is dual-written.
+    assert extract_contract_snapshot(legacy_source) == expected
+    assert extract_contract_snapshot(canonical_source) == expected
+
+
 def test_extract_snapshot_captures_manager_policy_io_contract() -> None:
     cfg = _manager_cfg()
 
@@ -229,6 +259,24 @@ def test_corrupt_sidecar_falls_back(tmp_path, capsys):
     assert "no contract_snapshot" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param("[]", id="non-mapping-top-level"),
+        pytest.param(json.dumps({"contract_snapshot": None}), id="null-snapshot"),
+        pytest.param(json.dumps({"contract_snapshot": [512, 256]}), id="non-mapping-snapshot"),
+    ],
+)
+def test_malformed_snapshot_currently_warning_skips(tmp_path, capsys, payload):
+    # #2414 deliberately pins the old-reader behavior before #2416 changes these
+    # cases from warning-skip to fail-closed. The historical artifact is not modified.
+    (tmp_path / "run_config.json").write_text(payload, encoding="utf-8")
+    target = _mujoco_cfg()
+
+    assert resolve_sim2sim_config(tmp_path, target) is target
+    assert "no contract_snapshot" in capsys.readouterr().out
+
+
 def test_none_source_returns_none(capsys):
     assert resolve_sim2sim_config(None, _mujoco_cfg()) is None
     assert "no source run dir" in capsys.readouterr().out
@@ -270,6 +318,45 @@ def test_legacy_empirical_normalization_alias_mismatch_raises(tmp_path):
     _write_sidecar(tmp_path, {"algo.empirical_normalization": True})
     target = OmegaConf.create({"algo": {"actor": {"obs_normalization": False}}, "env": {}})
     with pytest.raises(CrossBackendIncompatibleError):
+        resolve_sim2sim_config(tmp_path, target)
+
+
+@pytest.mark.parametrize(
+    ("legacy_key", "canonical_path"),
+    [
+        ("algo.policy.actor_hidden_dims", "algo.actor.hidden_dims"),
+        ("algo.policy.critic_hidden_dims", "algo.critic.hidden_dims"),
+    ],
+)
+def test_legacy_hidden_dims_alias_resolves_against_canonical_target(
+    tmp_path, legacy_key, canonical_path
+):
+    # #2414 transition evidence: old source keys are canonicalized before
+    # comparison. #2416 will remove this tolerance and make the old key reject.
+    _write_sidecar(tmp_path, {legacy_key: [512, 256, 128]})
+    target = OmegaConf.create({"algo": {}, "env": {}})
+    OmegaConf.update(target, canonical_path, [512, 256, 128])
+
+    assert resolve_sim2sim_config(tmp_path, target) is target
+
+
+@pytest.mark.parametrize(
+    ("legacy_key", "canonical_path", "target_value"),
+    [
+        ("algo.policy.actor_hidden_dims", "algo.actor.hidden_dims", [256, 256]),
+        ("algo.policy.critic_hidden_dims", "algo.critic.hidden_dims", [128, 128]),
+    ],
+)
+def test_legacy_hidden_dims_alias_mismatch_reports_canonical_path(
+    tmp_path, legacy_key, canonical_path, target_value
+):
+    # This records where the current mismatch is detected. In #2416 the alias
+    # should instead reject as an unsupported historical key before comparison.
+    _write_sidecar(tmp_path, {legacy_key: [512, 256, 128]})
+    target = OmegaConf.create({"algo": {}, "env": {}})
+    OmegaConf.update(target, canonical_path, target_value)
+
+    with pytest.raises(CrossBackendIncompatibleError, match=canonical_path):
         resolve_sim2sim_config(tmp_path, target)
 
 
