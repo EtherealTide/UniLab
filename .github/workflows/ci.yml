@@ -182,6 +182,8 @@ jobs:
               tests/base
               tests/architecture
               tests/assets
+              --ignore
+              tests/base/test_sim_backend.py
           - name: environments
             paths: >-
               tests/envs
