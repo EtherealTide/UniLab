@@ -14,7 +14,7 @@ install-completion:
 sync-rocm:
 	@cp pyproject.rocm.toml pyproject.toml
 	@if [ -f uv.rocm.lock ]; then cp uv.rocm.lock uv.lock; fi
-	uv sync --extra mujoco --extra uni_rl
+	uv sync --extra mujoco
 	cp uv.lock uv.rocm.lock
 
 .PHONY: sync-xpu
