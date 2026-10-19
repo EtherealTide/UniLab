@@ -1726,8 +1726,6 @@ def make_manager_based_rl_env(
 ) -> ManagerBasedRlEnv:
     """Construct the generic Registry-owned Manager-Based production runtime."""
     from unilab.base.registry import (
-        _SHELVED_SIM_BACKENDS,
-        _TENSOR_MANAGER_BACKEND_SCOPE_ERROR,
         _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS,
     )
 
@@ -1745,8 +1743,6 @@ def make_manager_based_rl_env(
             "make_manager_based_rl_env backend_type must be a non-empty string, "
             f"got {backend_type!r}"
         )
-    if backend_type in _SHELVED_SIM_BACKENDS:
-        raise ValueError(_TENSOR_MANAGER_BACKEND_SCOPE_ERROR.format(backend=backend_type))
     if backend_type not in _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS:
         raise ValueError(
             "make_manager_based_rl_env supports only the tensor Manager backends "

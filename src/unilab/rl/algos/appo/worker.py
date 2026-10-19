@@ -54,7 +54,6 @@ def compute_timeout_bootstrap_correction(
     collector_device: str,
     gamma: float,
     timeout_mask: torch.Tensor,
-    final_obs: torch.Tensor,
     final_critic: torch.Tensor,
 ) -> torch.Tensor:
     """Compute ``gamma * V(final_observation)`` for current timeout rows."""
@@ -311,11 +310,6 @@ def appo_collector_fn(
                     (state.terminated | state.truncated).to(device=obs_t.device).float()
                 )
                 final_observation = state.final_observation
-                final_obs = (
-                    final_observation["obs"]
-                    if final_observation is not None and "obs" in final_observation
-                    else None
-                )
                 final_critic = (
                     final_observation["critic"]
                     if final_observation is not None and "critic" in final_observation
@@ -332,7 +326,6 @@ def appo_collector_fn(
                         collector_device=collector_device,
                         gamma=float(cfg["algorithm"].get("gamma", 0.99)),
                         timeout_mask=timeout_mask,
-                        final_obs=final_obs if final_obs is not None else next_obs_t,
                         final_critic=bootstrap_critic,
                     )
 

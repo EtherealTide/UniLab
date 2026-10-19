@@ -52,8 +52,7 @@ _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS = (
     "isaacsim",
     "isaacgym",
 )
-_SHELVED_SIM_BACKENDS = ()
-_SUPPORTED_SIM_BACKENDS = _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS + _SHELVED_SIM_BACKENDS
+_SUPPORTED_SIM_BACKENDS = _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS
 # Drake and external-worker Isaac backends are explicit owner selections; never
 # use them as implicit fallback backends.
 _DEFAULT_SIM_BACKEND_ORDER: tuple[str, ...] = tuple(
@@ -167,8 +166,6 @@ def materialize_env_config(name: str) -> EnvCfg:
 
 def register_env(name: str, env_factory: TEnvFactory, sim_backend: str) -> TEnvFactory:
     """Register and return an environment class or function factory."""
-    if sim_backend in _SHELVED_SIM_BACKENDS:
-        raise ValueError(_TENSOR_MANAGER_BACKEND_SCOPE_ERROR.format(backend=sim_backend))
     if sim_backend not in _SUPPORTED_SIM_BACKENDS:
         raise ValueError(
             f"Unsupported simulation backend: {sim_backend}. "

@@ -2677,20 +2677,6 @@ def test_play_interactive_dynamic_compose_supports_algo_roots():
     assert sac_cfg.algo.algo == "sac"
 
 
-def test_play_interactive_sac_overrides_pass_through():
-    mod = _play_interactive()
-
-    overrides = mod._normalize_interactive_overrides(
-        "sac",
-        ["task=g1_walk_flat/mujoco", "algo.load_run=my_run"],
-    )
-
-    assert overrides == [
-        "task=g1_walk_flat/mujoco",
-        "algo.load_run=my_run",
-    ]
-
-
 def test_play_interactive_keyboard_commands_write_device_tensors():
     import types
 

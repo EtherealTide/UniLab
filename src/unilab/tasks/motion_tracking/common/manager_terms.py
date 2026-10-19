@@ -1294,23 +1294,6 @@ class MotionCommand(CommandTerm):
             out=self._command,
         )
 
-    def _refresh_relative_state_torch(self) -> None:
-        _bind_compiled_motion_relative_state()(
-            self._tensor_all_rows,
-            self.anchor_body_idx,
-            cast("torch.Tensor", self._motion_data.body_pos_w),
-            self._body_pos_w,
-            cast("torch.Tensor", self._motion_data.body_quat_w),
-            self._robot_body_pos_w,
-            self._robot_body_quat_w,
-            self.body_pos_relative_w,
-            self.body_quat_relative_w,
-            self.motion_anchor_pos_b,
-            self.motion_anchor_ori_b,
-            self.robot_body_pos_b,
-            self.robot_body_ori_b,
-        )
-
     def _torch_metrics(self) -> tuple[torch.Tensor, ...]:
         names = (
             "error_anchor_pos",

@@ -317,6 +317,3 @@ class ManagerBasedRlEnv(Protocol):
 
     # Concrete task terms may still type their own richer env subclass.  The
     # standalone manager core deliberately depends only on the properties above.
-
-
-DebugVisualizer = Any

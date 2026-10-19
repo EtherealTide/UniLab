@@ -72,7 +72,6 @@ def test_compute_timeout_bootstrap_correction_uses_final_observation_value():
         collector_device="cpu",
         gamma=0.5,
         timeout_mask=torch.tensor([True, False]),
-        final_obs=torch.tensor([[2.0, 3.0], [9.0, 9.0]], dtype=torch.float32),
         final_critic=torch.tensor([[2.0, 3.0], [9.0, 9.0]], dtype=torch.float32),
     )
 
@@ -85,7 +84,6 @@ def test_compute_timeout_bootstrap_correction_prefers_explicit_final_critic():
         collector_device="cpu",
         gamma=0.5,
         timeout_mask=torch.tensor([True, False]),
-        final_obs=torch.tensor([[2.0, 3.0], [9.0, 9.0]], dtype=torch.float32),
         final_critic=torch.tensor([[11.0, 13.0], [0.0, 0.0]], dtype=torch.float32),
     )
 
