@@ -10,6 +10,9 @@ from omegaconf import DictConfig, OmegaConf
 from unilab.rl.algos.sac.learner import SACLearner
 from unilab.rl.contracts.env import EnvFactory
 from unilab.rl.contracts.observations import get_obs_dims
+from unilab.rl.runtime.ipc.replay_pipelines.gpu_resident import (
+    require_offpolicy_replay_device,
+)
 from unilab.rl.runtime.offpolicy.actor_adapter import import_actor_adapter_modules
 from unilab.rl.runtime.offpolicy.double_buffer_runner import (
     DoubleBufferOffPolicyRunner,
@@ -52,6 +55,7 @@ def build_sac_double_buffer_runner(
     likewise injected by the owner layer (e.g.
     :mod:`unilab.base.process_device`).
     """
+    device = require_offpolicy_replay_device(device)
     rl_cfg = cast(dict[str, Any], OmegaConf.to_container(cfg.algo, resolve=True))
     custom_runtime = resolve_custom_offpolicy_runtime(rl_cfg)
     # Import registration modules before the learner builds its actor so

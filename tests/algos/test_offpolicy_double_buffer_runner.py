@@ -146,6 +146,7 @@ def test_offpolicy_owners_default_cuda_process_sharing_off(algo: str):
     cfg = _offpolicy_cfg(algo=algo)
 
     assert cfg.training.cuda_process_sharing is None
+    assert cfg.training.inference_transport is None
 
 
 def test_flashsac_scoped_tensor_benchmark_reduces_metric_flush_frequency():
@@ -508,7 +509,7 @@ def _bare_runner():
 
     runner = object.__new__(DoubleBufferOffPolicyRunner)
     runner.inference_placement = InferencePlacement(
-        mode=InferenceTransport.CPU,
+        mode=InferenceTransport.HOST,
         env_device="cpu",
         ring_device="cpu",
         learner_device="cpu",

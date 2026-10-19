@@ -192,6 +192,12 @@ def test_sac_builder_forwards_backend_device_injection(
 
     monkeypatch.setattr(module, "SACLearner", _FakeLearner)
     monkeypatch.setattr(module, "DoubleBufferOffPolicyRunner", _FakeRunner)
+    monkeypatch.setattr(
+        module,
+        "require_offpolicy_replay_device",
+        lambda device: device,
+        raising=False,
+    )
 
     kwargs: dict[str, Any] = {}
     if with_injection:
@@ -265,6 +271,12 @@ def test_double_buffer_builders_forward_injected_tensor_runtime(
         cfg = _sac_cfg()
         learner_name = "SACLearner"
         build = module.build_sac_double_buffer_runner
+        monkeypatch.setattr(
+            module,
+            "require_offpolicy_replay_device",
+            lambda device: device,
+            raising=False,
+        )
     else:
         import unilab.rl.algos.flash_sac.double_buffer as module
 
@@ -292,7 +304,7 @@ def test_double_buffer_builders_forward_injected_tensor_runtime(
     assert runner.kwargs["inference_placement"] is placement
     assert isinstance(runner.kwargs["inference_placement"], InferencePlacement)
     assert runner.kwargs["inference_placement"].collector_tensor_native is False
-    assert runner.kwargs["inference_placement"].mode.value == "cpu"
+    assert runner.kwargs["inference_placement"].mode.value == "host"
     # The injected settings win over cfg.algo for learner sampling.
     assert runner.kwargs["batch_size"] == 8
     assert runner.kwargs["updates_per_step"] == 2
@@ -310,6 +322,12 @@ def test_sac_builder_forwards_custom_runtime_preparation_hook(
     runtime = OffPolicyRuntime(learner_cls=_FakeLearner, learner_prepare_hook=prepare_hook)
     monkeypatch.setattr(module, "SACLearner", _FakeLearner)
     monkeypatch.setattr(module, "DoubleBufferOffPolicyRunner", _FakeRunner)
+    monkeypatch.setattr(
+        module,
+        "require_offpolicy_replay_device",
+        lambda device: device,
+        raising=False,
+    )
     monkeypatch.setattr(module, "resolve_custom_offpolicy_runtime", lambda rl_cfg: runtime)
 
     cfg = _sac_cfg()
@@ -333,6 +351,12 @@ def test_double_buffer_builders_reject_removed_inference_request_timeout(
 
         build = module.build_sac_double_buffer_runner
         cfg = _sac_cfg()
+        monkeypatch.setattr(
+            module,
+            "require_offpolicy_replay_device",
+            lambda device: device,
+            raising=False,
+        )
     else:
         import unilab.rl.algos.flash_sac.double_buffer as module
 

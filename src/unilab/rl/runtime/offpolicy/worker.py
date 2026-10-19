@@ -262,7 +262,7 @@ def off_policy_collector_fn(
     algo_type: str = "sac",
     actor_adapter_modules: list[str] | tuple[str, ...] | None = None,
     metrics_queue=None,
-    inference_transport: str = "cpu",
+    inference_transport: str = "host",
     inference_epoch: int = 0,
     collector_metrics_interval: int = 1,
     sim_backend: str = "mujoco",
@@ -370,10 +370,11 @@ def _run_collector(
     # ``unilab.rl.contracts.env``); this layer never touches an env registry.
     env = env_factory(num_envs, env_cfg_override)
     requested_transport = inference_transport
-    if requested_transport not in {"cpu", "cuda", "legacy_tensor"}:
+    if requested_transport not in {"host", "cuda", "legacy_tensor"}:
         raise ValueError(
-            "Collector inference transport must be 'cpu', 'cuda', or the internal "
-            f"'legacy_tensor' compatibility marker, got {requested_transport!r}"
+            "Collector inference transport must be 'host', 'cuda', or the internal "
+            f"'legacy_tensor' compatibility marker (use 'host' for the CPU ring), "
+            f"got {requested_transport!r}"
         )
     if "inference_transport" in (env_cfg_override or {}):
         raise ValueError("Collector env override must not set inference_transport")
@@ -442,9 +443,9 @@ def _run_collector(
                 "CUDA inference transport requires env observations on the ring device: "
                 f"env={observed_env_device}, ring={inference_ring_device}"
             )
-    elif requested_transport == "cpu" and observed_env_device.type == "cuda":
+    elif requested_transport == "host" and observed_env_device.type == "cuda":
         raise ValueError(
-            "CPU inference transport received CUDA tensor observations from the "
+            "Host inference transport received CUDA tensor observations from the "
             f"environment; env={observed_env_device}, ring={inference_ring_device}"
         )
     adapter = get_offpolicy_actor_adapter(algo_type)

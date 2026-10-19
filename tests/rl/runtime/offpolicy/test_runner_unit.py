@@ -1444,7 +1444,7 @@ def test_mps_learner_cpu_env_resolves_cpu_ring_with_device_copy_staging(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ):
-    """CPU env + torch.mps learner cell: CPU transport with explicit copies.
+    """CPU env + torch.mps learner cell: host transport with explicit copies.
 
     The probe reports host (non-tensor-native) observations, so placement
     keeps the CPU ring; the mps learner owns the replay device while ingress
@@ -1462,7 +1462,7 @@ def test_mps_learner_cpu_env_resolves_cpu_ring_with_device_copy_staging(
         env_tensor_native=False,
         algo_name="TestRunner",
     )
-    assert placement.mode is InferenceTransport.CPU
+    assert placement.mode is InferenceTransport.HOST
     assert placement.env_device == "cpu"
     assert placement.ring_device == "cpu"
     assert placement.staging_policy == "cpu_ring_explicit_learner_device_copy"
@@ -1489,7 +1489,7 @@ def test_mps_learner_cpu_env_resolves_cpu_ring_with_device_copy_staging(
     assert _FakeReplayBuffer.last_kwargs["device"] == "mps"
     assert _FakeReplayBuffer.last_kwargs["ingress_device"] == "cpu"
     assert _FakeReplayBuffer.last_kwargs["require_completion_receipt"] is False
-    assert collector_kwargs["inference_transport"] == "cpu"
+    assert collector_kwargs["inference_transport"] == "host"
     assert collector_kwargs["inference_slot"].device.type == "cpu"
     manifest = runner.runtime_manifest
     assert manifest["collector_tensor_native"] is False
@@ -1497,7 +1497,7 @@ def test_mps_learner_cpu_env_resolves_cpu_ring_with_device_copy_staging(
     assert manifest["inference_action_host_staging"] is True
     assert manifest["inference_learner_scratch_device"] == "mps"
     assert manifest["inference_transport"] == {
-        "mode": "cpu",
+        "mode": "host",
         "env_device": "cpu",
         "ring_device": "cpu",
         "learner_device": "mps",
@@ -1557,7 +1557,7 @@ def test_mps_learner_serves_cpu_ring_inference_with_device_copy(
     runner.inference_epoch = 0
     runner._inference_forward_timer = device_runner_module.make_device_timer("cpu")
     runner.inference_placement = InferencePlacement(
-        mode=InferenceTransport.CPU,
+        mode=InferenceTransport.HOST,
         env_device="cpu",
         ring_device="cpu",
         learner_device="mps",
@@ -1721,7 +1721,7 @@ def test_runner_collector_resources_follow_tensor_runtime_capability(
         else "cpu_ring_explicit_learner_actor_h2d_action_d2h"
     )
     assert manifest["inference_transport"] == {
-        "mode": "cuda" if collector_tensor_native else "cpu",
+        "mode": "cuda" if collector_tensor_native else "host",
         "env_device": expected_device,
         "ring_device": expected_device,
         "learner_device": expected_learner,
@@ -2590,7 +2590,7 @@ def test_learner_inference_matches_existing_actor_exploration(algo_type: str) ->
     runner.inference_epoch = 0
     runner._inference_forward_timer = device_runner_module.make_device_timer("cpu")
     runner.inference_placement = InferencePlacement(
-        mode=InferenceTransport.CPU,
+        mode=InferenceTransport.HOST,
         env_device="cpu",
         ring_device="cpu",
         learner_device="cpu",
@@ -2664,7 +2664,7 @@ def test_adapter_learner_inference_uses_actor_context(
     runner.inference_epoch = 0
     runner._inference_forward_timer = device_runner_module.make_device_timer("cpu")
     runner.inference_placement = InferencePlacement(
-        mode=InferenceTransport.CPU,
+        mode=InferenceTransport.HOST,
         env_device="cpu",
         ring_device="cpu",
         learner_device="cpu",

@@ -94,6 +94,22 @@ def test_disabled_default_does_not_probe_host(monkeypatch: pytest.MonkeyPatch) -
     }
 
 
+def test_enabled_probe_remains_nvidia_gated(linux_mps: Any) -> None:
+    """Transport's CUDA-family name does not admit AMD or a non-NVIDIA daemon."""
+    rocm_torch = _torch("GPU-a")
+    rocm_torch.version = SimpleNamespace(hip="6.3")
+
+    with pytest.raises(ValueError, match="supports NVIDIA CUDA only"):
+        probe_cuda_process_sharing(
+            "mps",
+            "cuda:0",
+            "cuda:0",
+            backend="mjwarp",
+            torch_module=rocm_torch,
+            run_command=_fake_commands(),
+        )
+
+
 def test_valid_single_rank_request_records_server_evidence(linux_mps: Any) -> None:
     _socket_control(linux_mps)
 

@@ -17,7 +17,7 @@ class InferenceTransport(str, Enum):
     """The two ring/scratch topologies the runtime promises to implement."""
 
     CUDA = "cuda"
-    CPU = "cpu"
+    HOST = "host"
 
 
 @dataclass(frozen=True)
@@ -25,10 +25,10 @@ class InferencePlacement:
     """Resolved collector/ring/env/learner placement before spawn.
 
     ``staging_policy`` is one of ``cuda_no_host_boundary`` (CUDA transport),
-    ``cpu_ring_explicit_learner_actor_h2d_action_d2h`` (CPU ring, CUDA learner),
-    ``cpu_ring_explicit_learner_device_copy`` (CPU ring, non-CUDA accelerator
-    learner such as ``torch.mps`` (Metal Performance Shaders)), or
-    ``cpu_no_device_transfer`` (CPU ring, CPU learner).
+    ``cpu_ring_explicit_learner_actor_h2d_action_d2h`` (host transport, CUDA
+    learner), ``cpu_ring_explicit_learner_device_copy`` (host transport,
+    non-CUDA accelerator learner such as ``torch.mps`` (Metal Performance
+    Shaders)), or ``cpu_no_device_transfer`` (host transport, CPU learner).
     """
 
     mode: InferenceTransport
@@ -81,8 +81,8 @@ _INFERENCE_TRANSPORT_SPECS: dict[InferenceTransport, InferenceTransportSpec] = {
         requires_rank_local_device_match=True,
         publication_sync="cuda_ipc_events",
     ),
-    InferenceTransport.CPU: InferenceTransportSpec(
-        mode=InferenceTransport.CPU,
+    InferenceTransport.HOST: InferenceTransportSpec(
+        mode=InferenceTransport.HOST,
         ring_device_type="cpu",
         requires_tensor_native=False,
         requires_rank_local_device_match=False,
@@ -143,10 +143,10 @@ def resolve_inference_placement(
     """Resolve one explicit topology and reject mixed placement before spawn.
 
     ``transport`` is authoritative when supplied. ``tensor_runtime`` is the
-    legacy Manager request for CUDA public tensors; combining it with CPU
+    legacy Manager request for CUDA public tensors; combining it with host
     transport is incoherent and fails closed. The explicit
     ``resolved_tensor_runtime_device`` and implicit ``learner_device`` requests
-    must also agree when both are present. CPU-transport staging policies are
+    must also agree when both are present. Host-transport staging policies are
     selected by ``cpu_ring_staging_policy`` from the learner device type.
     """
     learner = _canonical_device(learner_device, label="learner device", algo_name=algo_name)
@@ -175,18 +175,19 @@ def resolve_inference_placement(
     if env_tensor_native and transport is None:
         transport = InferenceTransport.CUDA.value
     elif transport is None:
-        transport = InferenceTransport.CPU.value
+        transport = InferenceTransport.HOST.value
     if not isinstance(transport, str):
         raise TypeError(f"{algo_name} inference transport must be a string, got {transport!r}")
     transport = transport.strip().lower()
     if transport not in {item.value for item in InferenceTransport}:
         raise ValueError(
-            f"{algo_name} inference transport must be one of {{'cuda', 'cpu'}}, got {transport!r}"
+            f"{algo_name} inference transport must be one of {{'cuda', 'host'}} "
+            f"(null=auto); use 'host' for the CPU inference ring, got {transport!r}"
         )
 
-    if env_tensor_native and transport == InferenceTransport.CPU.value:
+    if env_tensor_native and transport == InferenceTransport.HOST.value:
         raise ValueError(
-            f"{algo_name} requests CUDA tensor-native env observations with CPU inference transport"
+            f"{algo_name} requests CUDA tensor-native env observations with host inference transport"
         )
 
     if transport == InferenceTransport.CUDA.value:
@@ -211,11 +212,11 @@ def resolve_inference_placement(
 
     if _device_requires_cuda(env_resolved):
         raise ValueError(
-            f"{algo_name} CPU inference transport requires a CPU env device, "
+            f"{algo_name} host inference transport requires a CPU env device, "
             f"got env={env_resolved!r}"
         )
     return InferencePlacement(
-        mode=InferenceTransport.CPU,
+        mode=InferenceTransport.HOST,
         env_device=env_resolved,
         ring_device="cpu",
         learner_device=learner,
