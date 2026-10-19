@@ -11,7 +11,7 @@ from unisim.backend.mujoco.xml import materialize_scene_visual_override
 
 from unilab.base import registry
 from unilab.base.scene import SceneCfg
-from unilab.utils.reward import extract_reward_config
+from unilab.utils.reward import resolve_reward_dict
 
 
 class BackendAdapter:
@@ -42,7 +42,7 @@ class BackendAdapter:
                 f"'env.{reward_target}'; use the root reward owner only"
             )
 
-        env_cfg_override = extract_reward_config(self.cfg, target_field=reward_target)
+        env_cfg_override = resolve_reward_dict(self.cfg, target_field=reward_target)
         env_cfg_override.update(env_overrides)
         return env_cfg_override
 

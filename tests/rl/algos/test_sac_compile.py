@@ -10,7 +10,11 @@ import torch
 
 import unilab.rl.algos.common.learner_boilerplate as learner_boilerplate
 import unilab.rl.algos.sac.learner as sac_module
-from unilab.rl.algos.common.learner_boilerplate import mps_bf16_autocast_supported
+from unilab.rl.algos.common.learner_boilerplate import (
+    mps_bf16_autocast_supported,
+    resolve_amp_selection,
+    validate_amp_compile_paths,
+)
 from unilab.rl.algos.sac.learner import (
     DistributionalQNetwork,
     SACActor,
@@ -132,23 +136,39 @@ def test_sac_mps_compile_targets_training_hot_paths(monkeypatch) -> None:
 
 
 def test_sac_mps_amp_and_compile_gates_are_explicit_and_mutually_exclusive() -> None:
-    assert SACLearner._resolve_use_amp(False, "auto", "mps") is False
-    assert SACLearner._resolve_use_amp(False, "bf16", "mps") is False
-    assert SACLearner._resolve_use_amp(True, "auto", "mps") is False
-    assert SACLearner._resolve_use_amp(True, "bf16", "mps") is True
-    assert SACLearner._resolve_use_amp(True, "bf16", "cuda") is True
-    assert SACLearner._resolve_use_amp(True, "auto", "xpu") is True
-    assert SACLearner._resolve_use_amp(True, "bf16", "xpu") is True
+    def resolve_use_amp(use_amp: bool, amp_dtype: str, device_type: str) -> bool:
+        return resolve_amp_selection(
+            device_type=device_type,
+            use_amp=use_amp,
+            amp_dtype=amp_dtype,
+            learner_name="SAC",
+        ).use_amp
+
+    assert resolve_use_amp(False, "auto", "mps") is False
+    assert resolve_use_amp(False, "bf16", "mps") is False
+    assert resolve_use_amp(True, "auto", "mps") is False
+    assert resolve_use_amp(True, "bf16", "mps") is True
+    assert resolve_use_amp(True, "bf16", "cuda") is True
+    assert resolve_use_amp(True, "auto", "xpu") is True
+    assert resolve_use_amp(True, "bf16", "xpu") is True
     with pytest.raises(ValueError, match="amp_dtype='fp16'"):
-        SACLearner._resolve_use_amp(True, "fp16", "xpu")
+        resolve_use_amp(True, "fp16", "xpu")
     with pytest.raises(ValueError, match="amp_dtype='fp16'"):
-        SACLearner._resolve_use_amp(True, "fp16", "mps")
+        resolve_use_amp(True, "fp16", "mps")
 
     with pytest.raises(ValueError, match="mutually exclusive"):
-        SACLearner._validate_performance_paths("mps", use_compile=True, use_amp=True)
-    SACLearner._validate_performance_paths("mps", use_compile=True, use_amp=False)
-    SACLearner._validate_performance_paths("mps", use_compile=False, use_amp=True)
-    SACLearner._validate_performance_paths("cuda", use_compile=True, use_amp=True)
+        validate_amp_compile_paths(
+            device_type="mps", use_compile=True, use_amp=True, learner_name="SAC"
+        )
+    validate_amp_compile_paths(
+        device_type="mps", use_compile=True, use_amp=False, learner_name="SAC"
+    )
+    validate_amp_compile_paths(
+        device_type="mps", use_compile=False, use_amp=True, learner_name="SAC"
+    )
+    validate_amp_compile_paths(
+        device_type="cuda", use_compile=True, use_amp=True, learner_name="SAC"
+    )
 
 
 @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS runtime required")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import os
 import traceback
 from collections.abc import Iterator
@@ -13,12 +14,13 @@ from typing import TYPE_CHECKING, Any, cast
 from omegaconf import DictConfig, OmegaConf
 from unisim.backend.base import normalize_play_render_mode
 
+from unilab.rl.runtime.distributed.context import UNILAB_DP_LOG_DIR
 from unilab.utils.checkpoint import (
     _TEST_LOG_ROOT_ENV,
     _normalize_load_run,
     get_latest_checkpoint,
     get_latest_run,
-    resolve_task_checkpoint_path,
+    resolve_checkpoint_path,
 )
 
 if TYPE_CHECKING:
@@ -138,19 +140,66 @@ def nonfatal_play_step(step: str) -> Iterator[None]:
         traceback.print_exc()
 
 
-def get_log_root(root_dir: str | Path, cfg: DictConfig) -> Path:
-    """Resolve the algorithm log root, honoring optional training.log_root overrides."""
-    configured_root = OmegaConf.select(cfg, "training.log_root")
-    if configured_root:
-        log_root = Path(str(configured_root))
-        return log_root if log_root.is_absolute() else Path(root_dir) / log_root
+def get_log_root(
+    root_dir: str | Path,
+    cfg: DictConfig | None = None,
+    *,
+    algo_log_name: str | None = None,
+    log_root: str | Path | None = None,
+) -> Path:
+    """Resolve the algorithm log root.
+
+    The configured ``training.log_root`` (or the explicit ``log_root``
+    argument) wins; otherwise the ``UNILAB_TEST_LOG_ROOT`` override applies;
+    otherwise the default is ``<root_dir>/logs/<algo_log_name>``. Pass either
+    a composed Hydra ``cfg`` or an explicit ``algo_log_name``.
+    """
+    if cfg is not None:
+        if log_root is None:
+            log_root = OmegaConf.select(cfg, "training.log_root")
+        if algo_log_name is None:
+            selected = OmegaConf.select(cfg, "algo.algo_log_name")
+            algo_log_name = str(selected) if selected is not None else None
+    if algo_log_name is None:
+        raise ValueError("get_log_root requires a Hydra cfg or an explicit algo_log_name")
+    if log_root:
+        configured_root = Path(log_root)
+        return (
+            configured_root if configured_root.is_absolute() else Path(root_dir) / configured_root
+        )
     test_log_root = os.environ.get(_TEST_LOG_ROOT_ENV)
     if test_log_root:
-        return Path(test_log_root) / str(OmegaConf.select(cfg, "algo.algo_log_name"))
-    return Path(root_dir) / "logs" / str(OmegaConf.select(cfg, "algo.algo_log_name"))
+        return Path(test_log_root) / algo_log_name
+    return Path(root_dir) / "logs" / algo_log_name
 
 
-def parse_checkpoint_path(
+def resolve_run_log_dir(
+    cfg: DictConfig,
+    *,
+    world_size: int = 1,
+    timestamp: str | None = None,
+    root_dir: str | Path | None = None,
+) -> str:
+    """Resolve one canonical run directory shared by all distributed ranks."""
+    distributed_log_dir = os.environ.get(UNILAB_DP_LOG_DIR)
+    if distributed_log_dir:
+        return distributed_log_dir
+    configured_log_dir = OmegaConf.select(cfg, "training.log_dir", default=None)
+    if configured_log_dir:
+        return str(configured_log_dir)
+    timestamp = timestamp or datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return str(
+        get_log_root(Path.cwd() if root_dir is None else root_dir, cfg)
+        / str(cfg.training.task_name)
+        / build_run_dir_name(
+            timestamp,
+            str(cfg.training.sim_backend),
+            world_size=world_size,
+        )
+    )
+
+
+def resolve_configured_checkpoint_path(
     cfg: DictConfig,
     *,
     root_dir: str | Path,
@@ -172,12 +221,10 @@ def parse_checkpoint_path(
     if selected_checkpoint in (None, "", -1, "-1"):
         selected_checkpoint = None
 
-    return resolve_task_checkpoint_path(
-        root_dir,
-        task_name=selected_task,
-        load_run=selected_run,
-        algo_log_name=str(OmegaConf.select(cfg, "algo.algo_log_name")),
+    task_log_root = get_log_root(root_dir, cfg) / selected_task
+    return resolve_checkpoint_path(
+        task_log_root,
+        selected_run,
         checkpoint=str(selected_checkpoint) if selected_checkpoint is not None else None,
         suffix=suffix,
-        log_root=OmegaConf.select(cfg, "training.log_root"),
     )

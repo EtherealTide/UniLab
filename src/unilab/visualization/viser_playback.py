@@ -23,13 +23,13 @@ import numpy as np
 import torch
 import viser
 from omegaconf import DictConfig, OmegaConf
+from unisim.visualization.render_many import get_grid_offsets
 
 from unilab.visualization.interactive_playback import PlaybackControls, PlaybackSession
 from unilab.visualization.playback_state import (
     PhysicsStateApplier,
     assert_physics_state_playback_supported,
 )
-from unilab.visualization.render_many import get_grid_offsets
 from unilab.visualization.viser_scene import (
     MujocoViserBatchScene,
     MujocoViserScene,

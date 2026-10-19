@@ -402,14 +402,6 @@ def make_sim2sim_preflight(
     return _preflight
 
 
-def select_torch_device() -> str:
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
-
 def infer_checkpoint_actor_input_dim(ckpt_path: str) -> int | None:
     """Infer the actor MLP input dim from an rsl_rl checkpoint, if detectable."""
     loaded = torch.load(ckpt_path, map_location="cpu", weights_only=True)
@@ -489,7 +481,7 @@ def create_rsl_rl_playback_session(
     if policy_obs_dims_getter is None:
         policy_obs_dims_getter = get_policy_obs_dims
 
-    device_name = select_torch_device() if device is None else str(device)
+    device_name = default_device(torch) if device is None else str(device)
     env = env_factory(int(playback_cfg.num_envs))
     if env is None:
         raise RuntimeError("Playback env factory did not return an environment.")
@@ -582,13 +574,10 @@ def create_rsl_rl_playback_session(
     return session, policy_obs_mode, checkpoint_path
 
 
-_normalize_checkpoint_value = normalize_checkpoint_value
-
-
 def _cfg_checkpoint_value(cfg: Any) -> str | None:
     from omegaconf import OmegaConf
 
-    return _normalize_checkpoint_value(OmegaConf.select(cfg, "algo.checkpoint", default=None))
+    return normalize_checkpoint_value(OmegaConf.select(cfg, "algo.checkpoint", default=None))
 
 
 def _resolve_appo_checkpoint_from_cfg(
@@ -597,31 +586,17 @@ def _resolve_appo_checkpoint_from_cfg(
     root_dir: str | Path,
 ) -> tuple[str | None, str | None]:
     from unilab.training import get_log_root
-    from unilab.utils.checkpoint import (
-        resolve_appo_checkpoint_path,
-        resolve_task_checkpoint_path,
+    from unilab.utils.checkpoint import resolve_checkpoint_path
+
+    task_log_root = get_log_root(root_dir, cfg) / str(cfg.training.task_name)
+    selected_path, selected_dir = resolve_checkpoint_path(
+        task_log_root,
+        str(cfg.algo.load_run),
+        checkpoint=_cfg_checkpoint_value(cfg),
     )
-
-    selected_checkpoint = _cfg_checkpoint_value(cfg)
-    if selected_checkpoint is not None:
-        selected_path, selected_dir = resolve_task_checkpoint_path(
-            root_dir,
-            task_name=str(cfg.training.task_name),
-            load_run=str(cfg.algo.load_run),
-            algo_log_name=str(cfg.algo.algo_log_name),
-            checkpoint=selected_checkpoint,
-            log_root=getattr(cfg.training, "log_root", None),
-        )
-        return (
-            str(selected_path) if selected_path is not None else None,
-            str(selected_dir) if selected_dir is not None else None,
-        )
-
-    base_log_dir = get_log_root(root_dir, cfg) / str(cfg.training.task_name)
-    checkpoint_path, checkpoint_dir = resolve_appo_checkpoint_path(base_log_dir, cfg.algo.load_run)
     return (
-        str(checkpoint_path) if checkpoint_path is not None else None,
-        str(checkpoint_dir) if checkpoint_dir is not None else None,
+        str(selected_path) if selected_path is not None else None,
+        str(selected_dir) if selected_dir is not None else None,
     )
 
 
@@ -687,7 +662,7 @@ def create_appo_playback_session(
 ) -> tuple[RslRlPlaybackSession, str, str | None]:
     """Create an APPO interactive playback session."""
 
-    device_name = select_torch_device() if device is None else str(device)
+    device_name = default_device(torch) if device is None else str(device)
     env = env_factory(int(playback_cfg.num_envs))
     if env is None:
         raise RuntimeError("Playback env factory did not return an environment.")
@@ -766,11 +741,6 @@ def extract_reset_obs(reset_result):
             obs_out, _ = reset_result
             return obs_out
     raise ValueError(f"Unexpected env.reset return format: {type(reset_result)!r}")
-
-
-def resolve_play_obs_dim(obs_groups_spec: dict[str, int]) -> int:
-    obs_dim, _ = resolve_play_obs_dims(obs_groups_spec)
-    return obs_dim
 
 
 def resolve_play_obs_dims(obs_groups_spec: dict[str, int]) -> tuple[int, int]:
@@ -1002,7 +972,8 @@ def create_sac_playback_session(
     import os
 
     from unilab.rl.algos.common.actor_factory import build_actor
-    from unilab.utils.checkpoint import resolve_offpolicy_checkpoint_path
+    from unilab.training import get_log_root
+    from unilab.utils.checkpoint import resolve_checkpoint_path
 
     device_name = default_device(torch, str(device) if device is not None else None)
     env = env_factory(int(playback_cfg.num_envs))
@@ -1042,17 +1013,29 @@ def create_sac_playback_session(
             **actor_kwargs,
         )
         actor.eval()
-        log_root_kwarg: dict[str, Any] = (
-            {"log_root": playback_cfg.log_root} if playback_cfg.log_root is not None else {}
-        )
-        checkpoint_path, checkpoint_dir = resolve_offpolicy_checkpoint_path(
-            Path(root_dir),
-            cfg.algo.algo_log_name,
-            cfg.training.task_name,
+        algo_log_name = str(cfg.algo.algo_log_name)
+        if playback_cfg.log_root is not None:
+            task_log_root = (
+                get_log_root(
+                    Path(root_dir),
+                    algo_log_name=algo_log_name,
+                    log_root=playback_cfg.log_root,
+                )
+                / playback_cfg.task
+            )
+        else:
+            # Without an explicit log_root the lookup stays on the repo-rooted
+            # ``<root_dir>/logs/<algo>`` tree; the test-only
+            # ``UNILAB_TEST_LOG_ROOT`` override is reserved for cfg-driven
+            # resolution (``training.resolve_configured_checkpoint_path``).
+            task_log_root = (Path(root_dir) / "logs" / algo_log_name).absolute() / playback_cfg.task
+        resolved_path, resolved_dir = resolve_checkpoint_path(
+            task_log_root,
             playback_cfg.load_run,
-            checkpoint=playback_cfg.checkpoint,
-            **log_root_kwarg,
+            checkpoint=normalize_checkpoint_value(playback_cfg.checkpoint),
         )
+        checkpoint_path = str(resolved_path) if resolved_path is not None else None
+        checkpoint_dir = str(resolved_dir) if resolved_dir is not None else None
         if checkpoint_path is None or not os.path.exists(checkpoint_path):
             log(
                 f"WARNING: no {algo_name} checkpoint found for "
@@ -1176,10 +1159,10 @@ __all__ = [
     "create_appo_playback_session",
     "create_rsl_rl_playback_session",
     "create_sac_playback_session",
+    "default_device",
     "flashsac_play_actor_semantics",
     "infer_checkpoint_actor_input_dim",
     "make_sim2sim_preflight",
     "normalize_checkpoint_value",
     "prepare_motion_overlay_selection",
-    "select_torch_device",
 ]

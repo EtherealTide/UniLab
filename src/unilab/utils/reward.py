@@ -19,8 +19,26 @@ def _to_reward_dict(value: object, *, error_message: str) -> RewardDict:
     return cast(RewardDict, resolved)
 
 
-def resolve_reward_dict(cfg: DictConfig) -> RewardDict:
-    """Resolve the reward config from the final composed config."""
+def resolve_reward_dict(
+    cfg: DictConfig, *, target_field: str = "reward_config"
+) -> dict[str, RewardDict]:
+    """Extract and validate the reward config from a composed Hydra config.
+
+    Args:
+        cfg: Hydra DictConfig containing the root ``reward`` section.
+        target_field: Env config override key the mapping is mounted under.
+
+    Returns:
+        Dictionary with ``target_field`` as the env config override key.
+
+    Raises:
+        ValueError: If the reward config is missing or empty, or the
+            ``target_field`` is not a supported override key.
+    """
+    if target_field not in {"reward_config", "rewards"}:
+        raise ValueError(
+            f"Reward config target_field must be 'reward_config' or 'rewards', got {target_field!r}"
+        )
     reward_cfg = OmegaConf.select(cfg, "reward")
     if not reward_cfg:
         raise ValueError(
@@ -36,27 +54,4 @@ def resolve_reward_dict(cfg: DictConfig) -> RewardDict:
             "Reward config resolved to empty. Please select a non-default reward override."
         )
 
-    return reward_dict
-
-
-def extract_reward_config(
-    cfg: DictConfig,
-    *,
-    target_field: str = "reward_config",
-) -> dict[str, RewardDict]:
-    """Extract and validate reward config from Hydra config.
-
-    Args:
-        cfg: Hydra DictConfig containing reward section
-
-    Returns:
-        Dictionary with ``target_field`` as the env config override key.
-
-    Raises:
-        ValueError: If reward config is missing
-    """
-    if target_field not in {"reward_config", "rewards"}:
-        raise ValueError(
-            f"Reward config target_field must be 'reward_config' or 'rewards', got {target_field!r}"
-        )
-    return {target_field: resolve_reward_dict(cfg)}
+    return {target_field: reward_dict}

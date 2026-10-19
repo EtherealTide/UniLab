@@ -443,9 +443,9 @@ def test_sac_playback_session_runs_sim2sim_preflight(
     resolved_checkpoint = (str(checkpoint), str(tmp_path))
     monkeypatch.setattr(
         checkpoint_utils,
-        "resolve_offpolicy_checkpoint_path",
-        lambda root, algo_log_name, task_name, selected_run, checkpoint=None: (
-            resolved_runs.append(selected_run),
+        "resolve_checkpoint_path",
+        lambda task_log_root, load_run, *, checkpoint=None, suffix=".pt": (
+            resolved_runs.append(load_run),
             resolved_checkpoint,
         )[1],
     )

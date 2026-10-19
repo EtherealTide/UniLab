@@ -24,8 +24,9 @@ from unilab.training.run import (
     get_log_root,
     is_viser_play_render_mode,
     nonfatal_play_step,
-    parse_checkpoint_path,
+    resolve_configured_checkpoint_path,
     resolve_nan_guard_cfg,
+    resolve_run_log_dir,
     should_run_playback,
 )
 from unilab.training.seed import (
@@ -35,13 +36,9 @@ from unilab.training.seed import (
     resolve_training_seed,
 )
 from unilab.utils.checkpoint import (
-    get_entrypoint_log_root,
     get_latest_checkpoint,
     get_latest_run,
-    resolve_appo_checkpoint_path,
     resolve_checkpoint_path,
-    resolve_offpolicy_checkpoint_path,
-    resolve_task_checkpoint_path,
 )
 
 __all__ = [
@@ -54,7 +51,6 @@ __all__ = [
     "create_env",
     "ensure_registries",
     "format_play_checkpoint_error",
-    "get_entrypoint_log_root",
     "get_hydra_runtime_choice",
     "get_latest_checkpoint",
     "get_latest_run",
@@ -62,16 +58,14 @@ __all__ = [
     "is_viser_play_render_mode",
     "log_playback_plan",
     "nonfatal_play_step",
-    "parse_checkpoint_path",
     "resolve_checkpoint_path",
+    "resolve_configured_checkpoint_path",
     "resolve_nan_guard_cfg",
-    "resolve_task_checkpoint_path",
+    "resolve_run_log_dir",
     "should_run_playback",
     "TrainingSeedInfo",
     "apply_configured_training_seed",
     "apply_training_seed",
-    "resolve_appo_checkpoint_path",
-    "resolve_offpolicy_checkpoint_path",
     "resolve_training_seed",
     "setup_logger",
 ]

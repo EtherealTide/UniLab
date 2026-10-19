@@ -13,6 +13,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from unisim.backend.base import log_playback_plan
 
+import unilab.utils.checkpoint as checkpoint_utils
 from unilab.base.config_adapter import (
     BackendAdapter,
     create_env,
@@ -41,10 +42,10 @@ from unilab.training.experiment import ExperimentTracker
 from unilab.training.onnx_export import export_policy_onnx, verify_policy_onnx
 from unilab.training.seed import apply_configured_training_seed
 from unilab.training.tensor_runtime import select_sim_carrier_device
-from unilab.utils.checkpoint import resolve_appo_checkpoint_path
 from unilab.visualization.interactive_playback import (
     PlaybackConfig,
     create_appo_playback_session,
+    default_device,
     normalize_checkpoint_value,
 )
 from unilab.visualization.playback import camera_cfg_from_training
@@ -60,6 +61,15 @@ def _is_cuda_device(device: str | None) -> bool:
     """Return whether a device alias names CUDA (indexed or unindexed)."""
 
     return device is not None and str(device).strip().lower().split(":", 1)[0] == "cuda"
+
+
+def _str_checkpoint_tuple(
+    resolved: tuple[Path | None, Path | None],
+) -> tuple[str | None, str | None]:
+    return (
+        str(resolved[0]) if resolved[0] is not None else None,
+        str(resolved[1]) if resolved[1] is not None else None,
+    )
 
 
 def _env_carrier_device(
@@ -128,20 +138,20 @@ def build_appo_runner_kwargs(
         runner_kwargs["replay_queue_size"] = cfg.training.replay_queue_size
     load_run = OmegaConf.select(cfg, "algo.load_run", default="-1")
     if _training_resume_requested(load_run):
-        resume_path, _ = resolve_appo_checkpoint_path(
-            os.path.join(_get_log_root(cfg), cfg.training.task_name),
+        resume_path, _ = checkpoint_utils.resolve_checkpoint_path(
+            get_log_root(Path.cwd(), cfg) / str(cfg.training.task_name),
             str(load_run),
         )
         if resume_path is None:
             raise FileNotFoundError(f"Could not resolve APPO resume checkpoint: {load_run}")
-        runner_kwargs["resume_path"] = resume_path
+        runner_kwargs["resume_path"] = str(resume_path)
 
     nan_guard_cfg = resolve_nan_guard_cfg(cfg.training)
     if nan_guard_cfg is not None:
         runner_kwargs["nan_guard_cfg"] = nan_guard_cfg
-        from unilab.training.tensor_runtime_hooks import build_tensor_nan_guard_factory
+        from unilab.training.tensor_runtime_hooks import tensor_nan_guard_factory
 
-        runner_kwargs["nan_guard_factory"] = build_tensor_nan_guard_factory()
+        runner_kwargs["nan_guard_factory"] = tensor_nan_guard_factory
     return runner_kwargs
 
 
@@ -218,10 +228,6 @@ def _motrix_playback_step(
     return _motrix_playback_obs((env.step(action.contiguous()).obs, None))
 
 
-def _get_log_root(cfg: DictConfig) -> str:
-    return str(get_log_root(Path.cwd(), cfg))
-
-
 def play_appo(
     cfg: DictConfig,
     rl_cfg: dict[str, Any],
@@ -249,21 +255,18 @@ def play_appo(
     if resolve_checkpoint_path is not None:
         load_path, load_path_dir = resolve_checkpoint_path(cfg)
     else:
-        log_root = _get_log_root(cfg)
-        base_log_dir = os.path.join(log_root, cfg.training.task_name)
-        load_path, load_path_dir = resolve_appo_checkpoint_path(base_log_dir, cfg.algo.load_run)
+        base_log_dir = get_log_root(Path.cwd(), cfg) / str(cfg.training.task_name)
+        resolved_path, resolved_dir = checkpoint_utils.resolve_checkpoint_path(
+            base_log_dir, cfg.algo.load_run
+        )
+        load_path = str(resolved_path) if resolved_path is not None else None
+        load_path_dir = str(resolved_dir) if resolved_dir is not None else None
 
     if not load_path or not os.path.exists(load_path):
         print(f"Could not find run to load. load_path={load_path}")
         return None
 
-    device = cfg.training.device or (
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps"
-        if torch.backends.mps.is_available()
-        else "cpu"
-    )
+    device = cfg.training.device or default_device(torch)
     print(f"Using device for play: {device}")
 
     playback_cfg = PlaybackConfig(
@@ -391,7 +394,7 @@ def main(cfg: DictConfig) -> None:
 
     if cfg.training.log_dir is None:
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        log_root = _get_log_root(cfg)
+        log_root = str(get_log_root(Path.cwd(), cfg))
         log_dir = os.path.join(
             log_root,
             cfg.training.task_name,
@@ -404,13 +407,7 @@ def main(cfg: DictConfig) -> None:
     if collector_device == "gpu":
         collector_device = "mps" if torch.backends.mps.is_available() else "cuda"
 
-    learner_device = cfg.training.device or (
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps"
-        if torch.backends.mps.is_available()
-        else "cpu"
-    )
+    learner_device = cfg.training.device or default_device(torch)
     if pinned_device is not None:
         # The process was pinned to its requested GPU; use the in-process
         # index for both learner and collector.
@@ -521,9 +518,11 @@ def main(cfg: DictConfig) -> None:
                 cfg,
                 rl_cfg,
                 root_dir=Path.cwd(),
-                resolve_checkpoint_path=lambda current_cfg: resolve_appo_checkpoint_path(
-                    os.path.join(_get_log_root(current_cfg), current_cfg.training.task_name),
-                    current_cfg.algo.load_run,
+                resolve_checkpoint_path=lambda current_cfg: _str_checkpoint_tuple(
+                    checkpoint_utils.resolve_checkpoint_path(
+                        get_log_root(Path.cwd(), current_cfg) / str(current_cfg.training.task_name),
+                        current_cfg.algo.load_run,
+                    )
                 ),
             )
             if tracker is not None:

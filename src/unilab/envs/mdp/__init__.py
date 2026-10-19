@@ -23,7 +23,6 @@ from unilab.envs.mdp.curriculums import termination_curriculum as termination_cu
 from unilab.envs.mdp.events import apply_body_impulse as apply_body_impulse
 from unilab.envs.mdp.events import dof_armature as dof_armature
 from unilab.envs.mdp.events import geom_friction as geom_friction
-from unilab.envs.mdp.events import joint_armature as joint_armature
 from unilab.envs.mdp.events import pd_gains as pd_gains
 from unilab.envs.mdp.events import push_by_setting_velocity as push_by_setting_velocity
 from unilab.envs.mdp.events import randomize_body_mass_inertia as randomize_body_mass_inertia
@@ -113,7 +112,6 @@ __all__ = [
     "geom_friction",
     "generated_commands",
     "joint_pos_rel",
-    "joint_armature",
     "joint_pos_limits",
     "joint_vel_rel",
     "joint_vel_l2",
