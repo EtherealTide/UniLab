@@ -87,7 +87,8 @@ training:
   log_root: null
   log_dir: null
   env_steps_per_sync: 1
-  # Fixed in-flight learner-inference requests; 1 preserves legacy ordering.
+  # Fixed in-flight learner-inference requests; 1 keeps inference strictly
+  # serialized (one request in flight per collector).
   inference_slot_capacity: 1
   # Off-policy inference boundary: 'host' keeps the ring on CPU and supports
   # CPU tests plus macOS MPS learners; 'cuda' follows Torch's CUDA-family type

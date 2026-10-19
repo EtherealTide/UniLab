@@ -77,9 +77,10 @@ env:
   max_episode_seconds: 20.0
   observations:
     policy:
-      # Observation noise matches the legacy off-policy noise_config (level=1.0,
-      # actor-only; gyro/gravity/linvel scales were 0.0 there): joint pos
-      # +/-0.01 and joint vel +/-0.1, applied before term scaling.
+      # Observation noise reproduces the tuned pre-Manager-Based off-policy
+      # noise_config (level=1.0, actor-only; gyro/gravity/linvel scales were 0.0
+      # there): joint pos +/-0.01 and joint vel +/-0.1, applied before term
+      # scaling.
       enable_corruption: true
       terms:
         base_ang_vel:
@@ -212,12 +213,13 @@ env:
   curriculum:
     penalty_scaling:
       func: unilab.tasks.locomotion.g1.manager_terms.G1PenaltyCurriculum
-      # Effective schedule matches the tuned legacy baseline. The legacy env
-      # halved the shared override dict once per env construction; off-policy
-      # built two probe envs plus the spawned collector, so collectors actually
-      # trained at 1/16 initial / 1/8 cap of these YAML weights. The manager
-      # runtime isolates each env, so that collector-effective schedule is
-      # declared explicitly here.
+      # Effective schedule matches the tuned G1Walk baseline (restored in
+      # 87c6ee5a, #1768). The pre-Manager-Based env halved the shared override
+      # dict once per env construction; off-policy runs built two probe envs
+      # plus the spawned collector, so collectors effectively trained at 1/16
+      # initial / 1/8 cap of these YAML weights. The manager runtime isolates
+      # each env, so that collector-effective schedule is declared explicitly
+      # here.
       params:
         initial_scale: 0.0625
         min_scale: 0.0625

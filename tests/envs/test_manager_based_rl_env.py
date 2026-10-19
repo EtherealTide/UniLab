@@ -2580,7 +2580,7 @@ def test_scene_read_plan_refreshes_once_per_phase_and_after_mutations() -> None:
         cfg_events["mutate"] = EventTermCfg(func=_mutate_backend_tensor_state, mode="step")
         state = env.step(torch.zeros((2, 1), dtype=torch.float32))
         # Each control step owns two phases: pre-action and post-physics. The
-        # bounded mutation adds one refresh before the legacy read phase.
+        # bounded mutation adds one refresh before the post-physics read phase.
         assert backend.full_reads == 0
         assert state.obs["obs"].shape == (2, 2)
 

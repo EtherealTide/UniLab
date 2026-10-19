@@ -293,7 +293,7 @@ def _validate_event_term(
 
 
 def resolve_env_ids(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> torch.Tensor:
-    """Return CPU Torch rows for the legacy host event boundary."""
+    """Return CPU Torch rows for the host-side event boundary."""
     if env_ids is None:
         return torch.arange(env.num_envs, dtype=torch.int64)
     if isinstance(env_ids, torch.Tensor):

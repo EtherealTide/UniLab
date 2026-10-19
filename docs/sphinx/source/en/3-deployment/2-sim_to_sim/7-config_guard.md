@@ -27,7 +27,7 @@ Fields are classified by dotted path into three tiers (see `src/unilab/utils/sim
 
 | Tier | Behavior | Fields |
 |---|---|---|
-| **DENYLIST** | Mismatch → `CrossBackendIncompatibleError`, aborts | `algo.obs_groups`, legacy `env.control_config.action_scale`, Manager-Based `env.observations` / `env.actions` / policy and critic group mapping, `algo.actor.hidden_dims` / `algo.critic.hidden_dims`, `algo.actor.obs_normalization` / `algo.critic.obs_normalization` / `algo.obs_normalization`, `env.sampling_mode` |
+| **DENYLIST** | Mismatch → `CrossBackendIncompatibleError`, aborts | `algo.obs_groups`, Manager-Based `env.observations` / `env.actions` / policy and critic group mapping, `algo.actor.hidden_dims` / `algo.critic.hidden_dims`, `algo.actor.obs_normalization` / `algo.critic.obs_normalization` / `algo.obs_normalization`, `env.commands.motion.params.sampling_mode`, plus the historical snapshot key `env.control_config.action_scale` (retired from current owner configs) |
 | **WARNING_LIST** | Prints a warning, continues | `reward.*`, `env.control_config.simulate_action_latency` |
 | **ALLOWLIST** | Free to override, not checked | `training.sim_backend`, `env.scene`, `training.play_steps`, `env.noise_config` |
 
@@ -38,7 +38,7 @@ If the target backend's DENYLIST fields differ from training (e.g. a task whose 
 - **Align the contract** (recommended): make the target owner's DENYLIST fields match the training backend, then replay.
 - **Force through** (at your own risk): `uv run eval ... training.sim2sim_strict=false` downgrades DENYLIST mismatches to warnings.
 
-> Legacy runs: if `run_config.json` has no `contract_snapshot` (older training), the guard skips with a warning instead of breaking your workflow.
+> Older runs: if `run_config.json` has no `contract_snapshot` (older training), the guard skips with a warning instead of breaking your workflow.
 
 Manager-Based snapshots store the complete typed observation and action declarations from
 Hydra. A snapshot from before those fields existed cannot prove that its policy I/O is

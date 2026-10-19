@@ -1,4 +1,4 @@
-"""Playback rendering compatibility entrypoint."""
+"""Playback rendering entrypoint for trained policies."""
 
 from __future__ import annotations
 
@@ -54,8 +54,9 @@ def render_play_mode(
 ) -> str | None:
     """Run playback through the env/backend playback contract.
 
-    ``sim_backend`` is retained for older call sites; backend selection now
-    belongs to ``env.run_playback()`` and concrete backend implementations.
+    ``sim_backend`` is accepted but ignored; backend selection belongs to
+    ``env.run_playback()`` and the concrete backend implementations. The
+    parameter itself is scheduled for removal under #2415.
     """
     del sim_backend
     return cast(

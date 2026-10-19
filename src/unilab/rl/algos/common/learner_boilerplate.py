@@ -222,9 +222,9 @@ def validate_amp_compile_paths(
 def mps_bf16_autocast_supported() -> bool:
     """Probe whether this Torch/MPS runtime can execute BF16 autocast ops.
 
-    The result is cached for the process.  A failed probe is a compatibility
-    result, not an exception: callers decide whether to fail closed for an
-    explicit BF16 request.
+    The result is cached for the process.  A failed probe reports
+    "unsupported", it does not raise: callers decide whether to fail closed
+    for an explicit BF16 request.
     """
     global _MPS_BF16_AUTOCAST_SUPPORTED
     if _MPS_BF16_AUTOCAST_SUPPORTED is not None:
@@ -421,12 +421,14 @@ class WholeCycleLearnerMixin(LearnerBoilerplateMixin):
     ) -> None:
         del large_batch, batch_size
 
-    def _clear_compatibility_warmup_state(self) -> None:
+    def _clear_warmup_pending_state(self) -> None:
+        """Drop warmup-staged pending metric values after the state restore."""
         self._pending_actor_metric_values = None
         self._pending_cycle_critic_metric_values = None
         self._pending_cycle_metric_values = None
 
-    def _synchronize_compatibility_warmup(self) -> None:
+    def _synchronize_after_warmup(self) -> None:
+        """Synchronize the learner device after the warmup state restore."""
         sync_device(self.device)
 
     def _prepare_update_cycle_warmup(self, *, updates_per_step: int, policy_frequency: int) -> None:
@@ -531,11 +533,11 @@ class WholeCycleLearnerMixin(LearnerBoilerplateMixin):
                 self.scaler.load_state_dict(saved_scaler)
             self._optimizer_found_inf.copy_(saved_found_inf)
             self._whole_cycle_finite_gate().copy_(saved_finite_gate)
-            self._clear_compatibility_warmup_state()
+            self._clear_warmup_pending_state()
             restore_rng_state(rng_state)
             for optimizer in self._whole_cycle_optimizers():
                 self._zero_optimizer_gradients(optimizer)
-            self._synchronize_compatibility_warmup()
+            self._synchronize_after_warmup()
 
     def _materialize_capturable_optimizer_state(self) -> None:
         """Create fused optimizer state before whole-cycle graph capture."""

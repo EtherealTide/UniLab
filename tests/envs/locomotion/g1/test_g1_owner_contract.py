@@ -356,8 +356,9 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
         assert terms["gait_phase"].params["frequency"] == pytest.approx(1.5)
     assert critic_terms["base_lin_vel"].scale == expected_linvel
 
-    # Observation noise reproduces the legacy noise_config: actor-only (the
-    # critic reads clean observations), applied before term scaling.
+    # Observation noise reproduces the tuned pre-Manager-Based noise_config:
+    # actor-only (the critic reads clean observations), applied before term
+    # scaling.
     assert env_cfg.observations["policy"].enable_corruption is True
     assert env_cfg.observations["critic"].enable_corruption is False
     expected_noise = (
@@ -679,7 +680,7 @@ def test_g1_registry_executes_real_manager_runtime(
             assert isinstance(value, torch.Tensor)
             assert torch.isfinite(value).all()
 
-        # The command and gait-phase segments pin the legacy obs layout tail.
+        # The command and gait-phase segments pin the G1Walk-family obs layout tail.
         command = env.command_manager.get_command("twist")
         torch.testing.assert_close(
             state.obs["obs"][:, obs_dim - 5 : obs_dim - 2],
@@ -821,7 +822,7 @@ def test_g1_walk_mask_reset_preserves_phase_and_action_observation() -> None:
         env.close()
 
 
-def test_g1_walk_profile_runtime_obs_scaling_matches_legacy_layout() -> None:
+def test_g1_walk_profile_runtime_obs_scaling_matches_tuned_layout() -> None:
     """Walk-profile owners scale gyro x0.25, dof_vel x0.05, critic linvel x2.0."""
     registry.ensure_registries()
     _, _, env_override = _materialize("sac", ("task=g1_walk_flat/mujoco",), "G1WalkFlat")
@@ -863,8 +864,8 @@ def test_g1_walk_profile_runtime_obs_scaling_matches_legacy_layout() -> None:
         env.close()
 
 
-def test_g1_legacy_profile_runtime_obs_scaling_matches_legacy_layout() -> None:
-    """Legacy-profile owners keep unit scaling on every observation segment."""
+def test_g1_onpolicy_profile_runtime_obs_scaling_matches_tuned_layout() -> None:
+    """On-policy profile owners keep unit scaling on every observation segment."""
     registry.ensure_registries()
     _, _, env_override = _materialize("ppo", ("task=g1_walk_flat/mujoco",), "G1WalkFlat")
     # Exact comparison against raw sensor reads requires clean observations.
@@ -903,7 +904,8 @@ def test_g1_penalty_curriculum_scales_negative_weights_from_start() -> None:
             "G1WalkFlat", sim_backend="mujoco", env_cfg_override=env_override, num_envs=2
         )
         # Repeated construction from the same override must not drift: the
-        # legacy env halved the shared override dict on every construction.
+        # pre-Manager-Based env halved the shared override dict on every
+        # construction.
         env_repeat = registry.make(
             "G1WalkFlat", sim_backend="mujoco", env_cfg_override=env_override, num_envs=2
         )
@@ -914,8 +916,9 @@ def test_g1_penalty_curriculum_scales_negative_weights_from_start() -> None:
         for built in (env, env_repeat):
             assert built.curriculum_manager.active_terms == ["penalty_scaling"]
             # initial_scale=0.0625 scales every negative weight from
-            # construction, matching the legacy collector's effective schedule
-            # (two probe constructions + collector => 1/16 initial, 1/8 cap).
+            # construction, matching the pre-Manager-Based collector's effective
+            # schedule (two probe constructions + collector => 1/16 initial,
+            # 1/8 cap).
             assert built.reward_manager.get_term_cfg("penalty_orientation").weight == pytest.approx(
                 -0.625
             )
@@ -940,13 +943,13 @@ def test_g1_penalty_curriculum_scales_negative_weights_from_start() -> None:
 
 
 # Every task owner carrying the penalty curriculum, with the schedule that
-# reproduces its tuned legacy baseline. Legacy offpolicy runners built three
-# envs per training run (two probe envs + the spawned collector) and the
-# legacy PenaltyCurriculum halved the shared override dict in place on each
-# construction, so collectors effectively trained at 1/16 initial / 1/8 cap
-# of the YAML weights. The on-policy runners built a single env, so their
-# effective schedule was the declared 0.5 -> 1.0. The manager runtime isolates
-# each env, so these params are now the single source of truth.
+# reproduces its tuned G1Walk baseline. The pre-Manager-Based offpolicy runners
+# built three envs per training run (two probe envs + the spawned collector) and
+# the pre-Manager-Based PenaltyCurriculum halved the shared override dict in
+# place on each construction, so collectors effectively trained at 1/16 initial
+# / 1/8 cap of the YAML weights. The on-policy runners built a single env, so
+# their effective schedule was the declared 0.5 -> 1.0. The manager runtime
+# isolates each env, so these params are now the single source of truth.
 _PENALTY_CURRICULUM_CASES = (
     pytest.param(
         "sac",
@@ -974,7 +977,7 @@ _OFFPOLICY_ALIGNED_SCHEDULE = {
     _PENALTY_CURRICULUM_CASES,
     ids=[case.id for case in _PENALTY_CURRICULUM_CASES],
 )
-def test_offpolicy_penalty_curriculum_matches_legacy_effective_schedule(
+def test_offpolicy_penalty_curriculum_matches_tuned_effective_schedule(
     config_group: str, overrides: tuple[str, ...], task_name: str
 ) -> None:
     _, env_cfg, _ = _materialize(config_group, overrides, task_name)
