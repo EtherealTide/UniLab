@@ -16,7 +16,7 @@ SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "unilab"
 
 
 def test_offpolicy_replay_device_gate_keeps_xpu_unreachable() -> None:
-    with pytest.raises(ValueError, match="CUDA or MPS learner device"):
+    with pytest.raises(ValueError, match="replay device to equal the learner device"):
         require_offpolicy_replay_device("xpu")
 
 

@@ -250,17 +250,17 @@ def test_removed_env_tensor_runtime_fields_fail_closed() -> None:
             resolve_inference_transport(_cfg(env=env), device="cuda", algo_name="SAC")
 
 
-def test_default_owner_config_resolves_cpu_transport_with_explicit_cuda_learner() -> None:
+def test_default_owner_config_resolves_host_transport_with_explicit_cuda_learner() -> None:
     placement = resolve_inference_transport(_cfg(), device="cuda:3", algo_name="SAC")
 
-    assert placement.mode is InferenceTransport.CPU
+    assert placement.mode is InferenceTransport.HOST
     assert placement.env_device == "cpu"
     assert placement.ring_device == "cpu"
     assert placement.learner_device == "cuda:3"
     assert placement.collector_tensor_native is False
     assert placement.staging_policy == "cpu_ring_explicit_learner_actor_h2d_action_d2h"
     assert placement.manifest() == {
-        "mode": "cpu",
+        "mode": "host",
         "env_device": "cpu",
         "ring_device": "cpu",
         "learner_device": "cuda:3",
@@ -275,12 +275,12 @@ def test_default_owner_config_resolves_cpu_transport_with_explicit_cuda_learner(
     }
 
 
-def test_cpu_transport_labels_non_cuda_accelerator_learners_with_device_copy() -> None:
+def test_host_transport_labels_non_cuda_accelerator_learners_with_device_copy() -> None:
     # torch.mps (Apple Metal Performance Shaders) learners still cross devices
     # at the CPU-ring copy_ boundary; they must not claim cpu_no_device_transfer.
     placement = resolve_inference_transport(_cfg(), device="mps", algo_name="SAC")
 
-    assert placement.mode is InferenceTransport.CPU
+    assert placement.mode is InferenceTransport.HOST
     assert placement.env_device == "cpu"
     assert placement.ring_device == "cpu"
     assert placement.learner_device == "mps"
@@ -288,10 +288,10 @@ def test_cpu_transport_labels_non_cuda_accelerator_learners_with_device_copy() -
     assert placement.staging_policy == "cpu_ring_explicit_learner_device_copy"
 
 
-def test_cpu_transport_cpu_learner_reports_no_device_transfer() -> None:
+def test_host_transport_cpu_learner_reports_no_device_transfer() -> None:
     placement = resolve_inference_transport(_cfg(), device="cpu", algo_name="SAC")
 
-    assert placement.mode is InferenceTransport.CPU
+    assert placement.mode is InferenceTransport.HOST
     assert placement.staging_policy == "cpu_no_device_transfer"
 
 
@@ -308,15 +308,37 @@ def test_explicit_transport_can_request_cuda_without_legacy_boolean() -> None:
     assert placement.collector_tensor_native is True
 
 
-def test_explicit_cpu_transport_keeps_cpu_ring() -> None:
+def test_explicit_host_transport_keeps_cpu_ring() -> None:
     placement = resolve_inference_transport(
-        _cfg(training={"inference_transport": "cpu"}),
+        _cfg(training={"inference_transport": "host"}),
         device="cuda:0",
         algo_name="SAC",
     )
 
-    assert placement.mode is InferenceTransport.CPU
+    assert placement.mode is InferenceTransport.HOST
     assert placement.collector_tensor_native is False
+
+
+@pytest.mark.parametrize("transport", [None, "host", "cuda"])
+def test_inference_transport_owner_yaml_semantics(transport: str | None) -> None:
+    """The owner enum is exactly host/cuda with null retained for auto."""
+    placement = resolve_inference_transport(
+        _cfg(training={"inference_transport": transport}),
+        device="cuda:0" if transport == "cuda" else "cpu",
+        algo_name="SAC",
+    )
+
+    expected = InferenceTransport.CUDA if transport == "cuda" else InferenceTransport.HOST
+    assert placement.mode is expected
+
+
+def test_removed_cpu_inference_transport_spelling_fails_closed() -> None:
+    with pytest.raises(ValueError, match="must be one of \\{'cuda', 'host'\\}"):
+        resolve_inference_transport(
+            _cfg(training={"inference_transport": "cpu"}),
+            device="cuda:0",
+            algo_name="SAC",
+        )
 
 
 def test_backend_tensor_native_owner_derives_cuda_without_removed_fields() -> None:

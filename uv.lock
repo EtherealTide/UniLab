@@ -5276,7 +5276,7 @@ requires-dist = [
     { name = "warp-lang", marker = "extra == 'mjwarp'", specifier = "==1.16.0" },
     { name = "warp-lang", marker = "extra == 'newton'", specifier = "==1.16.0" },
 ]
-provides-extras = ["drake", "mujoco", "mjwarp", "newton", "motrix", "genesis", "uni-rl", "superdex"]
+provides-extras = ["drake", "mujoco", "mjwarp", "newton", "motrix", "genesis", "superdex"]
 
 [package.metadata.requires-dev]
 dev = [

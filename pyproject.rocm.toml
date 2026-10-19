@@ -73,10 +73,6 @@ mujoco = [
     "mjbatch-uni~=0.2.5",
 ]
 motrix = ["unisim-core[motrix]==1.7.22"]
-# Transitional no-op for legacy install commands (`pip install unilab[uni_rl]`,
-# `uv sync --extra uni_rl`): the RL stack (former unilab-rl) is merged into the
-# unilab distribution itself (src/unilab/rl/). To be removed in a later release.
-uni_rl = []
 
 [dependency-groups]
 # The RL stack (APPO/off-policy/multi-GPU) is merged into unilab itself
