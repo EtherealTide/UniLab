@@ -18,6 +18,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.mjwarp.dependencies import load_mjwarp_dependencies
 from unisim.backend.mjwarp.randomization import EXPANDED_MODEL_FIELDS
 from unisim.dr.types import (
@@ -42,7 +43,7 @@ from unisim.dr.types import (
     RESET_TERM_KP,
     IntervalRandomizationPlan,
     IntervalTermOp,
-    ResetRandomizationPayload,
+    TensorResetRandomizationPayload,
 )
 
 from unilab.base.backend_factory import create_backend
@@ -91,6 +92,12 @@ def _stand_ctrl(backend: Any) -> np.ndarray:
 
 def _broadcast_rows(values: np.ndarray, count: int) -> np.ndarray:
     return np.broadcast_to(values, (count, *values.shape)).copy()
+
+
+def _tensor_payload(**fields: np.ndarray) -> TensorResetRandomizationPayload:
+    return TensorResetRandomizationPayload(
+        **{name: torch.as_tensor(values) for name, values in fields.items()}
+    )
 
 
 def _device_field(backend: Any, name: str) -> np.ndarray:
@@ -164,7 +171,7 @@ def test_reset_payload_writes_only_selected_rows(backend: Any) -> None:
         rows,
         qpos,
         qvel,
-        randomization=ResetRandomizationPayload(
+        randomization=_tensor_payload(
             body_mass=body_mass,
             body_ipos=body_ipos,
             dof_armature=dof_armature,
@@ -229,7 +236,7 @@ def test_reset_payload_writes_only_selected_rows(backend: Any) -> None:
         np.asarray([1], dtype=np.int32),
         qpos1,
         qvel1,
-        randomization=ResetRandomizationPayload(base_mass_delta=np.asarray([0.5])),
+        randomization=_tensor_payload(base_mass_delta=np.asarray([0.5])),
     )
     np.testing.assert_allclose(
         _device_field(backend, "body_mass")[1, base_id],
@@ -246,7 +253,7 @@ def test_base_com_offset_applies_default_plus_delta(backend: Any) -> None:
         rows,
         qpos,
         qvel,
-        randomization=ResetRandomizationPayload(base_com_offset=offset),
+        randomization=_tensor_payload(base_com_offset=offset),
     )
     base_id = backend._base_body_id
     expected = backend.get_body_ipos()[base_id] + offset
@@ -277,7 +284,7 @@ def test_body_inertia_and_iquat_recompute_invweight0(backend: Any) -> None:
         rows,
         qpos,
         qvel,
-        randomization=ResetRandomizationPayload(
+        randomization=_tensor_payload(
             body_inertia=inertia,
             body_iquat=iquat,
         ),
@@ -306,7 +313,7 @@ def test_heavier_world_accelerates_less_under_identical_body_force(backend: Any)
         heavy_rows,
         qpos,
         qvel,
-        randomization=ResetRandomizationPayload(body_mass=body_mass),
+        randomization=_tensor_payload(body_mass=body_mass),
     )
 
     force = np.zeros((backend.num_envs, 1, 3), dtype=np.float32)
@@ -385,7 +392,7 @@ def test_kp_randomization_changes_tracking_response(backend: Any) -> None:
         rows,
         qpos,
         qvel,
-        randomization=ResetRandomizationPayload(
+        randomization=_tensor_payload(
             kp=np.broadcast_to(default_kp * 0.05, (rows.size, default_kp.size)).copy(),
         ),
     )
@@ -409,7 +416,7 @@ def test_low_friction_world_changes_kick_response(backend: Any) -> None:
         rows,
         qpos,
         qvel,
-        randomization=ResetRandomizationPayload(geom_friction=geom_friction),
+        randomization=_tensor_payload(geom_friction=geom_friction),
     )
     start = backend.get_base_pos()[:, :2].copy()
     delta = np.zeros((backend.num_envs, 1, 3), dtype=np.float32)
@@ -466,7 +473,7 @@ def test_dr_reset_bypasses_reset_scratch_graphs(monkeypatch: pytest.MonkeyPatch)
         rows,
         qpos,
         qvel,
-        randomization=ResetRandomizationPayload(body_mass=body_mass),
+        randomization=_tensor_payload(body_mass=body_mass),
     )
     assert backend._reset_scratch_reset_graph not in graph_launches
     assert backend._reset_scratch_forward_graph not in graph_launches
@@ -491,7 +498,7 @@ def test_mass_and_com_randomization_match_mujoco_statistics() -> None:
     qpos, qvel = _stand_state(mjwarp_backend, num_envs)
     mass_delta = rng.uniform(-0.5, 1.5, size=num_envs)
     com_offset = rng.uniform(-0.02, 0.02, size=(num_envs, 3))
-    payload = ResetRandomizationPayload(
+    payload = _tensor_payload(
         base_mass_delta=mass_delta,
         base_com_offset=com_offset,
     )

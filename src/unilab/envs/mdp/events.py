@@ -4,7 +4,7 @@
 # Modified by UniLab for NumPy reset transactions; Apache-2.0.
 # The mass/CoM/gravity public names and signatures follow Isaac Lab v2.2.0;
 # their implementation here is UniLab's original payload adapter, not vendored PhysX code.
-"""Community-style reset event terms for UniLab's NumPy manager runtime."""
+"""Community-style reset event terms for UniLab's torch-first manager runtime."""
 
 from __future__ import annotations
 
@@ -293,12 +293,13 @@ def _validate_event_term(
 
 
 def resolve_env_ids(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> torch.Tensor:
-    """Return CPU Torch rows for the host-side event boundary."""
+    """Return int64 env rows on the env device; no host detour for device envs."""
+    device = getattr(env, "device", torch.device("cpu"))
     if env_ids is None:
-        return torch.arange(env.num_envs, dtype=torch.int64)
+        return torch.arange(env.num_envs, dtype=torch.int64, device=device)
     if isinstance(env_ids, torch.Tensor):
-        return env_ids.detach().cpu().to(dtype=torch.int64)
-    return torch.as_tensor(env_ids, dtype=torch.int64)
+        return env_ids.detach().to(dtype=torch.int64)
+    return torch.as_tensor(env_ids, dtype=torch.int64, device=device)
 
 
 def _device_reset_table(values: torch.Tensor, device: torch.device) -> torch.Tensor:
@@ -720,7 +721,7 @@ class _ModelFieldRandomizer(_ResetRandomizationTerm):
             raise ValueError(
                 f"EventManager term '{self._term_name}' produced negative, NaN, or Inf values"
             )
-        self._write(values.cpu(), ids)
+        self._write(values, ids)
 
 
 class GeomFriction(_ModelFieldRandomizer):
@@ -919,8 +920,8 @@ class PdGains(_ResetRandomizationTerm):
             kp = kp * default_kp.to(dtype=kp.dtype, device=kp.device)
             kd = kd * default_kd.to(dtype=kd.dtype, device=kd.device)
         self._entity.write_actuator_gains_to_sim(
-            kp.cpu(),
-            kd.cpu(),
+            kp,
+            kd,
             actuator_ids=self._actuator_ids,
             env_ids=ids,
             term_name="pd_gains",
@@ -967,7 +968,7 @@ class RandomizeRigidBodyMass(_ResetRandomizationTerm):
         if recompute_inertia:
             raise NotImplementedError(
                 f"EventManager term '{term_name}' recompute_inertia=True is unavailable: "
-                "ResetRandomizationPayload has no inertia-recomputation contract; set it "
+                "TensorResetRandomizationPayload has no inertia-recomputation contract; set it "
                 "explicitly to false or do not configure this term"
             )
         self._operation = _event_choice(
@@ -1012,7 +1013,7 @@ class RandomizeRigidBodyMass(_ResetRandomizationTerm):
         later mask resets can omit this field entirely.
         """
         ids = resolve_env_ids(env, env_ids)
-        if not torch.equal(ids, torch.arange(env.num_envs, dtype=torch.int64)):
+        if not torch.equal(ids, torch.arange(env.num_envs, dtype=torch.int64, device=ids.device)):
             raise ValueError(
                 "EventManager term 'randomize_rigid_body_mass' startup mode requires all "
                 f"environment rows; got {ids.tolist()} for {env.num_envs} environments"
@@ -1042,7 +1043,7 @@ class RandomizeRigidBodyMass(_ResetRandomizationTerm):
                 )
             self._startup_values = values
         self._entity.record_startup_body_mass_to_sim(
-            self._startup_values.cpu(),
+            self._startup_values,
             body_ids=self._body_ids,
             env_ids=ids,
             term_name="randomize_rigid_body_mass",
@@ -1083,15 +1084,11 @@ class RandomizeRigidBodyMass(_ResetRandomizationTerm):
             canonical_ndim=1,
             device=sampled.device,
         )
-        values = (
-            _apply_randomization_operation_tensor(
-                default_mass,
-                sampled,
-                self._operation,
-            )
-            .clamp_min(self._min_mass)
-            .cpu()
-        )
+        values = _apply_randomization_operation_tensor(
+            default_mass,
+            sampled,
+            self._operation,
+        ).clamp_min(self._min_mass)
         self._entity.write_body_mass_to_sim(
             values,
             body_ids=self._body_ids,
@@ -1184,8 +1181,8 @@ class RandomizeBodyMassInertia(_ResetRandomizationTerm):
                 dtype=torch.float64,
             )
             self._scales = torch.exp(2.0 * alpha)
-        rows = ids.to(dtype=torch.int64)
-        scales = self._scales.index_select(0, rows).to(device=self._scales.device)
+        rows = ids.to(dtype=torch.int64, device=self._scales.device)
+        scales = self._scales.index_select(0, rows)
         default_mass = _selected_reset_defaults_tensor(
             self._default_mass,
             ids,
@@ -1199,13 +1196,13 @@ class RandomizeBodyMassInertia(_ResetRandomizationTerm):
             device=self._scales.device,
         )
         self._entity.write_body_mass_to_sim(
-            (default_mass * scales).cpu(),
+            default_mass * scales,
             body_ids=self._body_ids,
             env_ids=ids,
             term_name="randomize_body_mass_inertia",
         )
         self._entity.write_body_inertia_to_sim(
-            (default_inertia * scales[..., None]).cpu(),
+            default_inertia * scales[..., None],
             body_ids=self._body_ids,
             env_ids=ids,
             term_name="randomize_body_mass_inertia",
@@ -1269,7 +1266,7 @@ class RandomizeRigidBodyCom(_ResetRandomizationTerm):
     ) -> None:
         """Sample every world once and commit the immutable startup table."""
         ids = resolve_env_ids(env, env_ids)
-        if not torch.equal(ids, torch.arange(env.num_envs, dtype=torch.int64)):
+        if not torch.equal(ids, torch.arange(env.num_envs, dtype=torch.int64, device=ids.device)):
             raise ValueError(
                 "EventManager term 'randomize_rigid_body_com' startup mode requires all "
                 f"environment rows; got {ids.tolist()} for {env.num_envs} environments"
@@ -1301,7 +1298,7 @@ class RandomizeRigidBodyCom(_ResetRandomizationTerm):
                 )
             self._startup_values = values
         self._entity.record_startup_body_ipos_to_sim(
-            self._startup_values.cpu(),
+            self._startup_values,
             body_ids=self._body_ids,
             env_ids=ids,
             term_name="randomize_rigid_body_com",
@@ -1337,7 +1334,7 @@ class RandomizeRigidBodyCom(_ResetRandomizationTerm):
             canonical_ndim=2,
             device=offsets.device,
         )
-        values = (default_ipos + offsets[:, None, :]).cpu()
+        values = default_ipos + offsets[:, None, :]
         self._entity.write_body_ipos_to_sim(
             values,
             body_ids=self._body_ids,
@@ -1420,7 +1417,7 @@ class RandomizePhysicsSceneGravity(_ResetRandomizationTerm):
             self._operation,
         )
         env.scene.write_gravity_to_sim(
-            values.cpu(),
+            values,
             ids,
             term_name="randomize_physics_scene_gravity",
         )
@@ -1529,9 +1526,9 @@ class PushBySettingVelocity(ManagerTermBase):
         unit = torch.rand(size, generator=rng.generator, device=rng.device)
         scale = torch.as_tensor(upper - lower, dtype=unit.dtype, device=unit.device)
         offset = torch.as_tensor(lower, dtype=unit.dtype, device=unit.device)
-        # The interval host plan consumes CPU tensors; sampling follows the
-        # Manager generator device, so move the result to the host.
-        return (unit * scale + offset).cpu()
+        # The interval plan is torch-first; samples stay on the Manager
+        # generator device and the backend adapter owns any host conversion.
+        return unit * scale + offset
 
 
 push_by_setting_velocity = PushBySettingVelocity
@@ -1742,11 +1739,11 @@ class ApplyBodyImpulse(ManagerTermBase):
                 quat_rows = self._selected_body_quats(
                     quats.to(device=self._device, dtype=torch.float64), trigger_ids
                 )
-                offsets = (
-                    torch.tensor(self._body_point_offset)
-                    .to(dtype=quat_rows.dtype)
-                    .expand(count * num_bodies, 3)
-                )
+                offsets = torch.tensor(
+                    self._body_point_offset,
+                    dtype=quat_rows.dtype,
+                    device=quat_rows.device,
+                ).expand(count * num_bodies, 3)
                 offset_w = _tensor_quat_apply(quat_rows, offsets).reshape(count, num_bodies, 3)
                 torques = torques + torch.linalg.cross(offset_w, forces)
             self._active_forces[trigger_ids] = forces
@@ -1765,8 +1762,8 @@ class ApplyBodyImpulse(ManagerTermBase):
         # never clobbers another producer's staged forces.
         if bool(self._active.any() or expired.any()):
             self._entity.apply_body_wrench_to_sim(
-                self._active_forces.detach().cpu(),
-                self._active_torques.detach().cpu() if self._uses_torque else None,
+                self._active_forces,
+                self._active_torques if self._uses_torque else None,
                 self._backend_body_ids,
                 env_ids=None,
                 term_name="apply_body_impulse",

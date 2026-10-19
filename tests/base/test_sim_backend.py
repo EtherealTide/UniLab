@@ -11,11 +11,12 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+import torch
 from unisim.dr.types import (
     INTERVAL_TERM_PUSH,
     IntervalRandomizationPlan,
     IntervalTermOp,
-    ResetRandomizationPayload,
+    TensorResetRandomizationPayload,
 )
 
 from unilab.assets import ASSETS_ROOT_PATH
@@ -45,6 +46,12 @@ SIM_DT = 0.005
 
 def _shape(arr: np.ndarray, *expected: int) -> None:
     assert arr.shape == expected, f"expected shape {expected}, got {arr.shape}"
+
+
+def _tensor_payload(**fields: np.ndarray) -> TensorResetRandomizationPayload:
+    return TensorResetRandomizationPayload(
+        **{name: torch.as_tensor(values) for name, values in fields.items()}
+    )
 
 
 def _mujoco_module() -> Any:
@@ -163,7 +170,7 @@ class TestMuJoCoBasic:
         qvel = np.zeros((1, bkd.model.nv))
         base_body_id = bkd._base_body_id
         delta = np.array([original[1][base_body_id] * 0.5])
-        randomization = ResetRandomizationPayload(base_mass_delta=delta)
+        randomization = _tensor_payload(base_mass_delta=delta)
 
         bkd.set_state(np.array([1]), qpos, qvel, randomization=randomization)
 
@@ -176,26 +183,23 @@ class TestMuJoCoBasic:
     def test_apply_interval_randomization_calls_push_robots(self, bkd):
         called: dict[str, np.ndarray] = {}
 
-        def _fake_push_robots(force_range):
-            called["force_range"] = np.asarray(force_range, dtype=np.float64)
+        def _fake_push_robots(push):
+            called["push"] = np.asarray(push, dtype=np.float64)
 
         bkd.push_robots = _fake_push_robots  # type: ignore[method-assign]
-        limit = np.array([0.7, 0.3, 0.2], dtype=np.float64)
+        forces = np.array([[0.5, -0.25, 0.1], [-0.1, 0.8, -0.4]], dtype=np.float64)
 
         bkd.apply_interval_randomization(
-            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, limit),))
+            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, forces),))
         )
 
-        np.testing.assert_allclose(called["force_range"], limit)
+        np.testing.assert_allclose(called["push"], forces)
 
-    def test_step_uses_xfrc_applied_for_interval_push(self, bkd, monkeypatch: pytest.MonkeyPatch):
-        sampled = np.array([[0.5, -0.25, 0.1], [-0.1, 0.8, -0.4]], dtype=np.float64)
-        limit = np.array([0.7, 0.3, 0.2], dtype=np.float64)
-
-        monkeypatch.setattr(np.random, "uniform", lambda low, high, size: sampled.copy())
+    def test_step_uses_xfrc_applied_for_interval_push(self, bkd):
+        forces = np.array([[0.5, -0.25, 0.1], [-0.1, 0.8, -0.4]], dtype=np.float64)
 
         bkd.apply_interval_randomization(
-            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, limit),))
+            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, forces),))
         )
 
         ctrl = np.zeros((NUM_ENVS, bkd.model.nu), dtype=np.float64)
@@ -203,7 +207,7 @@ class TestMuJoCoBasic:
 
         expected_xfrc = np.zeros((NUM_ENVS, 6 * bkd.model.nbody), dtype=np.float64)
         start = 6 * bkd._base_body_id
-        expected_xfrc[:, start : start + 3] = sampled * limit[None, :]
+        expected_xfrc[:, start : start + 3] = forces
 
         # The staged wrench reached the persistent channel and survives the
         # call; the pending staging buffer is cleared.
@@ -216,7 +220,7 @@ class TestMuJoCoBasic:
         np.testing.assert_allclose(np.asarray(bkd._xfrc_view).reshape(NUM_ENVS, -1), 0.0)
         np.testing.assert_allclose(bkd._pending_xfrc_applied, 0.0)
 
-    def test_interval_push_uses_configured_body(self, monkeypatch: pytest.MonkeyPatch):
+    def test_interval_push_uses_configured_body(self):
         from unisim.backend.mujoco.backend import MuJoCoBackend
 
         mujoco = _mujoco_module()
@@ -228,20 +232,17 @@ class TestMuJoCoBasic:
             push_body_name="torso_link",
         )
         bkd.materialize()
-        sampled = np.array([[0.5, -0.25, 0.1], [-0.1, 0.8, -0.4]], dtype=np.float64)
-        limit = np.array([0.7, 0.3, 0.2], dtype=np.float64)
-
-        monkeypatch.setattr(np.random, "uniform", lambda low, high, size: sampled.copy())
+        forces = np.array([[0.5, -0.25, 0.1], [-0.1, 0.8, -0.4]], dtype=np.float64)
 
         bkd.apply_interval_randomization(
-            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, limit),))
+            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, forces),))
         )
         bkd.step(np.zeros((NUM_ENVS, bkd.model.nu), dtype=np.float64))
 
         base_start = 6 * bkd._base_body_id
         push_start = 6 * mujoco.mj_name2id(bkd.model, mujoco.mjtObj.mjOBJ_BODY, "torso_link")
         xfrc = np.asarray(bkd._xfrc_view).reshape(NUM_ENVS, -1)
-        np.testing.assert_allclose(xfrc[:, push_start : push_start + 3], sampled * limit[None, :])
+        np.testing.assert_allclose(xfrc[:, push_start : push_start + 3], forces)
         np.testing.assert_allclose(xfrc[:, base_start : base_start + 3], 0.0)
         np.testing.assert_allclose(bkd._pending_xfrc_applied, 0.0)
 
@@ -257,7 +258,7 @@ class TestMuJoCoBasic:
             np.array([1]),
             qpos,
             qvel,
-            randomization=ResetRandomizationPayload(body_iquat=updated[None, :, :]),
+            randomization=_tensor_payload(body_iquat=updated[None, :, :]),
         )
 
         np.testing.assert_array_equal(pool.expand("body_iquat")[0], original[0])
@@ -275,7 +276,7 @@ class TestMuJoCoBasic:
             np.array([1]),
             qpos,
             qvel,
-            randomization=ResetRandomizationPayload(gravity=updated[None, :]),
+            randomization=_tensor_payload(gravity=updated[None, :]),
         )
 
         np.testing.assert_array_equal(pool.expand("gravity")[0], original[0])
@@ -293,7 +294,7 @@ class TestMuJoCoBasic:
             np.array([1]),
             qpos,
             qvel,
-            randomization=ResetRandomizationPayload(body_inertia=updated[None, :, :]),
+            randomization=_tensor_payload(body_inertia=updated[None, :, :]),
         )
 
         np.testing.assert_array_equal(pool.expand("body_inertia")[0], original[0])
@@ -311,7 +312,7 @@ class TestMuJoCoBasic:
             np.array([1]),
             qpos,
             qvel,
-            randomization=ResetRandomizationPayload(dof_armature=updated[None, :]),
+            randomization=_tensor_payload(dof_armature=updated[None, :]),
         )
 
         np.testing.assert_array_equal(pool.expand("dof_armature")[0], original[0])
@@ -330,7 +331,7 @@ class TestMuJoCoBasic:
             np.array([1]),
             qpos,
             qvel,
-            randomization=ResetRandomizationPayload(kp=new_kp[None, :], kd=new_kd[None, :]),
+            randomization=_tensor_payload(kp=new_kp[None, :], kd=new_kd[None, :]),
         )
 
         gain = pool.expand("actuator_gainprm")
@@ -555,7 +556,7 @@ class TestMotrixBasic:
             np.array([0]),
             qpos,
             qvel,
-            randomization=ResetRandomizationPayload(base_mass_delta=delta),
+            randomization=_tensor_payload(base_mass_delta=delta),
         )
 
         updated_mass = np.asarray(bkd._body_link.get_mass_override(bkd.data))
@@ -575,7 +576,7 @@ class TestMotrixBasic:
             np.array([0]),
             qpos,
             qvel,
-            randomization=ResetRandomizationPayload(base_com_offset=delta),
+            randomization=_tensor_payload(base_com_offset=delta),
         )
 
         updated_com = np.asarray(bkd._body_link.get_center_of_mass_override(bkd.data))
@@ -610,7 +611,7 @@ class TestMotrixBasic:
             np.array([0]),
             qpos,
             qvel,
-            randomization=ResetRandomizationPayload(kp=randomized_kp, kd=randomized_kd),
+            randomization=_tensor_payload(kp=randomized_kp, kd=randomized_kd),
         )
 
         for idx in check_indices:
@@ -634,7 +635,7 @@ class TestMotrixBasic:
                 np.array([0]),
                 qpos,
                 qvel,
-                randomization=ResetRandomizationPayload(kp=np.zeros((1, invalid_cols))),
+                randomization=_tensor_payload(kp=np.zeros((1, invalid_cols))),
             )
 
     def test_set_state_unsupported_randomization_raises(self, _ctx):
@@ -649,23 +650,23 @@ class TestMotrixBasic:
                 np.array([0]),
                 qpos,
                 qvel,
-                randomization=ResetRandomizationPayload(body_inertia=np.zeros((1, 1, 3))),
+                randomization=_tensor_payload(body_inertia=np.zeros((1, 1, 3))),
             )
 
     def test_apply_interval_randomization_calls_push_robots(self, bkd):
         called: dict[str, np.ndarray] = {}
 
-        def _fake_push_robots(force_range):
-            called["force_range"] = np.asarray(force_range, dtype=np.float64)
+        def _fake_push_robots(push):
+            called["push"] = np.asarray(push, dtype=np.float64)
 
         bkd.push_robots = _fake_push_robots  # type: ignore[method-assign]
-        limit = np.array([0.7, 0.3, 0.2], dtype=np.float64)
+        forces = np.array([[0.5, -0.25, 0.1], [-0.1, 0.8, -0.4]], dtype=np.float64)
 
         bkd.apply_interval_randomization(
-            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, limit),))
+            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, forces),))
         )
 
-        np.testing.assert_allclose(called["force_range"], limit)
+        np.testing.assert_allclose(called["push"], forces)
 
     # base kinematics
 

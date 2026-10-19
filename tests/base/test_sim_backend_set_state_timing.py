@@ -25,7 +25,7 @@ from typing import Any
 import numpy as np
 import pytest
 import torch
-from unisim.dr.types import ResetRandomizationPayload
+from unisim.dr.types import TensorResetRandomizationPayload
 
 from unilab.assets import ASSETS_ROOT_PATH
 from unilab.base.backend_timing import BACKEND_SET_STATE_DETAIL_TIMING_KEYS
@@ -154,8 +154,8 @@ def test_motrix_set_state_returns_schema_conformant_timing() -> None:
     nv = backend.get_init_qvel().size
     qpos = _identity_qpos_mujoco(nq, xyz=(1.0, 2.0, 0.8))
     qvel = np.zeros((1, nv))
-    randomization = ResetRandomizationPayload(
-        gravity=np.asarray([[0.5, 0.5, -3.0]], dtype=np.float64)
+    randomization = TensorResetRandomizationPayload(
+        gravity=torch.tensor([[0.5, 0.5, -3.0]], dtype=torch.float32)
     )
 
     result = backend.set_state_tensor(

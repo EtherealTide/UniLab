@@ -20,9 +20,10 @@ def test_unisim_dependency_uses_an_approved_source() -> None:
     if direct_url is None:
         # Published package registry install.
         return
-    # The only approved non-registry source is this issue's local editable
-    # sibling checkout (#2363 established the coordinated-development pattern;
-    # #2387 uses a named worktree so neither repository's main tree changes).
+    # The only approved non-registry source is the local editable sibling
+    # checkout (#2363 established the coordinated-development pattern; #2410
+    # develops against the plain sibling checkout that `third-party/unisim`
+    # symlinks to, on its own feature branch).
     metadata = json.loads(direct_url)
     url = metadata.get("url", "")
     assert isinstance(url, str) and url.startswith("file://"), (
@@ -33,9 +34,9 @@ def test_unisim_dependency_uses_an_approved_source() -> None:
         "UniSim local validation must use an editable sibling checkout"
     )
     source = Path(url.removeprefix("file://")).resolve()
-    expected = (_REPO_ROOT.parent / "unisim-issue-2387-packed-reset-recovery").resolve()
+    expected = (_REPO_ROOT.parent / "unisim").resolve()
     assert source == expected, (
-        f"UniSim editable source must be the issue sibling checkout at {expected}, got {source}"
+        f"UniSim editable source must be the sibling checkout at {expected}, got {source}"
     )
     assert (source / "src" / "unisim").is_dir(), f"UniSim checkout is incomplete: {source}"
 

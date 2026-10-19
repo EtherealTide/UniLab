@@ -20,7 +20,7 @@ from unisim.dr.types import (
     INTERVAL_TERM_PUSH,
     IntervalRandomizationPlan,
     IntervalTermOp,
-    ResetRandomizationPayload,
+    TensorResetRandomizationPayload,
 )
 
 from unilab.assets import ASSETS_ROOT_PATH
@@ -450,7 +450,9 @@ def test_motrix_backend_smoke_contract(robot):
         np.array([0]),
         qpos,
         np.zeros((1, nv)),
-        randomization=ResetRandomizationPayload(gravity=gravity),
+        randomization=TensorResetRandomizationPayload(
+            gravity=torch.as_tensor(gravity, dtype=torch.float32)
+        ),
     )
     base_name = robot["base_name"]
     np.testing.assert_allclose(

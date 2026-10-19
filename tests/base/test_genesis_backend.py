@@ -36,7 +36,6 @@ from unisim.dr.types import (
     INTERVAL_TERM_PUSH,
     IntervalRandomizationPlan,
     IntervalTermOp,
-    ResetRandomizationPayload,
     TensorResetRandomizationPayload,
 )
 
@@ -544,7 +543,7 @@ def test_dr_capabilities_and_tensor_reset_randomization_boundary(
             rows,
             qpos,
             qvel,
-            randomization=ResetRandomizationPayload(
+            randomization=SimpleNamespace(
                 gravity=np.zeros((2, 3)),
                 kp=np.full((2, 2), 55.0),
                 kd=np.full((2, 2), 6.5),
@@ -552,13 +551,15 @@ def test_dr_capabilities_and_tensor_reset_randomization_boundary(
         )
     with pytest.raises(
         NotImplementedError,
-        match="genesis tensor reset randomization does not support terms: gravity",
+        match="genesis tensor reset randomization does not support device terms: gravity",
     ):
         backend.set_state_tensor(
             rows,
             qpos,
             qvel,
-            randomization=TensorResetRandomizationPayload(gravity=torch.zeros((2, 3))),
+            randomization=TensorResetRandomizationPayload(
+                gravity=torch.zeros((2, 3), device=rows.device)
+            ),
         )
 
 
@@ -582,7 +583,7 @@ def test_interval_randomization_and_body_force(fake_genesis, tiny_model_file: st
 
     with pytest.raises(NotImplementedError, match="does not support interval term 'push'"):
         backend.apply_interval_randomization(
-            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, np.ones(3)),))
+            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, np.ones((1, 3))),))
         )
     with pytest.raises(
         NotImplementedError, match="does not support interval term 'body_linear_velocity_delta'"

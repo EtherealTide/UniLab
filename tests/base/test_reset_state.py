@@ -25,7 +25,6 @@ from unisim.dr.types import (
     RESET_TERM_KD,
     RESET_TERM_KP,
     DomainRandomizationCapabilities,
-    ResetRandomizationPayload,
     TensorResetRandomizationPayload,
 )
 
@@ -50,7 +49,7 @@ class _Backend:
         self.default_qpos_calls = 0
         self.init_qvel_calls = 0
         self.set_state_calls: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-        self.randomization_calls: list[ResetRandomizationPayload | None] = []
+        self.randomization_calls: list[TensorResetRandomizationPayload | None] = []
         self.default_kp = np.array([10.0, 20.0, 30.0])
         self.default_kd = np.array([1.0, 2.0, 3.0])
 

@@ -77,10 +77,13 @@ def test_g1_smoke_reset_step_and_cleanup(backend) -> None:
     np.testing.assert_allclose(backend.get_dof_pos(), qpos[:, -backend.num_actuators :], atol=1e-5)
 
     # DR round-trip on the measured per-env setters (batch_*_info build flags).
-    from unisim.dr.types import ResetRandomizationPayload
+    import torch
+    from unisim.dr.types import TensorResetRandomizationPayload
 
     kp, kd = backend.get_actuator_gains()
-    payload = ResetRandomizationPayload(kp=(kp * 1.05)[None].repeat(2, axis=0))
+    payload = TensorResetRandomizationPayload(
+        kp=torch.as_tensor((kp * 1.05)[None].repeat(2, axis=0))
+    )
     backend.set_state(rows[:2], qpos[:2], qvel[:2], randomization=payload)
     np.testing.assert_allclose(
         backend._entity.get_dofs_kp().cpu().numpy()[:2, 6:],
@@ -91,7 +94,9 @@ def test_g1_smoke_reset_step_and_cleanup(backend) -> None:
         rows[:2],
         qpos[:2],
         qvel[:2],
-        randomization=ResetRandomizationPayload(kp=kp[None].repeat(2, axis=0)),
+        randomization=TensorResetRandomizationPayload(
+            kp=torch.as_tensor(kp[None].repeat(2, axis=0))
+        ),
     )
 
     ctrl = np.broadcast_to(
