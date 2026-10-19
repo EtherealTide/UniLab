@@ -33,7 +33,7 @@ _PRODUCTION_NUMPY_IMPORT_ALLOWLIST = {
     "src/unilab/base/variants.py",
     # Cold asset/materialization leaves.
     "src/unilab/terrains/heightfield_terrains.py",
-    "src/unilab/terrains/utils.py",
+    "src/unilab/terrains/heightfield_utils.py",
     # Serialization and external interop.
     "src/unilab/training/onnx_export.py",
     "src/unilab/training/tensor_diagnostics.py",

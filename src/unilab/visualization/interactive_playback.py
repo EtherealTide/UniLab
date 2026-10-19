@@ -428,10 +428,10 @@ def _scene_visual_materializer() -> Any:
 
 
 def build_play_backend_adapter(cfg: Any, *, root_dir: str | Path, algo_name: str = "ppo") -> Any:
-    """Build the BackendAdapter used by play entrypoints to derive env cfg overrides."""
-    from unilab.base.config_adapter import BackendAdapter
+    """Build the EnvConfigAdapter used by play entrypoints to derive env cfg overrides."""
+    from unilab.base.config_adapter import EnvConfigAdapter
 
-    return BackendAdapter(
+    return EnvConfigAdapter(
         cfg,
         root_dir=root_dir,
         algo_name=algo_name,
@@ -775,7 +775,7 @@ def resolve_play_actor_spec(
     if algo_name != "sac":
         return algo_name, {}
 
-    from unilab.rl.runtime.offpolicy.runtime import resolve_custom_offpolicy_runtime
+    from unilab.rl.runtime.offpolicy.resolution import resolve_custom_offpolicy_runtime
 
     rl_cfg = cast(dict[str, Any], OmegaConf.to_container(cfg.algo, resolve=True))
     custom_runtime = resolve_custom_offpolicy_runtime(rl_cfg)
@@ -925,13 +925,13 @@ def build_offpolicy_env_cfg_override(
     root_dir: str | Path,
 ) -> dict[str, Any] | None:
     """Build the task env override for off-policy training."""
-    from unilab.base.config_adapter import BackendAdapter
+    from unilab.base.config_adapter import EnvConfigAdapter
     from unilab.training.common import assert_offpolicy_task_choice_matches_algo
 
     assert_offpolicy_task_choice_matches_algo(cfg, algo_name=algo_name)
     return cast(
         dict[str, Any] | None,
-        BackendAdapter(cfg, root_dir=root_dir, algo_name=algo_name).build_task_env_cfg_override(),
+        EnvConfigAdapter(cfg, root_dir=root_dir, algo_name=algo_name).build_task_env_cfg_override(),
     )
 
 
@@ -947,13 +947,13 @@ def build_offpolicy_play_env_cfg_override(
     renderer must be selected before the worker's Kit ``INIT`` handshake, but
     learner/collector environments must stay on the no-rendering experience.
     """
-    from unilab.base.config_adapter import BackendAdapter
+    from unilab.base.config_adapter import EnvConfigAdapter
     from unilab.training.common import assert_offpolicy_task_choice_matches_algo
 
     assert_offpolicy_task_choice_matches_algo(cfg, algo_name=algo_name)
     return cast(
         dict[str, Any] | None,
-        BackendAdapter(cfg, root_dir=root_dir, algo_name=algo_name).build_play_env_cfg_override(),
+        EnvConfigAdapter(cfg, root_dir=root_dir, algo_name=algo_name).build_play_env_cfg_override(),
     )
 
 

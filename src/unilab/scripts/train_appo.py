@@ -15,7 +15,7 @@ from unisim.backend.base import log_playback_plan
 
 import unilab.utils.checkpoint as checkpoint_utils
 from unilab.base.config_adapter import (
-    BackendAdapter,
+    EnvConfigAdapter,
     create_env,
 )
 from unilab.base.env_factory import registry_env_factory
@@ -27,7 +27,7 @@ from unilab.base.process_device import (
     pin_genesis_device_before_cuda_init,
 )
 from unilab.rl import RslRlVecEnvAdapter
-from unilab.rl.algos.appo.runtime import resolve_appo_runtime
+from unilab.rl.algos.appo.resolution import resolve_appo_runtime
 from unilab.training import (
     algo_config_dict,
     build_run_dir_name,
@@ -288,7 +288,7 @@ def play_appo(
     if bound_device is not None:
         device = bound_device
     play_env_cfg_override = apply_backend_env_device_override(
-        BackendAdapter(cfg, root_dir=Path.cwd(), algo_name="appo").build_play_env_cfg_override(),
+        EnvConfigAdapter(cfg, root_dir=Path.cwd(), algo_name="appo").build_play_env_cfg_override(),
         str(cfg.training.sim_backend),
         learner_device=device,
     )
@@ -426,7 +426,7 @@ def main(cfg: DictConfig) -> None:
             collector_device = bound_device
 
     env_cfg_override = apply_backend_env_device_override(
-        BackendAdapter(cfg, root_dir=Path.cwd(), algo_name="appo").build_task_env_cfg_override(),
+        EnvConfigAdapter(cfg, root_dir=Path.cwd(), algo_name="appo").build_task_env_cfg_override(),
         str(cfg.training.sim_backend),
         learner_device=_env_carrier_device(cfg, collector_device, runner_device=learner_device),
     )

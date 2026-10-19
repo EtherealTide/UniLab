@@ -120,7 +120,7 @@ def _compose_env_cfg(task: str, backend: str, spec: TaskSpec) -> Any:
     from hydra import compose, initialize_config_dir
     from hydra.core.global_hydra import GlobalHydra
 
-    from unilab.base.config_adapter import BackendAdapter
+    from unilab.base.config_adapter import EnvConfigAdapter
     from unilab.base.registry import apply_cfg_overrides
 
     GlobalHydra.instance().clear()
@@ -138,7 +138,7 @@ def _compose_env_cfg(task: str, backend: str, spec: TaskSpec) -> Any:
             ],
         )
 
-    env_cfg_override = BackendAdapter(
+    env_cfg_override = EnvConfigAdapter(
         owner_cfg,
         root_dir=ROOT_DIR,
         algo_name="ppo",

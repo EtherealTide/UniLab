@@ -34,12 +34,12 @@ from unilab.base.backend_timing import (
     RESET_DONE_DETAIL_TIMING_KEYS,
 )
 from unilab.base.base import ABEnv, EnvCfg, EnvPlayCapabilities
-from unilab.base.cpu_runtime import apply_env_cpu_runtime
+from unilab.base.cpu_runtime import apply_cpu_confinement
 from unilab.base.scene import SceneCfg
 from unilab.dtype_config import get_global_dtype
 
 if TYPE_CHECKING:
-    from unilab.training.tensor_diagnostics import TensorNanGuard
+    from unilab.training.tensor_diagnostics import NanGuard
 
 
 @dataclass
@@ -92,7 +92,7 @@ class TorchEnv(ABEnv):
         *,
         device: torch.device | str = "cpu",
     ):
-        apply_env_cpu_runtime(cfg.cpu_ids)
+        apply_cpu_confinement(cfg.cpu_ids)
         self._cfg = cfg
         self._backend = backend
         self._num_envs = num_envs
@@ -115,7 +115,7 @@ class TorchEnv(ABEnv):
         self._autoreset_reset_active = False
         self._autoreset_scattered_reset_obs = False
         self._rgb_array_renderer_ready = False
-        self._nan_guard: "TensorNanGuard | None" = None
+        self._nan_guard: "NanGuard | None" = None
         self._pending_backend_step_completion: CompletionToken | None = None
 
     @property
@@ -795,18 +795,16 @@ class TorchEnv(ABEnv):
     def set_autoreset(self, enabled: bool) -> None:
         self._autoreset = bool(enabled)
 
-    def set_nan_guard(self, guard: TensorNanGuard) -> None:
+    def set_nan_guard(self, guard: NanGuard) -> None:
         """Attach the owner-provided diagnostic guard.
 
         Detection stays device-resident. Artifact export occurs only at the
         guard's explicit abnormal-diagnostic host boundary.
         """
-        from unilab.training.tensor_diagnostics import TensorNanGuard as _TensorNanGuard
+        from unilab.training.tensor_diagnostics import NanGuard as _NanGuard
 
-        if not isinstance(guard, _TensorNanGuard):
-            raise TypeError(
-                f"TorchEnv nan guard must be TensorNanGuard, got {type(guard).__name__}"
-            )
+        if not isinstance(guard, _NanGuard):
+            raise TypeError(f"TorchEnv nan guard must be NanGuard, got {type(guard).__name__}")
         self._nan_guard = guard
 
     def _resolve_nan_guard_model_file(self) -> str:

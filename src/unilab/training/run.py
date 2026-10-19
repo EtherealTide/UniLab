@@ -94,14 +94,14 @@ def resolve_nan_guard_cfg(training_cfg: Any) -> NanGuardCfg | None:
 
 
 def apply_env_nan_guard(env: Any, training_cfg: Any) -> None:
-    """Attach a ``TensorNanGuard`` to ``env`` when diagnostics are enabled."""
+    """Attach a ``NanGuard`` to ``env`` when diagnostics are enabled."""
     nan_guard_cfg = resolve_nan_guard_cfg(training_cfg)
     if nan_guard_cfg is None:
         return
-    from unilab.training.tensor_diagnostics import TensorNanGuard
+    from unilab.training.tensor_diagnostics import NanGuard
 
     env.set_nan_guard(
-        TensorNanGuard(
+        NanGuard(
             nan_guard_cfg,
             num_envs=env.num_envs,
             supports_state_playback=env.play_capabilities.supports_physics_state_playback,

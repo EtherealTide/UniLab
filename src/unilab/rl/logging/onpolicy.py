@@ -8,7 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from unilab.rl.logging.common import (
+from unilab.rl.logging.base import (
     BaseTrainingLogger,
     _fmt_number,
     _load_wandb,

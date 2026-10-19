@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from rich.console import Console
 
-import unilab.rl.logging.common as common_module
+import unilab.rl.logging.base as base_module
 import unilab.training.experiment as experiment_module
 from unilab.rl.logging import OffPolicyLogger, OnPolicyLogger
 from unilab.training.experiment import ExperimentTracker, build_wandb_settings
@@ -86,7 +86,7 @@ def test_training_logger_defers_initial_live_render(monkeypatch):
         def stop(self) -> None:
             pass
 
-    monkeypatch.setattr(common_module, "Live", _FakeLive)
+    monkeypatch.setattr(base_module, "Live", _FakeLive)
 
     logger = OffPolicyLogger(log_backend="none")
     logger.start()
@@ -119,8 +119,8 @@ def test_offpolicy_training_terminal_uses_fixed_clock_and_only_forces_errors(mon
     def _fake_time() -> float:
         return now
 
-    monkeypatch.setattr(common_module, "Live", _FakeLive)
-    monkeypatch.setattr(common_module.time, "time", _fake_time)
+    monkeypatch.setattr(base_module, "Live", _FakeLive)
+    monkeypatch.setattr(base_module.time, "time", _fake_time)
 
     logger = OffPolicyLogger(log_backend="none", refresh_per_second=4)
     logger.start()

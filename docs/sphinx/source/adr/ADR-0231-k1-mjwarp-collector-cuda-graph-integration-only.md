@@ -96,7 +96,7 @@ by the collector-graph removal (see Evidence In Repo).
 | Termination flags, timeout/truncation, reset mask | `TerminationManager.compute`, `ManagerBasedRlEnv._update_state_in_read_phase`, `TorchEnv._compute_truncated` | Graph-eligible fixed-width compute. |
 | Reward vector and 11 component carriers | `RewardManager.compute`, `_publish_reward_components` | Graph-eligible fixed compute and publication. |
 | Actor/critic observations (160/289 columns) and terminal observations | `ObservationManager.compute/compute_group`, persistent output carriers, `_ensure_final_observation_scratch` | Graph-eligible persistent carriers; rotating manager scratch must be pinned for capture. |
-| Versioned Torch RNG draws | `ManagerRng`, `TensorMotionSampler.sample_frames`, `MotionCommand._resample_command`, observation noise | Graph-eligible only in the recorded draw order; state/draw versions remain outside for rollback. |
+| Versioned Torch RNG draws | `ManagerRng`, `MotionSampler.sample_frames`, `MotionCommand._resample_command`, observation noise | Graph-eligible only in the recorded draw order; state/draw versions remain outside for rollback. |
 | Full-width qpos/qvel staging and packed mask reset | `ResetStateTransaction`, `TorchPackedResetComposer`, `MjwarpBackend.set_state_tensor_mask` | Graph-eligible compute subboundary; MJWarp's current eager device-wide sync and any future full refresh remain explicitly rejected for capture. |
 | Post-reset full-width observations | `ManagerBasedRlEnv.reset`, Manager reset computes, `torch.where` scatter | Graph-eligible only for the preflight-clean canonical owner. |
 | Transition copy into fixed replay ingress slots | `ReplayBuffer._add_to_ingress` | Graph-eligible device copies after receipt visibility. |

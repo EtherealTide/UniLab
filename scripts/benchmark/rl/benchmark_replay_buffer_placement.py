@@ -311,12 +311,12 @@ def _resolve_targets(
 
 
 def _resolve_env_shape(cfg: DictConfig, algo: str) -> ReplayShape:
-    from unilab.base.config_adapter import BackendAdapter, create_env
+    from unilab.base.config_adapter import EnvConfigAdapter, create_env
     from unilab.rl.contracts.observations import get_obs_dims
     from unilab.training import ensure_registries
 
     ensure_registries()
-    env_cfg_override = BackendAdapter(
+    env_cfg_override = EnvConfigAdapter(
         cfg,
         root_dir=ROOT_DIR,
         algo_name=algo,

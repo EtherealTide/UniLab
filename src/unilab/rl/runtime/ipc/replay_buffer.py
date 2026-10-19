@@ -15,11 +15,10 @@ from unilab.rl.runtime.ipc.completion import (
     record_ingress_publication,
     wait_completion,
 )
-from unilab.rl.runtime.ipc.shared_buffer import SharedBufferBase
 from unilab.rl.runtime.settings import DEFAULT_REPLAY_INGRESS_DEPTH
 
 
-class ReplayBuffer(SharedBufferBase):
+class ReplayBuffer:
     """Bounded host ingress for an authoritative device replay ring.
 
     The collector publishes fixed-depth shared ingress slots. The replay
@@ -41,7 +40,9 @@ class ReplayBuffer(SharedBufferBase):
         ingress_device: str | torch.device = "cpu",
         require_completion_receipt: bool = True,
     ):
-        super().__init__(capacity, device)
+        self.capacity = capacity
+        self.device = device
+        self.ptr = torch.zeros(1, dtype=torch.int64).share_memory_()
         self._obs_dim = obs_dim
         self._action_dim = action_dim
         self._critic_dim = critic_dim

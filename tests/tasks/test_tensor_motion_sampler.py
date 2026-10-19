@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from unilab.tasks.motion_tracking.common import tensor_sampler as mt
-from unilab.tasks.motion_tracking.common.tensor_sampler import TensorMotionSampler
+from unilab.tasks.motion_tracking.common.tensor_sampler import MotionSampler
 
 
 def _sampler(
@@ -17,9 +17,9 @@ def _sampler(
     bin_count: int = 4,
     start_ratio: float = 0.0,
     initial_frames: torch.Tensor | None = None,
-) -> TensorMotionSampler:
+) -> MotionSampler:
     frames = torch.zeros(num_envs, dtype=torch.int32) if initial_frames is None else initial_frames
-    return TensorMotionSampler(
+    return MotionSampler(
         mode=mode,
         num_envs=num_envs,
         num_frames=num_frames,
@@ -281,7 +281,7 @@ def test_sampling_dispatch_matches_eager_clip_lookup_and_publishes_timing() -> N
 def test_frame_indexed_clip_ends_match_searchsorted_ownership() -> None:
     offsets = torch.tensor([0, 7, 19, 30], dtype=torch.int64)
     ends = torch.tensor([6, 18, 29, 31], dtype=torch.int32)
-    sampler = TensorMotionSampler(
+    sampler = MotionSampler(
         mode="adaptive",
         num_envs=7,
         num_frames=32,

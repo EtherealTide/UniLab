@@ -762,18 +762,18 @@ def test_build_play_backend_adapter_injects_root_dir_and_materializer(
     captured: dict[str, Any] = {}
     sentinel_materializer = object()
 
-    class FakeBackendAdapter:
+    class FakeEnvConfigAdapter:
         def __init__(self, cfg: Any, **kwargs: Any) -> None:
             captured["cfg"] = cfg
             captured.update(kwargs)
 
-    monkeypatch.setattr(config_adapter, "BackendAdapter", FakeBackendAdapter)
+    monkeypatch.setattr(config_adapter, "EnvConfigAdapter", FakeEnvConfigAdapter)
     monkeypatch.setattr(config_adapter, "materialize_scene_visual_override", sentinel_materializer)
 
     cfg = SimpleNamespace(training=SimpleNamespace(task_name="Task"))
     adapter = build_play_backend_adapter(cfg, root_dir="/repo", algo_name="appo")
 
-    assert isinstance(adapter, FakeBackendAdapter)
+    assert isinstance(adapter, FakeEnvConfigAdapter)
     assert captured == {
         "cfg": cfg,
         "root_dir": "/repo",

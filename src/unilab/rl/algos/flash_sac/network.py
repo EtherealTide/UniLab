@@ -9,9 +9,9 @@ import torch
 import torch.nn as nn
 
 from unilab.rl.algos.flash_sac.layers import (
+    EnsembleBlock,
     EnsembleCategoricalValue,
-    EnsembleFlashSACBlock,
-    EnsembleFlashSACEmbedder,
+    EnsembleEmbedder,
     EnsembleUnitRMSNorm,
     FlashSACBlock,
     FlashSACEmbedder,
@@ -174,10 +174,8 @@ class FlashSACDoubleCritic(nn.Module):
         device: str | torch.device = "cpu",
     ):
         super().__init__()
-        self.embedder = EnsembleFlashSACEmbedder(num_qs, input_dim, hidden_dim)
-        self.encoder = nn.ModuleList(
-            [EnsembleFlashSACBlock(num_qs, hidden_dim) for _ in range(num_blocks)]
-        )
+        self.embedder = EnsembleEmbedder(num_qs, input_dim, hidden_dim)
+        self.encoder = nn.ModuleList([EnsembleBlock(num_qs, hidden_dim) for _ in range(num_blocks)])
         self.post_norm = EnsembleUnitRMSNorm(num_qs, hidden_dim)
         self.predictor = EnsembleCategoricalValue(
             num_ensemble=num_qs,

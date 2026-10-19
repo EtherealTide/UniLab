@@ -21,7 +21,7 @@ from unisim.backend.motrix.playback import run_motrix_playback
 from unisim.backend.mujoco.backend import MuJoCoBackend
 from unisim.backend.mujoco.playback import run_mujoco_playback
 
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.scene import SceneCfg
 from unilab.training import (
     get_log_root,
@@ -279,7 +279,7 @@ def test_backend_adapter_env_cfg_override_for_sac_g1_walk_flat():
     """Env cfg override carries reward + env preset fields. Algo is NOT touched."""
     cfg = _offpolicy_cfg(["task=g1_walk_flat/mujoco"])
 
-    adapter = BackendAdapter(cfg, root_dir=_ROOT_DIR, algo_name="sac")
+    adapter = EnvConfigAdapter(cfg, root_dir=_ROOT_DIR, algo_name="sac")
     env_cfg_override = adapter.build_task_env_cfg_override()
 
     assert env_cfg_override["rewards"]["tracking_lin_vel"]["weight"] == pytest.approx(2.0)
@@ -290,7 +290,7 @@ def test_backend_adapter_env_cfg_override_for_sac_g1_walk_flat():
 
 def test_backend_adapter_preserves_mask_reset_owner_yaml():
     cfg = _offpolicy_cfg(["task=g1_walk_flat/mjwarp"])
-    override = BackendAdapter(
+    override = EnvConfigAdapter(
         cfg, root_dir=_ROOT_DIR, algo_name="sac"
     ).build_task_env_cfg_override()
     assert (
@@ -306,12 +306,12 @@ def test_backend_adapter_injects_superdex_serial_mode_only_for_interactive_play(
     interactive = _ppo_cfg(
         ["task=go2_joystick_flat/superdex", "training.play_render_mode=interactive"]
     )
-    adapter = BackendAdapter(interactive, root_dir=_ROOT_DIR, algo_name="ppo")
+    adapter = EnvConfigAdapter(interactive, root_dir=_ROOT_DIR, algo_name="ppo")
     assert "superdex_execution_mode" not in adapter.build_task_env_cfg_override()
     assert adapter.build_play_env_cfg_override()["superdex_execution_mode"] == "serial"
 
     record = _ppo_cfg(["task=go2_joystick_flat/superdex", "training.play_render_mode=record"])
-    record_override = BackendAdapter(record, root_dir=_ROOT_DIR, algo_name="ppo")
+    record_override = EnvConfigAdapter(record, root_dir=_ROOT_DIR, algo_name="ppo")
     assert "superdex_execution_mode" not in record_override.build_play_env_cfg_override()
 
 
@@ -324,7 +324,7 @@ def test_backend_adapter_keeps_motion_manager_scene_during_play():
         captured.update(kwargs)
         pytest.fail("manager scene must not be replaced during play")
 
-    env_cfg_override = BackendAdapter(
+    env_cfg_override = EnvConfigAdapter(
         cfg,
         root_dir=_ROOT_DIR,
         algo_name="ppo",
@@ -369,7 +369,7 @@ def test_backend_adapter_play_profile_merges_partial_observation_term() -> None:
         }
     )
 
-    adapter = BackendAdapter(OmegaConf.create({}), root_dir=_ROOT_DIR)
+    adapter = EnvConfigAdapter(OmegaConf.create({}), root_dir=_ROOT_DIR)
     adapter._apply_env_profile(override, profile)
 
     position = override["observations"]["policy"]["terms"]["position"]

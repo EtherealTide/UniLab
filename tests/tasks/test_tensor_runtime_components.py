@@ -13,12 +13,12 @@ from unisim.backend.base import (
 
 from unilab.managers._noise.noise_cfg import UniformNoiseCfg
 from unilab.tasks.motion_tracking.common.tensor_runtime import (
-    TensorEpisodeMetrics,
-    TensorObservationNoise,
-    TensorResetPlan,
+    EpisodeMetrics,
+    ObservationNoise,
+    ResetMasks,
     semantic_fingerprint,
 )
-from unilab.tasks.motion_tracking.common.tensor_state_store import TensorDeviceStateStore
+from unilab.tasks.motion_tracking.common.tensor_state_store import DeviceStateStore
 
 
 def test_semantic_fingerprint_rejects_semantic_mutation() -> None:
@@ -40,7 +40,7 @@ def test_semantic_fingerprint_rejects_non_finite_scalar() -> None:
 
 
 def test_tensor_observation_noise_uses_declared_uniform_bounds() -> None:
-    noise = TensorObservationNoise.from_uniform_terms(
+    noise = ObservationNoise.from_uniform_terms(
         (
             UniformNoiseCfg(n_min=-0.1, n_max=0.2),
             UniformNoiseCfg(n_min=-2.0, n_max=-1.0),
@@ -60,7 +60,7 @@ def test_tensor_observation_noise_uses_declared_uniform_bounds() -> None:
 
 
 def test_tensor_reset_plan_publishes_full_width_done_union() -> None:
-    plan = TensorResetPlan(
+    plan = ResetMasks(
         terminated=torch.tensor([False, True, False, True]),
         truncated=torch.tensor([True, False, False, False]),
     )
@@ -70,19 +70,19 @@ def test_tensor_reset_plan_publishes_full_width_done_union() -> None:
 
 def test_tensor_reset_plan_fails_closed_on_mismatched_masks() -> None:
     with pytest.raises(ValueError, match="matching one-dimensional"):
-        TensorResetPlan(
+        ResetMasks(
             terminated=torch.tensor([False, True]),
             truncated=torch.tensor([True, False, False]),
         )
     with pytest.raises(TypeError, match="boolean"):
-        TensorResetPlan(
+        ResetMasks(
             terminated=torch.tensor([0, 1]),
             truncated=torch.tensor([1, 0]),
         )
 
 
 def test_tensor_episode_metrics_include_terminal_then_reset() -> None:
-    metrics = TensorEpisodeMetrics.create(3, torch.device("cpu"))
+    metrics = EpisodeMetrics.create(3, torch.device("cpu"))
 
     metrics.update(torch.tensor([1.0, 2.0, 3.0]), torch.tensor([False, True, False]))
     done_mask = torch.tensor([False, True, False])
@@ -270,7 +270,7 @@ class _AdvancingNamedSensorBackend(_DeviceMaskResetBackend):
 
 
 def test_tensor_state_store_full_read_validates_layout_and_finite_state() -> None:
-    store = TensorDeviceStateStore(
+    store = DeviceStateStore(
         backend=_HostBridgeBackend(),  # pyright: ignore[reportArgumentType]
         device=torch.device("cpu"),
         num_envs=1,
@@ -290,7 +290,7 @@ def test_tensor_state_store_full_read_validates_layout_and_finite_state() -> Non
 
 def _device_store(backend: _DeviceMaskResetBackend | None = None):
     backend = backend or _DeviceMaskResetBackend()
-    return backend, TensorDeviceStateStore(
+    return backend, DeviceStateStore(
         backend=backend,  # pyright: ignore[reportArgumentType]
         device=torch.device("cpu"),
         num_envs=1,
@@ -305,7 +305,7 @@ def test_tensor_state_store_mask_reset_updates_true_rows_only() -> None:
     backend = _DeviceMaskResetBackend()
     backend.qpos = backend.qpos.repeat(2, 1)
     backend.qvel = backend.qvel.repeat(2, 1)
-    store = TensorDeviceStateStore(
+    store = DeviceStateStore(
         backend=backend,  # pyright: ignore[reportArgumentType]
         device=torch.device("cpu"),
         num_envs=2,
@@ -348,7 +348,7 @@ def test_tensor_state_store_reset_rejects_non_full_width_non_bool_masks() -> Non
 
 def test_tensor_state_store_crosses_named_sensor_read_boundary_each_read() -> None:
     backend = _AdvancingNamedSensorBackend()
-    store = TensorDeviceStateStore(
+    store = DeviceStateStore(
         backend=backend,  # pyright: ignore[reportArgumentType]
         device=torch.device("cpu"),
         num_envs=1,
@@ -369,7 +369,7 @@ def test_tensor_state_store_crosses_named_sensor_read_boundary_each_read() -> No
 
 
 def test_tensor_state_store_reset_fails_closed_for_host_bridge_execution() -> None:
-    store = TensorDeviceStateStore(
+    store = DeviceStateStore(
         backend=_HostBridgeBackend(),  # pyright: ignore[reportArgumentType]
         device=torch.device("cpu"),
         num_envs=1,
@@ -399,7 +399,7 @@ def test_tensor_state_store_reset_fails_closed_without_mask_capability() -> None
 
 def test_tensor_state_store_has_no_legacy_host_state_fallback() -> None:
     backend = _HostBridgeBackend()
-    store = TensorDeviceStateStore(
+    store = DeviceStateStore(
         backend=backend,  # pyright: ignore[reportArgumentType]
         device=torch.device("cpu"),
         num_envs=1,
@@ -429,7 +429,7 @@ def test_tensor_state_store_rejects_unsupported_backend_before_read() -> None:
             return TensorLifecycleCapabilities(execution=TensorExecution.UNSUPPORTED)
 
     with pytest.raises(RuntimeError, match="DEVICE_RESIDENT or HOST_BRIDGE"):
-        TensorDeviceStateStore(
+        DeviceStateStore(
             backend=UnsupportedBackend(),  # pyright: ignore[reportArgumentType]
             device=torch.device("cpu"),
             num_envs=1,
@@ -458,7 +458,7 @@ def test_tensor_state_store_accepts_cuda_family_and_current_exact_device(exact_d
             )
 
     current = torch.device("cuda", index=torch.cuda.current_device())
-    store = TensorDeviceStateStore(
+    store = DeviceStateStore(
         backend=Backend(),  # pyright: ignore[reportArgumentType]
         device=torch.device("cuda"),
         num_envs=1,
@@ -487,7 +487,7 @@ def test_tensor_state_store_rejects_wrong_exact_cuda_device_before_allocation() 
             )
 
     with pytest.raises(RuntimeError, match="did not accept Tensor device"):
-        TensorDeviceStateStore(
+        DeviceStateStore(
             backend=Backend(),  # pyright: ignore[reportArgumentType]
             device=torch.device("cuda"),
             num_envs=1,

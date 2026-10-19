@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from unilab.rl.algos.common.compile import get_torch_compile_for_device
-from unilab.rl.algos.common.learner_boilerplate import (
+from unilab.rl.algos.common.learner_base import (
     WholeCycleLearnerMixin,
     fused_adam_supported,
     mps_bf16_autocast_supported,
@@ -36,7 +36,7 @@ from unilab.rl.algos.flash_sac.network import (
     FlashSACDoubleCritic,
     FlashSACTemperature,
 )
-from unilab.rl.algos.flash_sac.update import (
+from unilab.rl.algos.flash_sac.objectives import (
     build_lr_lambda,
     compute_categorical_td_target,
     resolve_target_entropy,

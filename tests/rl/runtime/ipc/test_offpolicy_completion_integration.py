@@ -10,7 +10,7 @@ from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
 from unilab.base import registry
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.rl.runtime.ipc.replay_buffer import ReplayBuffer
 from unilab.rl.runtime.offpolicy.worker import timeout_bootstrap_mask
 
@@ -36,7 +36,7 @@ def test_eager_mujoco_replay_rows_own_their_tick_across_autoreset() -> None:
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=str(CONF_DIR / "ppo"), version_base="1.3"):
         cfg = compose("config", overrides=["task=go2_joystick_flat/mujoco"])
-    override = BackendAdapter(cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
+    override = EnvConfigAdapter(cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
     env = registry.make(
         str(cfg.training.task_name),
         sim_backend="mujoco",

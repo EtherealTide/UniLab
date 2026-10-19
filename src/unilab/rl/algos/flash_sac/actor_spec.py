@@ -167,7 +167,7 @@ def validate_aux_losses(aux_losses: Any, *, context: str) -> dict[str, torch.Ten
     return validated
 
 
-def validate_flashsac_actor(actor: nn.Module, *, obs_dim: int, action_dim: int) -> None:
+def validate_custom_actor(actor: nn.Module, *, obs_dim: int, action_dim: int) -> None:
     """Fail closed unless ``actor`` satisfies the custom actor contract.
 
     Runs a representative forward/explore/export smoke pass and restores model
@@ -277,7 +277,7 @@ def build_custom_actor(
             f"FlashSAC actor builder {spec.builder!r} must return an nn.Module, "
             f"got {type(actor).__name__}"
         )
-    validate_flashsac_actor(actor, obs_dim=obs_dim, action_dim=action_dim)
+    validate_custom_actor(actor, obs_dim=obs_dim, action_dim=action_dim)
     return actor
 
 

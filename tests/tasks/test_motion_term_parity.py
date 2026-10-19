@@ -291,10 +291,10 @@ def test_tensor_anchor_position_termination_matches_numpy(
     tensor_command = _tensor_command_from_snapshots(command, snapshots)
     monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
     cfg = TerminationTermCfg(
-        func=mt.bad_anchor_pos_z_only,
+        func=mt.BadAnchorPosZOnly,
         params={"command_name": "motion", "threshold": 0.15},
     )
-    term = mt.bad_anchor_pos_z_only(cfg, env)
+    term = mt.BadAnchorPosZOnly(cfg, env)
 
     out = term(env, "motion", threshold=0.15)
     expected = (
@@ -338,7 +338,7 @@ def test_tensor_anchor_orientation_termination_matches_numpy(
 @pytest.mark.parametrize(
     ("term_type", "reference_name", "actual_name", "threshold"),
     [
-        (mt.bad_motion_body_pos_z_only, "body_pos_relative_w", "robot_body_pos_w", 0.5),
+        (mt.BadMotionBodyPosZOnly, "body_pos_relative_w", "robot_body_pos_w", 0.5),
     ],
 )
 def test_tensor_body_terminations_match_numpy(
@@ -399,28 +399,28 @@ def test_tensor_motion_clip_end_uses_current_rows(monkeypatch, body_setup) -> No
     ("term_type", "reference_name", "actual_name", "std", "orientation"),
     [
         (
-            mt.motion_relative_body_position_error_exp,
+            mt.MotionRelativeBodyPositionErrorExp,
             "body_pos_relative_w",
             "robot_body_pos_w",
             0.3,
             False,
         ),
         (
-            mt.motion_relative_body_orientation_error_exp,
+            mt.MotionRelativeBodyOrientationErrorExp,
             "body_quat_relative_w",
             "robot_body_quat_w",
             0.4,
             True,
         ),
         (
-            mt.motion_global_body_linear_velocity_error_exp,
+            mt.MotionGlobalBodyLinearVelocityErrorExp,
             "body_lin_vel_w",
             "robot_body_lin_vel_w",
             1.0,
             False,
         ),
         (
-            mt.motion_global_body_angular_velocity_error_exp,
+            mt.MotionGlobalBodyAngularVelocityErrorExp,
             "body_ang_vel_w",
             "robot_body_ang_vel_w",
             3.14,
@@ -576,7 +576,7 @@ def test_tensor_command_publishes_sampler_advance_exactly_once() -> None:
     command._device = torch.device("cpu")
     command.last_step_timing_ms = {}
     command.time_steps = torch.tensor([4, 0, 9], dtype=torch.int32)
-    command.tensor_sampler = mt.TensorMotionSampler(
+    command.tensor_sampler = mt.MotionSampler(
         mode="adaptive",
         num_envs=3,
         num_frames=11,
@@ -655,7 +655,7 @@ def test_tensor_command_full_refresh_gathers_advanced_frames() -> None:
     command._device = torch.device("cpu")
     command.last_step_timing_ms = {}
     command.time_steps = torch.tensor([4, 0, 9], dtype=torch.int32)
-    command.tensor_sampler = mt.TensorMotionSampler(
+    command.tensor_sampler = mt.MotionSampler(
         mode="adaptive",
         num_envs=3,
         num_frames=11,
@@ -702,7 +702,7 @@ def test_tensor_command_empty_mask_preserves_rng_and_skips_sampler() -> None:
     command = mt.MotionCommand.__new__(mt.MotionCommand)
     command._device = torch.device("cpu")
     command.last_reset_timing_ms = {}
-    command.tensor_sampler = mt.TensorMotionSampler(
+    command.tensor_sampler = mt.MotionSampler(
         mode="adaptive",
         num_envs=3,
         num_frames=11,
@@ -802,7 +802,7 @@ def test_tensor_command_syncs_sampler_mirrors_at_full_width() -> None:
     command._tensor_all_rows = torch.arange(3, dtype=torch.int64)
     command.time_steps = torch.tensor([4, 20, 9], dtype=torch.int32)
     command.current_clip_end_frames = torch.tensor([90, 90, 90], dtype=torch.int32)
-    command.tensor_sampler = mt.TensorMotionSampler(
+    command.tensor_sampler = mt.MotionSampler(
         mode="adaptive",
         num_envs=3,
         num_frames=11,
@@ -832,7 +832,7 @@ def test_tensor_clip_wrap_fails_closed_before_resampling_without_owner_transacti
     command._device = torch.device("cpu")
     command.last_step_timing_ms = {}
     command.time_steps = torch.tensor([4, 0, 10], dtype=torch.int32)
-    command.tensor_sampler = mt.TensorMotionSampler(
+    command.tensor_sampler = mt.MotionSampler(
         mode="adaptive",
         num_envs=3,
         num_frames=11,

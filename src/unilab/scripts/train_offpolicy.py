@@ -49,7 +49,7 @@ from unilab.training import (
     should_run_playback,
 )
 from unilab.training.cuda_mps_cli import (
-    CudaMpsCliError,
+    CudaMpsError,
     select_environment_for_gpu,
 )
 from unilab.training.cuda_process_sharing import (
@@ -405,16 +405,16 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
         builder_kwargs["runtime_settings"] = runtime_settings
         if algo_name == "sac":
             from unilab.rl.algos.sac.double_buffer import (
-                build_sac_double_buffer_runner,
+                build_double_buffer_runner,
             )
 
-            runner = build_sac_double_buffer_runner(cfg, **builder_kwargs)
+            runner = build_double_buffer_runner(cfg, **builder_kwargs)
         else:
             from unilab.rl.algos.flash_sac.double_buffer import (
-                build_flashsac_double_buffer_runner,
+                build_double_buffer_runner,
             )
 
-            runner = build_flashsac_double_buffer_runner(cfg, **builder_kwargs)
+            runner = build_double_buffer_runner(cfg, **builder_kwargs)
 
     _attach_cuda_process_sharing_manifest(runner, cuda_process_sharing)
     return runner
@@ -457,7 +457,7 @@ def _select_cuda_mps_daemon_environment(
         return
     try:
         environment = select_environment_for_gpu(uuid)
-    except CudaMpsCliError as exc:
+    except CudaMpsError as exc:
         raise ValueError(str(exc)) from exc
     os.environ.setdefault("CUDA_MPS_PIPE_DIRECTORY", environment["CUDA_MPS_PIPE_DIRECTORY"])
     os.environ.setdefault("CUDA_MPS_LOG_DIRECTORY", environment["CUDA_MPS_LOG_DIRECTORY"])

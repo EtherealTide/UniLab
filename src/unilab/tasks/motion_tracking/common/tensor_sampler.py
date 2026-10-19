@@ -45,7 +45,7 @@ def _sampling_dispatch_mask_kernel(
 
 
 @dataclass
-class TensorMotionSamplerDiagnostics:
+class MotionSamplerDiagnostics:
     """Count observed compatibility paths that would defeat tensor-only resets.
 
     The sampler itself no longer transfers rows to the host. We retain a real
@@ -66,7 +66,7 @@ class TensorMotionSamplerDiagnostics:
         return self.reset_host_row_transfers + self.step_host_mirror_transfers
 
 
-class TensorMotionSampler:
+class MotionSampler:
     """Torch-native adaptive/mixed motion sampler for ``MotionCommand``."""
 
     def __init__(
@@ -89,16 +89,16 @@ class TensorMotionSampler:
     ) -> None:
         if mode not in {"adaptive", "mixed"}:
             raise NotImplementedError(
-                f"TensorMotionSampler supports adaptive/mixed modes only, got {mode!r}"
+                f"MotionSampler supports adaptive/mixed modes only, got {mode!r}"
             )
         if num_envs <= 0 or num_frames <= 0 or bin_count <= 0:
-            raise ValueError("TensorMotionSampler dimensions must be positive")
+            raise ValueError("MotionSampler dimensions must be positive")
         if adaptive_kernel_size <= 0:
-            raise ValueError("TensorMotionSampler adaptive_kernel_size must be positive")
+            raise ValueError("MotionSampler adaptive_kernel_size must be positive")
         if not 0.0 <= adaptive_uniform_ratio or not 0.0 <= start_ratio <= 1.0:
-            raise ValueError("TensorMotionSampler sampling ratios are outside [0, 1]")
+            raise ValueError("MotionSampler sampling ratios are outside [0, 1]")
         if adaptive_alpha < 0.0:
-            raise ValueError("TensorMotionSampler adaptive_alpha must be non-negative")
+            raise ValueError("MotionSampler adaptive_alpha must be non-negative")
 
         self.mode = mode
         self.num_envs = int(num_envs)
@@ -209,7 +209,7 @@ class TensorMotionSampler:
         self._mixed_log_uniform = torch.empty_like(self.sampling_entropy)
         self._mixed_log_uniform.fill_(math.log(uniform_mass + 1.0e-12))
         self._mixed_entropy = torch.empty_like(self.sampling_entropy)
-        self.diagnostics = TensorMotionSamplerDiagnostics()
+        self.diagnostics = MotionSamplerDiagnostics()
 
     @property
     def bin_failed_count(self) -> torch.Tensor:
@@ -226,9 +226,9 @@ class TensorMotionSampler:
             or reset_mask.dtype != torch.bool
             or reset_mask.device != self.device
         ):
-            raise ValueError("TensorMotionSampler reset mask has an invalid shape/device")
+            raise ValueError("MotionSampler reset mask has an invalid shape/device")
         if torch_rng is None:
-            raise NotImplementedError("TensorMotionSampler requires the Manager RNG generator")
+            raise NotImplementedError("MotionSampler requires the Manager RNG generator")
         self.diagnostics.record_reset_dispatch()
         frames: torch.Tensor
         probabilities: torch.Tensor | None = None
@@ -335,13 +335,13 @@ class TensorMotionSampler:
             or active.dtype != torch.bool
             or active.device != self.device
         ):
-            raise ValueError("TensorMotionSampler active mask shape/device mismatch")
+            raise ValueError("MotionSampler active mask shape/device mismatch")
         if (
             time_steps.shape != (self.num_envs,)
             or time_steps.dtype != torch.int32
             or time_steps.device != self.device
         ):
-            raise ValueError("TensorMotionSampler time_steps must be int32 device frames")
+            raise ValueError("MotionSampler time_steps must be int32 device frames")
         next_frames = self._step_next_frames
         torch.add(self.current_frames, active, out=next_frames)
         next_frames.clamp_(max=self.num_frames - 1)
@@ -424,4 +424,4 @@ class TensorMotionSampler:
         self.sampling_entropy.copy_(entropy)
 
 
-__all__ = ["TensorMotionSampler", "TensorMotionSamplerDiagnostics"]
+__all__ = ["MotionSampler", "MotionSamplerDiagnostics"]

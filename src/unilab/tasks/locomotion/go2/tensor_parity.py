@@ -77,7 +77,7 @@ _GAIT_OFFSETS: tuple[float, ...] = (0.0, 0.5, 0.5, 0.0)
 
 
 @dataclass(frozen=True)
-class Go2TensorParityConfig:
+class Go2ParityConfig:
     """Numerical parameters of the canonical DR-free Go2 parity owner."""
 
     action_scale: float = 0.25
@@ -105,7 +105,7 @@ class Go2TensorParityConfig:
 
 
 @dataclass
-class Go2TensorParityState:
+class Go2ParityState:
     """Torch state returned by the Go2 parity pilot."""
 
     obs: dict[str, torch.Tensor]
@@ -115,7 +115,7 @@ class Go2TensorParityState:
     info: dict[str, Any]
 
 
-class Go2TensorParityRuntime:
+class Go2ParityRuntime:
     """Exercise the canonical Go2 equations through public backend tensor APIs."""
 
     def __init__(
@@ -126,7 +126,7 @@ class Go2TensorParityRuntime:
         reset_qpos: torch.Tensor,
         reset_qvel: torch.Tensor,
         device: str | torch.device = "cpu",
-        cfg: Go2TensorParityConfig = Go2TensorParityConfig(),
+        cfg: Go2ParityConfig = Go2ParityConfig(),
     ):
         self.backend = backend
         self.cfg = cfg
@@ -306,7 +306,7 @@ class Go2TensorParityRuntime:
         self._update_observation()
         return {name: values.clone() for name, values in self._obs.items()}
 
-    def step(self, actions: torch.Tensor, nsteps: int = 2) -> Go2TensorParityState:
+    def step(self, actions: torch.Tensor, nsteps: int = 2) -> Go2ParityState:
         actions = self._validate_actions(actions)
         if isinstance(nsteps, bool) or int(nsteps) != nsteps or int(nsteps) <= 0:
             raise ValueError("nsteps must be a positive integer")
@@ -342,7 +342,7 @@ class Go2TensorParityRuntime:
         }
         for name, weight in weights.items():
             reward.add_(self.reward_components[name], alpha=weight * self.cfg.ctrl_dt)
-        return Go2TensorParityState(
+        return Go2ParityState(
             obs=self._obs,
             reward=reward,
             terminated=terminated,
@@ -434,7 +434,7 @@ class Go2TensorParityRuntime:
 __all__ = [
     "GO2_ACTUATOR_NAMES",
     "GO2_JOINT_NAMES",
-    "Go2TensorParityConfig",
-    "Go2TensorParityRuntime",
-    "Go2TensorParityState",
+    "Go2ParityConfig",
+    "Go2ParityRuntime",
+    "Go2ParityState",
 ]

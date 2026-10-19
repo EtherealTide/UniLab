@@ -11,7 +11,7 @@ import torch
 
 from unilab.rl.algos.flash_sac import learner as flash_sac_module
 from unilab.rl.algos.flash_sac.learner import FlashSACLearner, RewardNormalizer
-from unilab.rl.algos.flash_sac.update import compute_categorical_td_target
+from unilab.rl.algos.flash_sac.objectives import compute_categorical_td_target
 from unilab.rl.logging.metric_schema import normalize_metric_map
 
 

@@ -8,7 +8,7 @@ clear. New code should import from canonical owner modules instead
 
 from unisim.backend.base import log_playback_plan
 
-from unilab.base.config_adapter import BackendAdapter, create_env
+from unilab.base.config_adapter import EnvConfigAdapter, create_env
 from unilab.training.common import (
     assert_offpolicy_task_choice_matches_algo,
     ensure_registries,
@@ -42,7 +42,7 @@ from unilab.utils.checkpoint import (
 )
 
 __all__ = [
-    "BackendAdapter",
+    "EnvConfigAdapter",
     "ExperimentTracker",
     "algo_config_dict",
     "apply_env_nan_guard",

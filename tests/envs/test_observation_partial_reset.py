@@ -19,7 +19,7 @@ from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
 from unilab.base import registry
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
 from unilab.envs import ManagerBasedRlEnvCfg
 
@@ -38,7 +38,7 @@ def _make_env(config_root: str, task: str, backend: str, identity: str, num_envs
         owner = compose("config", overrides=[f"task={task}/{backend}"])
     cfg = registry.materialize_env_config(identity)
     assert isinstance(cfg, ManagerBasedRlEnvCfg)
-    override = BackendAdapter(
+    override = EnvConfigAdapter(
         owner, root_dir=_ROOT, algo_name=config_root
     ).build_task_env_cfg_override()
     apply_cfg_overrides(cfg, override)

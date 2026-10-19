@@ -4,7 +4,7 @@ import pytest
 
 
 def test_offpolicy_runtime_defaults_to_standard_sac_overrides() -> None:
-    from unilab.rl.runtime.offpolicy.runtime import OffPolicyRuntime
+    from unilab.rl.runtime.offpolicy.resolution import OffPolicyRuntime
 
     runtime = OffPolicyRuntime()
 
@@ -15,14 +15,17 @@ def test_offpolicy_runtime_defaults_to_standard_sac_overrides() -> None:
 
 
 def test_offpolicy_runtime_rejects_marker_without_resolver() -> None:
-    from unilab.rl.runtime.offpolicy.runtime import resolve_custom_offpolicy_runtime
+    from unilab.rl.runtime.offpolicy.resolution import resolve_custom_offpolicy_runtime
 
     with pytest.raises(ValueError, match="runtime_impl='custom_sac'.*runtime_resolver"):
         resolve_custom_offpolicy_runtime({"runtime_impl": "custom_sac"})
 
 
 def test_resolve_actor_adapter_modules_combines_config_and_runtime() -> None:
-    from unilab.rl.runtime.offpolicy.runtime import OffPolicyRuntime, resolve_actor_adapter_modules
+    from unilab.rl.runtime.offpolicy.resolution import (
+        OffPolicyRuntime,
+        resolve_actor_adapter_modules,
+    )
 
     runtime = OffPolicyRuntime(actor_adapter_modules=("pkg.adapters", "pkg.more"))
 
@@ -35,13 +38,13 @@ def test_resolve_actor_adapter_modules_combines_config_and_runtime() -> None:
 
 
 def test_resolve_actor_adapter_modules_defaults_to_empty() -> None:
-    from unilab.rl.runtime.offpolicy.runtime import resolve_actor_adapter_modules
+    from unilab.rl.runtime.offpolicy.resolution import resolve_actor_adapter_modules
 
     assert resolve_actor_adapter_modules({}, None) == ()
 
 
 def test_resolve_actor_adapter_modules_rejects_non_string_entries() -> None:
-    from unilab.rl.runtime.offpolicy.runtime import resolve_actor_adapter_modules
+    from unilab.rl.runtime.offpolicy.resolution import resolve_actor_adapter_modules
 
     with pytest.raises(ValueError, match="non-empty dotted module strings"):
         resolve_actor_adapter_modules({"actor_adapter_modules": [42]}, None)

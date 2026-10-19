@@ -14,7 +14,7 @@ from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
 
 from unilab.base import registry
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.utils.sim2sim import DENYLIST, CrossBackendIncompatibleError, resolve_sim2sim_config
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -24,7 +24,7 @@ def _owner(backend: str) -> tuple[Any, dict[str, Any]]:
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=str(ROOT / "src/unilab/conf/ppo"), version_base="1.3"):
         owner = compose("config", overrides=[f"task=go2_joystick_flat/{backend}"])
-    return owner, BackendAdapter(owner, root_dir=ROOT).build_task_env_cfg_override()
+    return owner, EnvConfigAdapter(owner, root_dir=ROOT).build_task_env_cfg_override()
 
 
 def test_go2_superdex_preserves_mujoco_policy_contract() -> None:

@@ -23,7 +23,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from unilab.rl.algos.common.compile import get_torch_compile_for_device
-from unilab.rl.algos.common.learner_boilerplate import (
+from unilab.rl.algos.common.learner_base import (
     WholeCycleLearnerMixin,
     fused_adam_supported,
     mps_bf16_autocast_supported,

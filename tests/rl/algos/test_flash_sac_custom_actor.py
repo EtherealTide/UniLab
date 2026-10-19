@@ -437,8 +437,8 @@ class TestPlayValidation:
             )
 
 
-def test_validate_flashsac_actor_requires_parameters() -> None:
-    from unilab.rl.algos.flash_sac.actor_spec import validate_flashsac_actor
+def test_validate_custom_actor_requires_parameters() -> None:
+    from unilab.rl.algos.flash_sac.actor_spec import validate_custom_actor
 
     class _Paramless(torch.nn.Module):
         action_transform_id = "noop"
@@ -464,4 +464,4 @@ def test_validate_flashsac_actor_requires_parameters() -> None:
             return {"persistent_exploration_scratch": 0}
 
     with pytest.raises(ValueError, match="no parameters"):
-        validate_flashsac_actor(_Paramless(), obs_dim=_OBS_DIM, action_dim=_ACTION_DIM)
+        validate_custom_actor(_Paramless(), obs_dim=_OBS_DIM, action_dim=_ACTION_DIM)

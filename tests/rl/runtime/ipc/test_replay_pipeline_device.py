@@ -397,8 +397,8 @@ class TestConstructionGuards:
         import unilab.rl.algos.sac.double_buffer as sac_builder
 
         builders = (
-            sac_builder.build_sac_double_buffer_runner,
-            flashsac_builder.build_flashsac_double_buffer_runner,
+            sac_builder.build_double_buffer_runner,
+            flashsac_builder.build_double_buffer_runner,
         )
         for builder in builders:
             with pytest.raises(

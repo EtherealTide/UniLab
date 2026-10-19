@@ -6,10 +6,10 @@ from typing import Any
 import pytest
 from rich.console import Console
 
-import unilab.rl.logging.common as common_logger_module
+import unilab.rl.logging.base as base_logger_module
 import unilab.rl.logging.offpolicy as offpolicy_logger_module
 import unilab.rl.logging.onpolicy as onpolicy_logger_module
-from unilab.rl.logging.common import BaseTrainingLogger
+from unilab.rl.logging.base import BaseTrainingLogger
 from unilab.rl.logging.offpolicy import OffPolicyLogger
 from unilab.rl.logging.onpolicy import OnPolicyLogger
 
@@ -505,7 +505,7 @@ def test_offpolicy_logger_training_timer_excludes_warmup_from_elapsed_and_eta(
     monkeypatch,
 ) -> None:
     now = 100.0
-    monkeypatch.setattr(common_logger_module.time, "time", lambda: now)
+    monkeypatch.setattr(base_logger_module.time, "time", lambda: now)
 
     logger = OffPolicyLogger(
         algo_name="SAC",

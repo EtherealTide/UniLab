@@ -1,4 +1,4 @@
-"""Tests for env-owned CPU block process confinement (``apply_env_cpu_runtime``).
+"""Tests for env-owned CPU block process confinement (``apply_cpu_confinement``).
 
 Multi-rank off-policy collectors pin their MuJoCo pool workers to a per-rank
 CPU block via ``EnvCfg.cpu_ids``; ``TorchEnv.__init__`` additionally confines the
@@ -23,7 +23,7 @@ import torch
 
 import unilab.base.cpu_runtime as cpu_runtime
 from unilab.base.base import EnvCfg
-from unilab.base.cpu_runtime import apply_env_cpu_runtime
+from unilab.base.cpu_runtime import apply_cpu_confinement
 from unilab.base.torch_env import TorchEnv, TorchEnvState
 
 
@@ -50,7 +50,7 @@ def test_none_is_noop(monkeypatch: pytest.MonkeyPatch):
     affinity_calls = _record_affinity(monkeypatch, {0, 1, 2, 3})
     confine_calls = _record_confine(monkeypatch)
 
-    apply_env_cpu_runtime(None)
+    apply_cpu_confinement(None)
 
     assert affinity_calls == []
     assert confine_calls == []
@@ -60,7 +60,7 @@ def test_applies_affinity_and_confines_existing_threads(monkeypatch: pytest.Monk
     affinity_calls = _record_affinity(monkeypatch, {0, 1, 2, 3})
     confine_calls = _record_confine(monkeypatch)
 
-    apply_env_cpu_runtime([1, 2])
+    apply_cpu_confinement([1, 2])
 
     assert affinity_calls == [(0, {1, 2})]
     assert confine_calls == [{1, 2}]
@@ -71,7 +71,7 @@ def test_unavailable_cpu_ids_fail_closed(monkeypatch: pytest.MonkeyPatch):
     confine_calls = _record_confine(monkeypatch)
 
     with pytest.raises(ValueError, match="not available"):
-        apply_env_cpu_runtime([1, 2])
+        apply_cpu_confinement([1, 2])
 
     assert affinity_calls == []
     assert confine_calls == []
@@ -83,7 +83,7 @@ def test_platform_without_affinity_warns(monkeypatch: pytest.MonkeyPatch):
     confine_calls = _record_confine(monkeypatch)
 
     with pytest.warns(UserWarning, match="sched_setaffinity"):
-        apply_env_cpu_runtime([0, 1])
+        apply_cpu_confinement([0, 1])
 
     assert confine_calls == []
 
@@ -157,7 +157,7 @@ def test_torch_env_init_applies_env_cpu_runtime(monkeypatch: pytest.MonkeyPatch,
     calls: list[list[int] | None] = []
     monkeypatch.setattr(
         torch_env_module,
-        "apply_env_cpu_runtime",
+        "apply_cpu_confinement",
         lambda value: calls.append(None if value is None else list(value)),
     )
 
@@ -184,10 +184,10 @@ import os
 # pool predates the env hook and must be confined retroactively.
 import numpy as np
 
-from unilab.base.cpu_runtime import apply_env_cpu_runtime
+from unilab.base.cpu_runtime import apply_cpu_confinement
 
 block = sorted(os.sched_getaffinity(0))[:2]
-apply_env_cpu_runtime(block)
+apply_cpu_confinement(block)
 np.zeros(256)  # keep the host BLAS import observable
 
 
