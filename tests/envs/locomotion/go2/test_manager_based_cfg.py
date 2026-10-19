@@ -269,8 +269,8 @@ def test_go2_flat_motrix_owner_uses_tensor_reset_events() -> None:
     registry.ensure_registries()
     _, env_cfg, _ = _materialize("appo", ("task=go2_joystick_flat/motrix",))
 
-    assert env_cfg.events["reset_scene_to_default"].func is mdp.reset_scene_to_default_tensor
-    assert env_cfg.events["reset_root_state_uniform"].func is mdp.reset_root_state_uniform_tensor
+    assert env_cfg.events["reset_scene_to_default"].func is mdp.skip_scene_reset
+    assert env_cfg.events["reset_root_state_uniform"].func is mdp.reset_root_state_uniform_fused
     assert env_cfg.events["pd_gains"] is None
 
 

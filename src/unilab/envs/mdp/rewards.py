@@ -1,7 +1,7 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681),
 # src/mjlab/envs/mdp/rewards.py and src/mjlab/tasks/velocity/mdp/rewards.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy and the base-owned entity facade; Apache-2.0.
+# Modified by UniLab for Torch and the base-owned entity facade; Apache-2.0.
 """Community-style reward terms for the Manager runtime."""
 
 from __future__ import annotations

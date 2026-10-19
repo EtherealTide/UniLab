@@ -19,8 +19,8 @@ LogFn = Callable[[str], None]
 
 
 @dataclass(frozen=True)
-class RslRlPlaybackConfig:
-    """Configuration needed to bootstrap an RSL-RL interactive playback session."""
+class PlaybackConfig:
+    """Configuration needed to bootstrap an interactive playback session."""
 
     task: str
     load_run: str
@@ -77,9 +77,9 @@ class PlayInteractiveArgs:
     sim: str = "mujoco"
 
 
-def build_playback_config(args: Any, *, num_envs: int = 1) -> RslRlPlaybackConfig:
-    """Build an :class:`RslRlPlaybackConfig` from a play-args-like object."""
-    return RslRlPlaybackConfig(
+def build_playback_config(args: Any, *, num_envs: int = 1) -> PlaybackConfig:
+    """Build an :class:`PlaybackConfig` from a play-args-like object."""
+    return PlaybackConfig(
         task=str(args.task),
         load_run=str(args.load_run),
         checkpoint=getattr(args, "checkpoint", None),
@@ -461,7 +461,7 @@ def available_backends_for_task(task_name: str) -> tuple[str, ...]:
 
 def create_rsl_rl_playback_session(
     *,
-    playback_cfg: RslRlPlaybackConfig,
+    playback_cfg: PlaybackConfig,
     env_factory: Callable[[int], Any],
     algo_config: dict[str, Any],
     root_dir: str | Path,
@@ -676,7 +676,7 @@ def _build_appo_actor(
 
 def create_appo_playback_session(
     *,
-    playback_cfg: RslRlPlaybackConfig,
+    playback_cfg: PlaybackConfig,
     cfg: Any,
     rl_cfg: dict[str, Any],
     env_factory: Callable[[int], Any],
@@ -989,7 +989,7 @@ def build_offpolicy_play_env_cfg_override(
 
 def create_sac_playback_session(
     *,
-    playback_cfg: RslRlPlaybackConfig,
+    playback_cfg: PlaybackConfig,
     cfg: Any,
     env_factory: Callable[[int], Any],
     root_dir: str | Path,
@@ -1168,7 +1168,7 @@ __all__ = [
     "PlayInteractiveArgs",
     "PlaybackControls",
     "PlaybackSession",
-    "RslRlPlaybackConfig",
+    "PlaybackConfig",
     "RslRlPlaybackSession",
     "available_backends_for_task",
     "build_play_backend_adapter",

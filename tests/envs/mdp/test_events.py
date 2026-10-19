@@ -179,6 +179,33 @@ def test_generic_event_randomization_fails_closed_without_rng() -> None:
         mdp.reset_root_state_uniform(env, reset_mask, {"x": (0.1, 0.2)})
 
 
+def test_physics_scene_gravity_diagnostic_names_public_term() -> None:
+    env, _backend, _transaction = _transaction_env()
+    manager = EventManager(
+        {
+            "randomize_physics_scene_gravity": EventTermCfg(
+                func=mdp.randomize_physics_scene_gravity,
+                mode="reset",
+                params={
+                    "gravity_distribution_params": (
+                        [0.0, 0.0, -10.0],
+                        [0.0, 0.0, -9.0],
+                    ),
+                    "operation": "abs",
+                },
+            )
+        },
+        env,
+    )
+    env.rng = None
+
+    with pytest.raises(
+        RuntimeError,
+        match="term 'randomize_physics_scene_gravity' requires",
+    ):
+        manager.apply_reset(torch.tensor([True, True, False]), global_env_step_count=0)
+
+
 def test_uniform_root_state_uses_env_rng_and_preserves_single_env_shape() -> None:
     pose_range = {"x": (-1.0, 1.0), "yaw": (-0.5, 0.5)}
     velocity_range = {"x": (-2.0, 2.0), "roll": (-0.25, 0.25)}
