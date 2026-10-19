@@ -64,13 +64,13 @@ PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完
 
 ### Changed / 变更
 
-- Raised the required `unisim-core` pin to 1.8.0 for the base, Motrix, and
+- Raised the required `unisim-core` pin to 1.8.2 for the base, Motrix, and
   SuperDex dependency profiles, and removed the issue-local editable UniSim
-  source override. The published release supplies the restored packed-reset and
-  Isaac semantic-boundary contracts.
-  基础、Motrix 与 SuperDex 依赖配置将 `unisim-core` 提升到 1.8.0，并移除
+  source override. The published release supplies the restored packed-reset,
+  Isaac semantic-boundary, and Motrix `wxyz` FrameQuat contracts.
+  基础、Motrix 与 SuperDex 依赖配置将 `unisim-core` 提升到 1.8.2，并移除
   issue 本地的 editable UniSim source override。已发布版本提供恢复后的
-  packed-reset 与 Isaac 语义边界契约。
+  packed-reset、Isaac 语义边界与 Motrix `wxyz` FrameQuat 契约。
 - `training.collector_tensor_device` now defaults to `auto`: MuJoCo
   HOST_BRIDGE training follows the learner device, so a CUDA learner receives
   CUDA Manager/TorchEnv carriers and CUDA inference transport without explicit
