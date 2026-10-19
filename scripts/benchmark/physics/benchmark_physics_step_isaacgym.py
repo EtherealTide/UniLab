@@ -12,10 +12,10 @@ Benchmarks Isaac Gym across go2/g1 locomotion robots and outputs JSON + plots
 aligned with scripts/benchmark/physics/benchmark_physics_step_mj_step.py.
 
 Run without creating any new environment:
-    export UNILAB_BENCHMARK_HOLOSOMA_DEPS=/home/admin1/.holosoma_deps
+    export UNILAB_BENCHMARK_HOLOSOMA_DEPS=<holosoma-deps-root>
     export UNILAB_BENCHMARK_HSGYM_PYTHON=$UNILAB_BENCHMARK_HOLOSOMA_DEPS/miniconda3/envs/hsgym/bin/python3.8
     export UNILAB_BENCHMARK_HSGYM_LIB=$UNILAB_BENCHMARK_HOLOSOMA_DEPS/miniconda3/envs/hsgym/lib
-    export UNILAB_BENCHMARK_MODELS_ROOT=/home/admin1/ws/models
+    export UNILAB_BENCHMARK_MODELS_ROOT=<urdf-models-root>
     PYTHONPATH=$UNILAB_BENCHMARK_HOLOSOMA_DEPS/isaacgym/python \
     LD_LIBRARY_PATH=$UNILAB_BENCHMARK_HSGYM_LIB \
     uv run --no-project $UNILAB_BENCHMARK_HSGYM_PYTHON \
@@ -45,44 +45,22 @@ import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# Machine-specific runtime paths. Each fallback below is the path on the original
-# benchmarking machine; override via environment variables when running elsewhere,
-# or edit the fallback strings directly if you prefer hard-coding for your machine.
+
+def _required_env_path(name: str) -> Path:
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(
+            f"Required environment variable {name} is not set. Configure the "
+            "IsaacGym benchmark runtime explicitly; machine-local defaults are not provided."
+        )
+    return Path(value).expanduser()
+
+
+# Runtime paths are resolved in main() from these environment variables:
 #   UNILAB_BENCHMARK_HOLOSOMA_DEPS   -> root of the holosoma deps tree (contains isaacgym/python)
 #   UNILAB_BENCHMARK_HSGYM_PYTHON    -> the python3.8 binary that ships with the hsgym conda env
 #   UNILAB_BENCHMARK_HSGYM_LIB       -> the hsgym conda env lib/ (LD_LIBRARY_PATH at launch)
 #   UNILAB_BENCHMARK_MODELS_ROOT     -> directory containing URDF model trees referenced by TASK_SPECS
-# Legacy UNILAB_ISAACGYM_* variables remain accepted as aliases for existing
-# local benchmark setups.
-DEFAULT_DEPS_ROOT = Path(
-    os.environ.get(
-        "UNILAB_BENCHMARK_HOLOSOMA_DEPS",
-        os.environ.get("UNILAB_ISAACGYM_DEPS_ROOT", "/home/admin1/.holosoma_deps"),
-    )
-).expanduser()
-DEFAULT_ISAACGYM_PYTHON = DEFAULT_DEPS_ROOT / "isaacgym" / "python"
-DEFAULT_HSGYM_PYTHON = Path(
-    os.environ.get(
-        "UNILAB_BENCHMARK_HSGYM_PYTHON",
-        DEFAULT_DEPS_ROOT / "miniconda3" / "envs" / "hsgym" / "bin" / "python3.8",
-    )
-).expanduser()
-DEFAULT_HSGYM_LIB = Path(
-    os.environ.get(
-        "UNILAB_BENCHMARK_HSGYM_LIB",
-        DEFAULT_DEPS_ROOT / "miniconda3" / "envs" / "hsgym" / "lib",
-    )
-).expanduser()
-DEFAULT_MODELS_ROOT = Path(
-    os.environ.get(
-        "UNILAB_BENCHMARK_MODELS_ROOT",
-        os.environ.get("UNILAB_ISAACGYM_MODELS_ROOT", "/home/admin1/ws/models"),
-    )
-).expanduser()
-
-if str(DEFAULT_ISAACGYM_PYTHON) not in sys.path:
-    sys.path.insert(0, str(DEFAULT_ISAACGYM_PYTHON))
-
 _ISAACGYM_IMPORT_ERROR: Exception | None = None
 
 try:
@@ -96,7 +74,6 @@ except Exception as _isaacgym_error:
 class TaskSpec:
     owner_task_id: str
     display_name: str
-    asset_root: Path
     asset_file: str
     initial_height: float
 
@@ -116,27 +93,15 @@ TASK_SPECS = {
     "go2_joystick_flat": TaskSpec(
         owner_task_id="go2_joystick_flat",
         display_name="go2_joystick_flat",
-        asset_root=DEFAULT_MODELS_ROOT,
         asset_file="go2_description/urdf/go2_description.urdf",
         initial_height=0.40,
     ),
     "g1_walk_flat": TaskSpec(
         owner_task_id="g1_walk_flat",
         display_name="g1_walk_flat",
-        asset_root=DEFAULT_MODELS_ROOT,
         asset_file="g1_description/g1_29dof_rev_1_0.urdf",
         initial_height=0.78,
     ),
-}
-TASK_ALIASES = {
-    "Go2JoystickFlat": "go2_joystick_flat",
-    "G1WalkFlat": "g1_walk_flat",
-    "task=go2_joystick_flat/isaacgym": "go2_joystick_flat",
-    "task=g1_walk_flat/isaacgym": "g1_walk_flat",
-    "go2_joystick_flat/isaacgym": "go2_joystick_flat",
-    "g1_walk_flat/isaacgym": "g1_walk_flat",
-    "go2": "go2_joystick_flat",
-    "g1": "g1_walk_flat",
 }
 DEFAULT_TASK_IDS = list(TASK_SPECS.keys())
 DEFAULT_BATCH_SIZES = [2**k for k in range(8, 15)]  # 256 .. 16384
@@ -169,16 +134,46 @@ def _display_backend(backend: str) -> str:
     return backend
 
 
-def _runtime_hint() -> str:
+def _runtime_hint(
+    deps_root: Path,
+    isaacgym_python: Path,
+    hsgym_python: Path,
+    hsgym_lib: Path,
+) -> str:
     return (
-        f"PYTHONPATH={DEFAULT_ISAACGYM_PYTHON} "
-        f"LD_LIBRARY_PATH={DEFAULT_HSGYM_LIB} "
-        f"uv run --no-project {DEFAULT_HSGYM_PYTHON} "
+        f"PYTHONPATH={isaacgym_python} "
+        f"LD_LIBRARY_PATH={hsgym_lib} "
+        f"uv run --no-project {hsgym_python} "
         "scripts/benchmark/physics/benchmark_physics_step_isaacgym.py"
     )
 
 
-def _require_isaacgym() -> None:
+def _resolve_runtime_paths() -> tuple[Path, Path, Path, Path]:
+    deps_root = _required_env_path("UNILAB_BENCHMARK_HOLOSOMA_DEPS")
+    isaacgym_python = deps_root / "isaacgym" / "python"
+    hsgym_python = Path(
+        os.environ.get(
+            "UNILAB_BENCHMARK_HSGYM_PYTHON",
+            deps_root / "miniconda3" / "envs" / "hsgym" / "bin" / "python3.8",
+        )
+    ).expanduser()
+    hsgym_lib = Path(
+        os.environ.get(
+            "UNILAB_BENCHMARK_HSGYM_LIB",
+            deps_root / "miniconda3" / "envs" / "hsgym" / "lib",
+        )
+    ).expanduser()
+    return deps_root, isaacgym_python, hsgym_python, hsgym_lib
+
+
+def _require_isaacgym(
+    deps_root: Path,
+    isaacgym_python: Path,
+    hsgym_python: Path,
+    hsgym_lib: Path,
+) -> None:
+    if str(isaacgym_python) not in sys.path:
+        sys.path.insert(0, str(isaacgym_python))
     if gymapi is not None:
         return
     detail = repr(_ISAACGYM_IMPORT_ERROR) if _ISAACGYM_IMPORT_ERROR is not None else "unknown error"
@@ -187,28 +182,17 @@ def _require_isaacgym() -> None:
         f"Import detail: {detail}\n"
         "Set UNILAB_BENCHMARK_HOLOSOMA_DEPS / UNILAB_BENCHMARK_HSGYM_* "
         "for your Isaac Gym runtime, then run:\n"
-        f"  {_runtime_hint()}"
+        f"  {_runtime_hint(deps_root, isaacgym_python, hsgym_python, hsgym_lib)}"
     )
 
 
 def _normalize_task_name(task_name: str) -> str:
     normalized = task_name.strip()
-    if normalized.startswith("task="):
-        normalized = normalized[len("task=") :]
-    if (
-        normalized.endswith("/mujoco")
-        or normalized.endswith("/motrix")
-        or normalized.endswith("/genesis")
-    ):
-        normalized = normalized.rsplit("/", 1)[0]
     if normalized in TASK_SPECS:
         return normalized
-    alias_target = TASK_ALIASES.get(normalized)
-    if alias_target is not None:
-        return alias_target
     raise ValueError(
         f"Unknown task '{task_name}'. Available task ids: {list(TASK_SPECS.keys())}. "
-        "Accepted aliases include legacy env names and task=<name>/isaacgym forms."
+        "Pass one of those owner task ids verbatim."
     )
 
 
@@ -421,6 +405,8 @@ def _plot_per_env_sps(
 
 
 def main():
+    deps_root, isaacgym_python, hsgym_python, hsgym_lib = _resolve_runtime_paths()
+    models_root_env = _required_env_path("UNILAB_BENCHMARK_MODELS_ROOT")
     parser = argparse.ArgumentParser(description="Benchmark Isaac Gym physics execution")
     parser.add_argument("--nstep", type=int, default=20)
     parser.add_argument("--nthread", type=int, default=8)
@@ -431,7 +417,7 @@ def main():
     parser.add_argument(
         "--models-root",
         type=str,
-        default=str(DEFAULT_MODELS_ROOT),
+        default=str(models_root_env),
         help="Root containing go2_description/g1_description URDFs",
     )
     parser.add_argument("--tasks", type=str, default=",".join(DEFAULT_TASK_IDS))
@@ -451,7 +437,7 @@ def main():
     )
     args = parser.parse_args()
 
-    _require_isaacgym()
+    _require_isaacgym(deps_root, isaacgym_python, hsgym_python, hsgym_lib)
 
     task_names = [_normalize_task_name(x) for x in args.tasks.split(",") if x.strip()]
     batch_sizes = [int(x.strip()) for x in args.batch_sizes.split(",") if x.strip()]
@@ -497,8 +483,8 @@ def main():
             "backends": sorted({r.backend for r in records}),
             "models_root": str(models_root),
             "asset_files": {task: _task_spec(task).asset_file for task in task_names},
-            "isaacgym_python_path": str(DEFAULT_ISAACGYM_PYTHON),
-            "hsgym_python": str(DEFAULT_HSGYM_PYTHON),
+            "isaacgym_python_path": str(isaacgym_python),
+            "hsgym_python": str(hsgym_python),
         },
         "results": [asdict(r) for r in records],
     }

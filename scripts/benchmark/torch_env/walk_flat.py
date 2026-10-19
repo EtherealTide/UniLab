@@ -142,11 +142,7 @@ class WalkFlatWorkload:
             "obs": b.zeros((n, OBS_DIM)),
             "critic": b.zeros((n, CRITIC_DIM)),
         }
-        self.final_obs = {
-            "obs": b.zeros((n, OBS_DIM)),
-            "critic": b.zeros((n, CRITIC_DIM)),
-        }
-        self.compat_final_obs = {
+        self.final_observation = {
             "obs": b.zeros((n, OBS_DIM)),
             "critic": b.zeros((n, CRITIC_DIM)),
         }
@@ -292,8 +288,7 @@ class WalkFlatWorkload:
         # Selected-row reset: steps reset + terminal-observation copy.
         self.steps[env_ids] = 0
         for key in ("obs", "critic"):
-            self.final_obs[key][env_ids] = self.obs[key][env_ids]
-            self.compat_final_obs[key][env_ids] = self.final_obs[key][env_ids]
+            self.final_observation[key][env_ids] = self.obs[key][env_ids]
 
         # build_reset_plan: qpos/qvel sampling.
         qpos = b.tile_batch(self.init_qpos, n)

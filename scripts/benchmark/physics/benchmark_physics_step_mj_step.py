@@ -6,7 +6,6 @@ Benchmarks mujoco.rollout with the configured thread count.
 
 Sweeps batch sizes across current locomotion owner task ids
 (go2_joystick_flat/g1_walk_flat).
-Legacy env names remain accepted as aliases.
 """
 
 from __future__ import annotations
