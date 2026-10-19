@@ -15,6 +15,9 @@ import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
+from unisim.backend.base import TensorExecution, validate_tensor_device
+from unisim.support import TensorPlatformProfile, get_tensor_platform_profiles
+
 from unilab.process_context import visible_cuda_entries
 
 # These backends consume an explicit integer device id while materializing
@@ -39,9 +42,6 @@ BACKEND_ENV_DEVICE_STR_FIELDS: dict[str, str] = {
     "newton": "newton_device",
 }
 
-# MuJoCo is the scoped HOST_BRIDGE backend whose training collector may explicitly
-# request accelerator Torch carriers across its packed boundary.
-_SIM_CARRIER_BACKENDS = {"mujoco"}
 _EXTERNAL_CUDA_IPC_BACKENDS = {"isaacgym", "isaacsim"}
 
 
@@ -58,6 +58,16 @@ def _normalize_backend(backend_type: str) -> str:
     if not isinstance(backend_type, str) or not backend_type.strip():
         raise ValueError(f"backend_type must be a non-empty string, got {backend_type!r}")
     return backend_type.strip().lower()
+
+
+def _host_bridge_profile(backend_type: str) -> TensorPlatformProfile | None:
+    """Return the public HOST_BRIDGE capability profile for a backend."""
+
+    backend = _normalize_backend(backend_type)
+    profile = get_tensor_platform_profiles().get(backend)
+    if profile is None or profile.execution is not TensorExecution.HOST_BRIDGE:
+        return None
+    return profile
 
 
 def _cuda_device_index(device: str | None) -> int | None:
@@ -174,10 +184,13 @@ def apply_sim_carrier_device_override(
 
     The input mapping is never mutated. ``training.sim_carrier_device`` is the
     explicit training contract: ``cpu`` remains on CPU and unindexed ``cuda`` is
-    resolved to the current device by the environment. ``auto`` follows the learner device: a
-    CUDA learner routes the rank-local (indexed) learner device string, while a CPU
-    or torch.mps learner keeps the CPU carrier. ``auto`` is a no-op for backends
-    outside the MuJoCo HOST_BRIDGE scope and when no learner device is known. The
+    resolved to the current device by the environment. ``auto`` follows the learner
+    device: a CUDA learner routes the rank-local (indexed) learner device string,
+    while a CPU learner routes CPU and a torch.mps learner retains the owner/default
+    CPU placement. Eligibility comes from the public SDK-free backend capability
+    inventory: only a ``HOST_BRIDGE`` backend may route this key, and the requested
+    device family/index must be in its declared ``torch_devices``. ``auto`` is a
+    no-op for backends outside that scope and when no learner device is known. The
     legacy ``learner_device`` argument is used only by callers without a composed
     training configuration.
     """
@@ -188,7 +201,7 @@ def apply_sim_carrier_device_override(
             "env.manager_torch_device was removed; use env.sim_carrier_device "
             "(accepted values: cpu, cuda, or cuda:<index>)"
         )
-    backend = _normalize_backend(backend_type)
+    profile = _host_bridge_profile(backend_type)
     if sim_carrier_device is not None:
         device = str(sim_carrier_device).strip().lower()
         if device not in {"auto", "cpu", "cuda"}:
@@ -196,49 +209,66 @@ def apply_sim_carrier_device_override(
                 "training.sim_carrier_device must be 'auto', 'cpu', or 'cuda'; "
                 f"got {sim_carrier_device!r}"
             )
-        if backend not in _SIM_CARRIER_BACKENDS:
+        if profile is None:
             if device == "cuda":
                 raise ValueError(
-                    "training.sim_carrier_device=cuda is supported only for "
-                    f"the MuJoCo HOST_BRIDGE backend; got {backend_type!r}"
+                    "training.sim_carrier_device=cuda requires a HOST_BRIDGE "
+                    "backend that declares CUDA Torch carriers; got "
+                    f"{backend_type!r}"
                 )
             return result
         if device == "auto":
-            return _apply_sim_carrier_device_auto(result, learner_device)
+            return _apply_sim_carrier_device_auto(result, learner_device, profile=profile)
+        try:
+            validate_tensor_device(
+                profile.torch_devices, device, label="training.sim_carrier_device"
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"training.sim_carrier_device={device!r} is not supported by "
+                f"backend {backend_type!r}: {exc}"
+            ) from exc
         result["sim_carrier_device"] = device
         return result
 
-    if backend not in _SIM_CARRIER_BACKENDS:
+    if profile is None:
         return result
-    if learner_device is None:
-        return result
-    device = str(learner_device).strip()
-    if not device or device.lower() == "cpu":
-        result["sim_carrier_device"] = "cpu"
-        return result
-    if device.split(":", 1)[0].lower() != "cuda":
-        return result
-    result["sim_carrier_device"] = device
-    return result
+    return _apply_sim_carrier_device_auto(result, learner_device, profile=profile)
 
 
 def _apply_sim_carrier_device_auto(
     result: dict[str, Any],
     learner_device: str | None,
+    *,
+    profile: TensorPlatformProfile,
 ) -> dict[str, Any]:
     """Resolve the ``auto`` carrier request from the learner device.
 
-    A CUDA learner routes its rank-local (indexed) device string verbatim; a CPU
-    or torch.mps learner keeps the CPU carrier. ``None`` leaves the mapping
-    unchanged for callers that do not know the learner device yet.
+    A CUDA learner routes its rank-local (indexed) device string verbatim, a CPU
+    learner routes CPU, and a torch.mps learner retains the existing CPU mapping.
+    ``None`` leaves the mapping unchanged for callers that do not know the learner
+    device yet.
     """
 
     if learner_device is None:
         return result
     device = str(learner_device).strip()
+    if device.lower() == "mps":
+        return result
+    if device.lower() == "cpu":
+        result["sim_carrier_device"] = "cpu"
+        return result
     if not device or device.split(":", 1)[0].lower() != "cuda":
         result["sim_carrier_device"] = "cpu"
         return result
+    try:
+        validate_tensor_device(profile.torch_devices, device, label="training.sim_carrier_device")
+    except ValueError as exc:
+        raise ValueError(
+            "training.sim_carrier_device=auto resolved to "
+            f"{device!r}, which is not supported by the backend capability "
+            f"declaration {tuple(profile.torch_devices)!r}"
+        ) from exc
     result["sim_carrier_device"] = device
     return result
 
