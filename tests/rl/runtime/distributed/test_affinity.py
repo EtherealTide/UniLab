@@ -8,7 +8,25 @@ from __future__ import annotations
 import pytest
 
 import unilab.rl.runtime.distributed.affinity as affinity
-from unilab.rl.runtime.distributed.affinity import resolve_collector_cpu_ids
+from unilab.rl.runtime.distributed.affinity import (
+    discover_physical_cpu_groups,
+    resolve_collector_cpu_ids,
+)
+
+
+def test_physical_cpu_topology_discovery_is_a_public_seam() -> None:
+    assert callable(discover_physical_cpu_groups)
+
+
+def test_resolve_collector_cpu_ids_uses_public_topology_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    groups = [[0, 4], [1, 5], [2, 6], [3, 7]]
+    monkeypatch.setattr(affinity.os, "sched_getaffinity", lambda _: set(range(8)), raising=False)
+    monkeypatch.setattr(affinity, "discover_physical_cpu_groups", lambda _: groups)
+
+    assert resolve_collector_cpu_ids(2, 0) == [0, 4, 1, 5]
+    assert resolve_collector_cpu_ids(2, 1) == [2, 6, 3, 7]
 
 
 def test_resolve_collector_cpu_ids_single_rank_returns_none():
@@ -26,9 +44,18 @@ def test_resolve_collector_cpu_ids_keeps_physical_siblings_together(
 ):
     groups = [[0, 4], [1, 5], [2, 6], [3, 7]]
     monkeypatch.setattr(affinity.os, "sched_getaffinity", lambda _: set(range(8)), raising=False)
-    monkeypatch.setattr(affinity, "_discover_physical_cpu_groups", lambda _: groups)
-    assert resolve_collector_cpu_ids(2, 0) == [0, 4, 1, 5]
-    assert resolve_collector_cpu_ids(2, 1) == [2, 6, 3, 7]
+    assert resolve_collector_cpu_ids(2, 0, physical_cpu_group_discovery=lambda _: groups) == [
+        0,
+        4,
+        1,
+        5,
+    ]
+    assert resolve_collector_cpu_ids(2, 1, physical_cpu_group_discovery=lambda _: groups) == [
+        2,
+        6,
+        3,
+        7,
+    ]
 
 
 def test_resolve_collector_cpu_ids_remainder_stays_unassigned():

@@ -38,14 +38,62 @@ class InferencePlacement:
     collector_tensor_native: bool
     staging_policy: str
 
-    def manifest(self) -> dict[str, str]:
+    @property
+    def transport_spec(self) -> "InferenceTransportSpec":
+        return inference_transport_spec(self.mode)
+
+    def manifest(self) -> dict[str, str | dict[str, str | bool]]:
         return {
             "mode": self.mode.value,
             "env_device": self.env_device,
             "ring_device": self.ring_device,
             "learner_device": self.learner_device,
             "staging_policy": self.staging_policy,
+            "transport_table": self.transport_spec.manifest(),
         }
+
+
+@dataclass(frozen=True)
+class InferenceTransportSpec:
+    """Placement-level topology contract for one inference transport mode."""
+
+    mode: InferenceTransport
+    ring_device_type: str
+    requires_tensor_native: bool
+    requires_rank_local_device_match: bool
+    publication_sync: str
+
+    def manifest(self) -> dict[str, str | bool]:
+        return {
+            "ring_device_type": self.ring_device_type,
+            "requires_tensor_native": self.requires_tensor_native,
+            "requires_rank_local_device_match": self.requires_rank_local_device_match,
+            "publication_sync": self.publication_sync,
+            "evidence": "policy",
+        }
+
+
+_INFERENCE_TRANSPORT_SPECS: dict[InferenceTransport, InferenceTransportSpec] = {
+    InferenceTransport.CUDA: InferenceTransportSpec(
+        mode=InferenceTransport.CUDA,
+        ring_device_type="cuda",
+        requires_tensor_native=True,
+        requires_rank_local_device_match=True,
+        publication_sync="cuda_ipc_events",
+    ),
+    InferenceTransport.CPU: InferenceTransportSpec(
+        mode=InferenceTransport.CPU,
+        ring_device_type="cpu",
+        requires_tensor_native=False,
+        requires_rank_local_device_match=False,
+        publication_sync="cpu_synchronous",
+    ),
+}
+
+
+def inference_transport_spec(mode: InferenceTransport) -> InferenceTransportSpec:
+    """Return the authoritative topology table entry for ``mode``."""
+    return _INFERENCE_TRANSPORT_SPECS[mode]
 
 
 def _canonical_device(value: str, *, label: str, algo_name: str) -> str:
@@ -72,10 +120,12 @@ def _device_requires_cuda(device: str) -> bool:
 def cpu_ring_staging_policy(learner_device: str) -> str:
     """Return the CPU-ring staging policy for one canonical learner device."""
     device_type = torch.device(learner_device).type
-    if device_type == "cpu":
-        return "cpu_no_device_transfer"
-    if device_type == "cuda":
-        return "cpu_ring_explicit_learner_actor_h2d_action_d2h"
+    policies = {
+        "cpu": "cpu_no_device_transfer",
+        "cuda": "cpu_ring_explicit_learner_actor_h2d_action_d2h",
+    }
+    if device_type in policies:
+        return policies[device_type]
     # Other accelerators (e.g. torch.mps (Metal Performance Shaders)) still
     # cross devices at the CPU-ring copy_ boundary.
     return "cpu_ring_explicit_learner_device_copy"

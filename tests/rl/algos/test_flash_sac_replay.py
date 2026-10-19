@@ -202,7 +202,7 @@ def test_flashsac_builder_can_select_age_biased_replay(
     import unilab.rl.algos.flash_sac.double_buffer as module
 
     monkeypatch.setattr(module, "require_offpolicy_replay_device", lambda device: device)
-    monkeypatch.setattr(module, "apply_training_seed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "apply_worker_seed", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "FlashSACLearner", _FakeLearner)
     monkeypatch.setattr(module, "DoubleBufferOffPolicyRunner", _FakeRunner)
 

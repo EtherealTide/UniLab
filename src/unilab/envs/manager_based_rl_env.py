@@ -12,7 +12,6 @@ import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from types import SimpleNamespace
 from typing import Any, cast
 
 import gymnasium as gym
@@ -74,6 +73,7 @@ from unilab.managers import (
     TorchManagerRng,
 )
 from unilab.managers.scene_entity_config import SceneEntityCfg
+from unilab.rl.contracts.env import EnvAlgoCapabilities
 
 
 def _finite_real(value: Any) -> bool:
@@ -1419,8 +1419,18 @@ class ManagerBasedRlEnv(TorchEnv):
 
     @property
     def algo_capabilities(self) -> Any:
-        """Expose cold-path reward component metadata to algorithm owners."""
-        return SimpleNamespace(reward_component_names=self.reward_manager.step_reward_names)
+        """Expose cold-path metadata to algorithm owners.
+
+        Per-dimension action bounds and action-order joint names are reserved
+        fields. They intentionally stay unset until an algorithm consumes them;
+        the Manager-Based action owner, not the RL runtime, owns their source.
+        """
+        return EnvAlgoCapabilities(
+            action_low=None,
+            action_high=None,
+            joint_names=None,
+            reward_component_names=self.reward_manager.step_reward_names,
+        )
 
     def _publish_reward_components(self, state: TorchEnvState) -> None:
         """Publish fixed-width reward components for tensor-native consumers."""

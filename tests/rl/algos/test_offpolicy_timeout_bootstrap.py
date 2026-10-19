@@ -131,7 +131,7 @@ def _collect_one_step(monkeypatch: pytest.MonkeyPatch) -> tuple[ReplayBuffer, to
         return True
 
     monkeypatch.setattr(worker_module, "apply_torch_thread_runtime", lambda *a, **kw: None)
-    monkeypatch.setattr(worker_module, "apply_training_seed", lambda *a, **kw: None)
+    monkeypatch.setattr(worker_module, "apply_worker_seed", lambda *a, **kw: None)
     monkeypatch.setattr(worker_module, "_wait_for_inference_tick", serve_learner_action)
     worker_module._run_collector(
         stop_event=stop_event,

@@ -16,6 +16,7 @@ class ReplayTransferBackend(Protocol):
     host_memory_kind: str
     host_pinned: bool
     direct_pinned_shared: bool
+    supports_pinned: bool
     supports_timing_events: bool
 
     def register_host_slots(self, slots: list[torch.Tensor]) -> None: ...

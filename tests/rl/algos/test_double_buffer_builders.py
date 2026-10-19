@@ -181,7 +181,7 @@ def _patch_flashsac_host_gates(monkeypatch: pytest.MonkeyPatch, module: Any) -> 
         lambda device: device,
         raising=False,
     )
-    monkeypatch.setattr(module, "apply_training_seed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "apply_worker_seed", lambda *args, **kwargs: None)
 
 
 @pytest.mark.parametrize("with_injection", [False, True])
@@ -323,10 +323,26 @@ def test_sac_builder_forwards_custom_runtime_preparation_hook(
 
     assert runner.kwargs["learner_prepare_hook"] is prepare_hook
 
-    cfg = _sac_cfg()
+
+@pytest.mark.parametrize("algo", ["sac", "flashsac"])
+def test_double_buffer_builders_reject_removed_inference_request_timeout(
+    monkeypatch: pytest.MonkeyPatch, algo: str
+) -> None:
+    if algo == "sac":
+        import unilab.rl.algos.sac.double_buffer as module
+
+        build = module.build_sac_double_buffer_runner
+        cfg = _sac_cfg()
+    else:
+        import unilab.rl.algos.flash_sac.double_buffer as module
+
+        build = module.build_flashsac_double_buffer_runner
+        cfg = _flashsac_cfg()
+        _patch_flashsac_host_gates(monkeypatch, module)
+
     cfg.training.inference_request_timeout_sec = 17.0
     with pytest.raises(ValueError, match="inference_request_timeout_sec was removed"):
-        module.build_sac_double_buffer_runner(
+        build(
             cfg,
             env_factory=_fake_env_factory,
             env_cfg_override=None,

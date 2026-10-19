@@ -27,6 +27,12 @@ from unilab.rl.logging.runtime_manifest_schema import (
     validate_runtime_manifest,
 )
 from unilab.rl.runtime.async_runner import _SPAWN_CTX
+from unilab.rl.runtime.device import (
+    DeviceTimer,
+    device_runtime_capabilities,
+    make_device_timer,
+    sync_device,
+)
 from unilab.rl.runtime.ipc.inference_ring import (
     SharedInferenceRing,
     estimate_inference_ring_bytes,
@@ -77,6 +83,15 @@ _ALGO_DISPLAY_NAMES = {
     "sac": "SAC",
     "flashsac": "FlashSAC",
 }
+
+
+def reject_removed_inference_request_timeout(training: Mapping[str, Any]) -> None:
+    if "inference_request_timeout_sec" in training:
+        raise ValueError(
+            "training.inference_request_timeout_sec was removed; off-policy "
+            "coordination is liveness/phase-aware. Remove it from owner YAML."
+        )
+
 
 _DP_METRIC_PREFIX = "metric::"
 _DP_REWARD_COMPONENT_PREFIX = "reward_component::"
@@ -353,6 +368,9 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             "learner_actor_reused": True,
             "logger_owner_rank": 0,
             "logger_cross_rank_aggregation": self.dp_sync is not None,
+            "learner_performance_tier": self._learner_performance_tier_manifest(),
+            "learner_amp_policy": getattr(self.learner, "amp_policy", None),
+            "device_runtime_capabilities": device_runtime_capabilities(self.device).manifest(),
             "cuda_graph": self._cuda_graph_runtime_manifest(),
         }
         if self.dp_sync is not None:
@@ -464,6 +482,10 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             )
         return manifest
 
+    def _learner_performance_tier_manifest(self) -> dict[str, object] | None:
+        tier = getattr(self.learner, "_performance_tier", None)
+        return tier.manifest() if tier is not None else None
+
     def _dp_initial_sync_tensors(self) -> dict[str, torch.Tensor]:
         """Live model-state references broadcast once before collection."""
         initial_tensors = getattr(self.learner, "dp_initial_sync_tensors", None)
@@ -524,9 +546,9 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                         actor_context,
                     )
             if torch.device(self.device).type == "cuda":
-                torch.cuda.synchronize(self.device)
+                sync_device(self.device)
             if actions.device.type == "cuda":
-                torch.cuda.synchronize(actions.device)
+                sync_device(actions.device)
         finally:
             restore_rng_state(rng_state)
 
@@ -589,19 +611,12 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         return int(value)
 
     def _prepare_inference_timing_events(self) -> None:
-        """Allocate the two CUDA timing events accounted for by the startup budget."""
-        if torch.device(self.device).type != "cuda":
-            return
+        """Allocate the validated inference forward timer."""
         try:
-            self._inference_forward_cuda_events = (
-                torch.cuda.Event(enable_timing=True),
-                torch.cuda.Event(enable_timing=True),
-            )
+            self._inference_forward_timer = make_device_timer(self.device)
         except BaseException:
-            # CUDA event wrappers do not expose an explicit close method. Remove
-            # all local references so a partial allocation cannot survive startup.
-            if hasattr(self, "_inference_forward_cuda_events"):
-                delattr(self, "_inference_forward_cuda_events")
+            if hasattr(self, "_inference_forward_timer"):
+                delattr(self, "_inference_forward_timer")
             raise
 
     def _shutdown_collector(self) -> None:
@@ -1075,7 +1090,6 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         actions_host: torch.Tensor | None,
         trace_recorder: TraceRecorder | None,
     ) -> dict[str, float]:
-        device = torch.device(self.device)
         h2d_start_ns = time.perf_counter_ns()
         inference_slot.copy_observation_to(
             tick_id=tick_id,
@@ -1100,13 +1114,11 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             actor_context = actor_adapter.actor_context_from_obs(actor_obs_device, self.obs_dim)
         if self.obs_normalization:
             actor_obs = self.learner.obs_normalizer(actor_obs, update=False)
+        forward_timer: DeviceTimer | None = getattr(self, "_inference_forward_timer", None)
+        if forward_timer is None:
+            raise RuntimeError("Inference forward timer was not prepared at startup")
+        forward_timer.start()
         forward_start_ns = time.perf_counter_ns()
-        cuda_forward_events: tuple[torch.cuda.Event, torch.cuda.Event] | None = None
-        if device.type == "cuda":
-            cuda_forward_events = getattr(self, "_inference_forward_cuda_events", None)
-            if cuda_forward_events is None:
-                raise RuntimeError("CUDA inference timing events were not prepared at startup")
-            cuda_forward_events[0].record(torch.cuda.current_stream(device))
         with torch.no_grad():
             actions_device = sample_offpolicy_actions(
                 actor=self.learner.actor,
@@ -1115,15 +1127,8 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                 prev_dones_torch=actor_dones_device,
                 priv_info_torch=actor_context,
             )
-        if cuda_forward_events is not None:
-            cuda_forward_events[1].record(torch.cuda.current_stream(device))
-        elif device.type == "mps":
-            # torch.mps (Metal Performance Shaders) has no public timing-event
-            # equivalent.  Preserve the existing measurement boundary there;
-            # CUDA relies on the following blocking D2H copy and reads elapsed
-            # event time after it.
-            torch.mps.synchronize()
         forward_end_ns = time.perf_counter_ns()
+        forward_timer.stop()
 
         d2h_start_ns = time.perf_counter_ns()
         # CPU transport owns exactly one actor->host action D2H boundary into a
@@ -1142,12 +1147,9 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             epoch=self.inference_epoch,
         )
         d2h_end_ns = time.perf_counter_ns()
-        inference_forward_time = (forward_end_ns - forward_start_ns) / 1e9
-        if cuda_forward_events is not None:
-            cuda_forward_events[1].synchronize()
-            inference_forward_time = (
-                cuda_forward_events[0].elapsed_time(cuda_forward_events[1]) / 1e3
-            )
+        # CUDA event elapsed-time reads synchronize after publication; MPS/CPU
+        # wall timers synchronize only if the platform requires it.
+        inference_forward_time = forward_timer.elapsed_s()
         timings = {
             "inference_h2d_time": (h2d_end_ns - h2d_start_ns) / 1e9,
             "inference_forward_time": inference_forward_time,
@@ -1373,6 +1375,18 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         except BaseException as diagnostics_exc:
             self._shutdown_recorder.record_cleanup_error(diagnostics_exc)
 
+    def _synchronize_after_update_phase(
+        self, device: torch.device, *, phase_ordered_metrics: bool
+    ) -> None:
+        """Apply the validated platform policy after a learner update phase."""
+        if device.type == "cuda":
+            sync_device(device, stream=True)
+        elif device.type == "mps" and not phase_ordered_metrics:
+            # torch.mps preserves same-queue ordering, and phase-ordered metric
+            # reads already synchronize the host. A global sync would only
+            # drain unrelated queued work and recreate a GPU idle gap.
+            sync_device(device)
+
     def _learn_impl(
         self,
         max_iterations: int = 1500,
@@ -1484,6 +1498,12 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                 "allowed_bytes": int(cuda_free_bytes * 0.8),
             }
             self._prepare_inference_timing_events()
+            self.runtime_manifest["inference_timing"] = {
+                "timer_kind": "cuda_events",
+                "has_timing_events": True,
+                "persistent_timing_event_count": 2,
+                "classification": "capability",
+            }
 
         self._shutdown_recorder.set_phase(owner="learner", phase="startup/replay_resources")
         # --- bounded collector ingress (the complete ring lives on device) ---
@@ -1602,9 +1622,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         self.runtime_manifest.update(
             {
                 "inference_slot_bytes": inference_slot.nbytes,
-                "inference_publication_sync": (
-                    "cuda_ipc_events" if inference_slot.device.type == "cuda" else "cpu_synchronous"
-                ),
+                "inference_publication_sync": self.inference_placement.transport_spec.publication_sync,
                 "collector_metrics_interval": self.collector_metrics_interval,
             }
         )
@@ -2130,17 +2148,10 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                                     iter_metrics[key].append(value)
 
                     replay_pipeline.after_tick()
-                    device = torch.device(self.device)
-                    if device.type == "cuda":
-                        torch.cuda.current_stream(device).synchronize()
-                    elif device.type == "mps" and not phase_ordered_metrics:
-                        torch.mps.synchronize()
-                    # torch.mps (Metal Performance Shaders) preserves
-                    # same-queue ordering: the next inference's action D2H
-                    # waits behind optimizer/target updates, while replay
-                    # events govern ingress visibility and slot reuse.
-                    # A global synchronize here would only drain unrelated
-                    # queued work and recreate a per-iteration GPU idle gap.
+                    self._synchronize_after_update_phase(
+                        torch.device(self.device),
+                        phase_ordered_metrics=phase_ordered_metrics,
+                    )
                     if trace_recorder:
                         trace_recorder.add_slice(
                             "learner/update_phase",

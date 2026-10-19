@@ -26,7 +26,7 @@ from unilab.rl.runtime.offpolicy.coordination import (
 )
 from unilab.rl.runtime.offpolicy.tensor_metrics import TensorCollectorMetrics, TensorMetricFlush
 from unilab.rl.runtime.offpolicy.thread_budget import apply_torch_thread_runtime
-from unilab.rl.runtime.seed import apply_training_seed
+from unilab.rl.runtime.seed import apply_worker_seed
 
 # Exclusive phases for one collector loop iteration (one vectorized env.step).
 # Every key is recorded once per iteration so the reported averages share one
@@ -358,7 +358,7 @@ def _run_collector(
     # CUDA obs into the ring (a deterministic copy), and mjwarp device
     # randomness is Warp-owned via the backend device binding above — so
     # skipping torch/CUDA seeding here remains correct.
-    apply_training_seed(seed, torch_runtime=False, cuda=False)
+    apply_worker_seed(seed, torch_runtime=False, cuda=False)
 
     trace_recorder = None
     if trace_enabled:
@@ -392,11 +392,10 @@ def _run_collector(
             "inference transport is an explicit worker argument"
         )
     if nan_guard_cfg is not None and nan_guard_cfg.enabled:
-        from unilab.rl.runtime.nan_guard import NanGuard
-
-        guard_factory = NanGuard if nan_guard_factory is None else nan_guard_factory
+        if nan_guard_factory is None:
+            raise ValueError("collector diagnostics require an injected nan_guard_factory")
         env.set_nan_guard(
-            guard_factory(
+            nan_guard_factory(
                 nan_guard_cfg,
                 num_envs=env.num_envs,
                 supports_state_playback=env.play_capabilities.supports_physics_state_playback,

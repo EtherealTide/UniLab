@@ -1322,7 +1322,12 @@ def test_runner_constructs_only_bounded_device_replay(
     assert budget["ipc_event_count"] == 0
     assert budget["timing_event_count"] == 2
     assert budget["cuda_event_count"] == 2
-    assert len(runner._inference_forward_cuda_events) == 2
+    assert runner.runtime_manifest["inference_timing"] == {
+        "timer_kind": "cuda_events",
+        "has_timing_events": True,
+        "persistent_timing_event_count": 2,
+        "classification": "capability",
+    }
     assert not any(key.startswith("collector_pack") for key in collector_kwargs)
     assert "weight_sync_name" not in collector_kwargs
     assert "weight_param_shapes" not in collector_kwargs
@@ -1426,6 +1431,7 @@ def test_mujoco_cuda_carrier_resolves_cuda_tensor_ring_by_default(
         "ring_device": learner_device,
         "learner_device": learner_device,
         "staging_policy": "cuda_no_host_boundary",
+        "transport_table": placement.transport_spec.manifest(),
     }
     assert _FakePipeline.close_calls == 1
 
@@ -1549,6 +1555,7 @@ def test_mps_learner_serves_cpu_ring_inference_with_device_copy(
     runner.algo_type = "dummy_mps_sac"
     runner.learner = SimpleNamespace(actor=actor)
     runner.inference_epoch = 0
+    runner._inference_forward_timer = device_runner_module.make_device_timer("cpu")
     runner.inference_placement = InferencePlacement(
         mode=InferenceTransport.CPU,
         env_device="cpu",
@@ -1723,6 +1730,15 @@ def test_runner_collector_resources_follow_tensor_runtime_capability(
             if collector_tensor_native
             else "cpu_ring_explicit_learner_actor_h2d_action_d2h"
         ),
+        "transport_table": {
+            "ring_device_type": "cuda" if collector_tensor_native else "cpu",
+            "requires_tensor_native": collector_tensor_native,
+            "requires_rank_local_device_match": collector_tensor_native,
+            "publication_sync": (
+                "cuda_ipc_events" if collector_tensor_native else "cpu_synchronous"
+            ),
+            "evidence": "policy",
+        },
     }
     env_override = collector_kwargs["env_cfg_override"]
     assert env_override is None or not {
@@ -2383,6 +2399,53 @@ def test_runtime_manifest_reports_inductor_cuda_graph_path(
     }
 
 
+def test_runtime_manifest_reports_device_capability_and_learner_policy_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unilab.rl.algos.common.performance import resolve_learner_performance_tier
+
+    learner = _Learner()
+    learner._performance_tier = resolve_learner_performance_tier("cpu")
+    learner.amp_policy = {"enabled": False, "use_amp": False, "evidence": "policy"}
+    runner = _make_device_runner(monkeypatch, learner)
+
+    assert runner.runtime_manifest["learner_performance_tier"] == {
+        "name": "cpu_compatibility",
+        "device_type": "cpu",
+        "vendor_runtime": "default",
+        "supports_whole_cycle_graph": False,
+        "requires_inductor": False,
+        "supports_capturable_optimizer": False,
+        "evidence": "policy",
+    }
+    assert runner.runtime_manifest["learner_amp_policy"]["enabled"] is False
+    assert runner.runtime_manifest["learner_amp_policy"]["use_amp"] is False
+    capabilities = runner.runtime_manifest["device_runtime_capabilities"]
+    assert capabilities["sync_api"] == "torch.cuda.synchronize"
+    assert capabilities["has_timing_events"] is True
+
+
+def test_update_phase_sync_preserves_mps_phase_ordered_skip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _make_device_runner(monkeypatch)
+    calls: list[tuple[str, bool]] = []
+
+    def fake_sync(device, *, stream: bool = False) -> None:
+        del device
+        calls.append(("cuda_stream" if stream else "device", stream))
+
+    monkeypatch.setattr(device_runner_module, "sync_device", fake_sync)
+
+    runner._synchronize_after_update_phase(torch.device("cpu"), phase_ordered_metrics=False)
+    runner._synchronize_after_update_phase(torch.device("mps"), phase_ordered_metrics=True)
+    assert calls == []
+
+    runner._synchronize_after_update_phase(torch.device("mps"), phase_ordered_metrics=False)
+    runner._synchronize_after_update_phase(torch.device("cuda"), phase_ordered_metrics=True)
+    assert calls == [("device", False), ("cuda_stream", True)]
+
+
 def test_runtime_manifest_reports_mps_torch_compile_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2525,6 +2588,7 @@ def test_learner_inference_matches_existing_actor_exploration(algo_type: str) ->
     runner.algo_type = algo_type
     runner.learner = SimpleNamespace(actor=actor)
     runner.inference_epoch = 0
+    runner._inference_forward_timer = device_runner_module.make_device_timer("cpu")
     runner.inference_placement = InferencePlacement(
         mode=InferenceTransport.CPU,
         env_device="cpu",
@@ -2598,6 +2662,7 @@ def test_adapter_learner_inference_uses_actor_context(
     runner.algo_type = "dummy_priv_sac"
     runner.learner = SimpleNamespace(actor=actor)
     runner.inference_epoch = 0
+    runner._inference_forward_timer = device_runner_module.make_device_timer("cpu")
     runner.inference_placement = InferencePlacement(
         mode=InferenceTransport.CPU,
         env_device="cpu",
