@@ -3,7 +3,7 @@
 Faithful xp-port of the NumPy computation in the collector-timed sections of
 `uv run train --algo sac --task g1_walk_flat --sim mujoco` (num_envs=2048):
 
-- the legacy `G1WalkEnv.update_state` computation (pre-Manager-Based migration;
+- the retired `G1WalkEnv.update_state` computation (pre-Manager-Based migration;
   src/unilab/tasks/locomotion/g1/manager_terms.py now owns the same math):
   termination, `_compute_reward` (9 active terms under the SAC scales incl.
   per-term logging every 4 steps), `_compute_obs` (noise + concat, walk

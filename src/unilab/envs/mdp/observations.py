@@ -243,7 +243,7 @@ def projected_gravity(
 # Per-env constant IMU mounting-misalignment quaternions, keyed by env instance
 # and max_angle_rad. Sampled once per (env, angle) at term construction and
 # shared by every misaligned term of that env, so the gyroscope and gravity
-# observations see the SAME mounting error (legacy microduck recipe,
+# observations see the SAME mounting error (upstream microduck recipe:
 # microduck_rl/src/mjlab_microduck/tasks/mdp.py:3618-3660). Weak keys keep the
 # cache from outliving the env.
 _IMU_MISALIGNMENT_QUATS: weakref.WeakKeyDictionary[ManagerBasedRlEnv, dict[float, torch.Tensor]] = (
@@ -258,7 +258,8 @@ def _imu_misalignment_quat(env: ManagerBasedRlEnv, max_angle_rad: float) -> torc
     a rotation about an axis uniform on the sphere with magnitude uniform in
     [0, max_angle_rad]. Sampled from ``env.torch_rng`` on first use and cached for the
     whole run (a startup-style systematic per-robot bias, not per-step noise and
-    not resampled on episode reset), matching the legacy semantics.
+    not resampled on episode reset) — the behavior pinned from the upstream
+    microduck reference above.
 
     Returns (num_envs, 4) unit quaternions (w, x, y, z) in float32.
     """

@@ -189,7 +189,7 @@ def test_action_manager_rejects_declared_numpy_action_terms(
 ) -> None:
     monkeypatch.setattr(DummyAction, "uses_tensor_actions", False)
     with pytest.raises(TypeError, match="requires tensor action terms"):
-        ActionManager({"legacy": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
+        ActionManager({"non_tensor": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
 
 
 def test_action_manager_rejects_non_tensor_raw_action_carrier(
@@ -204,7 +204,7 @@ def test_action_manager_rejects_non_tensor_raw_action_carrier(
     monkeypatch.setattr(DummyAction, "raw_action", numpy_raw_action)
     try:
         with pytest.raises(TypeError, match="requires tensor raw actions"):
-            ActionManager({"legacy": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
+            ActionManager({"non_tensor": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
     finally:
         monkeypatch.setattr(DummyAction, "raw_action", original_raw_action)
 

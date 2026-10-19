@@ -53,9 +53,8 @@ class RewardManager(ManagerBase):
           the unscaled reward rate (raw_value * weight)
 
       ``step_reward_extras()`` exposes the latest ``compute()`` call's per-term
-      means as ``reward/<term>`` log entries (weighted, pre-dt rate), matching
-      the legacy envs' per-step reward log contract consumed by training
-      runners.
+      means as ``reward/<term>`` log entries (weighted, pre-dt rate). This is
+      the per-step reward log contract consumed by training runners.
     """
 
     _env: ManagerBasedRlEnv
@@ -246,8 +245,8 @@ class RewardManager(ManagerBase):
         """Per-term log entries of the latest ``compute()`` call.
 
         Returns ``reward/<term>`` -> mean weighted reward rate across envs
-        (raw_value * weight, before dt scaling), mirroring the legacy envs'
-        per-step reward log format.
+        (raw_value * weight, before dt scaling) — the per-step reward log
+        format consumed by training runners.
         """
         if not self._term_names:
             return {}

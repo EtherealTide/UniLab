@@ -160,7 +160,7 @@ def test_rng_state_api_table_dispatches_initialized_cuda(
     ],
     ids=["sac", "flashsac", "flashsac-unnormalized"],
 )
-def test_compatibility_warmup_restores_complete_learner_state(learner: Any) -> None:
+def test_warmup_restores_complete_learner_state(learner: Any) -> None:
     torch.manual_seed(321)
     random.seed(321)
     learner._optimizer_found_inf.zero_()
@@ -274,7 +274,7 @@ def test_sac_whole_cycle_warmup_captures_before_collection(
     ],
     ids=["sac", "flashsac"],
 )
-def test_compatibility_warmup_exercises_compiled_update_paths(
+def test_warmup_exercises_compiled_update_paths(
     monkeypatch: pytest.MonkeyPatch,
     module_name: str,
     learner_cls: type[Any],

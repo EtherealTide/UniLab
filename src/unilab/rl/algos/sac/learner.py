@@ -475,8 +475,9 @@ class SACLearner(WholeCycleLearnerMixin):
         compile_fn = get_torch_compile_for_device(self.device, warn=not self._nvidia_cuda)
         if self._nvidia_cuda and compile_fn is None:
             raise RuntimeError("SAC requires CUDA Inductor/Triton on NVIDIA CUDA")
-        # NVIDIA CUDA always uses the performance path; the legacy opt-out is
-        # retained only for ROCm/HIP, MPS, CPU, and other compatibility devices.
+        # NVIDIA CUDA always runs the validated performance tier; the explicit
+        # ``use_compile=False`` opt-out applies only on the compatibility tiers
+        # (ROCm/HIP, MPS, CPU, XPU).
         self.use_compile = self._nvidia_cuda or (bool(use_compile) and compile_fn is not None)
         self._validate_performance_paths(self._device_type, self.use_compile, self.use_amp)
         self.compile_backend = (
@@ -642,12 +643,12 @@ class SACLearner(WholeCycleLearnerMixin):
     ) -> None:
         self._select_mps_training_methods(large_batch, batch_size=batch_size)
 
-    def _clear_compatibility_warmup_state(self) -> None:
-        super()._clear_compatibility_warmup_state()
+    def _clear_warmup_pending_state(self) -> None:
+        super()._clear_warmup_pending_state()
         self._pending_update_finite_values = None
 
-    def _synchronize_compatibility_warmup(self) -> None:
-        return super()._synchronize_compatibility_warmup()
+    def _synchronize_after_warmup(self) -> None:
+        return super()._synchronize_after_warmup()
 
     def _whole_cycle_optimizers(self) -> tuple[optim.Optimizer, ...]:
         return (self.q_optimizer, self.actor_optimizer, self.alpha_optimizer)
@@ -705,8 +706,8 @@ class SACLearner(WholeCycleLearnerMixin):
         """Piggyback loss validity on the existing CUDA gradient collective.
 
         The sentinel is not an optimizer parameter or checkpoint field. Its
-        stable gradient address is reused by graph replay. Compatibility and
-        GradScaler paths retain their existing synchronization behavior.
+        stable gradient address is reused by graph replay. Compatibility-tier
+        and GradScaler paths retain their existing synchronization behavior.
         """
         if (
             self._gradient_sync is None
@@ -1177,7 +1178,7 @@ class SACLearner(WholeCycleLearnerMixin):
         if not self.use_update_cycle:
             raise RuntimeError(
                 "SAC update_cycle() requires the NVIDIA CUDA whole-cycle path; "
-                "use the per-update methods for compatibility devices"
+                "use the per-update methods on the compatibility performance tiers"
             )
         self._ensure_update_cycle_graph(
             large_batch,

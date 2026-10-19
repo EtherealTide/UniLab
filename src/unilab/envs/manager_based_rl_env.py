@@ -1408,7 +1408,7 @@ class ManagerBasedRlEnv(TorchEnv):
         return self.observation_manager.compute(update_history=True)
 
     def publish_reward_log(self) -> dict[str, float]:
-        """Publish latest device reward means through the legacy log contract."""
+        """Publish the latest device reward means as ``reward/<term>`` entries."""
         if not self._reward_log_names:
             return {}
         means = self._reward_log_means.detach().cpu().tolist()
