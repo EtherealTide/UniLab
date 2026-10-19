@@ -28,9 +28,10 @@ def _tiny_case() -> bench.BenchmarkCase:
 
 
 def test_sac_default_case_uses_configured_batch() -> None:
-    cfg = bench._compose_offpolicy_cfg("mujoco")
+    cfg = bench._compose_offpolicy_cfg("g1_walk_flat", "mujoco")
     case = bench._build_case(
         cfg,
+        task="g1_walk_flat",
         sim="mujoco",
         shape=bench.ReplayShape(obs_dim=45, action_dim=29, critic_dim=48),
     )
@@ -40,6 +41,17 @@ def test_sac_default_case_uses_configured_batch() -> None:
     assert case.learner_batch_size == case.configured_batch_size
     assert case.sample_count_per_rank == case.learner_batch_size * case.updates_per_step
     assert case.shape.packed_width == 2 * 45 + 29 + 3 + 2 * 48
+
+
+def test_build_case_omitted_task_uses_current_default() -> None:
+    cfg = bench._compose_offpolicy_cfg()
+    case = bench._build_case(
+        cfg,
+        shape=bench.ReplayShape(obs_dim=3, action_dim=2, critic_dim=1),
+    )
+
+    assert case.task == bench.DEFAULT_TASK
+    assert case.sim == bench.DEFAULT_SIM
 
 
 def test_default_compose_targets_motion_tracking_mujoco() -> None:
@@ -68,6 +80,11 @@ def test_default_compose_targets_motion_tracking_mujoco() -> None:
     assert case.sample_bytes_per_rank == 121_896_960
     assert case.collector_bytes_per_iter == 7_618_560
     assert case.sample_new_ratio_per_rank == 16
+
+
+def test_positional_sim_compatibility_is_removed() -> None:
+    with pytest.raises(FileNotFoundError, match="task='mujoco', sim='mujoco'"):
+        bench._compose_offpolicy_cfg("mujoco")
 
 
 def test_missing_owner_config_fails_before_hydra_compose() -> None:

@@ -191,7 +191,7 @@ def apply_sim_carrier_device_override(
     inventory: only a ``HOST_BRIDGE`` backend may route this key, and the requested
     device family/index must be in its declared ``torch_devices``. ``auto`` is a
     no-op for backends outside that scope and when no learner device is known. The
-    legacy ``learner_device`` argument is used only by callers without a composed
+    ``learner_device`` argument is the fallback for callers that do not compose a
     training configuration.
     """
 

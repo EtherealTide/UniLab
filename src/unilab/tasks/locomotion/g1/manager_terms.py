@@ -1,9 +1,10 @@
 """Task-owned Manager-Based terms for G1 biped locomotion.
 
-The equations come from UniLab's legacy G1Walk joystick tasks.  The adaptation
-uses community ``func + params`` terms, Torch state carriers, and cached
-cold-path sensor bindings; hot paths never parse assets or probe backend
-privates.
+The reward/observation equations and tuned constants are ported from UniLab's
+pre-Manager-Based G1Walk joystick task family (ported in 64c7f8b8, roadmap
+#1042).  The adaptation uses community ``func + params`` terms, Torch state
+carriers, and cached cold-path sensor bindings; hot paths never parse assets
+or probe backend privates.
 """
 
 from __future__ import annotations
@@ -184,7 +185,7 @@ class _SensorTerm(SensorTermBase):
 def compute_feet_phase_height_targets(
     gait_phase: torch.Tensor, swing_height: float
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Cubic-Bézier per-foot height targets, ported from the legacy G1 task."""
+    """Cubic-Bézier per-foot height targets, from the G1Walk task family (64c7f8b8)."""
 
     def cubic_bezier_height(phase: torch.Tensor, swing_height: float) -> torch.Tensor:
         phase = phase if phase.ndim == 2 else phase[:, None]
@@ -562,7 +563,7 @@ class feet_air_time(_FootContactTerm):
 
 
 # ---------------------------------------------------------------------------
-# Velocity / orientation reward terms (sensor-bound, legacy equations)
+# Velocity / orientation reward terms (sensor-bound, G1Walk family equations)
 # ---------------------------------------------------------------------------
 
 
@@ -673,7 +674,7 @@ class g1_base_height_below_minimum(ManagerTermBase):
     """Terminate when root height drops below the task threshold.
 
     Declaring the root body lets the packed device-resident read phase serve
-    this term without the legacy NumPy body-state facade or a full host cache
+    this term without the retired NumPy body-state facade or a full host cache
     refresh.
     """
 
@@ -781,7 +782,7 @@ class penalty_close_feet_xy(_SensorTerm):
 
 
 # ---------------------------------------------------------------------------
-# Entity-based reward terms (legacy equations, no sensor binding)
+# Entity-based reward terms (G1Walk family equations, no sensor binding)
 # ---------------------------------------------------------------------------
 
 
@@ -844,13 +845,13 @@ class upper_body_pose(weighted_pose):
 
 
 # ---------------------------------------------------------------------------
-# Velocity command term (legacy dead zone + standing zeroing semantics)
+# Velocity command term (G1Walk dead zone + standing zeroing semantics)
 # ---------------------------------------------------------------------------
 
 
 @dataclass(kw_only=True)
 class G1VelocityCommandCfg(UniformVelocityCommandCfg):
-    """G1 velocity command with the legacy planar-norm dead zone."""
+    """G1 velocity command with the G1Walk-family planar-norm dead zone."""
 
     planar_dead_zone: float = 0.2
 
@@ -868,8 +869,8 @@ class G1VelocityCommand(UniformVelocityCommand):
         if cfg.heading_command:
             raise NotImplementedError(
                 "G1VelocityCommand capability 'heading command' is unavailable in the "
-                "Manager-Based runtime; the legacy G1 heading-channel zeroing has no "
-                "production owner and fails closed instead of falling back"
+                "Manager-Based runtime; the G1Walk heading-channel zeroing was not "
+                "ported and fails closed instead of falling back"
             )
         super().__init__(cfg, env)
 
@@ -889,16 +890,17 @@ class G1VelocityCommand(UniformVelocityCommand):
 
 
 # ---------------------------------------------------------------------------
-# Penalty curriculum (ports the legacy G1 penalty-curriculum semantics)
+# Penalty curriculum (ports the G1Walk family penalty-curriculum semantics)
 # ---------------------------------------------------------------------------
 
 
 class G1PenaltyCurriculum(ManagerTermBase):
     """Scale negative-weight reward terms by average episode length.
 
-    Ports the legacy G1 penalty curriculum: penalty weights start at
-    ``initial_scale`` of their configured value and relax toward ``max_scale``
-    as the tracked average episode length crosses the configured thresholds.
+    Ports the G1Walk task-family penalty curriculum (64c7f8b8, roadmap #1042):
+    penalty weights start at ``initial_scale`` of their configured value and
+    relax toward ``max_scale`` as the tracked average episode length crosses
+    the configured thresholds.
     """
 
     _allowed_params: ClassVar[frozenset[str]] = frozenset(

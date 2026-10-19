@@ -13,7 +13,8 @@ runtime setup, task specs, build/run helpers, one-task benchmark loop, plotting,
 and a thin main().
 
 Run without creating any new environment:
-    /home/admin/isaacsim/python.sh scripts/benchmark/physics/benchmark_physics_step_isaacsim.py \\
+    export ISAACSIM_ROOT=<isaacsim-root>
+    $ISAACSIM_ROOT/python.sh scripts/benchmark/physics/benchmark_physics_step_isaacsim.py \\
         --batch-sizes 256,512,1024,2048,4096,8192
 
 What is timed:
@@ -45,13 +46,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_ISAACSIM_ROOT = Path(os.environ.get("ISAACSIM_ROOT", "/home/admin/isaacsim"))
-DEFAULT_USD_ROOT = Path(
-    os.environ.get(
-        "ISAACSIM_USD_ROOT",
-        "/home/admin/isaacsim_assets/Assets/Isaac/4.5/Isaac/Robots/UniLabBenchmark",
-    )
-)
+
+
+def _required_env_path(name: str) -> Path:
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(
+            f"Required environment variable {name} is not set. Configure the "
+            "Isaac Sim benchmark runtime explicitly; machine-local defaults are not provided."
+        )
+    return Path(value).expanduser()
+
+
 DEFAULT_EXPERIENCE = "apps/isaacsim.exp.base.python.kit"
 DEFAULT_OUT_DIR = REPO_ROOT / "scripts" / "benchmark" / "outputs" / "physics_step" / "isaacsim"
 DEFAULT_BATCH_SIZES = [2**k for k in range(8, 14)]  # 256 .. 8192
@@ -96,14 +102,6 @@ TASK_SPECS: Dict[str, TaskSpec] = {
         initial_height=0.78,
     ),
 }
-TASK_ALIASES = {
-    "Go2JoystickFlat": "go2_joystick_flat",
-    "G1WalkFlat": "g1_walk_flat",
-    "go2": "go2_joystick_flat",
-    "g1": "g1_walk_flat",
-    **{f"task={task}/isaacsim": task for task in TASK_SPECS},
-    **{f"{task}/isaacsim": task for task in TASK_SPECS},
-}
 DEFAULT_TASK_IDS = list(TASK_SPECS.keys())
 
 
@@ -134,9 +132,9 @@ def _display_backend(backend: str) -> str:
     return backend
 
 
-def _runtime_hint() -> str:
+def _runtime_hint(isaacsim_root: Path) -> str:
     return (
-        f"{DEFAULT_ISAACSIM_ROOT}/python.sh "
+        f"{isaacsim_root}/python.sh "
         "scripts/benchmark/physics/benchmark_physics_step_isaacsim.py "
         "--batch-sizes 256,512,1024,2048,4096,8192"
     )
@@ -144,23 +142,11 @@ def _runtime_hint() -> str:
 
 def _normalize_task_name(task_name: str) -> str:
     normalized = task_name.strip()
-    if normalized.startswith("task="):
-        normalized = normalized[len("task=") :]
-    if (
-        normalized.endswith("/mujoco")
-        or normalized.endswith("/motrix")
-        or normalized.endswith("/genesis")
-        or normalized.endswith("/isaacgym")
-    ):
-        normalized = normalized.rsplit("/", 1)[0]
     if normalized in TASK_SPECS:
         return normalized
-    alias_target = TASK_ALIASES.get(normalized)
-    if alias_target is not None:
-        return alias_target
     raise ValueError(
         f"Unknown task '{task_name}'. Available task ids: {list(TASK_SPECS.keys())}. "
-        "Accepted aliases include legacy env names and task=<name>/isaacsim forms."
+        "Pass one of those owner task ids verbatim."
     )
 
 
@@ -232,7 +218,7 @@ def _bootstrap_isaacsim(experience: Path, headless: bool = True) -> None:
         raise RuntimeError(
             "Isaac Sim is unavailable in the current runtime.\n"
             f"Import detail: {exc!r}\n"
-            f"Use the existing Isaac Sim runtime directly:\n  {_runtime_hint()}"
+            f"Use the existing Isaac Sim runtime directly:\n  {_runtime_hint(isaacsim_root)}"
         ) from exc
 
 
@@ -553,8 +539,10 @@ def _plot_per_env_sps(
 
 
 def main() -> None:
+    isaacsim_root_env = _required_env_path("ISAACSIM_ROOT")
+    usd_root_env = _required_env_path("ISAACSIM_USD_ROOT")
     parser = argparse.ArgumentParser(description="Benchmark Isaac Sim physics execution")
-    parser.add_argument("--isaacsim-root", type=str, default=str(DEFAULT_ISAACSIM_ROOT))
+    parser.add_argument("--isaacsim-root", type=str, default=str(isaacsim_root_env))
     parser.add_argument("--experience", type=str, default=DEFAULT_EXPERIENCE)
     parser.add_argument("--nstep", type=int, default=20)
     parser.add_argument("--warmup", type=int, default=2)
@@ -564,7 +552,7 @@ def main() -> None:
     parser.add_argument(
         "--usd-root",
         type=str,
-        default=str(DEFAULT_USD_ROOT),
+        default=str(usd_root_env),
         help="Directory containing go2/g1 USD assets",
     )
     parser.add_argument("--tasks", type=str, default=",".join(DEFAULT_TASK_IDS))

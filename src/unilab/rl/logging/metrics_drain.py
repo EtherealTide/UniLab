@@ -18,8 +18,8 @@ from typing import Any
 class RewardComponentWindow:
     """Aggregate reward-term reports between learner iterations.
 
-    Tensor-native interval reports already carry per-step component means and
-    use the legacy mean-of-means aggregation.
+    Tensor-native interval reports already carry per-step component means, so
+    the window aggregates them as a mean of per-step means.
     """
 
     _sums: dict[str, float] = field(default_factory=dict)

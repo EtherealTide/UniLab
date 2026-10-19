@@ -458,7 +458,6 @@ def test_render_play_mode_uses_env_interactive_contract():
 
     result = render_play_mode(
         env,
-        sim_backend="motrix",
         initialize=lambda: 0,
         step=lambda obs: seen.append(obs) or obs + 1,
         num_steps=3,
@@ -607,7 +606,6 @@ def test_render_play_mode_uses_motrix_native_video_capture(
     output_path = tmp_path / "motrix.mp4"
     result = render_play_mode(
         env,
-        sim_backend="motrix",
         initialize=lambda: 0,
         step=lambda obs: obs + 1,
         num_steps=2,
@@ -679,7 +677,6 @@ def test_render_play_mode_rejects_motrix_record_with_interactive_window(
     with pytest.raises(ValueError, match="Motrix video recording requires headless=true"):
         render_play_mode(
             env,
-            sim_backend="motrix",
             initialize=lambda: 0,
             step=lambda obs: obs + 1,
             num_steps=2,
@@ -737,7 +734,6 @@ def test_render_play_mode_defaults_to_env_physics_snapshot(
     output_path = tmp_path / "play.mp4"
     result = render_play_mode(
         env,
-        sim_backend="mujoco",
         initialize=lambda: 0,
         step=lambda obs: obs + 1,
         num_steps=2,
@@ -826,7 +822,6 @@ def test_render_play_mode_uses_visual_playback_model_for_video_export(
     output_path = tmp_path / "play.mp4"
     result = render_play_mode(
         env,
-        sim_backend="mujoco",
         initialize=lambda: 0,
         step=lambda obs: obs + 1,
         num_steps=2,
@@ -859,7 +854,6 @@ def test_render_play_mode_requires_env_snapshot_contract_for_video_export(tmp_pa
     with pytest.raises(NotImplementedError, match="unsupported"):
         render_play_mode(
             FakeEnv(),
-            sim_backend="mujoco",
             initialize=lambda: 0,
             step=lambda obs: obs + 1,
             num_steps=1,

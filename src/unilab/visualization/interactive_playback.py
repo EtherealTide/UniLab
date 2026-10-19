@@ -369,18 +369,27 @@ def _to_play_tensor(value: Any, *, device: torch.device) -> torch.Tensor:
 
 
 def make_sim2sim_preflight(
-    cfg: Any,
+    cfg: DictConfig,
     *,
     algo_name: str,
-) -> Callable[[str | None], Any] | None:
+) -> Callable[[str | None], Any]:
     """Build a sim2sim contract preflight closure for interactive playback entrypoints.
 
-    Returns ``None`` when no Hydra config is available (legacy non-Hydra path).
-    Old runs without a contract snapshot keep the fallback + warning semantics of
-    :func:`resolve_sim2sim_config`.
+    Requires the composed Hydra config for the playback run; the legacy
+    non-Hydra path (which silently skipped the preflight) has been removed, so
+    a missing or non-Hydra config fails closed. A source run whose contract
+    snapshot is missing, malformed, or uses retired keys also fails closed in
+    :func:`resolve_sim2sim_config`; only an explicit ``None`` source run dir
+    skips the check.
     """
-    if cfg is None:
-        return None
+    if not isinstance(cfg, DictConfig):
+        raise ValueError(
+            "make_sim2sim_preflight requires a composed Hydra config (DictConfig); "
+            "interactive playback no longer supports the legacy non-Hydra path and "
+            "never skips the sim2sim preflight. Compose the owner config with "
+            f"hydra.compose and pass it to the playback entrypoint; got "
+            f"{type(cfg).__name__}."
+        )
 
     def _preflight(source_run_dir: str | None) -> Any:
         return resolve_sim2sim_config(

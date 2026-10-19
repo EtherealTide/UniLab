@@ -1,4 +1,4 @@
-"""Playback rendering compatibility entrypoint."""
+"""Playback rendering entrypoint for trained policies."""
 
 from __future__ import annotations
 
@@ -38,7 +38,6 @@ def camera_cfg_from_training(training_cfg: Any) -> CameraCfg:
 def render_play_mode(
     env,
     *,
-    sim_backend: str,
     initialize: Callable[[], ObsT],
     step: Callable[[ObsT], ObsT],
     num_steps: int | None,
@@ -54,10 +53,9 @@ def render_play_mode(
 ) -> str | None:
     """Run playback through the env/backend playback contract.
 
-    ``sim_backend`` is retained for older call sites; backend selection now
-    belongs to ``env.run_playback()`` and concrete backend implementations.
+    Backend selection belongs to ``env.run_playback()`` and the concrete
+    backend implementations.
     """
-    del sim_backend
     return cast(
         str | None,
         env.run_playback(

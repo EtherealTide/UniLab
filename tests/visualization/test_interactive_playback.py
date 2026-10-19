@@ -22,6 +22,7 @@ from unilab.visualization.interactive_playback import (
     RslRlPlaybackSession,
     create_rsl_rl_playback_session,
     create_sac_playback_session,
+    make_sim2sim_preflight,
     prepare_motion_overlay_selection,
 )
 
@@ -300,6 +301,25 @@ def _rsl_rl_session_kwargs(tmp_path: Path) -> dict[str, Any]:
         policy_obs_dims_getter=lambda spec: (5, 7),
         log=lambda message: None,
     )
+
+
+def test_make_sim2sim_preflight_requires_hydra_config() -> None:
+    with pytest.raises(ValueError, match="composed Hydra config"):
+        make_sim2sim_preflight(None, algo_name="ppo")
+    with pytest.raises(ValueError, match="composed Hydra config"):
+        make_sim2sim_preflight({"training": {}}, algo_name="ppo")
+
+
+def test_make_sim2sim_preflight_builds_closure_for_dictconfig() -> None:
+    from omegaconf import OmegaConf
+
+    cfg = OmegaConf.create({"training": {"sim2sim_strict": False}})
+
+    preflight = make_sim2sim_preflight(cfg, algo_name="ppo")
+
+    assert callable(preflight)
+    # No source run dir -> the sim2sim contract check is skipped by design.
+    assert preflight(None) is None
 
 
 def test_create_rsl_rl_playback_session_runs_sim2sim_preflight(tmp_path: Path) -> None:

@@ -327,21 +327,29 @@ def custom_actor_semantics(
 
 
 def validate_actor_semantics(saved: Any, expected: Mapping[str, Any]) -> None:
-    """Fail closed when checkpoint actor semantics do not match construction.
+    """Fail closed unless the checkpoint records matching actor semantics.
 
-    ``saved`` is the ``actor_semantics`` payload stored in the checkpoint (or
-    ``None`` for checkpoints written before this contract existed). Legacy
-    payloads only load into the built-in actor; any configured ``actor_config``
-    requires a matching recorded payload.
+    ``saved`` is the ``actor_semantics`` payload stored in the checkpoint. Every
+    supported checkpoint — built-in or custom actor — must carry a mapping
+    payload whose ``schema_version`` equals
+    :data:`ACTOR_SEMANTICS_SCHEMA_VERSION` and whose construction fields match
+    ``expected``. Checkpoints written before this contract existed (missing or
+    ``None`` payload) are rejected for every actor kind, including the built-in
+    actor; there is no legacy inference fallback. Checkpoints are immutable
+    load inputs; this validator never writes, repairs, upgrades, or migrates
+    them.
     """
     if saved is None:
-        if expected.get("kind") != "builtin":
-            raise ValueError(
-                "Checkpoint does not record actor semantics (pre-contract format); "
-                "it can only be loaded with the built-in FlashSAC actor. Remove "
-                "algo.algo_params.actor_config or retrain with the custom actor."
-            )
-        return
+        raise ValueError(
+            "Checkpoint does not record actor semantics ('actor_semantics' is "
+            "missing or null); pre-contract FlashSAC checkpoints are not "
+            "supported for any actor, including the built-in actor. The minimum "
+            "supported format records an 'actor_semantics' mapping with "
+            f"schema_version={ACTOR_SEMANTICS_SCHEMA_VERSION} and the fields "
+            "'kind', 'builder', 'kwargs', 'obs_dim', 'action_dim', and "
+            "'action_transform'. Retrain the policy with a current UniLab "
+            "release to produce a loadable checkpoint."
+        )
     if not isinstance(saved, Mapping):
         raise TypeError(
             f"Checkpoint 'actor_semantics' must be a mapping, got {type(saved).__name__}"

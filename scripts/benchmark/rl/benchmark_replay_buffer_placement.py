@@ -955,18 +955,13 @@ def _write_results(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, default=_json_default), encoding="utf-8")
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--algos", default=",".join(DEFAULT_ALGOS))
     parser.add_argument(
         "--tasks",
         default=DEFAULT_TASKS_ARG,
         help="Comma-separated tasks, or 'auto' to discover existing owner configs.",
-    )
-    parser.add_argument(
-        "--task",
-        default=None,
-        help="Single-task compatibility alias. Overrides --tasks when set.",
     )
     parser.add_argument("--sim", default=DEFAULT_SIM)
     parser.add_argument("--device", default="auto")
@@ -998,13 +993,17 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Directory for PNG plots. Default: same directory as --out-json.",
     )
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
 
     if args.warmup < 0 or args.repeat <= 0:
         raise ValueError("--warmup must be >= 0 and --repeat must be > 0")
 
     algos = _parse_algos(args.algos)
-    tasks = _parse_tasks(args.task if args.task is not None else args.tasks)
+    tasks = _parse_tasks(args.tasks)
     targets, skipped_targets = _resolve_targets(algos=algos, tasks=tasks, sim=args.sim)
     device = _resolve_device(args.device)
     max_capacity_rows = args.max_capacity_rows if args.max_capacity_rows > 0 else None

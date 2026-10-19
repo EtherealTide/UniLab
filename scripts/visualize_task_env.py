@@ -156,7 +156,6 @@ def _run_motrix(env, num_envs: int) -> None:
 
     render_play_mode(
         env,
-        sim_backend="motrix",
         initialize=initialize,
         step=step,
         num_steps=None,

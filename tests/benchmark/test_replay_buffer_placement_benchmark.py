@@ -84,6 +84,19 @@ def test_parse_tasks_auto_must_stand_alone() -> None:
         bench._parse_tasks("auto,g1_walk_flat")
 
 
+def test_parser_has_no_single_task_compatibility_alias() -> None:
+    parser = bench._build_parser()
+
+    args = parser.parse_args(["--tasks", "g1_walk_flat"])
+
+    assert args.tasks == "g1_walk_flat"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--task", "g1_walk_flat"])
+
+    option_names = {option for action in parser._actions for option in action.option_strings}
+    assert "--task" not in option_names
+
+
 def test_resolve_device_auto_prefers_mps_when_cuda_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

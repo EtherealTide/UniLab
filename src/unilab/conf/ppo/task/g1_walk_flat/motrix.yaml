@@ -37,7 +37,7 @@ env:
         lin_vel_y: [0.0, 0.0]
         ang_vel_z: [0.0, 0.0]
   events:
-    # Legacy Motrix owners disable kp/kd randomization.
+    # kp/kd randomization stays disabled, matching the tuned walk baseline.
     pd_gains: null
     reset_root_state_uniform:
       params:

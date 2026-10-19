@@ -7,7 +7,7 @@
 #!/usr/bin/env python3
 """Bounded headless probe for the IsaacSim/IsaacLab backend contract.
 
-This developer tool runs inside the external ``UNILAB_ISAACSIM_HOME`` Python
+This developer tool runs inside the external ``UNISIM_ISAACSIM_HOME`` Python
 3.11 runtime.  It exercises only cold-path materialization and the native
 IsaacLab articulation tensor API; production backend behavior belongs under
 ``unisim.backend.isaacsim``.

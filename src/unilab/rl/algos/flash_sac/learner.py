@@ -263,8 +263,9 @@ class FlashSACLearner(WholeCycleLearnerMixin):
         )
         if compile_requested and self._nvidia_cuda and compile_fn is None:
             raise RuntimeError("FlashSAC requires CUDA Inductor/Triton on NVIDIA CUDA")
-        # ``None`` preserves the historical auto-enabled NVIDIA default, while
-        # an explicit ``False`` is a real debugging/compatibility opt-out.
+        # ``None`` is the auto policy (compile requested on the validated
+        # NVIDIA CUDA tier, off elsewhere); an explicit ``False`` opts out of
+        # compile for debugging on any tier.
         self.use_compile = bool(compile_requested and compile_fn is not None)
         validate_amp_compile_paths(
             device_type=self._device_type,
@@ -1006,7 +1007,7 @@ class FlashSACLearner(WholeCycleLearnerMixin):
         if not self.use_update_cycle:
             raise RuntimeError(
                 "FlashSAC update_cycle() requires the NVIDIA CUDA whole-cycle path; "
-                "use the per-update methods for compatibility devices"
+                "use the per-update methods on the compatibility performance tiers"
             )
         if not self._update_cycle_capture_failed:
             self._ensure_update_cycle_graph(

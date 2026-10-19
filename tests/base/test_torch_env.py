@@ -443,7 +443,7 @@ def test_tensor_nan_guard_keeps_detection_input_strict() -> None:
     assert ids.tolist() == [1]
 
 
-def test_tensor_nan_guard_rejects_legacy_guard_and_resolves_model_lazily() -> None:
+def test_tensor_nan_guard_rejects_non_tensor_guard_and_resolves_model_lazily() -> None:
     backend = _backend()
     backend.get_scene_model_file.return_value = "/backend.xml"
     env = _StubTorchEnv(cfg=_StubCfg(scene=SceneCfg(model_file="/scene.xml")), backend=backend)

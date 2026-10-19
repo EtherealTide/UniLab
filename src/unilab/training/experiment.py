@@ -649,8 +649,65 @@ def patch_rsl_rl_wandb_writer() -> None:
     setattr(wandb_utils, "_UNILAB_PATCHED", True)
 
 
+def _require_unilab_logger_state(loaded_dict: Any, path: str) -> tuple[float, int]:
+    """Validate the required ``unilab_logger_state`` checkpoint entry.
+
+    Pre-patch rsl-rl checkpoints are unsupported: there is no compatibility
+    window, offline migration, or silent restart from zero progress (issue
+    #2416). The returned ``(tot_time, tot_timesteps)`` pair is only produced
+    for a payload in the minimum supported format.
+    """
+    minimum_format_hint = (
+        "The minimum supported checkpoint format is written by UniLab's patched "
+        "OnPolicyRunner.save (resume-state patch, issue #441, shipped since v1.0.0) "
+        "and carries 'unilab_logger_state' = {'tot_time': float, 'tot_timesteps': int} "
+        "plus, when the environment publishes training state, a versioned "
+        "'unilab_env_training_state'. Resume from a checkpoint saved by a supported "
+        "UniLab version or retrain with one; pre-patch checkpoints cannot be migrated."
+    )
+    state = loaded_dict.get("unilab_logger_state") if isinstance(loaded_dict, dict) else None
+    if state is None:
+        raise ValueError(
+            f"Checkpoint {path} does not contain 'unilab_logger_state'; pre-patch "
+            f"rsl-rl checkpoints are not supported. {minimum_format_hint}"
+        )
+    if not isinstance(state, dict):
+        raise ValueError(
+            f"Checkpoint {path} has an invalid 'unilab_logger_state' "
+            f"(expected a dict, got {type(state).__name__}). {minimum_format_hint}"
+        )
+    tot_time_raw: Any = state.get("tot_time")
+    if type(tot_time_raw) not in (int, float):
+        raise ValueError(
+            f"Checkpoint {path} has an invalid 'unilab_logger_state.tot_time' "
+            f"(expected a finite non-negative number, got {tot_time_raw!r}). "
+            f"{minimum_format_hint}"
+        )
+    tot_time = float(tot_time_raw)
+    if tot_time != tot_time or tot_time in (float("inf"), float("-inf")) or tot_time < 0.0:
+        raise ValueError(
+            f"Checkpoint {path} has an invalid 'unilab_logger_state.tot_time' "
+            f"(expected a finite non-negative number, got {tot_time_raw!r}). "
+            f"{minimum_format_hint}"
+        )
+    tot_timesteps = state.get("tot_timesteps")
+    if type(tot_timesteps) is not int:
+        raise ValueError(
+            f"Checkpoint {path} has an invalid 'unilab_logger_state.tot_timesteps' "
+            f"(expected a non-negative integer, got {tot_timesteps!r}). "
+            f"{minimum_format_hint}"
+        )
+    if tot_timesteps < 0:
+        raise ValueError(
+            f"Checkpoint {path} has an invalid 'unilab_logger_state.tot_timesteps' "
+            f"(expected a non-negative integer, got {tot_timesteps!r}). "
+            f"{minimum_format_hint}"
+        )
+    return tot_time, tot_timesteps
+
+
 def patch_rsl_rl_resume_state() -> None:
-    """Persist + restore UniLab progress through rsl-rl checkpoints.
+    """Persist and restore UniLab progress through rsl-rl checkpoints.
 
     Without this patch, rsl-rl's ``Logger.__init__`` writes ``tot_time = 0`` and
     ``tot_timesteps = 0`` and ``OnPolicyRunner.load`` never refreshes them, so the
@@ -661,12 +718,21 @@ def patch_rsl_rl_resume_state() -> None:
     The patch wraps ``OnPolicyRunner.save`` / ``OnPolicyRunner.load`` to round-trip
     plain progress in the saved dict:
 
-    - ``unilab_logger_state``: ``Logger.tot_time`` / ``tot_timesteps``;
+    - ``unilab_logger_state``: ``Logger.tot_time`` / ``tot_timesteps`` (required);
     - ``unilab_env_training_state``: the wrapped TorchEnv's versioned training
-      state, if it publishes ``export_training_state``.
+      state, written only when the environment publishes one.
 
-    Legacy checkpoints (without either key) load unchanged. Environment state is
-    plain versioned JSON data; no Torch tensor, backend, environment, or manager
+    Loading fails closed (issue #2416). A checkpoint must carry a valid
+    ``unilab_logger_state``; pre-patch rsl-rl checkpoints without it are
+    rejected with a message describing the minimum supported format instead of
+    silently restarting progress from 0. When the active environment publishes
+    training state, the checkpoint must also carry its versioned
+    ``unilab_env_training_state``; environments without exportable state
+    neither write nor require the key, and no placeholder value is fabricated.
+
+    Checkpoints are immutable load inputs. The loader never repairs, rewrites,
+    upgrades, or migrates a checkpoint file. Environment state is plain
+    versioned JSON data; no Torch tensor, backend, environment, or manager
     object is serialized through this path.
     """
     try:
@@ -690,9 +756,11 @@ def patch_rsl_rl_resume_state() -> None:
         env = getattr(self, "env", None)
         export_env_training_state = getattr(env, "export_training_state", None)
         if callable(export_env_training_state):
-            saved_dict["unilab_env_training_state"] = _copy_plain_training_state(
-                export_env_training_state()
-            )
+            env_state = export_env_training_state()
+            # An environment without exportable training state publishes None;
+            # the key stays absent instead of carrying a fabricated placeholder.
+            if env_state is not None:
+                saved_dict["unilab_env_training_state"] = _copy_plain_training_state(env_state)
         torch.save(saved_dict, path)
         self.logger.save_model(path, self.current_learning_iteration)
 
@@ -704,23 +772,41 @@ def patch_rsl_rl_resume_state() -> None:
         map_location: str | None = None,
     ) -> Any:
         loaded_dict = torch.load(path, weights_only=False, map_location=map_location)
-        load_iteration = self.alg.load(loaded_dict, load_cfg, strict)
-        if load_iteration:
-            self.current_learning_iteration = loaded_dict["iter"]
-        state = loaded_dict.get("unilab_logger_state")
-        if state is not None:
-            self.logger.tot_time = float(state.get("tot_time", 0.0))
-            self.logger.tot_timesteps = int(state.get("tot_timesteps", 0))
+        # Validate the checkpoint contract before mutating any live state so a
+        # rejected checkpoint cannot half-load the algorithm or the logger.
+        tot_time, tot_timesteps = _require_unilab_logger_state(loaded_dict, path)
+        env = getattr(self, "env", None)
+        export_env_training_state = getattr(env, "export_training_state", None)
+        env_publishes_state = (
+            callable(export_env_training_state) and export_env_training_state() is not None
+        )
         env_state = loaded_dict.get("unilab_env_training_state")
-        if env_state is not None:
-            env = getattr(self, "env", None)
+        import_training_state: Any = None
+        if env_state is None:
+            if env_publishes_state:
+                raise ValueError(
+                    f"Checkpoint {path} does not contain 'unilab_env_training_state', "
+                    "but the active environment publishes versioned training state; "
+                    "the checkpoint is either pre-patch or belongs to a different "
+                    "environment. Resume from a checkpoint saved by a supported "
+                    "UniLab version for this task or retrain."
+                )
+        else:
+            # Reject non-plain payloads before touching the algorithm.
+            env_state = _copy_plain_training_state(env_state)
             import_training_state = getattr(env, "import_training_state", None)
             if not callable(import_training_state):
                 raise TypeError(
                     "Checkpoint contains unilab_env_training_state, but the active "
                     "environment does not implement import_training_state"
                 )
-            import_training_state(_copy_plain_training_state(env_state))
+        load_iteration = self.alg.load(loaded_dict, load_cfg, strict)
+        if load_iteration:
+            self.current_learning_iteration = loaded_dict["iter"]
+        self.logger.tot_time = tot_time
+        self.logger.tot_timesteps = tot_timesteps
+        if env_state is not None:
+            import_training_state(env_state)
         return loaded_dict["infos"]
 
     OnPolicyRunner.save = _patched_save  # type: ignore[assignment]
