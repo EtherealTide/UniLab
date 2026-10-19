@@ -56,5 +56,7 @@ CLI validates `--load-run` as a run id and does not accept path separators.
 ## Seeds
 
 Training seed resolution is implemented in `src/unilab/training/seed.py`.
-Algorithm configs currently carry `algo.seed`, and the helper records seed
-metadata when experiment tracking is active.
+Only the algorithm-level `algo.seed` is honored; the former `training.seed`
+fallback was removed, and a config that sets `training.seed` without
+`algo.seed` fails closed. The helper records seed metadata when experiment
+tracking is active.

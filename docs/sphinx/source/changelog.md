@@ -17,6 +17,13 @@ PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完
 
 ### Breaking changes / 破坏性变更
 
+- The training seed contract no longer falls back to `training.seed`; only the
+  algorithm-level `algo.seed` is honored. A config that sets `training.seed`
+  without `algo.seed` fails closed with an error pointing to `algo.seed`
+  ([#2415](https://github.com/Motphys/UniLab/issues/2415)).
+  训练 seed 契约不再 fallback 到 `training.seed`，仅认可算法级
+  `algo.seed`。配置了 `training.seed` 但缺少 `algo.seed` 的配置会 fail
+  closed，错误信息指向 `algo.seed`（#2415）。
 - `training.collector_tensor_device`, `manager_torch_device`, `env.tensor_runtime`,
   and `env.tensor_runtime_device` are removed. Use `training.sim_carrier_device`
   (routed to `env.sim_carrier_device`) and the resolved learner device for

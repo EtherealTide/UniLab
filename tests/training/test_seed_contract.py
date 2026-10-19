@@ -25,7 +25,7 @@ def _compose(config_dir: str, overrides: list[str] | None = None):
         return compose("config", overrides=overrides or [])
 
 
-def test_resolve_training_seed_prefers_algo_seed_over_legacy_training_seed():
+def test_resolve_training_seed_uses_algo_seed_and_ignores_training_seed():
     cfg = OmegaConf.create({"algo": {"seed": 7}, "training": {"seed": 99}})
 
     seed_info = resolve_training_seed(cfg)
@@ -33,6 +33,28 @@ def test_resolve_training_seed_prefers_algo_seed_over_legacy_training_seed():
     assert seed_info.configured_seed == 7
     assert seed_info.configured_seed_source == "algo.seed"
     assert seed_info.effective_seed == 7
+
+
+def test_resolve_training_seed_fails_closed_on_training_seed_without_algo_seed():
+    cfg = OmegaConf.create({"training": {"seed": 99}})
+
+    with pytest.raises(ValueError, match="algo.seed"):
+        resolve_training_seed(cfg)
+
+
+def test_resolve_training_seed_returns_empty_metadata_without_configured_seed():
+    seed_info = resolve_training_seed(OmegaConf.create({}))
+
+    assert seed_info.configured_seed is None
+    assert seed_info.configured_seed_source is None
+    assert seed_info.effective_seed is None
+
+
+def test_resolve_training_seed_rejects_negative_algo_seed():
+    cfg = OmegaConf.create({"algo": {"seed": -1}})
+
+    with pytest.raises(ValueError, match="algo.seed must be non-negative"):
+        resolve_training_seed(cfg)
 
 
 def test_apply_training_seed_controls_python_and_torch_rng_without_numpy():
