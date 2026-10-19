@@ -43,8 +43,8 @@ def test_isaac_backend_symbols_stay_behind_owner_boundaries() -> None:
         assert relative in owner_boundaries or relative.startswith("tasks/")
 
     registry.ensure_registries()
-    assert registry._envs["G1WalkFlat"].support_sim_backend("isaacgym")
-    assert registry._envs["G1WalkFlat"].support_sim_backend("isaacsim")
+    assert registry._envs["G1WalkFlat"].supports_sim_backend("isaacgym")
+    assert registry._envs["G1WalkFlat"].supports_sim_backend("isaacsim")
 
 
 def test_manager_env_has_no_cuda_ipc_warm_branch_for_shelved_backends() -> None:

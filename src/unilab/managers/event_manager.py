@@ -186,7 +186,7 @@ class EventManager(ManagerBase):
                 " as the environment indices are computed based on the time left for each environment."
             )
         if mode == "reset":
-            raise ValueError("Event reset terms are dispatched through apply_reset(mask).")
+            raise ValueError("Event reset terms are dispatched through dispatch_reset(mask).")
         if mode == "step" and dt is None:
             raise ValueError(f"Event mode '{mode}' requires the time-step of the environment.")
 
@@ -217,7 +217,7 @@ class EventManager(ManagerBase):
             else:
                 term_cfg.func(self._env, env_ids, **term_cfg.params)
 
-    def apply_reset(
+    def dispatch_reset(
         self,
         reset_mask: torch.Tensor,
         *,

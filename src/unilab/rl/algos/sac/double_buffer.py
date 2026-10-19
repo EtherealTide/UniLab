@@ -16,7 +16,7 @@ from unilab.rl.runtime.ipc.replay_pipelines.device import (
 from unilab.rl.runtime.offpolicy.actor_adapter import import_actor_adapter_modules
 from unilab.rl.runtime.offpolicy.double_buffer_runner import (
     DoubleBufferOffPolicyRunner,
-    reject_removed_inference_request_timeout,
+    validate_no_inference_request_timeout,
 )
 from unilab.rl.runtime.offpolicy.resolution import (
     resolve_actor_adapter_modules,
@@ -70,7 +70,7 @@ def build_double_buffer_runner(
         batch_size = int(cfg.algo.batch_size)
         updates_per_step = int(cfg.algo.updates_per_step)
 
-    reject_removed_inference_request_timeout(cfg.training)
+    validate_no_inference_request_timeout(cfg.training)
     env = env_factory(1, env_cfg_override)
     try:
         action_shape = env.action_space.shape

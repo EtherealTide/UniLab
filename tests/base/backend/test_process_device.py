@@ -16,7 +16,6 @@ from unilab.base.process_device import (
     apply_sim_carrier_device_override,
     bind_genesis_process_device,
     configure_backend_process_device,
-    rank_local_visible_cuda_entries,
     resolve_backend_env_device_id,
     resolve_backend_process_device,
 )
@@ -170,7 +169,7 @@ def test_rank_local_visibility_entries_are_opaque(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
-    assert rank_local_visible_cuda_entries(None) == ()
+    assert visible_cuda_entries(None) == ()
     assert visible_cuda_entries("GPU-a,MIG-b") == ("GPU-a", "MIG-b")
 
 

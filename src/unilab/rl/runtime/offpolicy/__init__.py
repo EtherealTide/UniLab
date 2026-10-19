@@ -12,7 +12,7 @@ from unilab.rl.runtime.offpolicy.warmup import (
     OffPolicyLearnerPreparation,
     OffPolicyWarmupContext,
 )
-from unilab.rl.runtime.offpolicy.worker import off_policy_collector_fn
+from unilab.rl.runtime.offpolicy.worker import offpolicy_collector_fn
 
 __all__ = [
     "OffPolicyActorAdapter",
@@ -22,6 +22,6 @@ __all__ = [
     "OffPolicyWarmupContext",
     "get_offpolicy_actor_adapter",
     "import_actor_adapter_modules",
-    "off_policy_collector_fn",
+    "offpolicy_collector_fn",
     "register_offpolicy_actor_adapter",
 ]

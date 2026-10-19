@@ -184,7 +184,7 @@ class DummyCommand(CommandTerm):
     def _update_command(self) -> None:
         pass
 
-    def update_command_reset(self, reset_mask: torch.Tensor) -> None:
+    def refresh_reset(self, reset_mask: torch.Tensor) -> None:
         del reset_mask
 
 
@@ -299,7 +299,7 @@ def test_command_reset_refresh_does_not_validate_full_command_or_metrics(
 
     torch.Tensor.__bool__ = counted_bool  # type: ignore[method-assign]
     try:
-        manager.compute_reset(0.0, mask)
+        manager.refresh_reset(mask)
     finally:
         torch.Tensor.__bool__ = original_bool  # type: ignore[method-assign]
 

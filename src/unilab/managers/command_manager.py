@@ -407,15 +407,15 @@ class CommandManager(ManagerBase):
         step_timing["update_state_command_validation_ms"] = validation_ms * 1000.0
         self.last_step_timing_ms = step_timing
 
-    def compute_reset(self, dt: float | torch.Tensor, reset_mask: torch.Tensor) -> None:
+    def refresh_reset(self, reset_mask: torch.Tensor) -> None:
         """Fixed-shape command refresh after reset."""
         step_timing: dict[str, float] = {}
         for name, term in self._terms.items():
-            callable_mask = getattr(term, "update_command_reset", None)
+            callable_mask = getattr(term, "refresh_reset", None)
             if not callable(callable_mask):
                 raise NotImplementedError(
                     f"CommandManager term '{name}' does not define the "
-                    "mask-preserving compute boundary"
+                    "mask-preserving reset refresh boundary"
                 )
             term_timing = getattr(term, "last_step_timing_ms", None)
             if term_timing is not None:
@@ -489,7 +489,7 @@ class CommandManager(ManagerBase):
             term = term_cfg.build(self._env)
             if not isinstance(term, CommandTerm):
                 raise TypeError(
-                    f"Returned object for the term {term_name} is not of type CommandType."
+                    f"Returned object for the term {term_name} is not of type CommandTerm."
                 )
             self._terms[term_name] = term
 
@@ -542,8 +542,8 @@ class NullCommandManager:
     def compute(self, dt: float | torch.Tensor) -> None:
         pass
 
-    def compute_reset(self, dt: float | torch.Tensor, reset_mask: torch.Tensor) -> None:
-        del dt, reset_mask
+    def refresh_reset(self, reset_mask: torch.Tensor) -> None:
+        del reset_mask
 
     def post_compute(self) -> None:
         pass

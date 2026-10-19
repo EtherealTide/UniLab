@@ -32,7 +32,7 @@ def _with_zero_weight_fallback(weights: torch.Tensor) -> torch.Tensor:
     return torch.where(weights.sum() > 0, weights, torch.ones_like(weights))
 
 
-def biased_replay_indices(
+def sample_biased_replay_indices(
     *,
     visible_size: int,
     capacity: int,
@@ -122,7 +122,7 @@ class AgeBiasedReplayPipeline(DeviceReplayPipeline):
         super().__init__(replay_buffer, **kwargs)
 
     def _gather_rows(self, *, visible_size: int, slot: int, gen: torch.Generator) -> None:
-        indices = biased_replay_indices(
+        indices = sample_biased_replay_indices(
             visible_size=visible_size,
             capacity=self._capacity,
             current_ptr=int(self._visible_ptr),

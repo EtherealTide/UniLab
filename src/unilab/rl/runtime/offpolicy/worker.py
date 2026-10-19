@@ -252,7 +252,7 @@ def _merge_reward_component_means(
     }
 
 
-def off_policy_collector_fn(
+def offpolicy_collector_fn(
     stop_event,
     env_factory: EnvFactory,
     num_envs: int,

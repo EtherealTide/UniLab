@@ -24,9 +24,9 @@ from unilab.rl.algos.common.normalization import EmpiricalNormalization
 from unilab.rl.algos.common.performance import resolve_learner_performance_tier
 from unilab.rl.algos.flash_sac.actor_spec import (
     FlashSACActorSpec,
+    build_builtin_actor_semantics,
     build_custom_actor,
-    builtin_actor_semantics,
-    custom_actor_semantics,
+    build_custom_actor_semantics,
     validate_actor_semantics,
     validate_aux_losses,
 )
@@ -317,7 +317,7 @@ class FlashSACLearner(WholeCycleLearnerMixin):
                 action_dim=action_dim,
                 device=self.device,
             )
-            self._actor_semantics = custom_actor_semantics(
+            self._actor_semantics = build_custom_actor_semantics(
                 self._actor_spec,
                 obs_dim=obs_dim,
                 action_dim=action_dim,
@@ -333,7 +333,7 @@ class FlashSACLearner(WholeCycleLearnerMixin):
                 noise_zeta_max=actor_noise_zeta_max,
                 device=self.device,
             )
-            self._actor_semantics = builtin_actor_semantics(
+            self._actor_semantics = build_builtin_actor_semantics(
                 obs_dim=obs_dim,
                 action_dim=action_dim,
                 num_blocks=actor_num_blocks,

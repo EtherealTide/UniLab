@@ -863,8 +863,8 @@ def flashsac_play_actor_semantics(
     """Recompute the FlashSAC actor semantics payload expected at play time."""
     from unilab.rl.algos.flash_sac.actor_spec import (
         FlashSACActorSpec,
-        builtin_actor_semantics,
-        custom_actor_semantics,
+        build_builtin_actor_semantics,
+        build_custom_actor_semantics,
     )
 
     actor_config = cfg.algo.algo_params.get("actor_config")
@@ -874,13 +874,13 @@ def flashsac_play_actor_semantics(
             raise TypeError(
                 "Custom FlashSAC play actor must declare a non-empty string 'action_transform_id'"
             )
-        return custom_actor_semantics(
+        return build_custom_actor_semantics(
             FlashSACActorSpec.from_config(actor_config),
             obs_dim=obs_dim,
             action_dim=action_dim,
             action_transform_id=transform_id,
         )
-    return builtin_actor_semantics(
+    return build_builtin_actor_semantics(
         obs_dim=obs_dim,
         action_dim=action_dim,
         num_blocks=int(cfg.algo.algo_params.actor_num_blocks),

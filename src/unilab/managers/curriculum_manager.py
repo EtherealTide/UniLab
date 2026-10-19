@@ -126,10 +126,6 @@ class CurriculumManager(ManagerBase):
             self._validate_state(name, state)
             self._curriculum_state[name] = state
 
-    def compute_reset(self, reset_mask: torch.Tensor) -> None:
-        """Compute only terms that own a mask-scoped reset boundary."""
-        self.compute(reset_mask)
-
     def _validate_state(self, term_name: str, state: Any) -> None:
         values = state.values() if isinstance(state, dict) else (state,)
         for value in values:

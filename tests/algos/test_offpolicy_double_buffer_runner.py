@@ -117,7 +117,7 @@ class _FakeCudaProcessSharingEvidence:
     control_pipe = "/tmp/unilab-mps/control"
     server_pid = 2768293
 
-    def manifest(self):
+    def to_dict(self):
         return {
             "configured": self.configured,
             "effective": self.effective,
@@ -308,7 +308,7 @@ def test_valid_cuda_process_sharing_evidence_enters_runner_manifest(
 
     runner = module.build_runner("sac", cfg)
 
-    assert runner.runtime_manifest["cuda_process_sharing"] == evidence.manifest()
+    assert runner.runtime_manifest["cuda_process_sharing"] == evidence.to_dict()
 
 
 @pytest.mark.parametrize("mode", ["invalid_mode", "same_tick"])

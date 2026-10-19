@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from unilab.training.cuda_process_sharing import probe_cuda_process_sharing
+from unilab.training.cuda_process_sharing import canonicalize_gpu_uuid, probe_cuda_process_sharing
 
 ALL_SELECTOR = "all"
 SINGLE_GPU_MODE = "single_gpu"
@@ -67,7 +67,7 @@ class GpuIdentity:
     index: int
     uuid: str
 
-    def manifest(self) -> dict[str, str | int]:
+    def to_dict(self) -> dict[str, str | int]:
         return {"index": self.index, "uuid": self.uuid}
 
 
@@ -86,7 +86,7 @@ class DaemonRecord:
     process_start_ticks: int
     created_at: float
 
-    def manifest(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["gpu_uuids"] = list(self.gpu_uuids)
         return value
@@ -100,7 +100,7 @@ class ControlPipeStatus:
     kind: str
     managed_names: tuple[str, ...]
 
-    def manifest(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "path": self.path,
             "kind": self.kind,
@@ -121,15 +121,15 @@ class HostStatus:
     diagnostic: str | None = None
     compatible_topology_modes: tuple[str, ...] = COMPATIBLE_TOPOLOGY_MODES
 
-    def manifest(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "platform": self.platform,
             "nvidia_smi_available": self.nvidia_smi_available,
             "diagnostic": self.diagnostic,
             "cuda_visible_devices": self.cuda_visible_devices,
-            "gpus": [gpu.manifest() for gpu in self.gpus],
-            "control_pipes": [pipe.manifest() for pipe in self.control_pipes],
-            "managed_daemons": [daemon.manifest() for daemon in self.managed_daemons],
+            "gpus": [gpu.to_dict() for gpu in self.gpus],
+            "control_pipes": [pipe.to_dict() for pipe in self.control_pipes],
+            "managed_daemons": [daemon.to_dict() for daemon in self.managed_daemons],
             "compatible_topology_modes": list(self.compatible_topology_modes),
         }
 
@@ -142,11 +142,11 @@ class TopologyPlan:
     topology_mode: str
     gpus: tuple[GpuIdentity, ...]
 
-    def manifest(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "selector": self.selector,
             "topology_mode": self.topology_mode,
-            "gpus": [gpu.manifest() for gpu in self.gpus],
+            "gpus": [gpu.to_dict() for gpu in self.gpus],
         }
 
 
@@ -195,10 +195,14 @@ def _canonical_uuid(value: str, *, field: str = "uuid") -> str:
         uuid = f"GPU-{uuid}"
     if not uuid.upper().startswith("GPU-"):
         raise CudaMpsError(f"Invalid NVIDIA GPU {field}: {value!r}; expected a GPU-<id> UUID.")
-    raw_uuid = uuid[4:]
-    if not raw_uuid:
+    token = canonicalize_gpu_uuid(uuid)
+    if not token:
         raise CudaMpsError(f"Invalid NVIDIA GPU {field}: {value!r}; expected a GPU-<id> UUID.")
-    return f"GPU-{raw_uuid}"
+    # Persisted/display form: the shared comparison token re-rendered in the
+    # canonical dashed ``GPU-<id>`` shape (nvidia-smi emits lowercase hex).
+    if len(token) == 32:
+        token = f"{token[:8]}-{token[8:12]}-{token[12:16]}-{token[16:20]}-{token[20:]}"
+    return f"GPU-{token.lower()}"
 
 
 def _parse_gpu_rows(output: str) -> tuple[GpuIdentity, ...]:
@@ -613,7 +617,7 @@ def _write_daemon_record(root: Path, daemon: DaemonRecord) -> Path:
         if path.exists():
             raise CudaMpsError(f"Refusing to overwrite daemon record {path}.")
         path.write_text(
-            json.dumps(daemon.manifest(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            json.dumps(daemon.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
     except OSError as exc:
         raise CudaMpsError(f"Could not write daemon record {path}: {exc}.") from exc
@@ -686,7 +690,7 @@ def daemon_status(
     """Return record identity plus PID/start-time liveness evidence."""
 
     return {
-        **daemon.manifest(),
+        **daemon.to_dict(),
         "process_live": daemon_process_is_live(daemon, proc_stat=proc_stat),
         "record_state": "live" if daemon_process_is_live(daemon, proc_stat=proc_stat) else "stale",
     }
@@ -1057,14 +1061,14 @@ def doctor(
                     },
                 ),
             )
-        training_validation = evidence.manifest()
+        training_validation = evidence.to_dict()
         valid = evidence.validated
     except Exception as exc:  # probe errors are diagnostics, not doctor termination
         training_validation = {"error": str(exc)}
         valid = False
     return {
         "compatible_topology_modes": list(COMPATIBLE_TOPOLOGY_MODES),
-        "plan": plan.manifest(),
+        "plan": plan.to_dict(),
         "managed_daemons": managed,
         "cuda_process_sharing": training_validation,
         "valid": valid,
@@ -1133,7 +1137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "status":
             status = host_status()
             if args.json:
-                _print_json(status.manifest())
+                _print_json(status.to_dict())
             else:
                 print(
                     f"platform={status.platform} nvidia_smi_available={status.nvidia_smi_available}"
@@ -1176,7 +1180,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 log_dir=args.log_dir,
                 daemon=not args.foreground,
             )
-            _print_json(record.manifest())
+            _print_json(record.to_dict())
             return 0
 
         if args.command == "stop":
@@ -1184,7 +1188,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 stopped = stop_all_daemons()
             else:
                 stopped = (stop_daemon(args.name),)
-            _print_json({"stopped": [daemon.manifest() for daemon in stopped]})
+            _print_json({"stopped": [daemon.to_dict() for daemon in stopped]})
             return 0
 
         if args.command == "env":

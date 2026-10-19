@@ -157,7 +157,6 @@ def build_appo_runner_kwargs(
 
 def apply_appo_runtime_flags(
     rl_cfg: dict[str, Any],
-    cfg: DictConfig,
     *,
     training_enabled: bool,
 ) -> None:
@@ -166,66 +165,6 @@ def apply_appo_runtime_flags(
         return
     if not training_enabled:
         algorithm_cfg["enable_compile"] = False
-
-
-def run_motrix_play_loop(
-    env,
-    actor,
-    device: str,
-    play_env_num: int,
-    num_steps: int | None = None,
-) -> None:
-    if env.state is None:
-        env.init_state()
-
-    with torch.inference_mode():
-        env.run_playback(
-            num_steps=num_steps,
-            initialize=lambda: _motrix_playback_obs(
-                env.reset(torch.ones(play_env_num, dtype=torch.bool, device=env.device))
-            ),
-            step=lambda obs: _motrix_playback_step(
-                env=env,
-                actor=actor,
-                device=device,
-                play_env_num=play_env_num,
-                obs=obs,
-            ),
-        )
-
-
-def _motrix_playback_obs(state: Any) -> torch.Tensor:
-    """Extract the actor observation tensor from a TorchEnv reset result."""
-    obs = state[0].obs if hasattr(state[0], "obs") else state[0]["obs"]
-    if not isinstance(obs, torch.Tensor):
-        raise TypeError(
-            f"APPO playback reset observation must be a tensor, got {type(obs).__name__}"
-        )
-    return obs
-
-
-def _motrix_playback_step(
-    *,
-    env: Any,
-    actor: Callable[[Any], Any],
-    device: str,
-    play_env_num: int,
-    obs: Any,
-) -> torch.Tensor:
-    """Run one APPO policy step and return the next actor observation tensor."""
-    from tensordict import TensorDict
-
-    if not isinstance(obs, torch.Tensor):
-        raise TypeError(
-            f"APPO playback step observation must be a tensor, got {type(obs).__name__}"
-        )
-    action = actor(
-        TensorDict(
-            {"policy": obs.to(device=device, dtype=torch.float32)},
-            batch_size=play_env_num,
-        )
-    ).to(device=env.device, dtype=torch.float32)
-    return _motrix_playback_obs((env.step(action.contiguous()).obs, None))
 
 
 def play_appo(
@@ -389,7 +328,7 @@ def main(cfg: DictConfig) -> None:
 
     # Convert algo config to plain dict for APPORunner / RSL-RL internals
     rl_cfg = algo_config_dict(cfg)
-    apply_appo_runtime_flags(rl_cfg, cfg, training_enabled=not cfg.training.play_only)
+    apply_appo_runtime_flags(rl_cfg, training_enabled=not cfg.training.play_only)
     appo_runtime = resolve_appo_runtime(rl_cfg, default_play_fn=play_appo)
 
     if cfg.training.log_dir is None:

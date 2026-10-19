@@ -1,7 +1,7 @@
 """Synchronous gradient averaging across data-parallel ranks.
 
 Multi-GPU data-parallel off-policy training runs one independent
-learner+collector pair per rank (see ``dp_launcher.py``). The runner broadcasts
+learner+collector pair per rank (see ``launcher.py``). The runner broadcasts
 rank 0's model state before collection starts. During steady-state training,
 each learner averages the actor/critic/temperature gradients immediately after
 ``backward()`` and before clipping or ``optimizer.step()``.

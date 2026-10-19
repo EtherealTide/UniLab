@@ -232,7 +232,7 @@ class UniformVelocityCommand(CommandTerm):
         tensor.copy_(torch.where(expanded, samples, tensor))
         self._world_command.copy_(torch.where(expanded, samples, self._world_command))
 
-    def update_command_reset(self, reset_mask: torch.Tensor) -> None:
+    def refresh_reset(self, reset_mask: torch.Tensor) -> None:
         tensor = self._tensor_command
         assert tensor is not None
 

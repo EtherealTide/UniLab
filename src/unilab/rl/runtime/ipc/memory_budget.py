@@ -148,7 +148,7 @@ def raise_if_cuda_memory_over_budget(
     )
 
 
-def estimate_offpolicy_bytes(
+def estimate_host_offpolicy_bytes(
     num_envs: int,
     replay_buffer_n: int,
     obs_dim: int,
@@ -321,7 +321,7 @@ def estimate_cuda_tensor_runtime_bytes(
     }
 
 
-def estimate_appo_bytes(
+def estimate_host_appo_bytes(
     num_envs: int,
     steps_per_env: int,
     obs_dim: int,
@@ -367,7 +367,7 @@ def get_available_memory_bytes() -> int | None:
     return None
 
 
-def get_shared_memory_available_bytes(path: str = "/dev/shm") -> int | None:
+def get_available_shared_memory_bytes(path: str = "/dev/shm") -> int | None:
     """Best-effort available shared-memory space detection."""
     try:
         return int(shutil.disk_usage(path).free)
@@ -382,7 +382,7 @@ def raise_if_shared_memory_over_budget(
     path: str = "/dev/shm",
 ) -> None:
     """Fail before allocating shared buffers that exceed shared-memory capacity."""
-    available = get_shared_memory_available_bytes(path)
+    available = get_available_shared_memory_bytes(path)
     if available is None:
         return
 

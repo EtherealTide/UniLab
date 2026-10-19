@@ -375,7 +375,7 @@ class SACCritic(nn.Module):
         ]
         return torch.stack(projections, dim=0)
 
-    def get_value(self, probs: torch.Tensor) -> torch.Tensor:
+    def expected_value(self, probs: torch.Tensor) -> torch.Tensor:
         """Calculate value from probabilities using support."""
         return torch.sum(probs * self.q_support, dim=-1)
 
@@ -949,7 +949,7 @@ class SACLearner(WholeCycleLearnerMixin):
                 target_distributions = self.qnet_target.projection(
                     critic_next_obs, next_actions, adjusted_rewards, bootstrap, discount
                 )
-                target_values = self.qnet_target.get_value(target_distributions)
+                target_values = self.qnet_target.expected_value(target_distributions)
                 target_q_max = target_values.max()
                 target_q_min = target_values.min()
 
@@ -984,7 +984,7 @@ class SACLearner(WholeCycleLearnerMixin):
         with self._autocast():
             q_outputs = self.qnet(critic_obs, actions)
             q_probs = F.softmax(q_outputs, dim=-1)
-            q_values = self.qnet.get_value(q_probs)
+            q_values = self.qnet.expected_value(q_probs)
             qf_value = q_values.mean(dim=0)
             actor_loss = (self.log_alpha.exp().detach() * log_probs - qf_value).mean()
 

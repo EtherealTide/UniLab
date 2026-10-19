@@ -17,7 +17,7 @@ from unisim.backend.base import (
 from .scene import SceneCfg
 from .variants import FixedModelVariantCatalogCfg
 
-OnPlaybackFrameFn = Callable[[int, np.ndarray], "np.ndarray | None"]
+PlaybackFrameCallback = Callable[[int, np.ndarray], "np.ndarray | None"]
 
 
 @dataclass(frozen=True)
@@ -344,7 +344,7 @@ class ABEnv(abc.ABC):
         frame_state_getter: Callable[[], np.ndarray] | None = None,
         camera_kwargs: CameraCfg | Mapping[str, Any] | None = None,
         debug_overlay_getter: DebugOverlayGetter | None = None,
-        on_frame: OnPlaybackFrameFn | None = None,
+        on_frame: PlaybackFrameCallback | None = None,
     ) -> str | None:
         """Execute playback through the backend contract.
 
@@ -369,7 +369,7 @@ class ABEnv(abc.ABC):
         frame_state_getter: Callable[[], np.ndarray] | None = None,
         camera_kwargs: CameraCfg | Mapping[str, Any] | None = None,
         debug_overlay_getter: DebugOverlayGetter | None = None,
-        on_frame: OnPlaybackFrameFn | None = None,
+        on_frame: PlaybackFrameCallback | None = None,
         on_plan: Callable[[BackendPlayRenderPlan], None] | None = None,
     ) -> str | None:
         """Resolve configured playback mode and execute it through the backend contract.

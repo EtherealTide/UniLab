@@ -93,7 +93,7 @@ class EnvMeta:
                 return backend
         return next(iter(self.env_factory_dict), None)
 
-    def support_sim_backend(self, sim_backend: str) -> bool:
+    def supports_sim_backend(self, sim_backend: str) -> bool:
         """Check if the environment supports a specific simulation backend."""
         return sim_backend in self.env_factory_dict
 
@@ -283,7 +283,7 @@ def make(
         if sim_backend is None:
             raise ValueError(f"Environment '{name}' does not support any simulation backend.")
 
-    if not meta.support_sim_backend(sim_backend):
+    if not meta.supports_sim_backend(sim_backend):
         raise ValueError(
             f"Environment '{name}' does not support simulation backend '{sim_backend}'."
         )

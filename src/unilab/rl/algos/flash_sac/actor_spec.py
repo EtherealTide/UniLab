@@ -281,7 +281,7 @@ def build_custom_actor(
     return actor
 
 
-def builtin_actor_semantics(
+def build_builtin_actor_semantics(
     *,
     obs_dim: int,
     action_dim: int,
@@ -307,7 +307,7 @@ def builtin_actor_semantics(
     }
 
 
-def custom_actor_semantics(
+def build_custom_actor_semantics(
     spec: FlashSACActorSpec,
     *,
     obs_dim: int,
