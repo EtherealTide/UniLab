@@ -18,7 +18,7 @@ from unilab.managers.rng import ManagerRng
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 def _real(value: Any, *, label: str) -> float:
@@ -131,7 +131,7 @@ class UniformVelocityCommand(CommandTerm):
     }
 
     def _metric_velocities(self) -> tuple[torch.Tensor, torch.Tensor]:
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
         names = self.tensor_sensor_names
         packed = read_plan.sensor_names.get(self.cfg.entity_name, ()) if read_plan else ()
         # The scene pack negotiates backend-local aliases (Go2 ``local_linvel``/
@@ -232,7 +232,7 @@ class UniformVelocityCommand(CommandTerm):
         tensor.copy_(torch.where(expanded, samples, tensor))
         self._world_command.copy_(torch.where(expanded, samples, self._world_command))
 
-    def _update_command_reset(self, reset_mask: torch.Tensor) -> None:
+    def update_command_reset(self, reset_mask: torch.Tensor) -> None:
         tensor = self._tensor_command
         assert tensor is not None
 
@@ -290,8 +290,8 @@ class UniformVelocityCommand(CommandTerm):
         return rng_owner.uniform(lower, upper, (count,), dtype=torch.float32)
 
     def _heading(self) -> torch.Tensor:
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
-        root_body_name = getattr(self.robot, "_root_body_name", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
+        root_body_name = getattr(self.robot, "root_body_name", None)
         if read_plan is None or not isinstance(root_body_name, str) or not root_body_name:
             # Command construction/reset does not consume heading; return the
             # cold neutral value until the packed read plan is compiled.

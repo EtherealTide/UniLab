@@ -20,9 +20,9 @@ from unisim.backend.base import (
 from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadSpec
 from unilab.envs import mdp
 from unilab.managers import ObservationGroupCfg, ObservationManager, ObservationTermCfg
-from unilab.managers._types import ManagerBasedRlEnv
 from unilab.managers.rng import ManagerRng
 from unilab.managers.scene_entity_config import SceneEntityCfg
+from unilab.managers.types import ManagerBasedRlEnv
 
 
 class _Backend:
@@ -222,7 +222,7 @@ def _env() -> tuple[ManagerBasedRlEnv, _Backend]:
             rng=ManagerRng.seeded(4),
         ),
     )
-    env.scene._tensor_read_plan = scene_plan = env.scene.compile_tensor_reads(
+    env.scene.read_plan = scene_plan = env.scene.compile_tensor_reads(
         env.device,
         (
             SceneTensorReadSpec(entity="robot", body_names=("base",)),
@@ -493,8 +493,8 @@ def test_named_sensor_runtime_drift_reports_term_and_backend() -> None:
         env,
     )
     backend.sensor_values["gyro"] = np.full((2, 3), np.nan, dtype=np.float32)
-    env.scene._tensor_read_plan.invalidate()
-    env.scene._tensor_read_plan.refresh()
+    env.scene.read_plan.invalidate()
+    env.scene.read_plan.refresh()
 
     with pytest.raises(ValueError, match="builtin_sensor.*gyro.*backend 'fake'.*NaN or Inf"):
         manager.compute_group("policy")

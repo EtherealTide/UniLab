@@ -12,8 +12,8 @@ import torch
 from unilab.base.entity import EntityTensorBodyStateView, EntityTensorStateView
 from unilab.envs import mdp
 from unilab.managers import TerminationManager, TerminationTermCfg
-from unilab.managers._types import ManagerBasedRlEnv
 from unilab.managers.scene_entity_config import SceneEntityCfg
+from unilab.managers.types import ManagerBasedRlEnv
 
 
 def _env() -> ManagerBasedRlEnv:
@@ -38,7 +38,7 @@ def _env() -> ManagerBasedRlEnv:
 
 class _Entity:
     name = "robot"
-    _root_body_name = "base"
+    root_body_name = "base"
 
     def __init__(self, projected_gravity: np.ndarray, root_pos: np.ndarray):
         self.projected_gravity = projected_gravity
@@ -83,7 +83,7 @@ class _ReadPlan:
 class _Scene(dict):
     def __init__(self, entity: _Entity):
         super().__init__({"robot": entity})
-        self._tensor_read_plan = _ReadPlan(entity)
+        self.read_plan = _ReadPlan(entity)
 
 
 def test_basic_termination_terms_match_pinned_semantics() -> None:

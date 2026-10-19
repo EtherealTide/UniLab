@@ -1433,7 +1433,7 @@ class Entity:
         if not name:
             raise ValueError("Entity name must be a non-empty string")
         self.name = name
-        self._root_body_name = cfg.root_body_name
+        self.root_body_name = cfg.root_body_name
         self._backend_type = backend.backend_type
         self._backend = backend
         self._body_tensor_layouts: dict[tuple[str, ...], np.ndarray] = {}
@@ -4142,7 +4142,7 @@ class EntityScene(Mapping[str, Entity]):
     ) -> None:
         self._backend = backend
         self._state_read_cache = _EntityStateReadCache()
-        self._tensor_read_plan: SceneTensorReadPlan | None = None
+        self.read_plan: SceneTensorReadPlan | None = None
         materialized: dict[str, Entity] = {}
         for name, cfg in entities.items():
             if not isinstance(name, str) or not name:
@@ -4373,8 +4373,8 @@ class EntityScene(Mapping[str, Entity]):
     def _invalidate_state_reads(self) -> None:
         """Discard cached backend state after an in-phase simulation mutation."""
         self._state_read_cache.invalidate()
-        if self._tensor_read_plan is not None:
-            self._tensor_read_plan.invalidate()
+        if self.read_plan is not None:
+            self.read_plan.invalidate()
 
     def reset_to_default(self, reset_mask: torch.Tensor, *, term_name: str) -> None:
         """Stage a full-scene default state in the active mask transaction."""

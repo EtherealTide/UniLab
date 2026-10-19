@@ -17,7 +17,7 @@ from prettytable import PrettyTable
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 @dataclass(kw_only=True)

@@ -18,7 +18,7 @@ from unilab.managers.manager_base import ManagerBase, ManagerTermBase
 from unilab.managers.rng import ManagerRng
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 def _finite(values: torch.Tensor) -> bool:
@@ -300,7 +300,7 @@ class CommandTerm(ManagerTermBase):
         The default command owns no scene reads. Device-resident terms may
         override this hook to obtain stable public views after the Manager has
         compiled its packed read plan, avoiding construction-order coupling to
-        ``EntityScene._tensor_read_plan``.
+        ``EntityScene.read_plan``.
         """
 
 
@@ -411,7 +411,7 @@ class CommandManager(ManagerBase):
         """Fixed-shape command refresh after reset."""
         step_timing: dict[str, float] = {}
         for name, term in self._terms.items():
-            callable_mask = getattr(term, "_update_command_reset", None)
+            callable_mask = getattr(term, "update_command_reset", None)
             if not callable(callable_mask):
                 raise NotImplementedError(
                     f"CommandManager term '{name}' does not define the "

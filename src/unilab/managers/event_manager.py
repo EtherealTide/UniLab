@@ -17,7 +17,7 @@ from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
 from unilab.managers.rng import ManagerRng
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 EventMode = Literal["startup", "reset", "interval", "step"]
 

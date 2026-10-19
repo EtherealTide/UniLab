@@ -184,7 +184,7 @@ class DummyCommand(CommandTerm):
     def _update_command(self) -> None:
         pass
 
-    def _update_command_reset(self, reset_mask: torch.Tensor) -> None:
+    def update_command_reset(self, reset_mask: torch.Tensor) -> None:
         del reset_mask
 
 

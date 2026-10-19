@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from unilab.managers import ResetOwner, ResetOwnerCfg, ResetOwnerManager
-from unilab.managers._types import ManagerBasedRlEnv
+from unilab.managers.types import ManagerBasedRlEnv
 
 from .conftest import FakeEnv
 

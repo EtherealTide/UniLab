@@ -275,7 +275,7 @@ def test_metrics_and_recorder_managers_do_not_import_numpy() -> None:
 
 
 def test_manager_env_protocol_reset_buffer_is_torch() -> None:
-    path = _REPO_ROOT / "src" / "unilab" / "managers" / "_types.py"
+    path = _REPO_ROOT / "src" / "unilab" / "managers" / "types.py"
     offenders = [
         line_number
         for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)

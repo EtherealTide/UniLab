@@ -44,11 +44,11 @@ def _patch_render_pipeline(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     playback_mod = types.ModuleType("unisim.backend.mujoco.playback")
 
-    def _resolve_render_play_model_files(env: Any, *, num_envs: int, tmp_dir: str) -> str:
+    def fake_resolve_render_play_model_files(env: Any, *, num_envs: int, tmp_dir: str) -> str:
         log["resolve_model_files"] = {"num_envs": num_envs}
         return "fake_model.xml"
 
-    playback_mod.resolve_render_play_model_files = _resolve_render_play_model_files  # type: ignore[attr-defined]
+    playback_mod.resolve_render_play_model_files = fake_resolve_render_play_model_files  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "unisim.backend.mujoco.playback", playback_mod)
 
     render_many_mod = types.ModuleType("unisim.visualization.render_many")

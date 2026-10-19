@@ -23,7 +23,7 @@ from unilab.rl.runtime.settings import (
     MAX_INFERENCE_SLOT_CAPACITY,
     MAX_REPLAY_INGRESS_DEPTH,
     RuntimeSettings,
-    _validated_positive_int,
+    validated_positive_int,
 )
 
 
@@ -127,7 +127,7 @@ def _resolve_configured_training_int(
     value = OmegaConf.select(cfg, f"training.{key}", default=default)
     if value is None:
         return default, None
-    effective = _validated_positive_int(
+    effective = validated_positive_int(
         value,
         label=f"{algo_name} training.{key}",
         maximum=maximum,
@@ -141,7 +141,7 @@ def _required_algo_int(cfg: DictConfig, *, key: str, algo_name: str) -> int:
         raise ValueError(
             f"{algo_name} algo.{key} must be configured as a positive integer, got None"
         )
-    return _validated_positive_int(value, label=f"{algo_name} algo.{key}")
+    return validated_positive_int(value, label=f"{algo_name} algo.{key}")
 
 
 def resolve_runtime_settings(

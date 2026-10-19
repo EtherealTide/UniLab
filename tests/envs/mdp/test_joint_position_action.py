@@ -39,7 +39,7 @@ from unilab.envs.mdp.actions import (
 from unilab.envs.mdp.actions import (
     JointPositionActionCfg as ExportedJointPositionActionCfg,
 )
-from unilab.managers._types import ManagerBasedRlEnv
+from unilab.managers.types import ManagerBasedRlEnv
 
 
 class _Backend:

@@ -124,7 +124,7 @@ def _override_key(override: str) -> str:
     return key.lstrip("+~")
 
 
-def _parse_interactive_cli(argv: Sequence[str]) -> InteractiveCliArgs:
+def parse_interactive_cli(argv: Sequence[str]) -> InteractiveCliArgs:
     parser = argparse.ArgumentParser(
         prog="play_interactive.py",
         description="Open a MuJoCo viewer for an interactive policy playback config.",
@@ -168,7 +168,7 @@ def _interactive_overrides_from_cli(
     return normalized
 
 
-def _compose_interactive_config(algo: str, overrides: list[str]) -> DictConfig:
+def compose_interactive_config(algo: str, overrides: list[str]) -> DictConfig:
     GlobalHydra.instance().clear()
     with initialize_config_dir(
         config_dir=str(_PACKAGE_CONF_ROOT / algo),
@@ -775,7 +775,7 @@ def create_playback_session(
         raise ValueError(
             "create_playback_session requires a composed Hydra config (DictConfig); "
             "the legacy non-Hydra playback path has been removed. Compose the owner "
-            "config with hydra.compose (see _compose_interactive_config) and pass it "
+            "config with hydra.compose (see compose_interactive_config) and pass it "
             f"to the playback entrypoint; got {type(cfg).__name__}."
         )
     device = _select_playback_device(cfg)
@@ -1118,7 +1118,7 @@ def play_interactive(args, cfg: DictConfig, *, algo: str | None = None):
     print("[play_interactive] Done.")
 
 
-def _build_play_args(cfg: DictConfig, *, algo: str = "ppo") -> PlayInteractiveArgs:
+def build_play_args(cfg: DictConfig, *, algo: str = "ppo") -> PlayInteractiveArgs:
     return PlayInteractiveArgs(
         task=str(cfg.training.task_name),
         load_run=str(cfg.algo.load_run),
@@ -1197,9 +1197,9 @@ def _exit_if_mjpython() -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parsed = _parse_interactive_cli(sys.argv[1:] if argv is None else argv)
-    cfg = _compose_interactive_config(parsed.algo, parsed.overrides)
-    play_interactive(_build_play_args(cfg, algo=parsed.algo), cfg)
+    parsed = parse_interactive_cli(sys.argv[1:] if argv is None else argv)
+    cfg = compose_interactive_config(parsed.algo, parsed.overrides)
+    play_interactive(build_play_args(cfg, algo=parsed.algo), cfg)
     _exit_if_mjpython()
 
 

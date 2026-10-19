@@ -41,8 +41,8 @@ from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadSpec
 from unilab.base.reset_state import ResetStateTransaction
 from unilab.envs import mdp
 from unilab.managers import EventManager, EventTermCfg, SceneEntityCfg
-from unilab.managers._types import ManagerBasedRlEnv
 from unilab.managers.rng import ManagerRng
+from unilab.managers.types import ManagerBasedRlEnv
 
 requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 
@@ -1039,7 +1039,7 @@ def test_apply_body_impulse_offset_generates_cross_torque() -> None:
     env, backend, _ = _tensor_dr_env(device_reset_randomization=True, device=torch.device("cpu"))
     backend.interval_force_supported = True
     backend.interval_torque_supported = True
-    env.scene._tensor_read_plan = scene_compile = env.scene.compile_tensor_reads(
+    env.scene.read_plan = scene_compile = env.scene.compile_tensor_reads(
         env.device,
         (SceneTensorReadSpec(entity="robot", body_names=("base",)),),
     )

@@ -5,7 +5,7 @@ from __future__ import annotations
 from os import PathLike
 from pathlib import Path
 
-_TEST_LOG_ROOT_ENV = "UNILAB_TEST_LOG_ROOT"
+TEST_LOG_ROOT_ENV = "UNILAB_TEST_LOG_ROOT"
 
 
 def get_latest_run(log_dir: str | Path) -> Path | None:
@@ -42,7 +42,7 @@ def get_latest_checkpoint(run_dir: str | Path, *, suffix: str = ".pt") -> Path |
     return max(model_files, key=_iteration)
 
 
-def _normalize_load_run(load_run: str | int | PathLike[str]) -> str:
+def normalize_load_run(load_run: str | int | PathLike[str]) -> str:
     return str(load_run)
 
 
@@ -74,7 +74,7 @@ def resolve_checkpoint_path(
     unresolvable run yields ``(None, None)``.
     """
     base_dir = Path(task_log_root)
-    selected_run = _normalize_load_run(load_run)
+    selected_run = normalize_load_run(load_run)
 
     run_dir: Path | None
     if selected_run == "-1":

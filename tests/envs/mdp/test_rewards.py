@@ -12,8 +12,8 @@ import torch
 from unilab.base.entity import EntityTensorBodyStateView, EntityTensorStateView
 from unilab.envs import mdp
 from unilab.managers import RewardManager, RewardTermCfg
-from unilab.managers._types import ManagerBasedRlEnv
 from unilab.managers.scene_entity_config import SceneEntityCfg
+from unilab.managers.types import ManagerBasedRlEnv
 
 
 class _Entity:
@@ -22,7 +22,7 @@ class _Entity:
     num_joints = 3
     num_bodies = 2
     name = "robot"
-    _root_body_name = "base"
+    root_body_name = "base"
 
     def __init__(self) -> None:
         self.data = SimpleNamespace(
@@ -165,7 +165,7 @@ def _projected_gravity(quat: np.ndarray) -> np.ndarray:
 class _Scene(dict):
     def __init__(self, entity: _Entity, plan: _ReadPlan):
         super().__init__({"robot": entity})
-        self._tensor_read_plan = plan
+        self.read_plan = plan
 
 
 def test_generic_reward_terms_match_pinned_numpy_semantics() -> None:
