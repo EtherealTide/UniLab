@@ -318,5 +318,5 @@ jobs:
         # reject package-name-only coverage invocations.
         run: |
           uv run --no-sync coverage combine coverage-data
-          uv run --no-sync coverage report --markdown >> "${GITHUB_STEP_SUMMARY}"
+          uv run --no-sync coverage report --format=markdown >> "${GITHUB_STEP_SUMMARY}"
           uv run --no-sync coverage report --fail-under=25
