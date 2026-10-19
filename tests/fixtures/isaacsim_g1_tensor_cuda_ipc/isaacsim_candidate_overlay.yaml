@@ -2,8 +2,8 @@
 # Test-fixture-only FlashSAC IsaacSim tensor overlay. It is intentionally not
 # a discoverable production Hydra owner: the current mapped-entity compiler
 # cannot compose a task keyframe without a temporary full robot-source copy,
-# and a shipped owner could otherwise resolve unisim-core 1.7.10 without the
-# CUDA IPC tensor lifecycle. Kit/PhysX stay in the external Python 3.11
+# and it requires the unisim-core 1.8.0 CUDA IPC tensor lifecycle. Kit/PhysX
+# stay in the external Python 3.11
 # worker; tensor_cuda_ipc replaces bulk CPU shared memory with a same-GPU CUDA
 # IPC arena. The static backend matrix remains unsupported until #1675 closes.
 
