@@ -598,7 +598,7 @@ def test_build_runner_multi_gpu_constructs_dp_sync_for_flashsac_rank0(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "unilab.rl.runtime.distributed.affinity._discover_physical_cpu_groups",
+        "unilab.rl.runtime.distributed.affinity.discover_physical_cpu_groups",
         lambda _: [[core, core + 64] for core in range(64)],
     )
     monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
@@ -617,7 +617,7 @@ def test_build_runner_multi_gpu_constructs_dp_sync_for_flashsac_rank0(
 
 def test_build_runner_multi_gpu_flashsac_spawned_rank(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
-        "unilab.rl.runtime.distributed.affinity._discover_physical_cpu_groups",
+        "unilab.rl.runtime.distributed.affinity.discover_physical_cpu_groups",
         lambda _: [[core, core + 64] for core in range(64)],
     )
     monkeypatch.setenv(UNILAB_DP_RANK, "1")

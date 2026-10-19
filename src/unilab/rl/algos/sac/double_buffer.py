@@ -10,7 +10,6 @@ from omegaconf import DictConfig, OmegaConf
 from unilab.rl.algos.sac.learner import SACLearner
 from unilab.rl.contracts.env import EnvFactory
 from unilab.rl.contracts.observations import get_obs_dims
-from unilab.rl.runtime.nan_guard import NanGuardCfg
 from unilab.rl.runtime.offpolicy.actor_adapter import import_actor_adapter_modules
 from unilab.rl.runtime.offpolicy.double_buffer_runner import (
     DoubleBufferOffPolicyRunner,
@@ -34,8 +33,8 @@ def build_sac_double_buffer_runner(
     env_cfg_override: dict[str, Any] | None,
     replay_prefetch_mode: str,
     device: str,
-    nan_guard_cfg: NanGuardCfg | None = None,
-    nan_guard_factory: Callable[[NanGuardCfg, int, bool], Any] | None = None,
+    nan_guard_cfg: Any | None = None,
+    nan_guard_factory: Callable[[Any, int, bool], Any] | None = None,
     torch_thread_runtime: dict[str, Any] | None = None,
     collector_cpu_ids: list[int] | None = None,
     dp_sync: DpParameterSync | None = None,

@@ -2,9 +2,9 @@
 
 Merged from unilab_rl @ 3654e4b (unilab-rl 1.4.15), Apache-2.0; previously
 ``uni_rl.utils.seed``. The owner-config seed resolution contract
-(``resolve_training_seed`` / ``TrainingSeedInfo``) is owned by
-:mod:`unilab.training.seed`; this module holds the runtime-side seed
-application and per-worker derivation.
+(``resolve_training_seed`` / ``TrainingSeedInfo`` / parent-process
+``apply_training_seed``) is owned by :mod:`unilab.training.seed`; this module
+owns only runtime-process seed application and per-worker derivation.
 """
 
 from __future__ import annotations
@@ -23,13 +23,13 @@ def derive_worker_seed(base_seed: int | None, worker_index: int = 0) -> int | No
     return int(base_seed) + int(worker_index) + 1
 
 
-def apply_training_seed(
+def apply_worker_seed(
     seed: int | None,
     *,
     torch_runtime: bool = True,
     cuda: bool = True,
 ) -> int | None:
-    """Apply a seed to the runtimes used by training entrypoints."""
+    """Apply a seed to every RNG consumed by an RL runtime process."""
     if seed is None:
         return None
 

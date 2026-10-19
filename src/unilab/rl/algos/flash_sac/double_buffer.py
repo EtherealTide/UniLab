@@ -14,13 +14,12 @@ from unilab.rl.contracts.env import EnvFactory
 from unilab.rl.contracts.observations import get_obs_dims
 from unilab.rl.runtime.device import get_default_device
 from unilab.rl.runtime.ipc.replay_pipelines.gpu_resident import require_offpolicy_replay_device
-from unilab.rl.runtime.nan_guard import NanGuardCfg
 from unilab.rl.runtime.offpolicy.double_buffer_runner import (
     DoubleBufferOffPolicyRunner,
     reject_removed_inference_request_timeout,
 )
 from unilab.rl.runtime.placement import InferencePlacement
-from unilab.rl.runtime.seed import apply_training_seed
+from unilab.rl.runtime.seed import apply_worker_seed
 from unilab.rl.runtime.settings import TensorRuntimeSettings
 
 if TYPE_CHECKING:
@@ -52,8 +51,8 @@ def build_flashsac_double_buffer_runner(
     env_cfg_override: dict[str, Any] | None,
     replay_prefetch_mode: str,
     device: str | None = None,
-    nan_guard_cfg: NanGuardCfg | None = None,
-    nan_guard_factory: Callable[[NanGuardCfg, int, bool], Any] | None = None,
+    nan_guard_cfg: Any | None = None,
+    nan_guard_factory: Callable[[Any, int, bool], Any] | None = None,
     torch_thread_runtime: dict[str, Any] | None = None,
     collector_cpu_ids: list[int] | None = None,
     dp_sync: DpParameterSync | None = None,
@@ -72,7 +71,7 @@ def build_flashsac_double_buffer_runner(
     :mod:`unilab.base.process_device`).
     """
     device = require_offpolicy_replay_device(device or get_default_device())
-    apply_training_seed(cfg.algo.seed, torch_runtime=True, cuda=True)
+    apply_worker_seed(cfg.algo.seed, torch_runtime=True, cuda=True)
     _validate_flashsac_double_buffer_runtime(
         cfg,
         replay_prefetch_mode=replay_prefetch_mode,

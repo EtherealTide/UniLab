@@ -29,6 +29,7 @@ import unilab.envs.manager_based_rl_env as manager_env_module
 from unilab.assets import ASSETS_ROOT_PATH
 from unilab.base.backend_factory import create_backend, env_backend_kwargs
 from unilab.base.backend_timing import UPDATE_STATE_DETAIL_TIMING_KEYS
+from unilab.base.base import EnvPlayCapabilities
 from unilab.base.entity import EntityCfg
 from unilab.base.scene import SceneCfg
 from unilab.base.torch_env import TorchEnv, TorchEnvState
@@ -60,6 +61,12 @@ from unilab.managers import (
 )
 from unilab.managers.scene_entity_config import SceneEntityCfg
 from unilab.managers.torch_rng import TorchManagerRng
+from unilab.rl.contracts.env import (
+    EnvAlgoCapabilities,
+    EnvPlayCapabilitiesProtocol,
+    EnvProtocol,
+    EnvStateProtocol,
+)
 
 
 class _FakeBackend:
@@ -1295,6 +1302,9 @@ def test_step_publishes_fixed_width_reward_components_for_tensor_collectors() ->
     state = env.step(torch.tensor([[0.25], [0.75]], dtype=torch.float32))
 
     assert env.algo_capabilities.reward_component_names == ("track",)
+    assert env.algo_capabilities.action_low is None
+    assert env.algo_capabilities.action_high is None
+    assert env.algo_capabilities.joint_names is None
     assert "reward_components" in state.info
     assert "reward/track" not in state.info["log"]
     torch.testing.assert_close(
@@ -1302,6 +1312,31 @@ def test_step_publishes_fixed_width_reward_components_for_tensor_collectors() ->
         torch.tensor([[0.25], [0.75]], dtype=torch.float32),
     )
     env.close()
+
+
+def test_manager_env_satisfies_rl_runtime_contract() -> None:
+    env, _backend = _make_env()
+    _backend.get_play_capabilities = lambda: EnvPlayCapabilities(
+        supports_physics_state_playback=False
+    )
+    try:
+        env.init_state()
+        assert isinstance(env, EnvProtocol)
+        assert isinstance(env.algo_capabilities, EnvAlgoCapabilities)
+        assert isinstance(env.play_capabilities, EnvPlayCapabilitiesProtocol)
+        assert isinstance(env.state, EnvStateProtocol)
+        assert set(env.state.obs) == set(env.obs_groups_spec)
+        assert all(value.device == env.device for value in env.state.obs.values())
+        assert isinstance(env.play_capabilities.supports_physics_state_playback, bool)
+        assert env.cfg.max_episode_seconds > 0
+        assert env.cfg.ctrl_dt > 0
+
+        values = torch.tensor([1, 2], dtype=torch.int64, device=env.device)
+        env.set_episode_length_buf(values)
+        torch.testing.assert_close(env.episode_length_buf, values)
+        torch.testing.assert_close(env.state.info["steps"], values)
+    finally:
+        env.close()
 
 
 def test_step_publishes_backend_completion_for_transition_consumers() -> None:

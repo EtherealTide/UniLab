@@ -400,7 +400,7 @@ def test_collector_publishes_ready_after_initialization(
         assert _publish_collector_ready(coordination_queue, None)
 
     monkeypatch.setattr(worker_module, "apply_torch_thread_runtime", lambda *args, **kwargs: None)
-    monkeypatch.setattr(worker_module, "apply_training_seed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker_module, "apply_worker_seed", lambda *args, **kwargs: None)
     monkeypatch.setattr(worker_module, "_publish_collector_ready", publish_ready)
     monkeypatch.setattr(
         worker_module,
@@ -433,6 +433,43 @@ def test_collector_publishes_ready_after_initialization(
     assert inference_request_queue.get_nowait() == worker_module.COLLECTOR_READY_TICK
 
 
+def test_collector_rejects_enabled_diagnostics_without_injected_guard_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Env:
+        num_envs = 1
+        play_capabilities = SimpleNamespace(supports_physics_state_playback=False)
+
+        def set_nan_guard(self, guard: object) -> None:
+            del guard
+            raise AssertionError("no guard should be constructed without a factory")
+
+    monkeypatch.setattr(worker_module, "apply_torch_thread_runtime", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker_module, "apply_worker_seed", lambda *args, **kwargs: None)
+
+    with pytest.raises(ValueError, match="injected nan_guard_factory"):
+        worker_module._run_collector(
+            stop_event=threading.Event(),
+            env_factory=lambda num_envs, env_cfg_override=None: _Env(),
+            num_envs=1,
+            replay_buffer=SimpleNamespace(),
+            inference_slot=None,
+            inference_request_queue=queue.Queue(),
+            inference_response_queue=queue.Queue(),
+            algo_type="sac",
+            actor_adapter_modules=None,
+            metrics_queue=queue.Queue(),
+            inference_transport="legacy_tensor",
+            sim_backend="mujoco",
+            backend_device=None,
+            env_cfg_override=None,
+            seed=None,
+            trace_enabled=False,
+            trace_thread_time=False,
+            nan_guard_cfg=SimpleNamespace(enabled=True),
+        )
+
+
 def _run_ready_collector(
     monkeypatch: pytest.MonkeyPatch,
     env: Any,
@@ -458,7 +495,7 @@ def _run_ready_collector(
         return False
 
     monkeypatch.setattr(worker_module, "apply_torch_thread_runtime", lambda *args, **kwargs: None)
-    monkeypatch.setattr(worker_module, "apply_training_seed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker_module, "apply_worker_seed", lambda *args, **kwargs: None)
     monkeypatch.setattr(worker_module, "_publish_collector_ready", publish_ready)
 
     worker_module._run_collector(
@@ -567,7 +604,7 @@ def test_collector_requires_batched_replay_publication(
             del stop
 
     monkeypatch.setattr(worker_module, "apply_torch_thread_runtime", lambda *args, **kwargs: None)
-    monkeypatch.setattr(worker_module, "apply_training_seed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker_module, "apply_worker_seed", lambda *args, **kwargs: None)
 
     with pytest.raises(AttributeError, match="add_batch"):
         worker_module._run_collector(
@@ -610,7 +647,7 @@ def test_collector_binds_backend_device_before_env_materialization(
         raise _EnvMaterializedError
 
     monkeypatch.setattr(worker_module, "apply_torch_thread_runtime", lambda *args, **kwargs: None)
-    monkeypatch.setattr(worker_module, "apply_training_seed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker_module, "apply_worker_seed", lambda *args, **kwargs: None)
 
     with pytest.raises(_EnvMaterializedError):
         worker_module._run_collector(
@@ -705,7 +742,7 @@ def test_tensor_collector_reports_bounded_inference_scheduling_diagnostics(
             events.append("replay_release")
 
     monkeypatch.setattr(worker_module, "apply_torch_thread_runtime", lambda *a, **kw: None)
-    monkeypatch.setattr(worker_module, "apply_training_seed", lambda *a, **kw: None)
+    monkeypatch.setattr(worker_module, "apply_worker_seed", lambda *a, **kw: None)
     ring = SharedInferenceRing(2, 2, 2, capacity=4)
 
     def serve_learner_action(
@@ -863,7 +900,7 @@ def test_tensor_collector_passes_env_observations_to_replay_without_snapshot(
             return None
 
     monkeypatch.setattr(worker_module, "apply_torch_thread_runtime", lambda *a, **kw: None)
-    monkeypatch.setattr(worker_module, "apply_training_seed", lambda *a, **kw: None)
+    monkeypatch.setattr(worker_module, "apply_worker_seed", lambda *a, **kw: None)
     ring = SharedInferenceRing(2, 2, 2, capacity=2)
 
     def serve_learner_action(
@@ -975,7 +1012,7 @@ def test_tensor_collector_steps_env_with_ring_tensor_actions(
             return None
 
     monkeypatch.setattr(worker_module, "apply_torch_thread_runtime", lambda *a, **kw: None)
-    monkeypatch.setattr(worker_module, "apply_training_seed", lambda *a, **kw: None)
+    monkeypatch.setattr(worker_module, "apply_worker_seed", lambda *a, **kw: None)
     ring = SharedInferenceRing(2, 2, 2, capacity=2)
 
     def serve_learner_action(coordination_queue, tick_id, stop, **kwargs):
@@ -1180,7 +1217,7 @@ def test_tensor_collector_preserves_interval_reward_component_means(
         return True
 
     monkeypatch.setattr(worker_module, "apply_torch_thread_runtime", lambda *a, **kw: None)
-    monkeypatch.setattr(worker_module, "apply_training_seed", lambda *a, **kw: None)
+    monkeypatch.setattr(worker_module, "apply_worker_seed", lambda *a, **kw: None)
     monkeypatch.setattr(worker_module, "_wait_for_inference_tick", serve_learner_action)
 
     worker_module._run_collector(
@@ -1270,7 +1307,7 @@ def test_worker_shutdown_flushes_partial_metrics_before_abnormal_cleanup(
             events.append("replay_release")
 
     monkeypatch.setattr(worker_module, "apply_torch_thread_runtime", lambda *a, **kw: None)
-    monkeypatch.setattr(worker_module, "apply_training_seed", lambda *a, **kw: None)
+    monkeypatch.setattr(worker_module, "apply_worker_seed", lambda *a, **kw: None)
     ring = SharedInferenceRing(2, 2, 2, capacity=4)
 
     def serve_learner_action(

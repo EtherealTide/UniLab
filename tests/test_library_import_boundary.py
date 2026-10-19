@@ -41,6 +41,14 @@ _RL_PACKAGE = _LIBRARY_PACKAGE / "rl"
 _SINGLE_OWNER_SYMBOLS = {
     "split_obs_dict": _RL_PACKAGE / "contracts" / "observations.py",
     "get_obs_dims": _RL_PACKAGE / "contracts" / "observations.py",
+    "get_default_device": _LIBRARY_PACKAGE / "utils" / "device.py",
+    "TrainingSeedInfo": _LIBRARY_PACKAGE / "training" / "seed.py",
+    "resolve_training_seed": _LIBRARY_PACKAGE / "training" / "seed.py",
+    "apply_training_seed": _LIBRARY_PACKAGE / "training" / "seed.py",
+    "apply_worker_seed": _RL_PACKAGE / "runtime" / "seed.py",
+    "resolve_backend_process_device": _LIBRARY_PACKAGE / "base" / "process_device.py",
+    "configure_backend_process_device": _LIBRARY_PACKAGE / "base" / "process_device.py",
+    "TensorNanGuard": _LIBRARY_PACKAGE / "training" / "tensor_diagnostics.py",
 }
 
 
@@ -95,9 +103,20 @@ def test_observation_contract_symbols_have_a_single_owner() -> None:
                     violations.append((path.relative_to(_REPO_ROOT).as_posix(), node.name))
 
     assert violations == [], (
-        "these symbols are owned by unilab.rl.contracts.observations; import "
-        f"them from there instead of re-defining: {violations}"
+        "these symbols have exactly one owner module; import them instead of "
+        f"re-defining: {violations}"
     )
+
+
+def test_library_does_not_import_former_uni_rl_package() -> None:
+    violations = [
+        (path.relative_to(_REPO_ROOT).as_posix(), module)
+        for path in sorted(_LIBRARY_PACKAGE.rglob("*.py"))
+        for module in sorted(_imports(path))
+        if module == "uni_rl" or module.startswith("uni_rl.")
+    ]
+
+    assert violations == [], "the merged RL stack must not import the former uni_rl package"
 
 
 _UTILS_FORBIDDEN_LAYERS = (

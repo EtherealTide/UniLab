@@ -24,8 +24,7 @@ from unilab.rl.contracts.observations import get_obs_dims
 from unilab.rl.logging import OffPolicyLogger
 from unilab.rl.logging.metrics_drain import RewardComponentWindow, drain_collector_metrics
 from unilab.rl.runtime.ipc import AsyncRunner, SharedWeightSync, TensorRolloutRingBuffer
-from unilab.rl.runtime.nan_guard import NanGuardCfg
-from unilab.rl.runtime.seed import apply_training_seed, derive_worker_seed
+from unilab.rl.runtime.seed import apply_worker_seed, derive_worker_seed
 
 
 def _optimizer_lr_from_state(optimizer: torch.optim.Optimizer) -> float:
@@ -63,7 +62,7 @@ class APPORunner(AsyncRunner):
         replay_queue_size: int = 3,
         seed: int | None = None,
         resume_path: str | None = None,
-        nan_guard_cfg: NanGuardCfg | None = None,
+        nan_guard_cfg: Any | None = None,
         nan_guard_factory: Any | None = None,
         log_interval: int = 1,
     ):
@@ -122,7 +121,7 @@ class APPORunner(AsyncRunner):
 
     def _detect_dims(self):
         """Create a tiny probe env via the injected factory, read dims, close it."""
-        apply_training_seed(self.seed, torch_runtime=True, cuda=True)
+        apply_worker_seed(self.seed, torch_runtime=True, cuda=True)
         env = self.env_factory(1, self.env_cfg_overrides if self.env_cfg_overrides else None)
         obs_dim, critic_dim = get_obs_dims(dict(env.obs_groups_spec))
         self.critic_dim = critic_dim
@@ -139,7 +138,7 @@ class APPORunner(AsyncRunner):
         import torch
         from tensordict import TensorDict
 
-        apply_training_seed(self.seed, torch_runtime=True, cuda=True)
+        apply_worker_seed(self.seed, torch_runtime=True, cuda=True)
         obs_example = torch.zeros((self.num_envs, self.obs_dim), device=self.device)
         td_example = TensorDict({"policy": obs_example}, batch_size=self.num_envs)
 

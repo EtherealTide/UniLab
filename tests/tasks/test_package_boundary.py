@@ -56,10 +56,8 @@ _PRODUCTION_NUMPY_IMPORT_ALLOWLIST = {
     "src/unilab/rl/runtime/ipc/replay_buffer.py",
     "src/unilab/rl/runtime/ipc/rollout_ring_buffer.py",
     "src/unilab/rl/runtime/ipc/weight_sync.py",
-    "src/unilab/rl/runtime/nan_guard.py",
     "src/unilab/rl/runtime/offpolicy/actor_adapter.py",
     "src/unilab/rl/runtime/seed.py",
-    "src/unilab/rl/runtime/tensor.py",
 }
 
 
