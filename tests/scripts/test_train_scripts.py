@@ -2831,8 +2831,17 @@ def test_play_interactive_runner_log_dir_uses_algo_log_name(monkeypatch: pytest.
         get_physics_state_snapshot=lambda: np.zeros((1, 8), dtype=np.float32),
     )
 
-    monkeypatch.setattr(mod.registry, "make", lambda *args, **kwargs: fake_env)
+    monkeypatch.setattr(mod, "configure_backend_process_device", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        mod,
+        "build_play_backend_adapter",
+        lambda *args, **kwargs: types.SimpleNamespace(build_task_env_cfg_override=lambda: {}),
+    )
+    from unilab.base import config_adapter
+
+    monkeypatch.setattr(config_adapter, "create_env", lambda *args, **kwargs: fake_env)
     monkeypatch.setattr(mod, "resolve_checkpoint", lambda *args, **kwargs: "/tmp/model_10.pt")
+    monkeypatch.setattr(mod, "make_sim2sim_preflight", lambda cfg, *, algo_name: None)
     monkeypatch.setattr(
         mod,
         "get_entrypoint_log_root",
@@ -2846,7 +2855,6 @@ def test_play_interactive_runner_log_dir_uses_algo_log_name(monkeypatch: pytest.
             *args, wrapper_cls=FakeWrapper, runner_cls=FakeRunner, **kwargs
         ),
     )
-    monkeypatch.setattr(mod, "PPOConfig", lambda: types.SimpleNamespace(to_dict=lambda: {}))
     monkeypatch.setattr(mod.mujoco, "MjData", lambda model: object())
     monkeypatch.setattr(mod, "PhysicsStateApplier", FakePhysicsStateApplier)
     monkeypatch.setattr(mod.mujoco.viewer, "launch_passive", lambda *args, **kwargs: FakeViewer())
@@ -2875,7 +2883,11 @@ def test_play_interactive_runner_log_dir_uses_algo_log_name(monkeypatch: pytest.
         start_paused=False,
     )
 
-    mod.play_interactive(args)
+    cfg = OmegaConf.create(
+        {"training": {"device": "cpu", "task_name": "MyTask"}, "algo": {"algo": "ppo"}}
+    )
+
+    mod.play_interactive(args, cfg)
 
     assert captured["ckpt"] == "/tmp/model_10.pt"
     assert captured["log_dir"].replace("\\", "/") == "/tmp/custom_ppo/MyTask/play_temp"

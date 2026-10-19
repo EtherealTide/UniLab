@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import pytest
 import torch
+from omegaconf import OmegaConf
 from unisim.backend.base import CameraCfg
 
 # CPU-bound on the single-core CI runner; kept in the slow lane (make test-slow).
@@ -296,6 +297,35 @@ def test_play_interactive_viewer_model_uses_shared_render_playback_resolver(
     assert Path(resolved["tmp_dir"]).name.startswith("unilab-interactive-viewer-")
 
 
+def _minimal_playback_cfg() -> Any:
+    return OmegaConf.create({"training": {"device": "cpu"}, "algo": {"algo": "ppo"}})
+
+
+def test_play_interactive_requires_composed_hydra_config():
+    mod = _load_script("play_interactive")
+    args = SimpleNamespace(
+        algo="ppo",
+        task="g1_walk_flat",
+        sim="mujoco",
+        load_run="-1",
+        checkpoint=None,
+        action_mode="policy",
+        policy_obs_mode="actor",
+    )
+
+    for bad_cfg in (None, {"training": {}, "algo": {}}):
+        with pytest.raises(ValueError, match="composed Hydra config"):
+            mod.play_interactive(args, bad_cfg)
+
+
+def test_create_playback_session_requires_composed_hydra_config():
+    mod = _load_script("play_interactive")
+    args = SimpleNamespace(task="g1_walk_flat", sim="mujoco")
+
+    with pytest.raises(ValueError, match="composed Hydra config"):
+        mod.create_playback_session(args, None, algo="ppo")
+
+
 def test_play_interactive_binds_mjwarp_process_device_before_session(monkeypatch):
     mod = _load_script("play_interactive")
     bound: list[tuple[str, str]] = []
@@ -322,7 +352,7 @@ def test_play_interactive_binds_mjwarp_process_device_before_session(monkeypatch
         policy_obs_mode="actor",
     )
     with pytest.raises(RuntimeError, match="stop-before-session"):
-        mod.play_interactive(args, None)
+        mod.play_interactive(args, _minimal_playback_cfg())
 
     assert bound == [("mjwarp", "cuda:0")]
 
@@ -353,6 +383,6 @@ def test_play_interactive_device_binding_is_noop_for_mujoco(monkeypatch):
         policy_obs_mode="actor",
     )
     with pytest.raises(RuntimeError, match="stop-before-session"):
-        mod.play_interactive(args, None)
+        mod.play_interactive(args, _minimal_playback_cfg())
 
     assert bound == [("mujoco", "cuda:0")]
