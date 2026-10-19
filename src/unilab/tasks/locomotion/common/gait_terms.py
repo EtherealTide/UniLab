@@ -1,7 +1,7 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681),
 # src/mjlab/tasks/velocity/mdp/rewards.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy, named-sensor contact groups, and the
+# Modified by UniLab for Torch, named-sensor contact groups, and the
 # base-owned entity facade; Apache-2.0.
 """mjlab-aligned gait-quality terms shared by locomotion families.
 

@@ -72,7 +72,7 @@ from unilab.utils.checkpoint import (
     resolve_offpolicy_checkpoint_path as resolve_checkpoint_path,
 )
 from unilab.visualization.interactive_playback import (
-    RslRlPlaybackConfig,
+    PlaybackConfig,
     create_sac_playback_session,
     default_device,
     resolve_play_obs_dims,
@@ -562,7 +562,7 @@ def play_offpolicy(
     )
     print(f"Using device for play: {device}")
 
-    playback_cfg = RslRlPlaybackConfig(
+    playback_cfg = PlaybackConfig(
         task=str(cfg.training.task_name),
         load_run=selected_load_run,
         checkpoint=selected_checkpoint,

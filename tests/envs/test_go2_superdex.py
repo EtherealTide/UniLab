@@ -74,7 +74,7 @@ def test_go2_superdex_executes_mujoco_checkpoint(tmp_path: Path) -> None:
 
     from unilab.training.run import algo_config_dict
     from unilab.visualization.interactive_playback import (
-        RslRlPlaybackConfig,
+        PlaybackConfig,
         create_rsl_rl_playback_session,
         infer_checkpoint_actor_input_dim,
         make_sim2sim_preflight,
@@ -94,7 +94,7 @@ def test_go2_superdex_executes_mujoco_checkpoint(tmp_path: Path) -> None:
     )
     try:
         session, _, loaded = create_rsl_rl_playback_session(
-            playback_cfg=RslRlPlaybackConfig(
+            playback_cfg=PlaybackConfig(
                 task="Go2JoystickFlat",
                 load_run=str(checkpoint),
                 checkpoint=None,

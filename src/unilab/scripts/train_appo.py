@@ -43,7 +43,7 @@ from unilab.training.seed import apply_configured_training_seed
 from unilab.training.tensor_runtime import select_sim_carrier_device
 from unilab.utils.checkpoint import resolve_appo_checkpoint_path
 from unilab.visualization.interactive_playback import (
-    RslRlPlaybackConfig,
+    PlaybackConfig,
     create_appo_playback_session,
     normalize_checkpoint_value,
 )
@@ -266,7 +266,7 @@ def play_appo(
     )
     print(f"Using device for play: {device}")
 
-    playback_cfg = RslRlPlaybackConfig(
+    playback_cfg = PlaybackConfig(
         task=str(cfg.training.task_name),
         load_run=str(cfg.algo.load_run),
         checkpoint=normalize_checkpoint_value(

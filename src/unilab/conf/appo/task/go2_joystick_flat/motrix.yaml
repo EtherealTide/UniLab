@@ -14,8 +14,8 @@ env:
   # Motrix's packed HOST_BRIDGE uses the canonical tensor selected-reset terms.
   events:
     reset_scene_to_default:
-      func: unilab.envs.mdp.reset_scene_to_default_tensor
+      func: unilab.envs.mdp.skip_scene_reset
     reset_root_state_uniform:
-      func: unilab.envs.mdp.reset_root_state_uniform_tensor
+      func: unilab.envs.mdp.reset_root_state_uniform_fused
     # Motrix tensor mask reset does not support PD-gain randomization.
     pd_gains: null

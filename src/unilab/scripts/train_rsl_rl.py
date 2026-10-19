@@ -61,7 +61,7 @@ from unilab.training.tensor_runtime import select_sim_carrier_device
 from unilab.utils.checkpoint import get_entrypoint_log_root
 from unilab.utils.device import get_default_device
 from unilab.visualization.interactive_playback import (
-    RslRlPlaybackConfig,
+    PlaybackConfig,
     create_rsl_rl_playback_session,
     infer_checkpoint_actor_input_dim,
     make_sim2sim_preflight,
@@ -311,7 +311,7 @@ def play_rsl_rl(cfg: DictConfig, device: str) -> str | None:
         )
         return None
 
-    playback_cfg = RslRlPlaybackConfig(
+    playback_cfg = PlaybackConfig(
         task=str(cfg.training.task_name),
         load_run=str(cfg.algo.load_run),
         checkpoint=normalize_checkpoint_value(
