@@ -34,7 +34,7 @@ def _validated_positive_int(
 
 
 @dataclass(frozen=True)
-class TensorRuntimeSettings:
+class RuntimeSettings:
     """Effective, bounded tensor-runtime values resolved before spawn."""
 
     inference_slot_capacity: int

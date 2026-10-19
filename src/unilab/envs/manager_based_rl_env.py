@@ -52,6 +52,7 @@ from unilab.managers import (
     CurriculumTermCfg,
     EventManager,
     EventTermCfg,
+    ManagerRng,
     MetricsManager,
     MetricsTermCfg,
     NullCommandManager,
@@ -70,7 +71,6 @@ from unilab.managers import (
     RewardTermCfg,
     TerminationManager,
     TerminationTermCfg,
-    TorchManagerRng,
 )
 from unilab.managers.scene_entity_config import SceneEntityCfg
 from unilab.rl.contracts.env import EnvAlgoCapabilities
@@ -337,9 +337,8 @@ class ManagerBasedRlEnv(TorchEnv):
         super().__init__(cfg, backend, num_envs, device=runtime_device)
         actual_seed = cfg.seed if cfg.seed is not None else secrets.randbits(63)
         cfg.seed = actual_seed
-        self._torch_rng_owner = TorchManagerRng(device=self.device).manual_seed(actual_seed)
-        self.torch_rng = self._torch_rng_owner
-        self._torch_generator = self._torch_rng_owner.generator if self._torch_rng_owner else None
+        self._rng_owner = ManagerRng(device=self.device).manual_seed(actual_seed)
+        self.rng = self._rng_owner
         self._reward_log_names: tuple[str, ...] = ()
         self._reward_log_means = torch.empty(0, dtype=torch.float32, device=self.device)
         self._last_reset_manager_timing_ms = {}
@@ -1146,7 +1145,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 "ManagerBasedRlEnv randomized initial episode counters require "
                 f"max_episode_steps > 1; got {max_steps}"
             )
-        return self.torch_rng.integers(0, max_steps, self.num_envs, dtype=torch.int64).to(
+        return self.rng.integers(0, max_steps, self.num_envs, dtype=torch.int64).to(
             device=self.device, dtype=torch.int64
         )
 
@@ -1699,8 +1698,8 @@ class ManagerBasedRlEnv(TorchEnv):
             seed = secrets.randbits(63)
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
             raise ValueError(f"ManagerBasedRlEnv seed must be a non-negative integer, got {seed!r}")
-        if self._torch_rng_owner is not None:
-            self._torch_rng_owner.manual_seed(seed)
+        if self._rng_owner is not None:
+            self._rng_owner.manual_seed(seed)
         self._cfg.seed = seed
         return seed
 
@@ -1726,7 +1725,7 @@ def make_manager_based_rl_env(
 ) -> ManagerBasedRlEnv:
     """Construct the generic Registry-owned Manager-Based production runtime."""
     from unilab.base.registry import (
-        _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS,
+        _SUPPORTED_SIM_BACKENDS,
     )
 
     if not isinstance(cfg, ManagerBasedRlEnvCfg):
@@ -1743,10 +1742,10 @@ def make_manager_based_rl_env(
             "make_manager_based_rl_env backend_type must be a non-empty string, "
             f"got {backend_type!r}"
         )
-    if backend_type not in _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS:
+    if backend_type not in _SUPPORTED_SIM_BACKENDS:
         raise ValueError(
             "make_manager_based_rl_env supports only the tensor Manager backends "
-            f"{', '.join(_TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS)}; got {backend_type!r}."
+            f"{', '.join(_SUPPORTED_SIM_BACKENDS)}; got {backend_type!r}."
         )
 
     cfg.validate()

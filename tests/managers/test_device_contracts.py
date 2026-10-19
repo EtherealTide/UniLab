@@ -404,11 +404,11 @@ def test_cuda_packed_read_plan_and_default_torch_tables() -> None:
 
     data = scene["robot"].data
     for table in (
-        data.default_joint_pos_torch(device),
-        data.default_joint_vel_torch(device),
-        data.default_root_state_torch(device),
-        data.gravity_vec_w_torch(device),
-        data.soft_joint_pos_limits_torch(device),
+        data.default_joint_pos(device),
+        data.default_joint_vel(device),
+        data.default_root_state(device),
+        data.gravity_vec_w(device),
+        data.soft_joint_pos_limits(device),
     ):
         assert table.dtype == torch.float32
         assert table.device == device

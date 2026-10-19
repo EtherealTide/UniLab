@@ -96,7 +96,7 @@ class EnvAlgoCapabilitiesProtocol(Protocol):
 
     @property
     def reward_component_names(self) -> tuple[str, ...] | None:
-        """Reward component names for fixed-width tensor metric aggregation."""
+        """Reward component names for fixed-width device metric aggregation."""
         ...
 
 

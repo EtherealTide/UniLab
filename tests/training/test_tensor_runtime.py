@@ -26,7 +26,7 @@ from unilab.training.tensor_runtime import (
     resolve_collector_metrics_interval,
     resolve_inference_slot_capacity,
     resolve_inference_transport,
-    resolve_tensor_runtime_settings,
+    resolve_runtime_settings,
     select_sim_carrier_device,
 )
 
@@ -45,8 +45,8 @@ def _cfg(
     )
 
 
-def test_tensor_runtime_settings_use_reviewed_defaults() -> None:
-    settings = resolve_tensor_runtime_settings(_cfg(), algo_name="FlashSAC", num_envs=32)
+def test_runtime_settings_use_reviewed_defaults() -> None:
+    settings = resolve_runtime_settings(_cfg(), algo_name="FlashSAC", num_envs=32)
 
     assert settings.inference_slot_capacity == DEFAULT_INFERENCE_SLOT_CAPACITY == 1
     assert settings.collector_metrics_interval == DEFAULT_COLLECTOR_METRICS_INTERVAL == 1
@@ -63,8 +63,8 @@ def test_sim_carrier_device_key_migration_fails_closed() -> None:
         select_sim_carrier_device(_cfg({"collector_tensor_device": None}))
 
 
-def test_tensor_runtime_settings_accept_reviewed_maxima() -> None:
-    settings = resolve_tensor_runtime_settings(
+def test_runtime_settings_accept_reviewed_maxima() -> None:
+    settings = resolve_runtime_settings(
         _cfg(
             {
                 "inference_slot_capacity": MAX_INFERENCE_SLOT_CAPACITY,
@@ -83,8 +83,8 @@ def test_tensor_runtime_settings_accept_reviewed_maxima() -> None:
     assert settings.replay_ingress_slot_rows == 3
 
 
-def test_tensor_runtime_settings_accept_all_minima() -> None:
-    settings = resolve_tensor_runtime_settings(
+def test_runtime_settings_accept_all_minima() -> None:
+    settings = resolve_runtime_settings(
         _cfg(
             {
                 "inference_slot_capacity": 1,
@@ -116,9 +116,9 @@ def test_tensor_runtime_settings_accept_all_minima() -> None:
         ("replay_ingress_depth", MAX_REPLAY_INGRESS_DEPTH),
     ],
 )
-def test_tensor_runtime_settings_reject_values_above_maxima(key: str, maximum: int) -> None:
+def test_runtime_settings_reject_values_above_maxima(key: str, maximum: int) -> None:
     with pytest.raises(ValueError, match=f"no greater than {maximum}"):
-        resolve_tensor_runtime_settings(
+        resolve_runtime_settings(
             _cfg({key: maximum + 1}),
             algo_name="SAC",
             num_envs=4,
@@ -135,10 +135,10 @@ def test_tensor_runtime_settings_reject_values_above_maxima(key: str, maximum: i
     ],
 )
 @pytest.mark.parametrize("value", [0, -1, True, "2", 1.0])
-def test_tensor_runtime_settings_reject_invalid_training_values(key: str, value: Any) -> None:
+def test_runtime_settings_reject_invalid_training_values(key: str, value: Any) -> None:
     error = TypeError if type(value) is not int else ValueError
     with pytest.raises(error, match="training\\." + key):
-        resolve_tensor_runtime_settings(
+        resolve_runtime_settings(
             _cfg({key: value}),
             algo_name="FlashSAC",
             num_envs=4,
@@ -147,7 +147,7 @@ def test_tensor_runtime_settings_reject_invalid_training_values(key: str, value:
 
 @pytest.mark.parametrize("key", ["batch_size", "updates_per_step", "num_envs"])
 @pytest.mark.parametrize("value", [0, -1, True, "2", 1.0])
-def test_tensor_runtime_settings_reject_invalid_algo_values(key: str, value: Any) -> None:
+def test_runtime_settings_reject_invalid_algo_values(key: str, value: Any) -> None:
     error = TypeError if type(value) is not int else ValueError
     algo = {"batch_size": 4, "updates_per_step": 2}
     num_envs = 4
@@ -158,7 +158,7 @@ def test_tensor_runtime_settings_reject_invalid_algo_values(key: str, value: Any
         algo[key] = value
         training = None
     with pytest.raises(error, match="algo\\." + key):
-        resolve_tensor_runtime_settings(
+        resolve_runtime_settings(
             _cfg(training=training, algo=algo),
             algo_name="FlashSAC",
             num_envs=num_envs,
@@ -166,15 +166,15 @@ def test_tensor_runtime_settings_reject_invalid_algo_values(key: str, value: Any
 
 
 @pytest.mark.parametrize("key", ["batch_size", "updates_per_step"])
-def test_tensor_runtime_settings_require_learner_sampling(key: str) -> None:
+def test_runtime_settings_require_learner_sampling(key: str) -> None:
     algo = {"batch_size": 4, "updates_per_step": 2}
     del algo[key]
     with pytest.raises(ValueError, match=f"FlashSAC algo\\.{key} must be configured"):
-        resolve_tensor_runtime_settings(_cfg(algo=algo), algo_name="FlashSAC", num_envs=4)
+        resolve_runtime_settings(_cfg(algo=algo), algo_name="FlashSAC", num_envs=4)
 
 
 def test_replay_ingress_slot_rows_may_be_smaller_than_num_envs() -> None:
-    settings = resolve_tensor_runtime_settings(
+    settings = resolve_runtime_settings(
         _cfg({"replay_ingress_slot_rows": 2}),
         algo_name="SAC",
         num_envs=16,
@@ -185,7 +185,7 @@ def test_replay_ingress_slot_rows_may_be_smaller_than_num_envs() -> None:
 
 def test_replay_ingress_slot_rows_reject_rows_above_num_envs() -> None:
     with pytest.raises(ValueError, match="no greater than 4"):
-        resolve_tensor_runtime_settings(
+        resolve_runtime_settings(
             _cfg({"replay_ingress_slot_rows": 5}),
             algo_name="SAC",
             num_envs=4,
@@ -193,7 +193,7 @@ def test_replay_ingress_slot_rows_reject_rows_above_num_envs() -> None:
 
 
 def test_tensor_runtime_manifest_records_configured_effective_and_bounds() -> None:
-    settings = resolve_tensor_runtime_settings(
+    settings = resolve_runtime_settings(
         _cfg(
             {
                 "inference_slot_capacity": 2,

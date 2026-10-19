@@ -789,7 +789,7 @@ class EntityData:
     """Backend host adapter plus Torch cold tables owned by the entity facade.
 
     The remaining host getters and default arrays are explicit adapter internals;
-    Manager runtime reads use packed Torch views or cached Torch tables. Control
+    Manager runtime reads use packed Torch views or cached tensor tables. Control
     writes publish into the same actuator layout without touching backend-private
     state.
     """
@@ -970,11 +970,11 @@ class EntityData:
 
     @property
     def _host_gravity_vec_w(self) -> np.ndarray:
-        """World gravity host source (backend/test-only; Torch table is public)."""
+        """World gravity host source (backend/test-only; tensor table is public)."""
         return self._require(self._gravity_vec_w, "world-frame gravity")
 
-    def gravity_vec_w_torch(self, device: str | torch.device) -> torch.Tensor:
-        """Return the immutable world-frame gravity vector as a cached Torch table."""
+    def gravity_vec_w(self, device: str | torch.device) -> torch.Tensor:
+        """Return the immutable world-frame gravity vector as a cached tensor table."""
         resolved = torch.device(device)
         if self._gravity_vec_w_tensor is None or self._gravity_vec_w_tensor.device != resolved:
             source = self._host_gravity_vec_w
@@ -987,8 +987,8 @@ class EntityData:
             )
         return self._gravity_vec_w_tensor
 
-    def default_root_state_torch(self, device: str | torch.device) -> torch.Tensor:
-        """Return the immutable default root state as a cached Torch table."""
+    def default_root_state(self, device: str | torch.device) -> torch.Tensor:
+        """Return the immutable default root state as a cached tensor table."""
         resolved = torch.device(device)
         if (
             self._default_root_state_tensor is None
@@ -1022,8 +1022,8 @@ class EntityData:
         index = self._require(self._joint_vel_index, "joint velocity")
         return self._state_table("qvel")[:, index]
 
-    def default_joint_pos_torch(self, device: str | torch.device) -> torch.Tensor:
-        """Return the cold-path default joint positions as a cached Torch tensor."""
+    def default_joint_pos(self, device: str | torch.device) -> torch.Tensor:
+        """Return the cold-path default joint positions as a cached tensor."""
         resolved = torch.device(device)
         cached = self._default_joint_pos_tensor
         if cached is None or cached.device != resolved:
@@ -1038,8 +1038,8 @@ class EntityData:
             self._default_joint_pos_tensor = cached
         return cached
 
-    def default_joint_vel_torch(self, device: str | torch.device) -> torch.Tensor:
-        """Return the cold-path default joint velocities as a cached Torch tensor."""
+    def default_joint_vel(self, device: str | torch.device) -> torch.Tensor:
+        """Return the cold-path default joint velocities as a cached tensor."""
         resolved = torch.device(device)
         cached = self._default_joint_vel_tensor
         if cached is None or cached.device != resolved:
@@ -1054,8 +1054,8 @@ class EntityData:
             self._default_joint_vel_tensor = cached
         return cached
 
-    def soft_joint_pos_limits_torch(self, device: str | torch.device) -> torch.Tensor:
-        """Return the cold-path joint position limits as a cached Torch tensor."""
+    def soft_joint_pos_limits(self, device: str | torch.device) -> torch.Tensor:
+        """Return the cold-path joint position limits as a cached tensor."""
         resolved = torch.device(device)
         cached = self._soft_joint_pos_limits_tensor
         if cached is None or cached.device != resolved:
@@ -4191,8 +4191,8 @@ class EntityScene(Mapping[str, Entity]):
         """Pinned community-style read-only entity mapping."""
         return self._entities
 
-    def env_origins_torch(self, device: str | torch.device) -> torch.Tensor:
-        """Return immutable per-environment origins as a cached Torch table."""
+    def env_origins(self, device: str | torch.device) -> torch.Tensor:
+        """Return immutable per-environment origins as a cached tensor table."""
         resolved = torch.device(device)
         if self._env_origins_tensor is None or self._env_origins_tensor.device != resolved:
             self._env_origins_tensor = torch.from_numpy(np.array(self._env_origins, copy=True)).to(
@@ -4399,16 +4399,16 @@ class EntityScene(Mapping[str, Entity]):
             )
         return self._reset_state.bind_gravity_write(term_name=term_name)
 
-    def bind_gravity_write_torch(
+    def bind_gravity_write_tensor(
         self, *, term_name: str, device: str | torch.device
     ) -> torch.Tensor:
-        """Bind immutable backend gravity as a Torch table for tensor events."""
+        """Bind immutable backend gravity as a tensor table for tensor events."""
         if self._reset_state is None:
             raise NotImplementedError(
                 f"EventManager term '{term_name}' gravity capability is unavailable: "
                 "EntityScene was materialized without an env-owned reset transaction"
             )
-        return self._reset_state.bind_gravity_write_torch(
+        return self._reset_state.bind_gravity_write_tensor(
             term_name=term_name, device=torch.device(device)
         )
 

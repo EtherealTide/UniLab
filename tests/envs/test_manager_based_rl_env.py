@@ -59,8 +59,8 @@ from unilab.managers import (
     RewardTermCfg,
     TerminationTermCfg,
 )
+from unilab.managers.rng import ManagerRng
 from unilab.managers.scene_entity_config import SceneEntityCfg
-from unilab.managers.torch_rng import TorchManagerRng
 from unilab.rl.contracts.env import (
     EnvAlgoCapabilities,
     EnvPlayCapabilitiesProtocol,
@@ -760,7 +760,6 @@ class _TensorBodyActionCfg(ActionTermCfg):
 
 
 class _TensorBodyAction(ActionTerm):
-    uses_tensor_actions = True
     uses_tensor_state_packet = True
 
     def __init__(self, cfg: _TensorBodyActionCfg, env) -> None:
@@ -825,7 +824,7 @@ class _Command(CommandTerm):
         return None
 
     def _resample_command(self, reset_mask: torch.Tensor) -> None:
-        rng = self._env.torch_rng
+        rng = self._env.rng
         assert rng is not None
         self.reset_masks.append(reset_mask.clone())
         samples = rng.uniform(0.0, 1.0, self._command.shape, dtype=torch.float32)
@@ -2078,7 +2077,7 @@ def test_named_keyframe_snapshot_is_shared_by_entity_and_reset_cold_path() -> No
     assert selected_qpos is not None
     assert not selected_qpos.flags.writeable
     torch.testing.assert_close(
-        env.scene["robot"].data.default_joint_pos_torch(env.device), torch.full((2, 1), 0.75)
+        env.scene["robot"].data.default_joint_pos(env.device), torch.full((2, 1), 0.75)
     )
 
     source_qpos[:] = 9.0
@@ -2219,12 +2218,12 @@ def test_real_mujoco_default_state_applies_keyframe_baseline(
         env = ManagerBasedRlEnv(cfg, backend, 2)
         robot = env.scene["robot"]
         torch.testing.assert_close(
-            robot.data.default_root_state_torch(env.device)[:, 2],
+            robot.data.default_root_state(env.device)[:, 2],
             torch.full((2,), expected_root_z, dtype=torch.float32),
         )
         expected_batch = np.broadcast_to(expected_joint_pos, (2, expected_joint_pos.size))
         torch.testing.assert_close(
-            robot.data.default_joint_pos_torch(env.device),
+            robot.data.default_joint_pos(env.device),
             torch.as_tensor(expected_batch),
         )
 
@@ -3421,13 +3420,13 @@ def test_reset_seed_updates_the_shared_generator_in_place() -> None:
     cfg.events = {}
     env, _ = _make_env(cfg)
     env.init_state()
-    generator = env.torch_rng
+    generator = env.rng
 
     env.reset(seed=123, reset_mask=torch.tensor([True, False], dtype=torch.bool))
 
-    assert env.torch_rng is generator
-    expected = TorchManagerRng.seeded(123).random(1)
-    torch.testing.assert_close(env.torch_rng.random(1), expected)
+    assert env.rng is generator
+    expected = ManagerRng.seeded(123).random(1)
+    torch.testing.assert_close(env.rng.random(1), expected)
 
 
 def test_per_substep_metrics_fail_without_post_substep_backend_hook() -> None:

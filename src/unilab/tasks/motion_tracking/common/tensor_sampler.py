@@ -228,7 +228,7 @@ class TensorMotionSampler:
         ):
             raise ValueError("TensorMotionSampler reset mask has an invalid shape/device")
         if torch_rng is None:
-            raise NotImplementedError("TensorMotionSampler requires the Manager Torch generator")
+            raise NotImplementedError("TensorMotionSampler requires the Manager RNG generator")
         self.diagnostics.record_reset_dispatch()
         frames: torch.Tensor
         probabilities: torch.Tensor | None = None

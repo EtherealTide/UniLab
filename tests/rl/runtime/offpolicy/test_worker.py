@@ -16,7 +16,7 @@ from unilab.rl.logging.metrics_drain import RewardComponentWindow, drain_collect
 from unilab.rl.logging.offpolicy import OffPolicyLogger
 from unilab.rl.runtime.collector_timing import extract_env_step_breakdown_timing_ms
 from unilab.rl.runtime.ipc.inference_ring import SharedInferenceRing
-from unilab.rl.runtime.offpolicy.tensor_metrics import TensorCollectorMetrics
+from unilab.rl.runtime.offpolicy.metrics import CollectorMetrics
 from unilab.rl.runtime.offpolicy.worker import (
     _publish_collector_ready,
     _publish_inference_tick,
@@ -28,7 +28,7 @@ from unilab.rl.runtime.offpolicy.worker import (
 def test_tensor_collector_metrics_resets_done_episodes_and_flushes_one_transfer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    metrics = TensorCollectorMetrics(num_envs=3, interval=4, device="cpu")
+    metrics = CollectorMetrics(num_envs=3, interval=4, device="cpu")
     calls = 0
     original_cpu = torch.Tensor.cpu
 
@@ -76,7 +76,7 @@ def test_tensor_collector_metrics_resets_done_episodes_and_flushes_one_transfer(
 def test_tensor_collector_metrics_packs_reward_components_in_same_transfer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    metrics = TensorCollectorMetrics(
+    metrics = CollectorMetrics(
         num_envs=2,
         interval=2,
         device="cpu",
@@ -112,7 +112,7 @@ def test_tensor_collector_metrics_packs_reward_components_in_same_transfer(
 
 
 def test_tensor_collector_metrics_supports_no_done_window() -> None:
-    metrics = TensorCollectorMetrics(num_envs=2, interval=2, device="cpu")
+    metrics = CollectorMetrics(num_envs=2, interval=2, device="cpu")
     metrics.update(
         rewards=torch.tensor([1.0, 2.0]),
         done=torch.tensor([False, False]),
@@ -137,7 +137,7 @@ def test_tensor_collector_metrics_supports_no_done_window() -> None:
 def test_tensor_collector_final_flush_handles_empty_and_partial_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    metrics = TensorCollectorMetrics(num_envs=2, interval=3, device="cpu")
+    metrics = CollectorMetrics(num_envs=2, interval=3, device="cpu")
     calls = 0
     original_cpu = torch.Tensor.cpu
 
@@ -154,7 +154,7 @@ def test_tensor_collector_final_flush_handles_empty_and_partial_windows(
     assert empty_before_updates == empty_after_finalize
     assert calls == 0
 
-    metrics = TensorCollectorMetrics(num_envs=2, interval=3, device="cpu")
+    metrics = CollectorMetrics(num_envs=2, interval=3, device="cpu")
     metrics.update(
         rewards=torch.tensor([1.0, 10.0]),
         done=torch.tensor([False, False]),
@@ -174,7 +174,7 @@ def test_tensor_collector_final_flush_handles_empty_and_partial_windows(
 def test_tensor_collector_final_flush_emits_only_completed_episodes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    metrics = TensorCollectorMetrics(num_envs=2, interval=3, device="cpu")
+    metrics = CollectorMetrics(num_envs=2, interval=3, device="cpu")
     calls = 0
     original_cpu = torch.Tensor.cpu
 
@@ -207,7 +207,7 @@ def test_tensor_collector_final_flush_emits_only_completed_episodes(
 
 
 def test_tensor_collector_final_flush_emits_multiple_completed_episodes() -> None:
-    metrics = TensorCollectorMetrics(num_envs=2, interval=4, device="cpu")
+    metrics = CollectorMetrics(num_envs=2, interval=4, device="cpu")
     metrics.update(
         rewards=torch.tensor([1.0, 10.0]),
         done=torch.tensor([True, False]),
@@ -230,7 +230,7 @@ def test_tensor_collector_final_flush_emits_multiple_completed_episodes() -> Non
 def test_tensor_collector_final_flush_after_normal_flush_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    metrics = TensorCollectorMetrics(num_envs=1, interval=2, device="cpu")
+    metrics = CollectorMetrics(num_envs=1, interval=2, device="cpu")
     calls = 0
     original_cpu = torch.Tensor.cpu
 
@@ -263,7 +263,7 @@ def test_tensor_collector_final_flush_after_normal_flush_is_idempotent(
 
 
 def test_tensor_collector_metrics_preserves_new_episode_after_done() -> None:
-    metrics = TensorCollectorMetrics(num_envs=1, interval=3, device="cpu")
+    metrics = CollectorMetrics(num_envs=1, interval=3, device="cpu")
     metrics.update(
         rewards=torch.tensor([1.0]),
         done=torch.tensor([True]),
@@ -309,14 +309,14 @@ def test_tensor_collector_metrics_preserves_new_episode_after_done() -> None:
 
 
 def test_tensor_collector_metrics_enforces_window_and_input_contract() -> None:
-    metrics = TensorCollectorMetrics(num_envs=2, interval=1, device="cpu")
+    metrics = CollectorMetrics(num_envs=2, interval=1, device="cpu")
 
     with pytest.raises(RuntimeError, match="window is not ready"):
         metrics.flush()
     with pytest.raises(ValueError, match="positive environment count"):
-        TensorCollectorMetrics(num_envs=0, interval=1, device="cpu")
+        CollectorMetrics(num_envs=0, interval=1, device="cpu")
     with pytest.raises(ValueError, match="positive interval"):
-        TensorCollectorMetrics(num_envs=1, interval=True, device="cpu")
+        CollectorMetrics(num_envs=1, interval=True, device="cpu")
     with pytest.raises(TypeError, match="rewards must be Torch tensors"):
         metrics.update(
             rewards=np.asarray([1.0, 2.0]),
@@ -1574,8 +1574,8 @@ def test_sample_offpolicy_actions_uses_actor_explore(algo_type: str) -> None:
     actions = sample_offpolicy_actions(
         actor=actor,
         algo_type=algo_type,
-        obs_torch=obs,
-        prev_dones_torch=dones,
+        obs=obs,
+        prev_dones=dones,
     )
 
     assert len(actor.calls) == 1
@@ -1590,8 +1590,8 @@ def test_sample_offpolicy_actions_rejects_unknown_algo() -> None:
         sample_offpolicy_actions(
             actor=actor,
             algo_type="unknown",
-            obs_torch=torch.zeros(2, 4),
-            prev_dones_torch=torch.zeros(2),
+            obs=torch.zeros(2, 4),
+            prev_dones=torch.zeros(2),
         )
 
 
@@ -1643,9 +1643,9 @@ def test_sample_offpolicy_actions_uses_adapter_sample_actions(
     actions = sample_offpolicy_actions(
         actor=actor,
         algo_type="dummy_priv_sac",
-        obs_torch=obs,
-        prev_dones_torch=torch.zeros(4),
-        priv_info_torch=priv_info,
+        obs=obs,
+        prev_dones=torch.zeros(4),
+        priv_info=priv_info,
     )
 
     assert actions.shape == (4, 3)

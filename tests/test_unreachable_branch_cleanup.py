@@ -10,7 +10,7 @@ import pytest
 
 from unilab.base import registry
 from unilab.base.base import EnvCfg
-from unilab.rl.runtime.ipc.replay_pipelines.gpu_resident import require_offpolicy_replay_device
+from unilab.rl.runtime.ipc.replay_pipelines.device import require_offpolicy_replay_device
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "unilab"
 

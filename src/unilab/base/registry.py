@@ -41,7 +41,7 @@ class EnvFactory(Protocol):
 
 TEnvFactory = TypeVar("TEnvFactory", bound=EnvFactory)
 RewardOverrideField = Literal["rewards"]
-_TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS = (
+_SUPPORTED_SIM_BACKENDS = (
     "mujoco",
     "mjwarp",
     "genesis",
@@ -52,18 +52,17 @@ _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS = (
     "isaacsim",
     "isaacgym",
 )
-_SUPPORTED_SIM_BACKENDS = _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS
 # Drake and external-worker Isaac backends are explicit owner selections; never
 # use them as implicit fallback backends.
 _DEFAULT_SIM_BACKEND_ORDER: tuple[str, ...] = tuple(
     backend
-    for backend in _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS
+    for backend in _SUPPORTED_SIM_BACKENDS
     if backend not in {"drake", "isaacgym", "isaacsim"}
 )
-_TENSOR_MANAGER_BACKEND_SCOPE_ERROR = (
+_BACKEND_SCOPE_ERROR = (
     "Simulation backend '{backend}' is temporarily out of the tensor-only "
     "Manager runtime scope. Active backends: "
-    f"{', '.join(_TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS)}. Re-enabling it requires "
+    f"{', '.join(_SUPPORTED_SIM_BACKENDS)}. Re-enabling it requires "
     "capability, parity, and support-matrix evidence (issue #1811)."
 )
 _REGISTRY_MODULES_ATTR = "__unilab_registry_modules__"

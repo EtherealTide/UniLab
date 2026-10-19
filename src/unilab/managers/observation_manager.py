@@ -163,13 +163,13 @@ class ObservationManager(ManagerBase):
     def __init__(self, cfg: dict[str, ObservationGroupCfg | None], env: ManagerBasedRlEnv):
         self.cfg = deepcopy(cfg)
         self._device = getattr(env, "device", torch.device("cpu"))
-        self._torch_rng = getattr(env, "torch_rng", None)
-        if self._torch_rng is not None and self._torch_rng.device != self._device:
+        self._rng = getattr(env, "rng", None)
+        if self._rng is not None and self._rng.device != self._device:
             raise ValueError(
-                f"ObservationManager Torch RNG device {self._torch_rng.device} "
+                f"ObservationManager RNG device {self._rng.device} "
                 f"does not match observations on {self._device}."
             )
-        self._torch_generator = self._torch_rng.generator if self._torch_rng is not None else None
+        self._generator = self._rng.generator if self._rng is not None else None
         super().__init__(env=env)
 
         self._group_obs_dim: dict[str, tuple[int, ...] | list[tuple[int, ...]]] = dict()
@@ -566,7 +566,7 @@ class ObservationManager(ManagerBase):
                 noisy = noise_carriers[generation % len(noise_carriers)]
                 self._group_term_noise_generation[(group_name, term_name)] = generation + 1
                 noisy.copy_(source)
-                obs = term_cfg.noise.apply(noisy, torch_rng=self._torch_generator)
+                obs = term_cfg.noise.apply(noisy, torch_rng=self._generator)
                 fresh = True
                 noise_ms += time.perf_counter() - noise_started
             elif isinstance(term_cfg.noise, noise_cfg.NoiseModelCfg):
@@ -895,7 +895,7 @@ class ObservationManager(ManagerBase):
                     self._group_obs_class_instances[group_name][term_name] = noise_model_cls(
                         term_cfg.noise,
                         num_envs=self._env.num_envs,
-                        torch_rng=cast("torch.Generator", self._torch_generator),
+                        torch_rng=cast("torch.Generator", self._generator),
                         device=self._device,
                     )
 
@@ -908,7 +908,7 @@ class ObservationManager(ManagerBase):
                         hold_prob=term_cfg.delay_hold_prob,
                         update_period=term_cfg.delay_update_period,
                         per_env_phase=term_cfg.delay_per_env_phase,
-                        torch_generator=self._torch_generator,
+                        torch_generator=self._generator,
                         device=self._device,
                     )
 

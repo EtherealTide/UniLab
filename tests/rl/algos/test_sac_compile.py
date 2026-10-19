@@ -97,11 +97,11 @@ def test_sac_compile_targets_training_hot_paths(monkeypatch) -> None:
 
     assert calls == [
         (
-            "SACLearner._critic_loss_tensors",
+            "SACLearner._critic_objective",
             {"dynamic": False, "options": {"triton.cudagraphs": True}},
         ),
         (
-            "SACLearner._actor_loss_tensors",
+            "SACLearner._actor_objective",
             {"dynamic": False, "options": {"triton.cudagraphs": True}},
         ),
     ]
@@ -126,8 +126,8 @@ def test_sac_mps_compile_targets_training_hot_paths(monkeypatch) -> None:
     learner._compile_training_methods()
 
     assert calls == [
-        ("SACLearner._critic_loss_tensors", {"dynamic": False}),
-        ("SACLearner._actor_loss_tensors", {"dynamic": False}),
+        ("SACLearner._critic_objective", {"dynamic": False}),
+        ("SACLearner._actor_objective", {"dynamic": False}),
     ]
 
 
@@ -224,24 +224,24 @@ def test_sac_mps_compile_selection_requires_runtime_win(
     learner._device_type = "mps"
     learner.use_compile = True
     learner.compile_backend = "torch_compile"
-    learner._eager_critic_loss_tensors = SACLearner._critic_loss_tensors.__get__(learner)
-    learner._eager_actor_loss_tensors = SACLearner._actor_loss_tensors.__get__(learner)
+    learner._eager_critic_objective = SACLearner._critic_objective.__get__(learner)
+    learner._eager_actor_objective = SACLearner._actor_objective.__get__(learner)
 
     def compiled_critic(*_args, **_kwargs):
         raise AssertionError("benchmark helper should intercept compiled loss calls")
 
-    learner._compiled_critic_loss_tensors = compiled_critic
-    learner._compiled_actor_loss_tensors = learner._eager_actor_loss_tensors
-    learner.__dict__["_critic_loss_tensors"] = compiled_critic
-    learner.__dict__["_actor_loss_tensors"] = learner._compiled_actor_loss_tensors
+    learner._compiled_critic_objective = compiled_critic
+    learner._compiled_actor_objective = learner._eager_actor_objective
+    learner.__dict__["_critic_objective"] = compiled_critic
+    learner.__dict__["_actor_objective"] = learner._compiled_actor_objective
 
     def benchmark(self):
-        return compiled_time if self._critic_loss_tensors is compiled_critic else 1.0
+        return compiled_time if self._critic_objective is compiled_critic else 1.0
 
-    monkeypatch.setattr(SACLearner, "_benchmark_critic_loss_tensors", benchmark)
+    monkeypatch.setattr(SACLearner, "_benchmark_critic_objective", benchmark)
     monkeypatch.setattr(
         SACLearner,
-        "_benchmark_actor_loss_tensors",
+        "_benchmark_actor_objective",
         lambda self: 0.5,
     )
     batch = _small_offpolicy_batch()
@@ -250,9 +250,9 @@ def test_sac_mps_compile_selection_requires_runtime_win(
     assert learner.use_compile is expected_compile
     assert learner.compile_backend == ("torch_compile" if expected_compile else "eager")
     if expected_compile:
-        assert learner._critic_loss_tensors is compiled_critic
+        assert learner._critic_objective is compiled_critic
     else:
-        assert learner._critic_loss_tensors is learner._eager_critic_loss_tensors
+        assert learner._critic_objective is learner._eager_critic_objective
 
 
 def test_sac_mps_compile_selection_failure_falls_back_to_eager(monkeypatch, capsys) -> None:
@@ -260,28 +260,28 @@ def test_sac_mps_compile_selection_failure_falls_back_to_eager(monkeypatch, caps
     learner._device_type = "mps"
     learner.use_compile = True
     learner.compile_backend = "torch_compile"
-    learner._eager_critic_loss_tensors = SACLearner._critic_loss_tensors.__get__(learner)
-    learner._eager_actor_loss_tensors = SACLearner._actor_loss_tensors.__get__(learner)
+    learner._eager_critic_objective = SACLearner._critic_objective.__get__(learner)
+    learner._eager_actor_objective = SACLearner._actor_objective.__get__(learner)
 
     def compiled_critic(*_args, **_kwargs):
         raise RuntimeError("metal backend unavailable")
 
-    learner._compiled_critic_loss_tensors = compiled_critic
-    learner._compiled_actor_loss_tensors = lambda *_args, **_kwargs: None
-    learner.__dict__["_critic_loss_tensors"] = compiled_critic
-    learner.__dict__["_actor_loss_tensors"] = learner._compiled_actor_loss_tensors
+    learner._compiled_critic_objective = compiled_critic
+    learner._compiled_actor_objective = lambda *_args, **_kwargs: None
+    learner.__dict__["_critic_objective"] = compiled_critic
+    learner.__dict__["_actor_objective"] = learner._compiled_actor_objective
 
     def benchmark(self):
-        if self._critic_loss_tensors is compiled_critic:
+        if self._critic_objective is compiled_critic:
             raise RuntimeError("metal backend unavailable")
         return 1.0
 
-    monkeypatch.setattr(SACLearner, "_benchmark_critic_loss_tensors", benchmark)
+    monkeypatch.setattr(SACLearner, "_benchmark_critic_objective", benchmark)
     learner._select_mps_training_methods(_small_offpolicy_batch(), batch_size=4)
 
     assert learner.use_compile is False
     assert learner.compile_backend == "eager"
-    assert learner._critic_loss_tensors is learner._eager_critic_loss_tensors
+    assert learner._critic_objective is learner._eager_critic_objective
     assert "MPS torch.compile warmup failed" in capsys.readouterr().err
 
 
@@ -292,19 +292,19 @@ def test_sac_mps_compile_selection_restores_mps_rng(monkeypatch) -> None:
     learner._device_type = "mps"
     learner.use_compile = True
     learner.compile_backend = "torch_compile"
-    learner._eager_critic_loss_tensors = SACLearner._critic_loss_tensors.__get__(learner)
-    learner._eager_actor_loss_tensors = SACLearner._actor_loss_tensors.__get__(learner)
-    learner._compiled_critic_loss_tensors = learner._eager_critic_loss_tensors
-    learner._compiled_actor_loss_tensors = learner._eager_actor_loss_tensors
-    learner.__dict__["_critic_loss_tensors"] = learner._eager_critic_loss_tensors
-    learner.__dict__["_actor_loss_tensors"] = learner._eager_actor_loss_tensors
+    learner._eager_critic_objective = SACLearner._critic_objective.__get__(learner)
+    learner._eager_actor_objective = SACLearner._actor_objective.__get__(learner)
+    learner._compiled_critic_objective = learner._eager_critic_objective
+    learner._compiled_actor_objective = learner._eager_actor_objective
+    learner.__dict__["_critic_objective"] = learner._eager_critic_objective
+    learner.__dict__["_actor_objective"] = learner._eager_actor_objective
 
     def benchmark(self):
         torch.rand(1, device="mps")
         return 0.5
 
-    monkeypatch.setattr(SACLearner, "_benchmark_critic_loss_tensors", benchmark)
-    monkeypatch.setattr(SACLearner, "_benchmark_actor_loss_tensors", benchmark)
+    monkeypatch.setattr(SACLearner, "_benchmark_critic_objective", benchmark)
+    monkeypatch.setattr(SACLearner, "_benchmark_actor_objective", benchmark)
     before = torch.mps.get_rng_state()
 
     learner._select_mps_training_methods(_small_offpolicy_batch(), batch_size=4)
@@ -332,11 +332,11 @@ def test_sac_whole_cycle_uses_max_autotune_without_nested_graphs(monkeypatch) ->
 
     assert calls == [
         (
-            "SACLearner._critic_loss_tensors",
+            "SACLearner._critic_objective",
             {"dynamic": False, "mode": "max-autotune-no-cudagraphs"},
         ),
         (
-            "SACLearner._actor_loss_tensors",
+            "SACLearner._actor_objective",
             {"dynamic": False, "mode": "max-autotune-no-cudagraphs"},
         ),
     ]
@@ -646,7 +646,7 @@ def test_sac_alpha_loss_helper_matches_reference_value_and_grad() -> None:
     reference_loss.backward()
 
     learner.log_alpha.grad = None
-    alpha_loss = learner._alpha_loss_tensor(next_log_probs)
+    alpha_loss = learner._alpha_loss(next_log_probs)
     alpha_loss.backward()
 
     assert torch.allclose(alpha_loss.detach(), reference_loss.detach())

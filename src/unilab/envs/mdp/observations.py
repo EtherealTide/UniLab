@@ -14,8 +14,8 @@ import torch
 
 from unilab.base.entity import EntityTensorStateView
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
+from unilab.managers.rng import ManagerRng
 from unilab.managers.scene_entity_config import SceneEntityCfg
-from unilab.managers.torch_rng import TorchManagerRng
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
@@ -236,7 +236,7 @@ def projected_gravity(
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     asset, view = _root_body_view(env, asset_cfg, "projected_gravity")
-    gravity = asset.data.gravity_vec_w_torch(getattr(env, "device", torch.device("cpu")))[0]
+    gravity = asset.data.gravity_vec_w(getattr(env, "device", torch.device("cpu")))[0]
     return _quat_apply_inverse(view.quat_w[:, 0, :], gravity.expand((view.quat_w.shape[0], 3)))
 
 
@@ -256,7 +256,7 @@ def _imu_misalignment_quat(env: ManagerBasedRlEnv, max_angle_rad: float) -> torc
 
     Models a fixed small mounting/calibration error of the IMU on each robot:
     a rotation about an axis uniform on the sphere with magnitude uniform in
-    [0, max_angle_rad]. Sampled from ``env.torch_rng`` on first use and cached for the
+    [0, max_angle_rad]. Sampled from ``env.rng`` on first use and cached for the
     whole run (a startup-style systematic per-robot bias, not per-step noise and
     not resampled on episode reset) — the behavior pinned from the upstream
     microduck reference above.
@@ -269,8 +269,8 @@ def _imu_misalignment_quat(env: ManagerBasedRlEnv, max_angle_rad: float) -> torc
         _IMU_MISALIGNMENT_QUATS[env] = per_env
     quat = per_env.get(max_angle_rad)
     if quat is None:
-        rng_owner = getattr(env, "torch_rng", None)
-        if not isinstance(rng_owner, TorchManagerRng):
+        rng_owner = getattr(env, "rng", None)
+        if not isinstance(rng_owner, ManagerRng):
             raise RuntimeError(
                 "IMU misalignment sampling requires the Manager-owned Torch generator"
             )
@@ -351,7 +351,7 @@ class projected_gravity_imu_misaligned(_ImuMisalignedObservation):
     ) -> torch.Tensor:
         self._validate_max_angle(max_angle_deg)
         asset, view = _root_body_view(env, asset_cfg, self._term_name)
-        gravity = asset.data.gravity_vec_w_torch(getattr(env, "device", torch.device("cpu")))[0]
+        gravity = asset.data.gravity_vec_w(getattr(env, "device", torch.device("cpu")))[0]
         projected = _quat_apply_inverse(
             view.quat_w[:, 0, :], gravity.expand((view.quat_w.shape[0], 3))
         )
@@ -369,9 +369,7 @@ def joint_pos_rel(
     device = getattr(env, "device", torch.device("cpu"))
     asset = env.scene[asset_cfg.name]
     state = _joint_view(env, asset_cfg, "joint_pos_rel")
-    result = (
-        state.joint_pos[:, joint_ids] - asset.data.default_joint_pos_torch(device)[:, joint_ids]
-    )
+    result = state.joint_pos[:, joint_ids] - asset.data.default_joint_pos(device)[:, joint_ids]
     return (
         result
         if not biased
@@ -387,7 +385,7 @@ def joint_vel_rel(
     device = getattr(env, "device", torch.device("cpu"))
     asset = env.scene[asset_cfg.name]
     state = _joint_view(env, asset_cfg, "joint_vel_rel")
-    return state.joint_vel[:, joint_ids] - asset.data.default_joint_vel_torch(device)[:, joint_ids]
+    return state.joint_vel[:, joint_ids] - asset.data.default_joint_vel(device)[:, joint_ids]
 
 
 def last_action(env: ManagerBasedRlEnv, action_name: str | None = None) -> torch.Tensor:

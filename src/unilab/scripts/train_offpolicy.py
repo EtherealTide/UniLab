@@ -64,7 +64,7 @@ from unilab.training.onnx_export import export_policy_onnx, verify_policy_onnx
 from unilab.training.seed import apply_configured_training_seed
 from unilab.training.tensor_runtime import (
     resolve_inference_transport,
-    resolve_tensor_runtime_settings,
+    resolve_runtime_settings,
     select_sim_carrier_device,
 )
 from unilab.utils.checkpoint import normalize_checkpoint_value
@@ -352,7 +352,7 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
             f"Unsupported training.replay_prefetch_mode={replay_prefetch_mode!r}; "
             "expected 'one_tick'"
         )
-    from unilab.rl.runtime.ipc.replay_pipelines.gpu_resident import (
+    from unilab.rl.runtime.ipc.replay_pipelines.device import (
         require_offpolicy_replay_device,
     )
 
@@ -384,7 +384,7 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
     }
     # Resolve the spawn-facing tensor-runtime knobs before the one-env probe so
     # invalid training knobs fail closed without materializing a backend.
-    tensor_runtime_settings = resolve_tensor_runtime_settings(
+    runtime_settings = resolve_runtime_settings(
         cfg,
         algo_name=algo_label,
         num_envs=int(cfg.algo.num_envs),
@@ -407,7 +407,7 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
             algo_name=algo_label,
             env_tensor_native=env_tensor_native,
         )
-        builder_kwargs["tensor_runtime_settings"] = tensor_runtime_settings
+        builder_kwargs["runtime_settings"] = runtime_settings
         if algo_name == "sac":
             from unilab.rl.algos.sac.double_buffer import (
                 build_sac_double_buffer_runner,

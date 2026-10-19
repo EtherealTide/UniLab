@@ -150,7 +150,7 @@ def flat_orientation_l2(
 ) -> torch.Tensor:
     """Penalize non-flat base orientation."""
     asset, view = _root_body_view(env, asset_cfg, "flat_orientation_l2")
-    gravity_w = asset.data.gravity_vec_w_torch(getattr(env, "device", torch.device("cpu")))[0]
+    gravity_w = asset.data.gravity_vec_w(getattr(env, "device", torch.device("cpu")))[0]
     gravity = _quat_apply_inverse(view.quat_w[:, 0, :], gravity_w.expand((view.quat_w.shape[0], 3)))
     return torch.sum(torch.square(gravity[:, :2]), dim=1)
 
@@ -179,7 +179,7 @@ def upright(
         dtype=torch.float32,
         device=getattr(env, "device", torch.device("cpu")),
     )
-    gravity = asset.data.gravity_vec_w_torch(getattr(env, "device", torch.device("cpu")))[0]
+    gravity = asset.data.gravity_vec_w(getattr(env, "device", torch.device("cpu")))[0]
     gravity = gravity.expand((quat.shape[0], 3))
     quat_w, quat_xyz = quat[:, 0:1], quat[:, 1:4]
     cross = 2.0 * torch.linalg.cross(quat_xyz.expand_as(gravity), gravity, dim=-1)
@@ -257,7 +257,7 @@ def joint_pos_limits(
 ) -> torch.Tensor:
     """Penalize joint positions if they cross the soft limits."""
     asset = env.scene[asset_cfg.name]
-    limits = asset.data.soft_joint_pos_limits_torch(getattr(env, "device", torch.device("cpu")))[
+    limits = asset.data.soft_joint_pos_limits(getattr(env, "device", torch.device("cpu")))[
         asset_cfg.joint_ids
     ]
     joint_pos = _joint_view(env, asset_cfg, "joint_pos_limits").joint_pos[:, asset_cfg.joint_ids]
@@ -302,7 +302,7 @@ class posture(ManagerTermBase):
         self._std = _resolve_std_dict(
             self.name, "std", cfg.params.get("std"), _selected_joint_names(asset, asset_cfg)
         )
-        self._default_joint_pos = asset.data.default_joint_pos_torch(
+        self._default_joint_pos = asset.data.default_joint_pos(
             getattr(env, "device", torch.device("cpu"))
         )
         self._std = torch.tensor(
@@ -376,7 +376,7 @@ class variable_posture(ManagerTermBase):
                 f"{self.name} walking_threshold must be below running_threshold, got "
                 f"{self._walking_threshold} >= {self._running_threshold}"
             )
-        self._default_joint_pos = asset.data.default_joint_pos_torch(
+        self._default_joint_pos = asset.data.default_joint_pos(
             getattr(env, "device", torch.device("cpu"))
         )
         device = getattr(env, "device", torch.device("cpu"))

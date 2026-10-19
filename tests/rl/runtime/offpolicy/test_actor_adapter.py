@@ -166,9 +166,9 @@ def test_sample_actions_uses_adapter_hook(registered_adapter) -> None:
     actions = sample_offpolicy_actions(
         actor="the-actor",
         algo_type="custom_sac",
-        obs_torch=obs,
-        prev_dones_torch=dones,
-        priv_info_torch=priv,
+        obs=obs,
+        prev_dones=dones,
+        priv_info=priv,
     )
 
     assert actions.shape == (4, 2)
@@ -184,8 +184,8 @@ def test_sample_actions_rejects_adapter_without_sample_hook(registered_adapter) 
         sample_offpolicy_actions(
             actor=object(),
             algo_type="custom_sac",
-            obs_torch=torch.zeros(2, 4),
-            prev_dones_torch=torch.zeros(2),
+            obs=torch.zeros(2, 4),
+            prev_dones=torch.zeros(2),
         )
 
 
@@ -196,8 +196,8 @@ def test_sample_actions_unknown_algo_error_mentions_adapter_registration() -> No
         sample_offpolicy_actions(
             actor=object(),
             algo_type="unknown",
-            obs_torch=torch.zeros(2, 4),
-            prev_dones_torch=torch.zeros(2),
+            obs=torch.zeros(2, 4),
+            prev_dones=torch.zeros(2),
         )
 
 

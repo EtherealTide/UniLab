@@ -17,8 +17,8 @@ import torch
 
 from unilab.managers.event_manager import EventTermCfg
 from unilab.managers.manager_base import ManagerTermBase
+from unilab.managers.rng import ManagerRng
 from unilab.managers.scene_entity_config import SceneEntityCfg
-from unilab.managers.torch_rng import TorchManagerRng
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
@@ -68,7 +68,7 @@ def _gain_choice(
 
 
 def _sample_gain_range(
-    rng: TorchManagerRng,
+    rng: ManagerRng,
     bounds: tuple[float, float],
     shape: tuple[int, int],
     distribution: Literal["uniform", "log_uniform"],
@@ -81,7 +81,7 @@ def _sample_gain_range(
 def _sample_se3_range(
     range_dict: dict[str, tuple[float, float]] | None,
     shape: tuple[int, ...],
-    rng: TorchManagerRng,
+    rng: ManagerRng,
 ) -> torch.Tensor:
     """Sample uniform ``[x, y, z, roll, pitch, yaw]`` offsets with Torch RNG."""
     if not shape or shape[-1] != len(_SE3_KEYS):
@@ -171,7 +171,7 @@ def _distribution_parameters(
 
 
 def _sample_distribution(
-    rng: TorchManagerRng,
+    rng: ManagerRng,
     params: torch.Tensor,
     shape: tuple[int, ...],
     distribution: str,
@@ -185,7 +185,7 @@ def _sample_distribution(
     return rng.uniform(low, high, shape, dtype=torch.float64)
 
 
-def _selected_reset_defaults_tensor(
+def _selected_reset_defaults(
     defaults: torch.Tensor,
     env_ids: torch.Tensor,
     *,
@@ -234,9 +234,9 @@ def _model_field_default_rows(
     return selected
 
 
-def _require_torch_rng(env: ManagerBasedRlEnv, term_name: str) -> TorchManagerRng:
-    rng = getattr(env, "torch_rng", None)
-    if not isinstance(rng, TorchManagerRng):
+def _require_rng(env: ManagerBasedRlEnv, term_name: str) -> ManagerRng:
+    rng = getattr(env, "rng", None)
+    if not isinstance(rng, ManagerRng):
         raise RuntimeError(
             f"EventManager term '{term_name}' requires the Manager-owned Torch generator"
         )
@@ -307,8 +307,8 @@ def _device_reset_table(values: torch.Tensor, device: torch.device) -> torch.Ten
     return values.to(device=device, dtype=torch.float32)
 
 
-def _sample_distribution_tensor(
-    rng: TorchManagerRng,
+def _sample_distribution_on_device(
+    rng: ManagerRng,
     low: torch.Tensor,
     high: torch.Tensor,
     shape: tuple[int, ...],
@@ -322,7 +322,7 @@ def _sample_distribution_tensor(
     return rng.uniform(low, high, shape)
 
 
-def _apply_randomization_operation_tensor(
+def _apply_randomization_operation(
     default: torch.Tensor,
     samples: torch.Tensor,
     operation: str,
@@ -335,8 +335,8 @@ def _apply_randomization_operation_tensor(
     return samples
 
 
-def _sample_axis_tensor(
-    rng: TorchManagerRng,
+def _sample_axis_on_device(
+    rng: ManagerRng,
     parameters: torch.Tensor,
     count: int,
     *,
@@ -344,7 +344,7 @@ def _sample_axis_tensor(
     shared_random: bool,
 ) -> torch.Tensor:
     if not shared_random:
-        return _sample_distribution_tensor(
+        return _sample_distribution_on_device(
             rng,
             parameters[:, 0],
             parameters[:, 1],
@@ -358,7 +358,7 @@ def _sample_axis_tensor(
     for index, pair in enumerate(parameters.detach().cpu().tolist()):
         groups.setdefault((float(pair[0]), float(pair[1])), []).append(index)
     for low, high, indices in _shared_parameter_groups(parameters, groups):
-        shared = _sample_distribution_tensor(
+        shared = _sample_distribution_on_device(
             rng,
             low,
             high,
@@ -636,13 +636,13 @@ class _ModelFieldRandomizer(_ResetRandomizationTerm):
             groups.setdefault((float(pair[0]), float(pair[1])), []).append(index)
         return list(_shared_parameter_groups(parameters, groups))
 
-    def _sample_axis_tensor(self, rng: TorchManagerRng, axis: int, count: int) -> torch.Tensor:
+    def _sample_axis_on_device(self, rng: ManagerRng, axis: int, count: int) -> torch.Tensor:
         """Sample one axis on the RNG device, honoring shared_random groups."""
         ranges = self._device_ranges
         assert ranges is not None
         parameters = ranges[:, axis]
         if not self._shared_random:
-            return _sample_distribution_tensor(
+            return _sample_distribution_on_device(
                 rng,
                 parameters[:, 0],
                 parameters[:, 1],
@@ -657,17 +657,17 @@ class _ModelFieldRandomizer(_ResetRandomizationTerm):
             (count, parameters.shape[0]), dtype=torch.float32, device=parameters.device
         )
         for low, high, indices in groups:
-            shared = _sample_distribution_tensor(rng, low, high, (count, 1), self._distribution)
+            shared = _sample_distribution_on_device(rng, low, high, (count, 1), self._distribution)
             samples[:, indices] = shared
         return samples
 
     def _sample_device(self, env: ManagerBasedRlEnv) -> torch.device:
-        return _require_torch_rng(env, self.name).device
+        return _require_rng(env, self.name).device
 
     def _sample_axis(self, env: ManagerBasedRlEnv, axis: int, count: int) -> torch.Tensor:
         parameters = self._ranges[:, axis].to(device=self._sample_device(env))
-        rng = _require_torch_rng(env, self.name)
-        return _sample_axis_tensor(
+        rng = _require_rng(env, self.name)
+        return _sample_axis_on_device(
             rng,
             parameters,
             count,
@@ -703,13 +703,13 @@ class _ModelFieldRandomizer(_ResetRandomizationTerm):
         for index, axis in enumerate(self._axes):
             samples = sampled_axis if index == 0 else self._sample_axis(env, axis, ids.numel())
             if self._field_width == 1:
-                values = _apply_randomization_operation_tensor(
+                values = _apply_randomization_operation(
                     default_values,
                     samples,
                     self._operation,
                 )
             else:
-                values[..., axis] = _apply_randomization_operation_tensor(
+                values[..., axis] = _apply_randomization_operation(
                     default_values[..., axis],
                     samples,
                     self._operation,
@@ -852,19 +852,19 @@ class PdGains(_ResetRandomizationTerm):
         ids = torch.arange(env.num_envs, dtype=torch.int64, device=reset_mask.device)
         shape = (ids.numel(), len(self._actuator_ids))
         kp = _sample_gain_range(
-            _require_torch_rng(env, "pd_gains"), self._kp_range, shape, self._distribution
+            _require_rng(env, "pd_gains"), self._kp_range, shape, self._distribution
         )
         kd = _sample_gain_range(
-            _require_torch_rng(env, "pd_gains"), self._kd_range, shape, self._distribution
+            _require_rng(env, "pd_gains"), self._kd_range, shape, self._distribution
         )
         if self._operation == "scale":
-            default_kp = _selected_reset_defaults_tensor(
+            default_kp = _selected_reset_defaults(
                 self._default_kp,
                 ids,
                 canonical_ndim=1,
                 device=kp.device,
             )
-            default_kd = _selected_reset_defaults_tensor(
+            default_kd = _selected_reset_defaults(
                 self._default_kd,
                 ids,
                 canonical_ndim=1,
@@ -896,19 +896,19 @@ class PdGains(_ResetRandomizationTerm):
         ids = resolve_env_ids(env, env_ids)
         shape = (ids.numel(), len(self._actuator_ids))
         kp = _sample_gain_range(
-            _require_torch_rng(env, "pd_gains"), self._kp_range, shape, self._distribution
+            _require_rng(env, "pd_gains"), self._kp_range, shape, self._distribution
         )
         kd = _sample_gain_range(
-            _require_torch_rng(env, "pd_gains"), self._kd_range, shape, self._distribution
+            _require_rng(env, "pd_gains"), self._kd_range, shape, self._distribution
         )
         if self._operation == "scale":
-            default_kp = _selected_reset_defaults_tensor(
+            default_kp = _selected_reset_defaults(
                 self._default_kp,
                 ids,
                 canonical_ndim=1,
                 device=kp.device,
             )
-            default_kd = _selected_reset_defaults_tensor(
+            default_kd = _selected_reset_defaults(
                 self._default_kd,
                 ids,
                 canonical_ndim=1,
@@ -1017,18 +1017,18 @@ class RandomizeRigidBodyMass(_ResetRandomizationTerm):
             )
         if self._startup_values is None:
             sampled = _sample_distribution(
-                _require_torch_rng(env, "randomize_rigid_body_mass"),
+                _require_rng(env, "randomize_rigid_body_mass"),
                 self._distribution_params,
                 (env.num_envs, self._body_ids.size),
                 self._distribution,
             )
-            default_mass = _selected_reset_defaults_tensor(
+            default_mass = _selected_reset_defaults(
                 self._default_mass,
                 ids,
                 canonical_ndim=1,
                 device=sampled.device,
             )
-            values = _apply_randomization_operation_tensor(
+            values = _apply_randomization_operation(
                 default_mass,
                 sampled,
                 self._operation,
@@ -1070,18 +1070,18 @@ class RandomizeRigidBodyMass(_ResetRandomizationTerm):
             return
         ids = resolve_env_ids(env, env_ids)
         sampled = _sample_distribution(
-            _require_torch_rng(env, "randomize_rigid_body_mass"),
+            _require_rng(env, "randomize_rigid_body_mass"),
             self._distribution_params,
             (ids.numel(), self._body_ids.size),
             self._distribution,
         )
-        default_mass = _selected_reset_defaults_tensor(
+        default_mass = _selected_reset_defaults(
             self._default_mass,
             ids,
             canonical_ndim=1,
             device=sampled.device,
         )
-        values = _apply_randomization_operation_tensor(
+        values = _apply_randomization_operation(
             default_mass,
             sampled,
             self._operation,
@@ -1171,7 +1171,7 @@ class RandomizeBodyMassInertia(_ResetRandomizationTerm):
         del asset_cfg, scale_range
         ids = resolve_env_ids(env, env_ids)
         if self._scales is None:
-            alpha = _require_torch_rng(env, "randomize_body_mass_inertia").uniform(
+            alpha = _require_rng(env, "randomize_body_mass_inertia").uniform(
                 math.log(self._scale_lo) / 2.0,
                 math.log(self._scale_hi) / 2.0,
                 (env.num_envs, self._body_ids.size),
@@ -1180,13 +1180,13 @@ class RandomizeBodyMassInertia(_ResetRandomizationTerm):
             self._scales = torch.exp(2.0 * alpha)
         rows = ids.to(dtype=torch.int64, device=self._scales.device)
         scales = self._scales.index_select(0, rows)
-        default_mass = _selected_reset_defaults_tensor(
+        default_mass = _selected_reset_defaults(
             self._default_mass,
             ids,
             canonical_ndim=1,
             device=self._scales.device,
         )
-        default_inertia = _selected_reset_defaults_tensor(
+        default_inertia = _selected_reset_defaults(
             self._default_inertia,
             ids,
             canonical_ndim=2,
@@ -1275,13 +1275,13 @@ class RandomizeRigidBodyCom(_ResetRandomizationTerm):
                 name="com_range",
                 keys=_XYZ_KEYS,
             )
-            offsets = _require_torch_rng(env, "randomize_rigid_body_com").uniform(
+            offsets = _require_rng(env, "randomize_rigid_body_com").uniform(
                 torch.as_tensor(ranges[:, 0], dtype=torch.float64),
                 torch.as_tensor(ranges[:, 1], dtype=torch.float64),
                 (env.num_envs, 3),
                 dtype=torch.float64,
             )
-            default_ipos = _selected_reset_defaults_tensor(
+            default_ipos = _selected_reset_defaults(
                 self._default_ipos,
                 ids,
                 canonical_ndim=2,
@@ -1319,13 +1319,13 @@ class RandomizeRigidBodyCom(_ResetRandomizationTerm):
             keys=_XYZ_KEYS,
         )
         ids = resolve_env_ids(env, env_ids)
-        offsets = _require_torch_rng(env, "randomize_rigid_body_com").uniform(
+        offsets = _require_rng(env, "randomize_rigid_body_com").uniform(
             torch.as_tensor(ranges[:, 0], dtype=torch.float64),
             torch.as_tensor(ranges[:, 1], dtype=torch.float64),
             (ids.numel(), 3),
             dtype=torch.float64,
         )
-        default_ipos = _selected_reset_defaults_tensor(
+        default_ipos = _selected_reset_defaults(
             self._default_ipos,
             ids,
             canonical_ndim=2,
@@ -1375,7 +1375,7 @@ class RandomizePhysicsSceneGravity(_ResetRandomizationTerm):
             width=3,
             distribution=self._distribution,
         )
-        self._default_gravity = env.scene.bind_gravity_write_torch(
+        self._default_gravity = env.scene.bind_gravity_write_tensor(
             term_name=term_name, device=getattr(env, "device", torch.device("cpu"))
         )
 
@@ -1390,7 +1390,7 @@ class RandomizePhysicsSceneGravity(_ResetRandomizationTerm):
         del gravity_distribution_params, operation, distribution
         ids = resolve_env_ids(env, env_ids)
         sampled = _sample_distribution(
-            _require_torch_rng(env, "randomize_gravity"),
+            _require_rng(env, "randomize_gravity"),
             self._distribution_params,
             (ids.numel(), 3),
             self._distribution,
@@ -1402,13 +1402,13 @@ class RandomizePhysicsSceneGravity(_ResetRandomizationTerm):
                 else self._default_gravity
             ).to(device=sampled.device)
         else:
-            default_gravity = _selected_reset_defaults_tensor(
+            default_gravity = _selected_reset_defaults(
                 self._default_gravity,
                 ids,
                 canonical_ndim=1,
                 device=sampled.device,
             )
-        values = _apply_randomization_operation_tensor(
+        values = _apply_randomization_operation(
             default_gravity,
             sampled,
             self._operation,
@@ -1519,7 +1519,7 @@ class PushBySettingVelocity(ManagerTermBase):
         size: tuple[int, ...],
         env: ManagerBasedRlEnv,
     ) -> torch.Tensor:
-        rng = _require_torch_rng(env, "push_by_setting_velocity")
+        rng = _require_rng(env, "push_by_setting_velocity")
         unit = torch.rand(size, generator=rng.generator, device=rng.device)
         scale = torch.as_tensor(upper - lower, dtype=unit.dtype, device=unit.device)
         offset = torch.as_tensor(lower, dtype=unit.dtype, device=unit.device)
@@ -1666,7 +1666,7 @@ class ApplyBodyImpulse(ManagerTermBase):
                 f"got {self._step_dt}"
             )
         num_bodies = self._backend_body_ids.size
-        self._device = _require_torch_rng(self._env, "apply_body_impulse").device
+        self._device = _require_rng(self._env, "apply_body_impulse").device
         self._time_remaining = torch.zeros(self.num_envs, dtype=torch.float64, device=self._device)
         self._active = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
         self._active_forces = torch.zeros(
@@ -1683,7 +1683,7 @@ class ApplyBodyImpulse(ManagerTermBase):
         return self._host_uniform(self._cooldown_s[0], self._cooldown_s[1], count)
 
     def _host_uniform(self, lower: float, upper: float, count: int) -> torch.Tensor:
-        rng = _require_torch_rng(self._env, "apply_body_impulse")
+        rng = _require_rng(self._env, "apply_body_impulse")
         samples = torch.rand((count,), generator=rng.generator, device=rng.device)
         return (samples * float(upper - lower) + float(lower)).to(dtype=torch.float64)
 
@@ -1741,7 +1741,7 @@ class ApplyBodyImpulse(ManagerTermBase):
                     dtype=quat_rows.dtype,
                     device=quat_rows.device,
                 ).expand(count * num_bodies, 3)
-                offset_w = _tensor_quat_apply(quat_rows, offsets).reshape(count, num_bodies, 3)
+                offset_w = _quat_apply(quat_rows, offsets).reshape(count, num_bodies, 3)
                 torques = torques + torch.linalg.cross(offset_w, forces)
             self._active_forces[trigger_ids] = forces
             self._active_torques[trigger_ids] = torques
@@ -1865,11 +1865,9 @@ class RandomizeEncoderBias(ManagerTermBase):
         control = getattr(self._entity.data, "control_buffer", None)
         if isinstance(control, torch.Tensor):
             columns = torch.tensor(self._joint_ids, dtype=torch.int64, device=control.device)
-            rng_owner = getattr(env, "torch_rng", None)
+            rng_owner = getattr(env, "rng", None)
             if rng_owner is None:
-                raise NotImplementedError(
-                    "Tensor encoder-bias reset requires the Manager Torch RNG"
-                )
+                raise NotImplementedError("Tensor encoder-bias reset requires the Manager RNG")
             lower, upper = self._range
             sampled = rng_owner.uniform(
                 lower,
@@ -1914,7 +1912,7 @@ def reset_root_state_uniform(
     if reset_mask.shape != (env.num_envs,) or reset_mask.dtype != torch.bool:
         raise ValueError("reset_root_state_uniform requires a full-width bool reset mask")
     try:
-        default_root_state = asset.data.default_root_state_torch(torch.device(env.device))
+        default_root_state = asset.data.default_root_state(torch.device(env.device))
         root_states = default_root_state.clone()
     except NotImplementedError as exc:
         raise NotImplementedError(
@@ -1924,22 +1922,20 @@ def reset_root_state_uniform(
         ) from exc
 
     pose_samples = _sample_se3_range(
-        pose_range, (env.num_envs, 6), _require_torch_rng(env, "reset_root_state_uniform")
+        pose_range, (env.num_envs, 6), _require_rng(env, "reset_root_state_uniform")
     )
     root_states[:, 0:3] = (
         root_states[:, 0:3]
         + pose_samples[:, 0:3].to(dtype=root_states.dtype)
-        + env.scene.env_origins_torch(torch.device(env.device))
+        + env.scene.env_origins(torch.device(env.device))
     )
-    orientation_delta = _tensor_quat_from_euler_xyz(
+    orientation_delta = _quat_from_euler_xyz(
         pose_samples[:, 3], pose_samples[:, 4], pose_samples[:, 5]
     )
-    root_states[:, 3:7] = _tensor_quat_mul(
-        root_states[:, 3:7], orientation_delta.to(root_states.dtype)
-    )
+    root_states[:, 3:7] = _quat_mul(root_states[:, 3:7], orientation_delta.to(root_states.dtype))
 
     velocity_samples = _sample_se3_range(
-        velocity_range, (env.num_envs, 6), _require_torch_rng(env, "reset_root_state_uniform")
+        velocity_range, (env.num_envs, 6), _require_rng(env, "reset_root_state_uniform")
     )
     root_states[:, 7:13] = root_states[:, 7:13] + velocity_samples.to(dtype=root_states.dtype)
     asset.write_root_state_tensor_to_sim(root_states, reset_mask)
@@ -1948,7 +1944,7 @@ def reset_root_state_uniform(
 setattr(reset_root_state_uniform, "reset", reset_root_state_uniform)
 
 
-def _tensor_se3_bounds(range_dict: dict[str, tuple[float, float]] | None) -> torch.Tensor:
+def _se3_bounds(range_dict: dict[str, tuple[float, float]] | None) -> torch.Tensor:
     try:
         values = [
             [
@@ -1969,7 +1965,7 @@ def _tensor_se3_bounds(range_dict: dict[str, tuple[float, float]] | None) -> tor
     return bounds
 
 
-def _tensor_quat_from_euler_xyz(
+def _quat_from_euler_xyz(
     roll: torch.Tensor, pitch: torch.Tensor, yaw: torch.Tensor
 ) -> torch.Tensor:
     """Convert XYZ Euler angles to device-resident wxyz quaternions."""
@@ -1987,7 +1983,7 @@ def _tensor_quat_from_euler_xyz(
     )
 
 
-def _tensor_quat_apply(quat_wxyz: torch.Tensor, vector: torch.Tensor) -> torch.Tensor:
+def _quat_apply(quat_wxyz: torch.Tensor, vector: torch.Tensor) -> torch.Tensor:
     """Apply broadcast-compatible wxyz quaternions to device-resident vectors."""
     quat_xyz = quat_wxyz[..., 1:4]
     if vector.ndim < quat_xyz.ndim:
@@ -1997,7 +1993,7 @@ def _tensor_quat_apply(quat_wxyz: torch.Tensor, vector: torch.Tensor) -> torch.T
     return vector + 2.0 * quat_wxyz[..., 0:1] * cross + 2.0 * second_cross
 
 
-def _tensor_quat_mul(left_wxyz: torch.Tensor, right_wxyz: torch.Tensor) -> torch.Tensor:
+def _quat_mul(left_wxyz: torch.Tensor, right_wxyz: torch.Tensor) -> torch.Tensor:
     """Multiply broadcast-compatible device-resident wxyz quaternions."""
     left_w, left_xyz = left_wxyz[..., 0:1], left_wxyz[..., 1:4]
     right_w, right_xyz = right_wxyz[..., 0:1], right_wxyz[..., 1:4]
@@ -2011,7 +2007,7 @@ def _tensor_quat_mul(left_wxyz: torch.Tensor, right_wxyz: torch.Tensor) -> torch
     )
 
 
-def _tensor_root_reset_kernel(
+def _root_reset_kernel(
     default_rows: torch.Tensor,
     origins_rows: torch.Tensor | None,
     pose_delta: torch.Tensor,
@@ -2023,26 +2019,24 @@ def _tensor_root_reset_kernel(
     if origins_rows is not None:
         output[:, 0:3] += origins_rows[:, 0:3]
     output[:, 0:3] += pose_delta[:, 0:3]
-    orientation_delta = _tensor_quat_from_euler_xyz(
-        pose_delta[:, 3], pose_delta[:, 4], pose_delta[:, 5]
-    )
-    output[:, 3:7] = _tensor_quat_mul(output[:, 3:7], orientation_delta)
+    orientation_delta = _quat_from_euler_xyz(pose_delta[:, 3], pose_delta[:, 4], pose_delta[:, 5])
+    output[:, 3:7] = _quat_mul(output[:, 3:7], orientation_delta)
     output[:, 7:13] += velocity_delta
 
 
-_TensorRootResetFn = Any
-_tensor_root_reset_compiled: _TensorRootResetFn | None = None
+_RootResetFn = Any
+_root_reset_compiled: _RootResetFn | None = None
 
 
-def _bind_tensor_root_reset() -> _TensorRootResetFn:
-    global _tensor_root_reset_compiled
-    if _tensor_root_reset_compiled is not None:
-        return _tensor_root_reset_compiled
+def _bind_root_reset() -> _RootResetFn:
+    global _root_reset_compiled
+    if _root_reset_compiled is not None:
+        return _root_reset_compiled
     if not (hasattr(torch, "compile") and hasattr(torch.compiler, "is_compiling")):
-        _tensor_root_reset_compiled = _tensor_root_reset_kernel
-        return _tensor_root_reset_compiled
-    _tensor_root_reset_compiled = torch.compile(_tensor_root_reset_kernel, dynamic=True)
-    return _tensor_root_reset_compiled
+        _root_reset_compiled = _root_reset_kernel
+        return _root_reset_compiled
+    _root_reset_compiled = torch.compile(_root_reset_kernel, dynamic=True)
+    return _root_reset_compiled
 
 
 def reset_root_state_uniform_tensor(
@@ -2053,16 +2047,15 @@ def reset_root_state_uniform_tensor(
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
     """Full-width root reset."""
-    if env.torch_rng is None:
+    if env.rng is None:
         raise NotImplementedError(
-            "reset_root_state_uniform_tensor requires env.torch_rng on a CUDA "
-            "Manager tensor runtime"
+            "reset_root_state_uniform_tensor requires env.rng on a CUDA Manager tensor runtime"
         )
     if reset_mask.device != torch.device(env.device):
         raise ValueError("reset_root_state_uniform_tensor mask must live on env.device")
     asset = cast("Entity", env.scene[asset_cfg.name])
     device = torch.device(env.device)
-    asset.data.default_root_state_torch(device)
+    asset.data.default_root_state(device)
     num_envs = env.num_envs
     bounds_key = (
         (asset_cfg.name, tuple(sorted(pose_range.items())), tuple(sorted(velocity_range.items())))
@@ -2072,8 +2065,8 @@ def reset_root_state_uniform_tensor(
     pose_bounds_tensor = getattr(env, "_tensor_reset_pose_bounds", None)
     velocity_bounds_tensor = getattr(env, "_tensor_reset_velocity_bounds", None)
     if pose_bounds_tensor is None or getattr(env, "_tensor_reset_bounds_key", None) != bounds_key:
-        new_pose_bounds = _tensor_se3_bounds(pose_range).to(device=device)
-        new_velocity_bounds = _tensor_se3_bounds(velocity_range).to(device=device)
+        new_pose_bounds = _se3_bounds(pose_range).to(device=device)
+        new_velocity_bounds = _se3_bounds(velocity_range).to(device=device)
         env._tensor_reset_pose_bounds = new_pose_bounds
         env._tensor_reset_velocity_bounds = new_velocity_bounds
         env._tensor_reset_bounds_key = bounds_key
@@ -2083,7 +2076,7 @@ def reset_root_state_uniform_tensor(
         (num_envs, 2 * len(_SE3_KEYS)),
         dtype=torch.float32,
         device=device,
-        generator=env.torch_rng.generator,
+        generator=env.rng.generator,
     )
     bounds = torch.cat((pose_bounds_tensor, velocity_bounds_tensor), dim=0)
     deltas = torch.addcmul(
@@ -2092,10 +2085,10 @@ def reset_root_state_uniform_tensor(
         bounds[None, :, 1] - bounds[None, :, 0],
     )
     pose_delta, velocity_delta = torch.split(deltas, len(_SE3_KEYS), dim=1)
-    default_tensor = asset.data.default_root_state_torch(device)
-    origins = env.scene.env_origins_torch(device)
+    default_tensor = asset.data.default_root_state(device)
+    origins = env.scene.env_origins(device)
     root_state = torch.empty_like(default_tensor)
-    _bind_tensor_root_reset()(default_tensor, origins, pose_delta, velocity_delta, root_state)
+    _bind_root_reset()(default_tensor, origins, pose_delta, velocity_delta, root_state)
     asset.write_root_state_tensor_to_sim(root_state, reset_mask)
 
 

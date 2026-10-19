@@ -201,7 +201,7 @@ class joint_deviation_l1(ManagerTermBase):
                 f"{self.name} requires the Manager packed joint-state read plan"
             )
         position = read_plan.joint_tensor_view(self._entity_name).joint_pos[self._joint_ids]
-        default = env.scene[self._entity_name].data.default_joint_pos_torch(env.device)[
+        default = env.scene[self._entity_name].data.default_joint_pos(env.device)[
             :, self._joint_ids
         ]
         return (position - default).abs().sum(dim=1)

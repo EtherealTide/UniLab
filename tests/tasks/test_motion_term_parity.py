@@ -111,12 +111,8 @@ def body_setup(monkeypatch: pytest.MonkeyPatch):
         robot_anchor_quat_w=robot_body_quat_w[:, anchor_body_idx],
         joint_pos=torch.from_numpy(rng.standard_normal((num_envs, 29), dtype=np.float32)),
         joint_vel=torch.from_numpy(rng.standard_normal((num_envs, 29), dtype=np.float32)),
-        device_robot_joint_pos=torch.from_numpy(
-            rng.standard_normal((num_envs, 29), dtype=np.float32)
-        ),
-        device_robot_joint_vel=torch.from_numpy(
-            rng.standard_normal((num_envs, 29), dtype=np.float32)
-        ),
+        robot_joint_pos=torch.from_numpy(rng.standard_normal((num_envs, 29), dtype=np.float32)),
+        robot_joint_vel=torch.from_numpy(rng.standard_normal((num_envs, 29), dtype=np.float32)),
         body_pos_relative_w=body_pos_relative_w,
         body_quat_relative_w=body_quat_relative_w,
         robot_body_quat_w=robot_body_quat_w,
@@ -177,8 +173,8 @@ def _expected_body_reward(
             0.3,
             False,
         ),
-        (mt.motion_joint_position_error_exp, "joint_pos", "device_robot_joint_pos", 0.2, True),
-        (mt.motion_joint_velocity_error_exp, "joint_vel", "device_robot_joint_vel", 1.0, True),
+        (mt.motion_joint_position_error_exp, "joint_pos", "robot_joint_pos", 0.2, True),
+        (mt.motion_joint_velocity_error_exp, "joint_vel", "robot_joint_vel", 1.0, True),
     ],
 )
 def test_tensor_scalar_error_rewards_match_numpy_and_do_not_mutate(
@@ -223,9 +219,9 @@ def test_tensor_joint_rewards_use_device_resident_actual_state(
     tensor_command = SimpleNamespace(
         tensor_carrier=True,
         joint_pos=motion_joint_pos,
-        device_robot_joint_pos=device_joint_pos,
+        robot_joint_pos=device_joint_pos,
         joint_vel=motion_joint_vel,
-        device_robot_joint_vel=device_joint_vel,
+        robot_joint_vel=device_joint_vel,
     )
     monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
 
@@ -543,7 +539,7 @@ def test_joint_pos_limits_matches_reference_equation() -> None:
     limits = np.asarray([[-1.0, 1.0]] * 5, dtype=np.float32)
     asset = SimpleNamespace(
         data=SimpleNamespace(
-            soft_joint_pos_limits_torch=lambda device: torch.as_tensor(
+            soft_joint_pos_limits=lambda device: torch.as_tensor(
                 limits, dtype=torch.float32, device=device
             ),
         )
@@ -776,7 +772,7 @@ def test_tensor_command_empty_mask_preserves_rng_and_skips_sampler() -> None:
     command._soft_joint_limits = torch.tensor(((-1.0, 1.0), (-1.0, 1.0)), dtype=torch.float32)
     command._env = SimpleNamespace(
         num_envs=3,
-        torch_rng=SimpleNamespace(
+        rng=SimpleNamespace(
             generator=torch.Generator(),
             uniform=_uniform,
         ),
@@ -789,7 +785,7 @@ def test_tensor_command_empty_mask_preserves_rng_and_skips_sampler() -> None:
     )
     writes: list[dict[str, object]] = []
     ingested: list[tuple[torch.Tensor, torch.Tensor]] = []
-    generator = command._env.torch_rng.generator
+    generator = command._env.rng.generator
     rng_state = generator.get_state()
 
     command._resample_command(torch.zeros(3, dtype=torch.bool))

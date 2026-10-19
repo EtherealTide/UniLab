@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 import torch
 
 from unilab.managers.command_manager import CommandTerm, CommandTermCfg
-from unilab.managers.torch_rng import TorchManagerRng
+from unilab.managers.rng import ManagerRng
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
@@ -282,8 +282,8 @@ class UniformVelocityCommand(CommandTerm):
         self.post_compute()
 
     def _sample_uniform(self, lower: float, upper: float, count: int) -> torch.Tensor:
-        rng_owner = getattr(self._env, "torch_rng", None)
-        if not isinstance(rng_owner, TorchManagerRng):
+        rng_owner = getattr(self._env, "rng", None)
+        if not isinstance(rng_owner, ManagerRng):
             raise RuntimeError(
                 "UniformVelocityCommand sampling requires the Manager-owned Torch generator"
             )

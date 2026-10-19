@@ -237,7 +237,7 @@ class ResetStateTransaction:
             self.abort()
             raise
         else:
-            self.commit_device_tensor()
+            self.commit_tensor()
 
     @contextmanager
     def scoped_device_owner_tensor(
@@ -251,7 +251,7 @@ class ResetStateTransaction:
             self.abort()
             raise
         else:
-            self.commit_device_tensor()
+            self.commit_tensor()
 
     def begin(self, env_ids: torch.Tensor) -> None:
         """Open a transaction for the concrete reset environment IDs."""
@@ -745,8 +745,8 @@ class ResetStateTransaction:
             term_name=term_name,
         )
 
-    def bind_gravity_write_torch(self, *, term_name: str, device: torch.device) -> torch.Tensor:
-        """Bind the immutable backend gravity vector as a Torch table."""
+    def bind_gravity_write_tensor(self, *, term_name: str, device: torch.device) -> torch.Tensor:
+        """Bind the immutable backend gravity vector as a tensor table."""
         default = self.bind_gravity_write(term_name=term_name)
         return torch.from_numpy(np.array(default, copy=True)).to(device=device, dtype=torch.float64)
 
@@ -1687,7 +1687,7 @@ class ResetStateTransaction:
         finally:
             self._finish()
 
-    def commit_device_tensor(self) -> dict | None:
+    def commit_tensor(self) -> dict | None:
         """Commit the fixed-width reset through the packed composer boundary."""
         self._require_active()
         mocap_staged = bool(self._mocap_pending)

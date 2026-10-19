@@ -33,9 +33,9 @@ from unilab.envs.mdp.commands.velocity_command import (
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
 from unilab.managers.reset_owner import ResetOwner, ResetOwnerCfg
 from unilab.managers.reward_manager import RewardTermCfg
+from unilab.managers.rng import ManagerRng
 from unilab.managers.scene_entity_config import SceneEntityCfg
 from unilab.managers.termination_manager import TerminationTermCfg
-from unilab.managers.torch_rng import TorchManagerRng
 from unilab.tasks.locomotion.common.manager_terms import SensorTermBase
 
 if TYPE_CHECKING:
@@ -297,8 +297,8 @@ def _resample_gait(env: _G1Env, context: _G1GaitContext, env_ids: torch.Tensor) 
     if count == 0:
         return
 
-    rng_owner = getattr(env, "torch_rng", None)
-    if not isinstance(rng_owner, TorchManagerRng):
+    rng_owner = getattr(env, "rng", None)
+    if not isinstance(rng_owner, ManagerRng):
         raise RuntimeError("G1 gait phase reset requires the Manager-owned Torch generator")
     left = rng_owner.uniform(0.0, 2.0 * math.pi, (count,), dtype=torch.float32)
     if context.init_mode == "independent":
@@ -310,8 +310,8 @@ def _resample_gait(env: _G1Env, context: _G1GaitContext, env_ids: torch.Tensor) 
 
 
 def _resample_gait_mask(env: _G1Env, context: _G1GaitContext, reset_mask: torch.Tensor) -> None:
-    rng_owner = getattr(env, "torch_rng", None)
-    if not isinstance(rng_owner, TorchManagerRng):
+    rng_owner = getattr(env, "rng", None)
+    if not isinstance(rng_owner, ManagerRng):
         raise RuntimeError("G1 gait phase reset requires the Manager-owned Torch generator")
     count = context.phase.shape[0]
     left = rng_owner.uniform(0.0, 2.0 * math.pi, (count,), dtype=torch.float32)
@@ -817,7 +817,7 @@ class weighted_pose(ManagerTermBase):
                 f"{self.name} requires the Manager packed joint-state read plan"
             )
         position = read_plan.joint_tensor_view(self._entity_name).joint_pos[:, self._joint_ids]
-        default = env.scene[self._entity_name].data.default_joint_pos_torch(env.device)[
+        default = env.scene[self._entity_name].data.default_joint_pos(env.device)[
             :, self._joint_ids
         ]
         if self._weights.numel() != position.shape[1]:
@@ -1089,8 +1089,8 @@ class G1WalkResetOwner(ResetOwner):
             ) from exc
         if not isinstance(command, UniformVelocityCommand):
             raise TypeError("G1WalkResetOwner requires a UniformVelocityCommand term")
-        if getattr(env, "torch_rng", None) is None:
-            raise NotImplementedError("G1WalkResetOwner requires the Manager Torch RNG")
+        if getattr(env, "rng", None) is None:
+            raise NotImplementedError("G1WalkResetOwner requires the Manager RNG")
 
     def reset_transaction(self, reset_mask: torch.Tensor) -> dict[str, float]:
         env = cast("_G1Env", self._env)
@@ -1222,7 +1222,7 @@ class G1WalkRewardPack(ManagerTermBase):
         if joint_state is None:
             raise NotImplementedError("G1WalkRewardPack requires the tensor joint read plan")
         joint_pos = joint_state.joint_tensor_view(self._entity).joint_pos
-        default = self._entity.data.default_joint_pos_torch(self._device)
+        default = self._entity.data.default_joint_pos(self._device)
         phase = _cached_gait_phase(env, self._gait_context)
         targets = compute_feet_phase_height_targets(phase, self.cfg.swing_height)
         left_target = cast(torch.Tensor, targets[0])

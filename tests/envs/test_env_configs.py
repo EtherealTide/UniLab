@@ -497,7 +497,7 @@ def test_flashsac_g1_motion_mujoco_tensor_command_roll_out() -> None:
         try:
             command = env.command_manager.get_term("motion")
             assert command.tensor_carrier is True
-            assert env.torch_rng is not None
+            assert env.rng is not None
             state = env.reset(seed=7)[0]
             for _ in range(3):
                 state = env.step(torch.zeros((2, 29), dtype=torch.float32))
