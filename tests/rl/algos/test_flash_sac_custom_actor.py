@@ -276,6 +276,22 @@ class TestCheckpointSemantics:
                 {"schema_version": 1, "kind": "builtin"},
             )
 
+    # #2414 transition evidence: this missing-semantics checkpoint is synthetic
+    # and immutable. The built-in tolerance currently loads; #2416 must replace
+    # this success assertion with fail-closed rejection.
+    def test_pre_contract_builtin_checkpoint_currently_loads(self) -> None:
+        learner = _make_learner()
+        canonical = learner.get_state_dict()
+        pre_contract = learner.get_state_dict()
+        pre_contract.pop("actor_semantics")
+
+        restored = _make_learner()
+        restored.load_state_dict(pre_contract)
+
+        assert "actor_semantics" in canonical
+        assert "actor_semantics" not in pre_contract
+        torch.testing.assert_close(restored.actor.state_dict(), learner.actor.state_dict())
+
 
 class TestDefaultActorRegression:
     def test_default_actor_unchanged(self) -> None:

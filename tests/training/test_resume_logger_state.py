@@ -135,8 +135,11 @@ def test_save_round_trip_restores_logger_counters(tmp_path: Path) -> None:
     assert loader.logger.tot_timesteps == 4096 * 100
 
 
-def test_load_legacy_checkpoint_without_unilab_state(tmp_path: Path) -> None:
-    """Pre-patch checkpoints must still load; logger counters keep their defaults."""
+# #2414 transition evidence: this synthetic pre-patch checkpoint is deliberately
+# mutable test scope. It currently loads unchanged; #2416 must replace this
+# success path with fail-closed rejection and keep the input immutable.
+def test_pre_patch_checkpoint_currently_loads_without_unilab_state(tmp_path: Path) -> None:
+    """Pin the pre-patch checkpoint tolerance before #2416 removes it."""
     patch_rsl_rl_resume_state()
 
     legacy = {
@@ -208,7 +211,9 @@ def test_checkpoint_rejects_non_plain_env_training_state(tmp_path: Path) -> None
         saver.save(str(tmp_path / "model_0.pt"))
 
 
-def test_checkpoint_without_env_state_keeps_legacy_load_contract(tmp_path: Path) -> None:
+# #2414 transition evidence: #2416 must turn this legacy environment-state skip
+# into fail-closed rejection rather than adding a migration or dual-write path.
+def test_pre_patch_checkpoint_currently_skips_env_training_state(tmp_path: Path) -> None:
     patch_rsl_rl_resume_state()
     env = _EnvTrainingStateStub(step_counter=0)
     legacy = {

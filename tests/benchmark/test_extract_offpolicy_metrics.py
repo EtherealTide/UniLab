@@ -75,6 +75,73 @@ def test_extract_legacy_tags_fall_back_unscaled(tmp_path: Path, capsys) -> None:
     assert rows["collector_active_steps_per_sec"] == pytest.approx(60.0)
 
 
+@pytest.mark.parametrize(
+    ("tag", "row", "value"),
+    [
+        ("perf/iter_ms", "iter_ms", 1_250.0),
+        ("timing/learner_train_ms", "learner_train_ms", 500.0),
+    ],
+)
+def test_extract_legacy_mode_accepts_each_recognized_family(
+    tmp_path: Path, capsys, tag: str, row: str, value: float
+) -> None:
+    _write_tfevents(tmp_path, {tag: [value]})
+
+    assert extract.main([str(tmp_path), "--json", "--legacy-unversioned"]) == 0
+
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed[row] == pytest.approx(value)
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "reward/mean",
+        "reward/mean_ep100",
+        "train/dp_sync_time",
+    ],
+)
+def test_extract_legacy_mode_rejects_undocumented_reader_families(
+    tmp_path: Path, capsys, tag: str
+) -> None:
+    # dcbd09e3 evidence: despite their global pre-schema migration history,
+    # reward/train return-summary tags are not recognized extraction inputs in
+    # this reader. #2416 may narrow or extend that scope explicitly; this test
+    # must move with any such behavior change.
+    _write_tfevents(tmp_path, {tag: [1.0]})
+
+    assert extract.main([str(tmp_path), "--json", "--legacy-unversioned"]) == 1
+    assert "--legacy-unversioned requires recognized pre-schema tags" in capsys.readouterr().err
+
+
+def test_extract_legacy_mode_rejects_newer_schema_stamp(tmp_path: Path, capsys) -> None:
+    _write_run_summary(tmp_path, metric_schema_version=2)
+    _write_tfevents(tmp_path, {"perf/steps_per_sec": [100.0]})
+
+    assert extract.main([str(tmp_path), "--json", "--legacy-unversioned"]) == 1
+    assert "cannot read a schema-stamped" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("legacy_tag", ["perf/iter_ms", "timing/learner_train_ms"])
+def test_extract_current_mode_rejects_mixed_recognized_families(
+    tmp_path: Path, capsys, legacy_tag: str
+) -> None:
+    _write_run_summary(tmp_path)
+    _write_tfevents(tmp_path, {"Perf/total_fps": [100.0], legacy_tag: [1.0]})
+
+    assert extract.main([str(tmp_path), "--json"]) == 1
+    assert "must not contain legacy tags" in capsys.readouterr().err
+
+
+def test_extract_current_mode_ignores_tags_outside_reader_scope(tmp_path: Path, capsys) -> None:
+    # This pins the current narrow reader scope: reward/train tags are outside
+    # its recognized-tag set and therefore do not participate in mixed rejection.
+    _write_run_summary(tmp_path)
+    _write_tfevents(tmp_path, {"Perf/total_fps": [100.0], "reward/mean": [1.0]})
+
+    assert extract.main([str(tmp_path), "--json"]) == 0
+
+
 def test_extract_does_not_fall_back_from_canonical_to_legacy(tmp_path: Path, capsys) -> None:
     _write_run_summary(tmp_path)
     _write_tfevents(

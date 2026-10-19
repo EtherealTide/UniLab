@@ -139,7 +139,12 @@ def _asymmetric_line(path: str, present_value: Any, *, source_present: bool) -> 
 
 
 def _read_snapshot(run_dir: Path) -> dict[str, Any] | None:
-    """Read ``contract_snapshot`` from ``run_dir/run_config.json`` (``None`` if absent)."""
+    """Read a historical ``contract_snapshot`` without modifying the run directory.
+
+    Missing files and malformed snapshots return ``None``. The caller treats that
+    value as an old-run warning-skip; nothing here repairs, rewrites, or migrates
+    the immutable training artifact.
+    """
     path = run_dir / "run_config.json"
     if not path.is_file():
         return None
@@ -168,6 +173,10 @@ def resolve_sim2sim_config(
     unchanged (never mutated). Raises :class:`CrossBackendIncompatibleError` under
     ``strict`` when any DENYLIST field differs, including asymmetric presence for
     :data:`ENV_STRUCTURAL_DENYLIST` paths.
+
+    A source snapshot that is absent or malformed is reported and skipped as an
+    old run. Historical ``run_config.json`` files are immutable inputs: this
+    function never writes, upgrades, or migrates them.
     """
     if source_run_dir is None:
         print("[sim2sim] no source run dir; skipping cross-backend contract check")

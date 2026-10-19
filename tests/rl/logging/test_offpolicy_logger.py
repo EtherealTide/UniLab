@@ -715,6 +715,27 @@ def test_offpolicy_backend_log_step_writes_one_batched_event() -> None:
     assert "perf/collector_cycle_ms" not in scalars
 
 
+def test_offpolicy_writer_does_not_emit_retired_summary_or_throughput_tags() -> None:
+    """Guard the current event writer against retired direct-rename tags."""
+    logger = OffPolicyLogger(log_backend="none", num_gpus=1)
+    writer = _BatchedWriter()
+    logger._tb_writer = writer
+
+    logger.log_step(
+        iteration=1,
+        metrics={"Loss/critic": 2.0},
+        return_mean_ep100=1.25,
+        train_time=0.2,
+        iteration_time=0.5,
+        extra_info={"env_steps_per_sec": 400.0},
+    )
+
+    tags = set(_batched_scalar_map(writer))
+    assert "Train/mean_reward" in tags
+    assert "Perf/total_fps" in tags
+    assert {"reward/mean", "reward/mean_ep100", "perf/steps_per_sec"}.isdisjoint(tags)
+
+
 def test_offpolicy_source_episode_return_owner_fails_closed() -> None:
     logger = OffPolicyLogger(log_backend="none", max_iterations=10, log_interval=5)
 
@@ -1061,6 +1082,7 @@ def test_onpolicy_backend_uses_canonical_reward_and_loss_tags() -> None:
     assert scalars["Perf/learning_time"] == pytest.approx(0.2)
     assert "Train/iteration" not in scalars
     assert "Perf/iteration_time" not in scalars
+    assert {"reward/mean", "reward/mean_ep100", "perf/steps_per_sec"}.isdisjoint(scalars)
 
 
 def test_onpolicy_source_episode_return_owner_fails_closed() -> None:
