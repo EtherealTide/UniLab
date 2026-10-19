@@ -31,6 +31,38 @@ PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完
   不再静默地从 0 恢复进度。无兼容窗口、离线迁移工具或 dual-write 路径；请用受支持
   的 UniLab 版本重训，或从该版本保存的 checkpoint 续训（#2416）。
 
+- The sim2sim contract guard no longer warning-skips historical runs: a source
+  run whose `run_config.json` is missing, malformed, lacks a mapping
+  `contract_snapshot`, or contains keys outside the current contract schema
+  fails closed with `CrossBackendIncompatibleError`. The legacy snapshot/config
+  key aliases (`env.sampling_mode`, `algo.policy.actor_hidden_dims`,
+  `algo.policy.critic_hidden_dims`, `algo.empirical_normalization`) are removed;
+  only canonical `contract_snapshot` mappings written by training runs on the
+  1.3.5 baseline schema are supported, and this change is not backported to
+  1.3.5 patch releases. To reuse an older run, retrain with the current version
+  (checkpoint weights are unchanged); `training.sim2sim_strict=false` does not
+  bypass the integrity failures
+  ([#2416](https://github.com/Motphys/UniLab/issues/2416)).
+  Sim2Sim 契约守卫不再对历史 run warning-skip：源 run 的 `run_config.json`
+  缺失、损坏、缺少 mapping 形态的 `contract_snapshot`、或含有当前契约 schema
+  之外的键时一律 fail closed（抛 `CrossBackendIncompatibleError`）。legacy
+  快照/配置键别名（`env.sampling_mode`、`algo.policy.actor_hidden_dims`、
+  `algo.policy.critic_hidden_dims`、`algo.empirical_normalization`）已移除；
+  仅支持 1.3.5 基线 schema 训练 run 写出的 canonical `contract_snapshot`，
+  且本变更不回 port 到 1.3.5 patch release。要复用旧 run 需用当前版本重训
+  （checkpoint 权重本身不变）；`training.sim2sim_strict=false` 不能绕过完整性
+  失败（#2416）。
+- FlashSAC pre-contract checkpoints (a missing or null `actor_semantics`
+  entry) are no longer supported: training resume and play loading fail
+  closed for every actor, including the built-in actor, with an error that
+  states the minimum supported checkpoint format. The only migration path is
+  to retrain the policy with a current release; the change is not backported
+  to any 1.3.5 patch release
+  ([#2416](https://github.com/Motphys/UniLab/issues/2416)).
+  FlashSAC pre-contract checkpoint（缺失或为 null 的 `actor_semantics` 条目）
+  不再受支持：训练续训与 play 加载对所有 actor（包括内置 actor）一律 fail
+  closed，错误信息说明最低支持的 checkpoint 格式。唯一迁移路径是使用当前
+  版本重新训练策略；该变更不回 port 到任何 1.3.5 patch release（#2416）。
 - The training seed contract no longer falls back to `training.seed`; only the
   algorithm-level `algo.seed` is honored. A config that sets `training.seed`
   without `algo.seed` fails closed with an error pointing to `algo.seed`

@@ -125,8 +125,8 @@ def test_snapshot_json_round_trips():
     assert json.loads(json.dumps(snapshot)) == snapshot
 
 
-def test_hidden_dims_snapshot_uses_only_canonical_paths() -> None:
-    legacy_source = OmegaConf.create(
+def test_extract_snapshot_reads_only_canonical_paths() -> None:
+    retired_source = OmegaConf.create(
         {
             "algo": {
                 "policy": {
@@ -149,9 +149,9 @@ def test_hidden_dims_snapshot_uses_only_canonical_paths() -> None:
         "algo.critic.hidden_dims": [256, 128],
     }
 
-    # A legacy-shaped source config is canonicalized on extraction. New current
-    # snapshots still emit only canonical keys; no alias key is dual-written.
-    assert extract_contract_snapshot(legacy_source) == expected
+    # Retired pre-canonical config paths are no longer canonicalized on
+    # extraction; only canonical keys are ever read or written.
+    assert extract_contract_snapshot(retired_source) == {}
     assert extract_contract_snapshot(canonical_source) == expected
 
 
@@ -239,24 +239,39 @@ def test_command_vel_limit_mismatch_is_denied(tmp_path):
     assert "env.commands.vel_limit" in str(excinfo.value)
 
 
-def test_missing_snapshot_falls_back(tmp_path, capsys):
+def test_missing_snapshot_fails_closed(tmp_path):
     _write_sidecar(tmp_path, None)  # run_config.json without contract_snapshot
     target = _mujoco_cfg()
-    assert resolve_sim2sim_config(tmp_path, target) is target
-    assert "no contract_snapshot" in capsys.readouterr().out
+    with pytest.raises(CrossBackendIncompatibleError) as excinfo:
+        resolve_sim2sim_config(tmp_path, target)
+    msg = str(excinfo.value)
+    assert "contract_snapshot" in msg
+    assert "Minimum supported format" in msg
 
 
-def test_missing_file_falls_back(tmp_path, capsys):
+def test_missing_file_fails_closed(tmp_path):
     target = _mujoco_cfg()
-    assert resolve_sim2sim_config(tmp_path, target) is target  # no run_config.json
-    assert "no contract_snapshot" in capsys.readouterr().out
+    with pytest.raises(CrossBackendIncompatibleError) as excinfo:
+        resolve_sim2sim_config(tmp_path, target)  # no run_config.json
+    msg = str(excinfo.value)
+    assert "run_config.json" in msg
+    assert "Minimum supported format" in msg
 
 
-def test_corrupt_sidecar_falls_back(tmp_path, capsys):
+def test_missing_snapshot_fails_closed_even_non_strict(tmp_path):
+    # Snapshot-integrity failures are not DENYLIST mismatches: strict=False does
+    # not downgrade them.
+    _write_sidecar(tmp_path, None)
+    with pytest.raises(CrossBackendIncompatibleError):
+        resolve_sim2sim_config(tmp_path, _mujoco_cfg(), strict=False)
+
+
+def test_corrupt_sidecar_fails_closed(tmp_path):
     (tmp_path / "run_config.json").write_text("{ not valid json", encoding="utf-8")
     target = _mujoco_cfg()
-    assert resolve_sim2sim_config(tmp_path, target) is target
-    assert "no contract_snapshot" in capsys.readouterr().out
+    with pytest.raises(CrossBackendIncompatibleError) as excinfo:
+        resolve_sim2sim_config(tmp_path, target)
+    assert "not valid JSON" in str(excinfo.value)
 
 
 @pytest.mark.parametrize(
@@ -267,14 +282,12 @@ def test_corrupt_sidecar_falls_back(tmp_path, capsys):
         pytest.param(json.dumps({"contract_snapshot": [512, 256]}), id="non-mapping-snapshot"),
     ],
 )
-def test_malformed_snapshot_currently_warning_skips(tmp_path, capsys, payload):
-    # #2414 deliberately pins the old-reader behavior before #2416 changes these
-    # cases from warning-skip to fail-closed. The historical artifact is not modified.
+def test_malformed_snapshot_fails_closed(tmp_path, payload):
     (tmp_path / "run_config.json").write_text(payload, encoding="utf-8")
     target = _mujoco_cfg()
 
-    assert resolve_sim2sim_config(tmp_path, target) is target
-    assert "no contract_snapshot" in capsys.readouterr().out
+    with pytest.raises(CrossBackendIncompatibleError, match="contract_snapshot|JSON object"):
+        resolve_sim2sim_config(tmp_path, target)
 
 
 def test_none_source_returns_none(capsys):
@@ -306,58 +319,53 @@ def test_actor_obs_normalization_on_vs_off_raises(tmp_path):
         resolve_sim2sim_config(tmp_path, target)
 
 
-def test_legacy_empirical_normalization_alias_resolves_against_canonical_target(tmp_path):
-    # Old snapshots record the pre-native-schema key; LEGACY_PATH_ALIASES maps it
-    # onto the canonical actor-side path before comparison.
+@pytest.mark.parametrize("target_value", [True, False])
+def test_retired_empirical_normalization_key_fails_closed(tmp_path, target_value):
+    # Retired pre-canonical snapshot keys are unsupported input: they fail closed
+    # before any comparison, whether or not the target would have matched.
     _write_sidecar(tmp_path, {"algo.empirical_normalization": True})
-    target = OmegaConf.create({"algo": {"actor": {"obs_normalization": True}}, "env": {}})
-    assert resolve_sim2sim_config(tmp_path, target) is target
-
-
-def test_legacy_empirical_normalization_alias_mismatch_raises(tmp_path):
-    _write_sidecar(tmp_path, {"algo.empirical_normalization": True})
-    target = OmegaConf.create({"algo": {"actor": {"obs_normalization": False}}, "env": {}})
-    with pytest.raises(CrossBackendIncompatibleError):
+    target = OmegaConf.create({"algo": {"actor": {"obs_normalization": target_value}}, "env": {}})
+    with pytest.raises(CrossBackendIncompatibleError) as excinfo:
         resolve_sim2sim_config(tmp_path, target)
+    assert "algo.empirical_normalization" in str(excinfo.value)
 
 
 @pytest.mark.parametrize(
-    ("legacy_key", "canonical_path"),
+    "retired_key",
     [
-        ("algo.policy.actor_hidden_dims", "algo.actor.hidden_dims"),
-        ("algo.policy.critic_hidden_dims", "algo.critic.hidden_dims"),
+        "algo.policy.actor_hidden_dims",
+        "algo.policy.critic_hidden_dims",
     ],
 )
-def test_legacy_hidden_dims_alias_resolves_against_canonical_target(
-    tmp_path, legacy_key, canonical_path
-):
-    # #2414 transition evidence: old source keys are canonicalized before
-    # comparison. #2416 will remove this tolerance and make the old key reject.
-    _write_sidecar(tmp_path, {legacy_key: [512, 256, 128]})
+def test_retired_hidden_dims_keys_fail_closed(tmp_path, retired_key):
+    _write_sidecar(tmp_path, {retired_key: [512, 256, 128]})
     target = OmegaConf.create({"algo": {}, "env": {}})
-    OmegaConf.update(target, canonical_path, [512, 256, 128])
 
-    assert resolve_sim2sim_config(tmp_path, target) is target
-
-
-@pytest.mark.parametrize(
-    ("legacy_key", "canonical_path", "target_value"),
-    [
-        ("algo.policy.actor_hidden_dims", "algo.actor.hidden_dims", [256, 256]),
-        ("algo.policy.critic_hidden_dims", "algo.critic.hidden_dims", [128, 128]),
-    ],
-)
-def test_legacy_hidden_dims_alias_mismatch_reports_canonical_path(
-    tmp_path, legacy_key, canonical_path, target_value
-):
-    # This records where the current mismatch is detected. In #2416 the alias
-    # should instead reject as an unsupported historical key before comparison.
-    _write_sidecar(tmp_path, {legacy_key: [512, 256, 128]})
-    target = OmegaConf.create({"algo": {}, "env": {}})
-    OmegaConf.update(target, canonical_path, target_value)
-
-    with pytest.raises(CrossBackendIncompatibleError, match=canonical_path):
+    with pytest.raises(CrossBackendIncompatibleError) as excinfo:
         resolve_sim2sim_config(tmp_path, target)
+    assert retired_key in str(excinfo.value)
+
+
+def test_unknown_snapshot_key_fails_closed(tmp_path):
+    # Keys outside the current contract schema (newer/older writers) are reported
+    # as an unsupported format instead of being silently skipped.
+    _write_sidecar(tmp_path, {"algo.future_field": 1})
+    target = OmegaConf.create({"algo": {}, "env": {}})
+
+    with pytest.raises(CrossBackendIncompatibleError) as excinfo:
+        resolve_sim2sim_config(tmp_path, target)
+    msg = str(excinfo.value)
+    assert "algo.future_field" in msg
+    assert "unsupported" in msg.lower() or "outside the current contract schema" in msg
+
+
+def test_retired_alias_tables_stay_removed():
+    # Regression guard for the retired-key removal: the resolver must not
+    # reintroduce legacy alias/fallback tables.
+    import unilab.utils.sim2sim as sim2sim_module
+
+    assert not hasattr(sim2sim_module, "LEGACY_PATH_ALIASES")
+    assert not hasattr(sim2sim_module, "_CANONICAL_PATH_FALLBACKS")
 
 
 def test_int_and_float_compare_equal(tmp_path):
@@ -421,21 +429,23 @@ def test_env_field_present_in_target_absent_in_source_raises(tmp_path):
     assert "source=<absent>" in msg
 
 
-def test_legacy_sampling_mode_snapshot_resolves_against_manager_path(tmp_path) -> None:
+def test_retired_sampling_mode_key_fails_closed(tmp_path) -> None:
     _write_sidecar(tmp_path, {"env.sampling_mode": "adaptive"})
     target = OmegaConf.create(
         {"env": {"commands": {"motion": {"params": {"sampling_mode": "adaptive"}}}}}
     )
 
-    assert resolve_sim2sim_config(tmp_path, target) is target
+    with pytest.raises(CrossBackendIncompatibleError) as excinfo:
+        resolve_sim2sim_config(tmp_path, target)
+    assert "env.sampling_mode" in str(excinfo.value)
 
 
-def test_legacy_config_sampling_mode_is_snapshotted_under_canonical_path() -> None:
+def test_retired_config_sampling_mode_path_is_not_snapshotted() -> None:
+    # The retired pre-canonical config path is no longer read during extraction;
+    # only the canonical env.commands.motion.params.sampling_mode is captured.
     cfg = OmegaConf.create({"env": {"sampling_mode": "adaptive"}})
 
-    assert extract_contract_snapshot(cfg) == {
-        "env.commands.motion.params.sampling_mode": "adaptive"
-    }
+    assert extract_contract_snapshot(cfg) == {}
 
 
 def test_env_field_symmetric_absence_does_not_raise(tmp_path):
