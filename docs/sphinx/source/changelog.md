@@ -17,6 +17,27 @@ PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完
 
 ### Breaking changes / 破坏性变更
 
+- The sim2sim contract guard no longer warning-skips historical runs: a source
+  run whose `run_config.json` is missing, malformed, lacks a mapping
+  `contract_snapshot`, or contains keys outside the current contract schema
+  fails closed with `CrossBackendIncompatibleError`. The legacy snapshot/config
+  key aliases (`env.sampling_mode`, `algo.policy.actor_hidden_dims`,
+  `algo.policy.critic_hidden_dims`, `algo.empirical_normalization`) are removed;
+  only canonical `contract_snapshot` mappings written by training runs on the
+  1.3.5 baseline schema are supported, and this change is not backported to
+  1.3.5 patch releases. To reuse an older run, retrain with the current version
+  (checkpoint weights are unchanged); `training.sim2sim_strict=false` does not
+  bypass the integrity failures
+  ([#2416](https://github.com/Motphys/UniLab/issues/2416)).
+  Sim2Sim 契约守卫不再对历史 run warning-skip：源 run 的 `run_config.json`
+  缺失、损坏、缺少 mapping 形态的 `contract_snapshot`、或含有当前契约 schema
+  之外的键时一律 fail closed（抛 `CrossBackendIncompatibleError`）。legacy
+  快照/配置键别名（`env.sampling_mode`、`algo.policy.actor_hidden_dims`、
+  `algo.policy.critic_hidden_dims`、`algo.empirical_normalization`）已移除；
+  仅支持 1.3.5 基线 schema 训练 run 写出的 canonical `contract_snapshot`，
+  且本变更不回 port 到 1.3.5 patch release。要复用旧 run 需用当前版本重训
+  （checkpoint 权重本身不变）；`training.sim2sim_strict=false` 不能绕过完整性
+  失败（#2416）。
 - FlashSAC pre-contract checkpoints (a missing or null `actor_semantics`
   entry) are no longer supported: training resume and play loading fail
   closed for every actor, including the built-in actor, with an error that

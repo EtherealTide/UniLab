@@ -377,9 +377,10 @@ def make_sim2sim_preflight(
 
     Requires the composed Hydra config for the playback run; the legacy
     non-Hydra path (which silently skipped the preflight) has been removed, so
-    a missing or non-Hydra config fails closed. Old runs without a contract
-    snapshot keep the fallback + warning semantics of
-    :func:`resolve_sim2sim_config`.
+    a missing or non-Hydra config fails closed. A source run whose contract
+    snapshot is missing, malformed, or uses retired keys also fails closed in
+    :func:`resolve_sim2sim_config`; only an explicit ``None`` source run dir
+    skips the check.
     """
     if not isinstance(cfg, DictConfig):
         raise ValueError(
