@@ -232,12 +232,6 @@ class UniformVelocityCommand(CommandTerm):
         tensor.copy_(torch.where(expanded, samples, tensor))
         self._world_command.copy_(torch.where(expanded, samples, self._world_command))
 
-    def clear_episode_metrics_masked(self, reset_mask: torch.Tensor) -> None:
-        for metric_value in self.metrics.values():
-            if not isinstance(metric_value, torch.Tensor):
-                raise TypeError("CommandTerm metrics must be torch.Tensor carriers")
-            metric_value.masked_fill_(reset_mask, 0.0)
-
     def _update_command_reset(self, reset_mask: torch.Tensor) -> None:
         tensor = self._tensor_command
         assert tensor is not None

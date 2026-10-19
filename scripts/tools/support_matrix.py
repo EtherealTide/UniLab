@@ -207,12 +207,12 @@ def _task_label(task_slug: str) -> str:
     return _TASK_LABELS.get(task_slug, task_slug.replace("_", " "))
 
 
-def _load_task_owner(task_path: Path) -> tuple[str, str, bool]:
+def _load_task_owner(task_path: Path) -> tuple[str, str]:
     raw = OmegaConf.to_container(OmegaConf.load(task_path), resolve=True) or {}
     if not isinstance(raw, dict):
         raise ValueError(f"Expected mapping config in {task_path}")
     if task_path.name == "base.yaml":
-        return "", "", False
+        return "", ""
     training = raw.get("training")
     if not isinstance(training, dict) or "task_name" not in training:
         raise ValueError(f"Missing training.task_name in {task_path}")
@@ -222,9 +222,7 @@ def _load_task_owner(task_path: Path) -> tuple[str, str, bool]:
     backend = training.get("sim_backend")
     if not isinstance(backend, str) or not backend.strip():
         raise ValueError(f"training.sim_backend must be a non-empty string in {task_path}")
-    env = raw.get("env")
-    tensor_runtime = isinstance(env, dict) and bool(env.get("tensor_runtime", False))
-    return task_name, backend.strip(), tensor_runtime
+    return task_name, backend.strip()
 
 
 def _load_registry_backends() -> dict[str, set[str]]:
@@ -255,7 +253,7 @@ def _configured_entries(root: Path, spec: EntrypointSpec) -> dict[str, dict[str,
         if relative_path in _ISSUE_GATED_CANDIDATE_CONFIGS:
             continue
         task_slug = task_path.parent.name
-        task_name, backend, _tensor_runtime = _load_task_owner(task_path)
+        task_name, backend = _load_task_owner(task_path)
         if backend not in BACKENDS:
             continue
         entries.setdefault(task_slug, {})[backend] = task_name

@@ -904,9 +904,6 @@ def test_run_motrix_rsl_play_loop_uses_render_spacing_and_offset_mode(
             else:
                 self._renderer.init_renderer(render_spacing, offset_mode=offset_mode)
 
-        def render_play_frame(self):
-            self._renderer.render()
-
         def run_playback(self, **kwargs):
             kwargs.pop("frame_state_getter", None)
             kwargs.setdefault("output_video", None)
@@ -1098,9 +1095,6 @@ def test_run_motrix_play_loop_runs_without_physics_state():
         def init_play_renderer(self, render_spacing=None, render_offset_mode=None):
             del render_spacing, render_offset_mode
             self._renderer.init_renderer()
-
-        def render_play_frame(self):
-            self._renderer.render()
 
         def run_playback(self, **kwargs):
             kwargs.pop("frame_state_getter", None)

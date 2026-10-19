@@ -27,18 +27,6 @@ from unilab.rl.runtime.settings import (
 )
 
 
-def resolve_collector_tensor_native(
-    cfg: DictConfig,
-    *,
-    device: str,
-    algo_name: str,
-) -> bool:
-    """Compatibility resolver returning one placement contract's tensor mode."""
-    return resolve_inference_transport(
-        cfg, device=device, algo_name=algo_name
-    ).collector_tensor_native
-
-
 def select_sim_carrier_device(cfg: DictConfig) -> str:
     """Select the MuJoCo Manager carrier request and reject the removed key."""
     training = OmegaConf.select(cfg, "training", default=None)

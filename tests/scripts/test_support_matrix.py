@@ -154,8 +154,6 @@ def test_owner_backend_identity_comes_from_training_sim_backend(
                 "training:",
                 "  task_name: DemoTask",
                 "  sim_backend: genesis",
-                "env:",
-                "  tensor_runtime: true",
             )
         ),
         encoding="utf-8",
@@ -168,7 +166,7 @@ def test_owner_backend_identity_comes_from_training_sim_backend(
         task_glob="*/*.yaml",
     )
 
-    assert _load_task_owner(owner) == ("DemoTask", "genesis", True)
+    assert _load_task_owner(owner) == ("DemoTask", "genesis")
     assert _configured_entries(tmp_path, spec) == {"demo-task": {"genesis": "DemoTask"}}
 
 
