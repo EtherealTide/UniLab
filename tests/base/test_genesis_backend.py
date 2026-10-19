@@ -3,9 +3,9 @@
 These tests run on machines WITHOUT the genesis-world extra (and without
 CUDA): the fake runtime in ``genesis_fake_runtime.py`` mirrors the 1.3.3 API
 surface the adapter consumes, while the adapter's real cold-path MJCF scan
-(the ``mujoco`` package) runs against a tiny inline scene document.  Real
-runtime coverage lives in the slow lanes (``test_genesis_runtime.py`` and the
-genesis parameterization of ``test_backend_conformance.py``).
+(the ``mujoco`` package) runs against a tiny inline scene document.  The
+genesis parameterization of ``test_backend_conformance.py`` and unisim's
+Genesis adapter suite cover the broader contract and real-runtime lifecycle.
 """
 
 from __future__ import annotations

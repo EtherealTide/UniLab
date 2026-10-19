@@ -1004,9 +1004,9 @@ def _genesis_runtime_available() -> bool:
 
 
 # Runs in a subprocess: Genesis allows exactly one gs.init per process
-# (REPORT #1372 §3.5 [9a]) and tests/base/test_genesis_runtime.py deliberately
-# destroys the session to verify re-init fails closed, so an in-process smoke
-# could observe a poisoned session depending on pytest collection order.
+# (REPORT #1372 §3.5 [9a]), and an in-process smoke could observe a poisoned
+# session depending on pytest collection order. Keep this smoke isolated from
+# other Genesis lifecycle suites.
 # The config group (ppo/sac) arrives as argv[1]; each parametrized case gets
 # its own subprocess, hence its own gs session.
 _GENESIS_ENV_SMOKE_SCRIPT = """
