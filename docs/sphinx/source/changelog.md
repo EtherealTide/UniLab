@@ -17,6 +17,20 @@ PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完
 
 ### Breaking changes / 破坏性变更
 
+- Resuming PPO/APPO training now fails closed on pre-patch rsl-rl checkpoints:
+  a checkpoint without a valid `unilab_logger_state` — and, for environments
+  that publish training state, without a valid versioned
+  `unilab_env_training_state` — is rejected with an error naming the minimum
+  supported format instead of silently restarting progress from 0. There is no
+  compatibility window, offline migration tool, or dual-write path; retrain or
+  resume from a checkpoint saved by a supported UniLab version
+  ([#2416](https://github.com/Motphys/UniLab/issues/2416)).
+  PPO/APPO 续训对 pre-patch rsl-rl checkpoint fail closed：缺少有效
+  `unilab_logger_state` 的 checkpoint——对于发布 training state 的环境，还需有效的
+  版本化 `unilab_env_training_state`——会被拒绝加载，错误信息说明最低支持格式，
+  不再静默地从 0 恢复进度。无兼容窗口、离线迁移工具或 dual-write 路径；请用受支持
+  的 UniLab 版本重训，或从该版本保存的 checkpoint 续训（#2416）。
+
 - The sim2sim contract guard no longer warning-skips historical runs: a source
   run whose `run_config.json` is missing, malformed, lacks a mapping
   `contract_snapshot`, or contains keys outside the current contract schema
