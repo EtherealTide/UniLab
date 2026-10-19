@@ -36,8 +36,8 @@ class _MotionCommand(MotionCommand):
         return True
 
     @property
-    def device_robot_joint_pos(self) -> torch.Tensor:
-        value = self.__dict__["device_robot_joint_pos"]
+    def robot_joint_pos(self) -> torch.Tensor:
+        value = self.__dict__["robot_joint_pos"]
         assert isinstance(value, torch.Tensor)
         return value
 
@@ -267,12 +267,12 @@ def test_tensor_command_observation_accessors_return_carrier_views() -> None:
 def test_tensor_command_joint_observation_uses_cached_default() -> None:
     robot = SimpleNamespace(
         data=SimpleNamespace(
-            default_joint_pos_torch=lambda device: torch.full((2, 29), 0.25),
+            default_joint_pos=lambda device: torch.full((2, 29), 0.25),
         )
     )
     command = _MotionCommand(
         robot=robot,
-        device_robot_joint_pos=torch.full((2, 29), 1.0),
+        robot_joint_pos=torch.full((2, 29), 1.0),
         joint_default_bias=torch.full((2, 29), 0.125),
     )
     env = _env(command, _view())

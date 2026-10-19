@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import torch
 
-from unilab.managers.torch_rng import TorchManagerRng
+from unilab.managers.rng import ManagerRng
 
 
 class FakeEntity:
@@ -47,8 +47,8 @@ class FakeEnv:
         self, seed: int = 7, num_envs: int = 4, device: str | torch.device = "cpu"
     ) -> None:
         self.num_envs = num_envs
-        self.torch_rng = TorchManagerRng.seeded(seed, device=device)
-        self.device = self.torch_rng.device
+        self.rng = ManagerRng.seeded(seed, device=device)
+        self.device = self.rng.device
         self.scene = {"robot": FakeEntity()}
         self.max_episode_length_s = 2.0
         self.value = torch.arange(num_envs, dtype=torch.float32, device=self.device)

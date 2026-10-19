@@ -101,7 +101,7 @@ class _ParityScene:
                 root_link_ang_vel_b=np.array(
                     [[0.1, -0.2, 0.4], [-0.3, 0.2, -0.1]], dtype=np.float32
                 ),
-                default_joint_pos_torch=lambda device: torch.tensor(
+                default_joint_pos=lambda device: torch.tensor(
                     [[0.1, -0.2, 0.5], [-0.1, 0.1, 0.0]], dtype=torch.float32
                 ),
             )

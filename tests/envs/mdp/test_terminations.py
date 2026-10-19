@@ -47,7 +47,7 @@ class _Entity:
         self.joint_vel = torch.zeros((3, 2))
         self.data = self
 
-    def gravity_vec_w_torch(self, device):
+    def gravity_vec_w(self, device):
         gravity = np.zeros((3, 3), dtype=np.float32)
         gravity[:, 2] = -1.0
         return torch.from_numpy(gravity).to(device=device)

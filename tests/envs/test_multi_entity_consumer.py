@@ -72,8 +72,6 @@ class PositionActionCfg(ActionTermCfg):
 
 
 class PositionAction(ActionTerm):
-    uses_tensor_actions = True
-
     def __init__(self, cfg, env):
         super().__init__(cfg, env)
         self.values = torch.zeros((self.num_envs, 1), dtype=torch.float32, device=env.device)

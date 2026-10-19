@@ -316,7 +316,7 @@ def test_g1_walk_flat_owner_eager_capture_warmup_and_replay_share_semantics() ->
                             name: value.clone() for name, value in after_reset.obs.items()
                         },
                         "after_reward": after_reset.reward.clone(),
-                        "rng_state": env.torch_rng.get_state().clone(),
+                        "rng_state": env.rng.get_state().clone(),
                     }
                 )
             references[mode] = trace

@@ -1,7 +1,7 @@
-"""Torch-native RNG adapter for Manager owners.
+"""Manager RNG adapter for owners.
 
 The Manager environment owns one explicit CPU or CUDA ``torch.Generator`` and
-publishes this adapter as ``ManagerBasedRlEnv.torch_rng``. It never converts
+publishes this adapter as ``ManagerBasedRlEnv.rng``. It never converts
 drawn tensors back to NumPy, so a CUDA owner can keep randomization on its
 declared device.
 """
@@ -15,13 +15,13 @@ import torch
 
 def _shape(size: int | tuple[int, ...]) -> tuple[int, ...]:
     if isinstance(size, bool):
-        raise TypeError(f"TorchManagerRng shape must be an int or tuple of ints, got {size!r}")
+        raise TypeError(f"ManagerRng shape must be an int or tuple of ints, got {size!r}")
     if isinstance(size, int):
         return (size,)
     if not isinstance(size, tuple) or not all(
         isinstance(value, int) and not isinstance(value, bool) for value in size
     ):
-        raise TypeError(f"TorchManagerRng shape must be an int or tuple of ints, got {size!r}")
+        raise TypeError(f"ManagerRng shape must be an int or tuple of ints, got {size!r}")
     return size
 
 
@@ -37,9 +37,9 @@ def _bounds(
     if isinstance(value, torch.Tensor):
         tensor = value.to(device=device, dtype=dtype)
     else:
-        raise TypeError(f"TorchManagerRng {name} must be a scalar or Tensor bounds, got {value!r}")
+        raise TypeError(f"ManagerRng {name} must be a scalar or Tensor bounds, got {value!r}")
     if tensor.numel() == 0:
-        raise ValueError(f"TorchManagerRng {name} cannot be empty")
+        raise ValueError(f"ManagerRng {name} cannot be empty")
     return tensor
 
 
@@ -65,7 +65,7 @@ def _sampled_bounds(
     return _sampled_value(low, shape, device=device), _sampled_value(high, shape, device=device)
 
 
-class TorchManagerRng:
+class ManagerRng:
     """Small explicit RNG surface backed by one ``torch.Generator``.
 
     The method names mirror the NumPy Generator calls used by Manager terms so
@@ -77,28 +77,28 @@ class TorchManagerRng:
     def __init__(self, *, device: str | torch.device, generator: torch.Generator | None = None):
         resolved = torch.device(device)
         if resolved.type not in {"cpu", "cuda"}:
-            raise ValueError(f"TorchManagerRng supports CPU/CUDA devices only, got {resolved}")
+            raise ValueError(f"ManagerRng supports CPU/CUDA devices only, got {resolved}")
         if resolved.type == "cuda":
             if not torch.cuda.is_available():
-                raise RuntimeError(f"TorchManagerRng CUDA device is unavailable: {resolved}")
+                raise RuntimeError(f"ManagerRng CUDA device is unavailable: {resolved}")
             if resolved.index is None:
                 resolved = torch.device("cuda", index=torch.cuda.current_device())
         if generator is None:
             generator = torch.Generator(device=resolved)
         elif generator.device != resolved:
             raise ValueError(
-                f"TorchManagerRng generator device {generator.device} does not match {resolved}"
+                f"ManagerRng generator device {generator.device} does not match {resolved}"
             )
         self.generator = generator
         self.device = resolved
 
     @classmethod
-    def seeded(cls, seed: int, *, device: str | torch.device = "cpu") -> TorchManagerRng:
+    def seeded(cls, seed: int, *, device: str | torch.device = "cpu") -> ManagerRng:
         return cls(device=device).manual_seed(seed)
 
-    def manual_seed(self, seed: int) -> TorchManagerRng:
+    def manual_seed(self, seed: int) -> ManagerRng:
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
-            raise ValueError(f"TorchManagerRng seed must be a non-negative integer, got {seed!r}")
+            raise ValueError(f"ManagerRng seed must be a non-negative integer, got {seed!r}")
         self.generator.manual_seed(int(seed))
         return self
 
@@ -151,16 +151,14 @@ class TorchManagerRng:
         dtype: torch.dtype = torch.int64,
     ) -> torch.Tensor:
         if isinstance(low, bool) or not isinstance(low, int) or low < 0:
-            raise ValueError(
-                f"TorchManagerRng integers low must be a non-negative integer, got {low!r}"
-            )
+            raise ValueError(f"ManagerRng integers low must be a non-negative integer, got {low!r}")
         if isinstance(high, bool) or not isinstance(high, int) or high <= low:
             raise ValueError(
-                f"TorchManagerRng integers high must be greater than low, got {low!r}, {high!r}"
+                f"ManagerRng integers high must be greater than low, got {low!r}, {high!r}"
             )
         shape = _shape(size)
         if dtype not in {torch.int32, torch.int64}:
-            raise TypeError(f"TorchManagerRng integers supports int32/int64, got {dtype}")
+            raise TypeError(f"ManagerRng integers supports int32/int64, got {dtype}")
         return torch.randint(
             int(low),
             int(high),
@@ -179,24 +177,24 @@ class TorchManagerRng:
         replacement: bool = True,
     ) -> torch.Tensor:
         if isinstance(a, bool) or not isinstance(a, int) or a <= 0:
-            raise ValueError(f"TorchManagerRng choice population must be a positive int, got {a}")
+            raise ValueError(f"ManagerRng choice population must be a positive int, got {a}")
         if not replacement:
-            raise NotImplementedError("TorchManagerRng choice supports replacement=True only")
+            raise NotImplementedError("ManagerRng choice supports replacement=True only")
         if not isinstance(p, torch.Tensor):
-            raise TypeError("TorchManagerRng choice probabilities must be a torch.Tensor")
+            raise TypeError("ManagerRng choice probabilities must be a torch.Tensor")
         if p.ndim != 1 or p.numel() != a:
             raise ValueError(
-                f"TorchManagerRng choice probabilities must have shape ({a},), got {tuple(p.shape)}"
+                f"ManagerRng choice probabilities must have shape ({a},), got {tuple(p.shape)}"
             )
         if p.device != self.device:
             raise ValueError(
-                f"TorchManagerRng choice probabilities must live on {self.device}, got {p.device}"
+                f"ManagerRng choice probabilities must live on {self.device}, got {p.device}"
             )
         if p.numel() == 0 or not bool(torch.isfinite(p).all()) or bool((p < 0).any()):
-            raise ValueError("TorchManagerRng choice probabilities must be finite and non-negative")
+            raise ValueError("ManagerRng choice probabilities must be finite and non-negative")
         count = _shape(size)
         if len(count) != 1:
-            raise TypeError("TorchManagerRng choice size must be one-dimensional")
+            raise TypeError("ManagerRng choice size must be one-dimensional")
         return torch.multinomial(p, count[0], replacement=True, generator=self.generator)
 
     def get_state(self) -> torch.Tensor:
@@ -204,8 +202,8 @@ class TorchManagerRng:
 
     def set_state(self, state: torch.Tensor) -> None:
         if state.device.type != "cpu":
-            raise ValueError("TorchManagerRng state must be a CPU Torch state tensor")
+            raise ValueError("ManagerRng state must be a CPU Torch state tensor")
         self.generator.set_state(state)
 
 
-__all__ = ["TorchManagerRng"]
+__all__ = ["ManagerRng"]

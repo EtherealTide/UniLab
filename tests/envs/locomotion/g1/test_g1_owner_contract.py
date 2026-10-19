@@ -714,7 +714,7 @@ def test_g1_walk_newton_mask_reset_preserves_rows_and_rng() -> None:
         qpos_before = views["qpos"].clone()
         qvel_before = views["qvel"].clone()
         command = env.command_manager.get_command("twist").clone()
-        rng_state = env.torch_rng.get_state().clone() if env.torch_rng is not None else None
+        rng_state = env.rng.get_state().clone() if env.rng is not None else None
         assert rng_state is not None
 
         rows = torch.tensor([1, 3], dtype=torch.int64, device=device)
@@ -744,7 +744,7 @@ def test_g1_walk_newton_mask_reset_preserves_rows_and_rng() -> None:
             new_command[keep], command[keep], msg="untouched command rows changed"
         )
 
-        env.torch_rng.set_state(rng_state)
+        env.rng.set_state(rng_state)
         reference_obs, _ = env.reset(reset_mask=reset_mask)
         reference_command = env.command_manager.get_command("twist")
         torch.testing.assert_close(

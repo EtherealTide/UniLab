@@ -62,7 +62,7 @@ def bad_orientation(
     if not math.isfinite(limit_angle):
         raise ValueError("bad_orientation limit_angle must be finite")
     asset, view = _root_body_view(env, asset_cfg, "bad_orientation")
-    gravity = asset.data.gravity_vec_w_torch(getattr(env, "device", torch.device("cpu")))[0]
+    gravity = asset.data.gravity_vec_w(getattr(env, "device", torch.device("cpu")))[0]
     projected_gravity = _quat_apply_inverse(
         view.quat_w[:, 0, :], gravity.expand((view.quat_w.shape[0], 3))
     )

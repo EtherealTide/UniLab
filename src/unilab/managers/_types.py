@@ -13,7 +13,7 @@ from typing import Any, Protocol
 import torch
 from unisim.backend.base import SimBackend
 
-from unilab.managers.torch_rng import TorchManagerRng
+from unilab.managers.rng import ManagerRng
 
 
 class ManagerEntity(Protocol):
@@ -178,7 +178,7 @@ class ManagerScene(Protocol):
 
     def compile_tensor_reads(self, device: str | torch.device, specs: Sequence[Any]) -> Any: ...
 
-    def env_origins_torch(self, device: str | torch.device) -> torch.Tensor: ...
+    def env_origins(self, device: str | torch.device) -> torch.Tensor: ...
 
     def __getitem__(self, name: str) -> ManagerEntity: ...
 
@@ -186,7 +186,7 @@ class ManagerScene(Protocol):
 
     def reset_to_default(self, env_ids: torch.Tensor, *, term_name: str) -> None: ...
 
-    def bind_gravity_write_torch(
+    def bind_gravity_write_tensor(
         self, *, term_name: str, device: str | torch.device
     ) -> torch.Tensor: ...
 
@@ -261,7 +261,7 @@ class ManagerBasedRlEnv(Protocol):
     def device(self) -> torch.device: ...
 
     @property
-    def torch_rng(self) -> TorchManagerRng: ...
+    def rng(self) -> ManagerRng: ...
 
     @property
     def cfg(self) -> Any: ...

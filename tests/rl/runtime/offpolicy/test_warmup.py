@@ -321,7 +321,7 @@ def test_warmup_exercises_compiled_update_paths(
     assert learner.use_compile is True
     learner.prepare_for_collection(_context())
 
-    assert {"_critic_loss_tensors", "_actor_loss_tensors"}.issubset(invoked)
+    assert {"_critic_objective", "_actor_objective"}.issubset(invoked)
 
 
 def test_runner_prepare_uses_custom_learner_and_runtime_hooks() -> None:
@@ -403,12 +403,12 @@ def test_actor_adapter_warmup_hook_is_preferred_and_rng_restored(
     assert random.getstate() == before_python
 
 
-def test_gpu_resident_replay_pipeline_warmup_uses_scratch_gather_only(
+def test_device_replay_pipeline_warmup_uses_scratch_gather_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from unilab.rl.runtime.ipc.replay_pipelines.gpu_resident import GPUResidentReplayPipeline
+    from unilab.rl.runtime.ipc.replay_pipelines.device import DeviceReplayPipeline
 
-    pipeline = object.__new__(GPUResidentReplayPipeline)
+    pipeline = object.__new__(DeviceReplayPipeline)
     pipeline._closed = False
     pipeline._main_thread_submission = True
     pipeline._learner_thread_id = threading.get_ident()

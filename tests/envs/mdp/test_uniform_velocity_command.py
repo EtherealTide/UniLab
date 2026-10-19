@@ -21,7 +21,7 @@ from unilab.envs.mdp.commands import (
 )
 from unilab.managers import CommandManager
 from unilab.managers._types import ManagerBasedRlEnv
-from unilab.managers.torch_rng import TorchManagerRng
+from unilab.managers.rng import ManagerRng
 
 
 class _Backend:
@@ -123,8 +123,7 @@ def _env(seed: int = 7) -> tuple[ManagerBasedRlEnv, _Backend]:
         SimpleNamespace(
             num_envs=backend.num_envs,
             device=torch.device("cpu"),
-            torch_rng=TorchManagerRng.seeded(seed),
-            rng=np.random.default_rng(seed),
+            rng=ManagerRng.seeded(seed),
             scene=scene,
             step_dt=0.02,
         ),
@@ -200,9 +199,9 @@ def test_resampling_is_seeded_and_partial_reset_is_local() -> None:
     np.testing.assert_array_equal(left.get_term("twist").command_counter[[1, 3]], 1)
 
 
-def test_uniform_velocity_command_fails_closed_without_torch_rng() -> None:
+def test_uniform_velocity_command_fails_closed_without_rng() -> None:
     env, _ = _env(seed=23)
-    env.torch_rng = None
+    env.rng = None
 
     with pytest.raises(RuntimeError, match="CommandTerm scheduling"):
         _cfg().build(env)

@@ -15,7 +15,7 @@ import torch
 from prettytable import PrettyTable
 
 from unilab.managers.manager_base import ManagerBase, ManagerTermBase
-from unilab.managers.torch_rng import TorchManagerRng
+from unilab.managers.rng import ManagerRng
 
 if TYPE_CHECKING:
     from unilab.managers._types import ManagerBasedRlEnv
@@ -68,7 +68,7 @@ class CommandTerm(ManagerTermBase):
             )
         self._resampling_time_range = (lower, upper)
         self._device = torch.device(getattr(self._env, "device", torch.device("cpu")))
-        self._torch_rng = self._require_torch_rng()
+        self._rng = self._require_rng()
         self.metrics: dict[str, torch.Tensor] = {}
         self.time_left = torch.zeros(self.num_envs, dtype=torch.float32, device=self._device)
         self.command_counter = torch.zeros(self.num_envs, dtype=torch.int64, device=self._device)
@@ -261,14 +261,14 @@ class CommandTerm(ManagerTermBase):
 
     def _resample(self, reset_mask: torch.Tensor) -> None:
         lower, upper = self._resampling_time_range
-        sampled = self._torch_rng.uniform(lower, upper, (self.num_envs,), dtype=torch.float32)
+        sampled = self._rng.uniform(lower, upper, (self.num_envs,), dtype=torch.float32)
         self.time_left.copy_(torch.where(reset_mask, sampled, self.time_left))
         self._resample_command(reset_mask)
         self.command_counter += reset_mask.to(torch.int64)
 
-    def _require_torch_rng(self) -> TorchManagerRng:
-        rng = self._env.torch_rng
-        if not isinstance(rng, TorchManagerRng):
+    def _require_rng(self) -> ManagerRng:
+        rng = self._env.rng
+        if not isinstance(rng, ManagerRng):
             raise RuntimeError("CommandTerm scheduling requires the Manager-owned Torch generator")
         return rng
 

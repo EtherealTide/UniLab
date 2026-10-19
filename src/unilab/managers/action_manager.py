@@ -55,14 +55,11 @@ class ActionTerm(ManagerTermBase):
     backend step. State-feedback terms must override this declaration with ``True``.
     """
 
-    uses_tensor_actions: ClassVar[bool] = True
-    """Whether this term consumes raw actions as Torch tensors.
-
-    The tensor-only Manager runtime requires this declaration to remain true.
-    """
-
     uses_tensor_state_packet: ClassVar[bool] = False
     """Whether ``apply_actions`` consumes the current packed tensor state packet."""
+
+    # Contract invariant: raw actions are Torch tensors. ``process_actions`` and
+    # the public ``raw_action`` carrier do not provide a NumPy fallback.
 
     def __init__(self, cfg: ActionTermCfg, env: ManagerBasedRlEnv):
         self.cfg = cfg
@@ -329,18 +326,6 @@ class ActionManager(ManagerBase):
                     "ActionManager term "
                     f"'{term_name}' requires_substep_state_feedback must be bool, "
                     f"got {type(feedback).__name__}."
-                )
-            uses_tensor_actions = term.uses_tensor_actions
-            if not isinstance(uses_tensor_actions, bool):
-                raise TypeError(
-                    "ActionManager term "
-                    f"'{term_name}' uses_tensor_actions must be bool, got "
-                    f"{type(uses_tensor_actions).__name__}."
-                )
-            if not uses_tensor_actions:
-                raise TypeError(
-                    "ActionManager requires tensor action terms; legacy NumPy action "
-                    f"term '{term_name}' is unsupported"
                 )
             if not isinstance(term.raw_action, torch.Tensor):
                 raise TypeError(

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from unilab.managers.command_manager import CommandTerm, CommandTermCfg
-from unilab.managers.torch_rng import TorchManagerRng
+from unilab.managers.rng import ManagerRng
 
 if TYPE_CHECKING:
     from unilab.managers._types import ManagerBasedRlEnv
@@ -106,8 +106,8 @@ class UniformPoseCommand(CommandTerm):
             self._command.copy_(torch.where((reset_mask & zero)[:, None], zeros, self._command))
 
     def _host_uniform(self, lower: float, upper: float, count: int) -> torch.Tensor:
-        rng_owner = getattr(self._env, "torch_rng", None)
-        if not isinstance(rng_owner, TorchManagerRng):
+        rng_owner = getattr(self._env, "rng", None)
+        if not isinstance(rng_owner, ManagerRng):
             raise RuntimeError(
                 "UniformPoseCommand sampling requires the Manager-owned Torch generator"
             )

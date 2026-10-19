@@ -333,10 +333,10 @@ def test_backend_profiles_materialize_identical_local_entity_contract(backend_ty
     assert robot.body_names == ("foot", "base")
     np.testing.assert_array_equal(robot.data._host_joint_pos, backend.dof_pos[:, [4, 2]])
     np.testing.assert_array_equal(robot.data._host_joint_vel, backend.dof_vel[:, [4, 2]])
-    soft_limits = robot.data.soft_joint_pos_limits_torch(torch.device("cpu"))
+    soft_limits = robot.data.soft_joint_pos_limits(torch.device("cpu"))
     torch.testing.assert_close(soft_limits, torch.from_numpy(backend.joint_range[[4, 2]]))
     assert soft_limits.dtype == torch.float32
-    assert robot.data.soft_joint_pos_limits_torch(torch.device("cpu")) is soft_limits
+    assert robot.data.soft_joint_pos_limits(torch.device("cpu")) is soft_limits
     np.testing.assert_array_equal(robot.data._host_gravity_vec_w, [[0.0, 0.0, -1.0]] * 3)
     np.testing.assert_array_equal(robot.data._host_body_link_pos_w, backend.body_pos[:, [7, 4]])
     np.testing.assert_array_equal(robot.data._host_root_link_pos_w, backend.body_pos[:, 4])
@@ -344,10 +344,10 @@ def test_backend_profiles_materialize_identical_local_entity_contract(backend_ty
     np.testing.assert_array_equal(robot.data._host_root_link_ang_vel_b, backend.body_ang_vel[:, 4])
     np.testing.assert_array_equal(robot.data._host_root_link_quat_w[:, 0], 1.0)
     np.testing.assert_array_equal(
-        robot.data.default_root_state_torch(torch.device("cpu")),
+        robot.data.default_root_state(torch.device("cpu")),
         np.tile([1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], (3, 1)),
     )
-    default_vel = robot.data.default_joint_vel_torch(torch.device("cpu"))
+    default_vel = robot.data.default_joint_vel(torch.device("cpu"))
     torch.testing.assert_close(default_vel, torch.zeros_like(default_vel))
 
 
@@ -568,7 +568,7 @@ def test_entity_caches_unsupported_root_layout_without_hot_path_probe() -> None:
         NotImplementedError,
         match="default root state.*backend 'drake'.*drake lacks root-state layout",
     ):
-        _ = robot.data.default_root_state_torch(torch.device("cpu"))
+        _ = robot.data.default_root_state(torch.device("cpu"))
     with (
         pytest.raises(ValueError, match="every environment row"),
         transaction.scoped_startup(torch.tensor([0], dtype=torch.int64)),
@@ -597,7 +597,7 @@ def test_entity_joint_position_target_maps_natural_joint_order_to_control_order(
     assert ids == [0, 1]
     assert names == ["ankle", "hip"]
     np.testing.assert_array_equal(
-        robot.data.default_joint_pos_torch(torch.device("cpu")),
+        robot.data.default_joint_pos(torch.device("cpu")),
         torch.tile(torch.tensor([14.0, 12.0, 10.0]), (backend.num_envs, 1)),
     )
     np.testing.assert_array_equal(robot.data.encoder_bias, 0.0)
@@ -644,14 +644,14 @@ def test_entity_cold_default_root_and_env_origin_torch_tables_are_cached() -> No
     _, scene = _scene("mujoco")
     robot = scene["robot"]
 
-    roots = robot.data.default_root_state_torch(torch.device("cpu"))
-    origins = scene.env_origins_torch(torch.device("cpu"))
+    roots = robot.data.default_root_state(torch.device("cpu"))
+    origins = scene.env_origins(torch.device("cpu"))
     assert roots.shape == (3, 13)
     assert origins.shape == (3, 3)
     assert roots.dtype == torch.float32
     assert origins.dtype == torch.float32
-    assert robot.data.default_root_state_torch(torch.device("cpu")) is roots
-    assert scene.env_origins_torch(torch.device("cpu")) is origins
+    assert robot.data.default_root_state(torch.device("cpu")) is roots
+    assert scene.env_origins(torch.device("cpu")) is origins
 
 
 @pytest.mark.parametrize(
@@ -866,13 +866,13 @@ def test_real_mujoco_entity_selector_and_numpy_state_smoke() -> None:
     assert scene["robot"].data._host_root_link_lin_vel_b.shape == (2, 3)
     assert scene["robot"].data._host_root_link_ang_vel_b.shape == (2, 3)
     assert scene["robot"].data._host_root_link_quat_w[:, 0].shape == (2,)
-    assert scene["robot"].data.gravity_vec_w_torch(torch.device("cpu")).shape == (2, 3)
-    assert scene["robot"].data.default_joint_vel_torch(torch.device("cpu")).shape == (2, 12)
+    assert scene["robot"].data.gravity_vec_w(torch.device("cpu")).shape == (2, 3)
+    assert scene["robot"].data.default_joint_vel(torch.device("cpu")).shape == (2, 12)
     assert np.isfinite(scene["robot"].data._host_root_link_lin_vel_b).all()
     assert np.isfinite(scene["robot"].data._host_root_link_ang_vel_b).all()
     assert np.isfinite(scene["robot"].data._host_root_link_quat_w[:, 0:1]).all()
-    assert bool(torch.isfinite(scene["robot"].data.gravity_vec_w_torch("cpu")).all())
-    default_vel = scene["robot"].data.default_joint_vel_torch(torch.device("cpu"))
+    assert bool(torch.isfinite(scene["robot"].data.gravity_vec_w("cpu")).all())
+    default_vel = scene["robot"].data.default_joint_vel(torch.device("cpu"))
     torch.testing.assert_close(default_vel, torch.zeros_like(default_vel))
 
 
@@ -890,7 +890,7 @@ def test_scene_exposes_read_only_community_entities_and_zero_origins() -> None:
     with pytest.raises(TypeError):
         scene.entities["other"] = scene["robot"]  # type: ignore[index]
 
-    origins = scene.env_origins_torch(torch.device("cpu"))
+    origins = scene.env_origins(torch.device("cpu"))
     assert origins.shape == (3, 3)
     torch.testing.assert_close(origins, torch.zeros_like(origins))
     assert not origins.requires_grad

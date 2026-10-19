@@ -18,7 +18,7 @@ def _env() -> SimpleNamespace:
     command = G1VelocityCommand.__new__(G1VelocityCommand)
     env = SimpleNamespace(
         command_manager=SimpleNamespace(get_term=lambda name: SimpleNamespace(spec=object)),
-        torch_rng=object(),
+        rng=object(),
         action_manager=SimpleNamespace(cleared=[]),
         metrics_manager=SimpleNamespace(cleared=[]),
         device=torch.device("cpu"),
@@ -90,6 +90,6 @@ def test_owner_validates_command_and_rng_contract() -> None:
         G1WalkResetOwner(cfg, env)
 
     env = _env()
-    env.torch_rng = None
-    with pytest.raises(NotImplementedError, match="Torch RNG"):
+    env.rng = None
+    with pytest.raises(NotImplementedError, match="Manager RNG"):
         G1WalkResetOwner(cfg, env)

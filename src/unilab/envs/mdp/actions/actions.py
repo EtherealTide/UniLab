@@ -78,7 +78,6 @@ class BaseAction(ActionTerm):
 
     cfg: BaseActionCfg
     _entity: Entity
-    uses_tensor_actions: ClassVar[bool] = True
 
     def __init__(self, cfg: BaseActionCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg=cfg, env=env)
@@ -246,7 +245,7 @@ class JointPositionAction(BaseAction):
         super().__init__(cfg=cfg, env=env)
         if cfg.use_default_offset:
             self._offset = self._cold_affine(
-                self._entity.data.default_joint_pos_torch(self._device)[:, self._target_index]
+                self._entity.data.default_joint_pos(self._device)[:, self._target_index]
             )
         self._tensor_target = torch.empty_like(self._processed_actions)
         self._full_width_natural_target = len(
@@ -347,7 +346,7 @@ class JointVelocityAction(BaseAction):
             raise TypeError("JointVelocityActionCfg use_default_offset must be bool")
         if cfg.use_default_offset:
             self._offset = self._cold_affine(
-                self._entity.data.default_joint_vel_torch(self._device)[:, self._target_index]
+                self._entity.data.default_joint_vel(self._device)[:, self._target_index]
             )
 
     def apply_actions(self) -> None:

@@ -22,7 +22,7 @@ from unilab.rl.runtime.settings import (
     MAX_COLLECTOR_METRICS_INTERVAL,
     MAX_INFERENCE_SLOT_CAPACITY,
     MAX_REPLAY_INGRESS_DEPTH,
-    TensorRuntimeSettings,
+    RuntimeSettings,
     _validated_positive_int,
 )
 
@@ -144,12 +144,12 @@ def _required_algo_int(cfg: DictConfig, *, key: str, algo_name: str) -> int:
     return _validated_positive_int(value, label=f"{algo_name} algo.{key}")
 
 
-def resolve_tensor_runtime_settings(
+def resolve_runtime_settings(
     cfg: DictConfig,
     *,
     algo_name: str,
     num_envs: int,
-) -> TensorRuntimeSettings:
+) -> RuntimeSettings:
     """Resolve all spawn-facing tensor-runtime knobs and learner sampling."""
     inference_capacity, configured_inference_capacity = _resolve_configured_training_int(
         cfg,
@@ -180,7 +180,7 @@ def resolve_tensor_runtime_settings(
     )
     batch_size = _required_algo_int(cfg, key="batch_size", algo_name=algo_name)
     updates_per_step = _required_algo_int(cfg, key="updates_per_step", algo_name=algo_name)
-    return TensorRuntimeSettings(
+    return RuntimeSettings(
         inference_slot_capacity=inference_capacity,
         collector_metrics_interval=metrics_interval,
         replay_ingress_depth=ingress_depth,

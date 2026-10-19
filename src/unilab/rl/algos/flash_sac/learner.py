@@ -500,22 +500,22 @@ class FlashSACLearner(WholeCycleLearnerMixin):
                 },
             }
         if self.compile_full_objectives:
-            self._critic_objective_tensors = compile_fn(  # type: ignore[method-assign]
-                self._critic_objective_tensors, **compile_kwargs
+            self._full_critic_objective = compile_fn(  # type: ignore[method-assign]
+                self._full_critic_objective, **compile_kwargs
             )
-            self._actor_objective_tensors = compile_fn(  # type: ignore[method-assign]
-                self._actor_objective_tensors, **compile_kwargs
+            self._full_actor_objective = compile_fn(  # type: ignore[method-assign]
+                self._full_actor_objective, **compile_kwargs
             )
             return
         self.actor.get_mean_and_std = compile_fn(  # type: ignore[method-assign]
             self.actor.get_mean_and_std, **compile_kwargs
         )
-        self.__dict__["_critic_loss_tensors"] = compile_fn(
-            self._critic_loss_tensors,
+        self.__dict__["_critic_objective"] = compile_fn(
+            self._critic_objective,
             **compile_kwargs,
         )
-        self.__dict__["_actor_loss_tensors"] = compile_fn(
-            self._actor_loss_tensors,
+        self.__dict__["_actor_objective"] = compile_fn(
+            self._actor_objective,
             **compile_kwargs,
         )
 
@@ -576,7 +576,7 @@ class FlashSACLearner(WholeCycleLearnerMixin):
             return
         self.reward_normalizer.update_from_transitions(rewards, dones)
 
-    def _critic_loss_tensors(
+    def _critic_objective(
         self,
         next_q_values: torch.Tensor,
         next_q_log_probs_full: torch.Tensor,
@@ -600,7 +600,7 @@ class FlashSACLearner(WholeCycleLearnerMixin):
         )
         return cast(torch.Tensor, -(target_probs.unsqueeze(0) * pred_log_probs).sum(dim=-1).mean())
 
-    def _actor_loss_tensors(
+    def _actor_objective(
         self,
         log_probs: torch.Tensor,
         q_values: torch.Tensor,
@@ -616,7 +616,7 @@ class FlashSACLearner(WholeCycleLearnerMixin):
         entropy = -log_probs.detach().mean()
         return actor_loss, entropy
 
-    def _critic_objective_tensors(
+    def _full_critic_objective(
         self,
         actions: torch.Tensor,
         rewards: torch.Tensor,
@@ -643,7 +643,7 @@ class FlashSACLearner(WholeCycleLearnerMixin):
         with self._autocast():
             _, pred_info_all = self.critic(obs_all, act_all, training=True)
             pred_log_probs = pred_info_all["log_prob"].chunk(2, dim=1)[0]
-            critic_loss = self._critic_loss_tensors(
+            critic_loss = self._critic_objective(
                 next_q_values,
                 next_q_log_probs_full,
                 support,
@@ -661,7 +661,7 @@ class FlashSACLearner(WholeCycleLearnerMixin):
         )
         return critic_loss, reward_scale_std
 
-    def _actor_objective_tensors(
+    def _full_actor_objective(
         self,
         obs: torch.Tensor,
         next_obs: torch.Tensor,
@@ -680,7 +680,7 @@ class FlashSACLearner(WholeCycleLearnerMixin):
             actions = actions_all.chunk(2, dim=0)[0]
             log_probs = actor_info_all["log_prob"].chunk(2, dim=0)[0]
             q_values, _ = self.critic(critic_obs, actions, training=False)
-            actor_loss, entropy = self._actor_loss_tensors(
+            actor_loss, entropy = self._actor_objective(
                 log_probs, q_values, actions, expert_actions, self.temperature()
             )
             aux_losses = validate_aux_losses(
@@ -711,7 +711,7 @@ class FlashSACLearner(WholeCycleLearnerMixin):
         if self.reward_normalizer is not None:
             rewards = self.reward_normalizer.normalize(rewards)
 
-        critic_loss, reward_scale_std = self._critic_objective_tensors(
+        critic_loss, reward_scale_std = self._full_critic_objective(
             actions, rewards, next_obs, dones, truncated, critic_obs, critic_next_obs
         )
 
@@ -766,7 +766,7 @@ class FlashSACLearner(WholeCycleLearnerMixin):
         next_obs = self._maybe_normalize_obs(next_obs, update=False)
 
         self._pending_actor_metric_values = None
-        actor_loss, entropy, aux_losses = self._actor_objective_tensors(
+        actor_loss, entropy, aux_losses = self._full_actor_objective(
             obs,
             next_obs,
             expert_actions,
@@ -1047,7 +1047,7 @@ class FlashSACLearner(WholeCycleLearnerMixin):
         self._pending_cycle_critic_metric_values = None
         self._pending_cycle_metric_values = None
 
-    def dp_initial_sync_tensors(self) -> dict[str, torch.Tensor]:
+    def dp_initial_sync(self) -> dict[str, torch.Tensor]:
         """Model state broadcast once from rank 0 before collection starts.
 
         The values alias the parameter/buffer storage of ``actor``, ``critic``,

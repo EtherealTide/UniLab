@@ -52,7 +52,7 @@
 
 - SAC / FlashSAC runner builder（`build_sac_double_buffer_runner`、
   `build_flashsac_double_buffer_runner`）改为注入式：训练装配层传入
-  `tensor_runtime_settings`、`inference_placement`、
+  `runtime_settings`、`inference_placement`、
   `backend_device_resolver`、`backend_device_configurer`；旧
   `backend_device_binder` 参数已移除。缺省时使用 runner 侧默认值。
 - 扩展机制不变：`runtime_resolver`、`class_name`、`actor_adapter_modules`

@@ -125,16 +125,6 @@ def test_action_feedback_declaration_must_be_bool(
         ActionManager({"invalid": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
 
 
-def test_tensor_action_declaration_must_be_bool(
-    fake_env: FakeEnv,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(DummyAction, "uses_tensor_actions", "yes")
-
-    with pytest.raises(TypeError, match="uses_tensor_actions must be bool"):
-        ActionManager({"invalid": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
-
-
 @pytest.mark.parametrize(
     "action,match",
     [
@@ -182,14 +172,6 @@ def test_action_manager_routes_tensor_terms_only(fake_env: FakeEnv) -> None:
     manager.process_action(torch.zeros((fake_env.num_envs, 1), dtype=torch.float32))
 
     assert manager.get_term("tensor").input_types == [torch.Tensor]
-
-
-def test_action_manager_rejects_declared_numpy_action_terms(
-    fake_env: FakeEnv, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(DummyAction, "uses_tensor_actions", False)
-    with pytest.raises(TypeError, match="requires tensor action terms"):
-        ActionManager({"non_tensor": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
 
 
 def test_action_manager_rejects_non_tensor_raw_action_carrier(

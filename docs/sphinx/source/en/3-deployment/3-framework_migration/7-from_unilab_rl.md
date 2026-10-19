@@ -55,7 +55,7 @@ Permanent `import uni_rl` support is **not** guaranteed; migrate to the
 
 - The SAC / FlashSAC runner builders (`build_sac_double_buffer_runner`,
   `build_flashsac_double_buffer_runner`) are injection-based: the training
-  assembly layer passes `tensor_runtime_settings`, `inference_placement`,
+  assembly layer passes `runtime_settings`, `inference_placement`,
   `backend_device_resolver`, and `backend_device_configurer`; the old
   `backend_device_binder` parameter is removed. When omitted, runner-side
   defaults apply.

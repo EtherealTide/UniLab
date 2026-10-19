@@ -42,7 +42,7 @@ from unilab.base.reset_state import ResetStateTransaction
 from unilab.envs import mdp
 from unilab.managers import EventManager, EventTermCfg, SceneEntityCfg
 from unilab.managers._types import ManagerBasedRlEnv
-from unilab.managers.torch_rng import TorchManagerRng
+from unilab.managers.rng import ManagerRng
 
 requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 
@@ -53,7 +53,7 @@ def _interval_op(plan: IntervalRandomizationPlan, term: str):
 
 class _CaptureEntity:
     def __init__(self, default_root_state: np.ndarray) -> None:
-        self.default_root_state = default_root_state
+        self._default_root_state = default_root_state
         self._default_root_state_tensor: torch.Tensor | None = None
         self.writes: list[tuple[torch.Tensor, torch.Tensor]] = []
 
@@ -61,16 +61,15 @@ class _CaptureEntity:
     def data(self) -> SimpleNamespace:
         return SimpleNamespace(
             default_root_state=self.default_root_state,
-            default_root_state_torch=self.default_root_state_torch,
         )
 
-    def default_root_state_torch(self, device: torch.device) -> torch.Tensor:
+    def default_root_state(self, device: torch.device) -> torch.Tensor:
         if (
             self._default_root_state_tensor is None
             or self._default_root_state_tensor.device != device
         ):
             self._default_root_state_tensor = torch.from_numpy(
-                np.array(self.default_root_state, copy=True)
+                np.array(self._default_root_state, copy=True)
             ).to(device=device)
         return self._default_root_state_tensor
 
@@ -86,13 +85,13 @@ class _CaptureEntity:
 class _CaptureScene:
     def __init__(self, entity: _CaptureEntity, env_origins: np.ndarray) -> None:
         self.entities = {"robot": entity}
-        self.env_origins = env_origins
+        self._env_origins = env_origins
 
     def __getitem__(self, name: str) -> _CaptureEntity:
         return self.entities[name]
 
-    def env_origins_torch(self, device: torch.device) -> torch.Tensor:
-        return torch.from_numpy(self.env_origins).to(device=device)
+    def env_origins(self, device: torch.device) -> torch.Tensor:
+        return torch.from_numpy(self._env_origins).to(device=device)
 
 
 def _capture_env(
@@ -112,9 +111,8 @@ def _capture_env(
         ManagerBasedRlEnv,
         SimpleNamespace(
             num_envs=3,
-            rng=np.random.default_rng(seed),
             device=torch.device("cpu"),
-            torch_rng=TorchManagerRng.seeded(seed),
+            rng=ManagerRng.seeded(seed),
             scene=_CaptureScene(entity, env_origins),
         ),
     )
@@ -172,9 +170,9 @@ def test_uniform_root_state_applies_pinned_pose_velocity_and_origin_semantics() 
     np.testing.assert_array_equal(defaults[:, :3], [[1, 2, 3], [4, 5, 6], [7, 8, 9]])
 
 
-def test_generic_event_randomization_fails_closed_without_torch_rng() -> None:
+def test_generic_event_randomization_fails_closed_without_rng() -> None:
     env, _entity = _capture_env()
-    env.torch_rng = None
+    env.rng = None
     reset_mask = torch.tensor([True, True, False])
 
     with pytest.raises(RuntimeError, match="Manager-owned Torch generator"):
@@ -199,7 +197,7 @@ def test_physics_scene_gravity_diagnostic_names_public_term() -> None:
         },
         env,
     )
-    env.torch_rng = None
+    env.rng = None
 
     with pytest.raises(
         RuntimeError,
@@ -554,9 +552,8 @@ def _transaction_env(
         ManagerBasedRlEnv,
         SimpleNamespace(
             num_envs=backend.num_envs,
-            rng=np.random.default_rng(rng_seed),
             device=torch.device("cpu"),
-            torch_rng=TorchManagerRng.seeded(rng_seed),
+            rng=ManagerRng.seeded(rng_seed),
             scene=scene,
             step_dt=step_dt,
             backend=backend,
@@ -884,14 +881,14 @@ def test_mass_randomization_capability_gaps_fail_during_construction(
 def test_startup_mass_and_com_sample_once_and_persist_across_resets() -> None:
     env, backend, transaction = _transaction_env(rng_seed=61)
     uniform_calls = 0
-    original_uniform = env.torch_rng.uniform
+    original_uniform = env.rng.uniform
 
     def counted_uniform(*args: Any, **kwargs: Any) -> torch.Tensor:
         nonlocal uniform_calls
         uniform_calls += 1
         return original_uniform(*args, **kwargs)
 
-    env.torch_rng.uniform = counted_uniform  # type: ignore[method-assign]
+    env.rng.uniform = counted_uniform  # type: ignore[method-assign]
     asset_cfg = SceneEntityCfg("robot", body_names=("base",))
     manager = EventManager(
         {
@@ -1380,7 +1377,7 @@ def _bias_env(
         SimpleNamespace(
             num_envs=num_envs,
             device=torch.device("cpu"),
-            torch_rng=TorchManagerRng.seeded(seed),
+            rng=ManagerRng.seeded(seed),
             scene=_BiasScene(_BiasEntity(num_envs, num_joints, tensor_control=tensor_control)),
         ),
     )
@@ -1578,7 +1575,7 @@ def _mass_inertia_env(
         SimpleNamespace(
             num_envs=backend.num_envs,
             device=torch.device("cpu"),
-            torch_rng=TorchManagerRng.seeded(rng_seed),
+            rng=ManagerRng.seeded(rng_seed),
             scene=scene,
             step_dt=0.02,
         ),
@@ -1747,8 +1744,7 @@ def _tensor_dr_env(
         SimpleNamespace(
             num_envs=backend.num_envs,
             device=device,
-            rng=np.random.default_rng(5),
-            torch_rng=TorchManagerRng.seeded(5, device=device),
+            rng=ManagerRng.seeded(5, device=device),
             scene=scene,
             step_dt=0.02,
             backend=backend,

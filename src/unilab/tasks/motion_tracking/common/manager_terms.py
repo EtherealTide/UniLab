@@ -612,8 +612,8 @@ class MotionCommand(CommandTerm):
         self._robot_joint_vel = torch.empty(
             (self.num_envs, num_joints), dtype=torch.float32, device=self._device
         )
-        self._env_origins = self._env.scene.env_origins_torch(self._device)
-        self._soft_joint_limits = self.robot.data.soft_joint_pos_limits_torch(self._device)
+        self._env_origins = self._env.scene.env_origins(self._device)
+        self._soft_joint_limits = self.robot.data.soft_joint_pos_limits(self._device)
         self._pose_range_torch = self._pose_range.to(device=self._device, dtype=torch.float32)
         self._velocity_range_torch = self._velocity_range.to(
             device=self._device, dtype=torch.float32
@@ -712,7 +712,7 @@ class MotionCommand(CommandTerm):
         return packet
 
     def _make_tensor_sampler(self) -> None:
-        if self._env.torch_rng is None:
+        if self._env.rng is None:
             raise NotImplementedError("MotionCommand requires the Manager-owned Torch generator")
         self.tensor_sampler = TensorMotionSampler(
             mode=self.cfg.params.sampling_mode,
@@ -789,20 +789,6 @@ class MotionCommand(CommandTerm):
     @property
     def tensor_carrier(self) -> bool:
         return True
-
-    @property
-    def device_robot_joint_pos(self) -> torch.Tensor:
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
-        if read_plan is not None and read_plan.ready:
-            self._robot_joint_pos = read_plan.joint_tensor_view(self.robot).joint_pos
-        return self._robot_joint_pos
-
-    @property
-    def device_robot_joint_vel(self) -> torch.Tensor:
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
-        if read_plan is not None and read_plan.ready:
-            self._robot_joint_vel = read_plan.joint_tensor_view(self.robot).joint_vel
-        return self._robot_joint_vel
 
     @property
     def tensor_body_names(self) -> tuple[str, ...]:
@@ -921,7 +907,7 @@ class MotionCommand(CommandTerm):
                 f"MotionCommand reset mask must have shape {(self.num_envs,)}, "
                 f"bool dtype, and device {self._device}"
             )
-        if self._env.torch_rng is None:
+        if self._env.rng is None:
             raise NotImplementedError(
                 "MotionCommand reset requires the Manager-owned Torch generator"
             )
@@ -930,7 +916,7 @@ class MotionCommand(CommandTerm):
         self.joint_default_bias.copy_(
             torch.where(
                 reset_mask[:, None],
-                self._env.torch_rng.uniform(
+                self._env.rng.uniform(
                     lower, upper, self.joint_default_bias.shape, dtype=torch.float32
                 ),
                 self.joint_default_bias,
@@ -941,7 +927,7 @@ class MotionCommand(CommandTerm):
         # resample at the next compute, overwriting frames the reset just
         # sampled (and rows owned by an active owner-subset transaction).
         resample_lower, resample_upper = self._resampling_time_range
-        sampled = self._torch_rng.uniform(
+        sampled = self._env.rng.uniform(
             resample_lower, resample_upper, (self.num_envs,), dtype=torch.float32
         )
         self.time_left.copy_(torch.where(reset_mask, sampled, self.time_left))
@@ -982,22 +968,22 @@ class MotionCommand(CommandTerm):
             # device dispatch (v1.3.5 contract).
             return
         sampler_started = time.perf_counter()
-        frames = self.tensor_sampler.sample_frames(reset_mask, self._env.torch_rng.generator)
+        frames = self.tensor_sampler.sample_frames(reset_mask, self._env.rng.generator)
         packet = self._motion_packet(frames)
         tails, offsets = self._cached_motion_feature_shapes()
-        pose = self._env.torch_rng.uniform(
+        pose = self._env.rng.uniform(
             self._pose_range_torch[:, 0],
             self._pose_range_torch[:, 1],
             (self.num_envs, 6),
             dtype=torch.float32,
         )
-        velocity = self._env.torch_rng.uniform(
+        velocity = self._env.rng.uniform(
             self._velocity_range_torch[:, 0],
             self._velocity_range_torch[:, 1],
             (self.num_envs, 6),
             dtype=torch.float32,
         )
-        joint_noise = self._env.torch_rng.uniform(
+        joint_noise = self._env.rng.uniform(
             self._joint_position_range_torch[0],
             self._joint_position_range_torch[1],
             self._reset_joint_values.shape,
@@ -1156,7 +1142,7 @@ class MotionCommand(CommandTerm):
     def _seed_robot_state_torch_from_defaults(self) -> None:
         """Cold proxy path: seed immutable defaults before CUDA view binding."""
         try:
-            root = self.robot.data.default_root_state_torch(self._device)
+            root = self.robot.data.default_root_state(self._device)
         except NotImplementedError:
             self._robot_body_pos_w.zero_()
             self._robot_body_quat_w.zero_()
@@ -1166,7 +1152,7 @@ class MotionCommand(CommandTerm):
             self._robot_body_quat_w.copy_(root[:, None, 3:7])
         self._robot_body_lin_vel_w.zero_()
         self._robot_body_ang_vel_w.zero_()
-        default_joint_pos = self.robot.data.default_joint_pos_torch(self._device)
+        default_joint_pos = self.robot.data.default_joint_pos(self._device)
         self._robot_joint_pos.copy_(default_joint_pos.expand(self.num_envs, -1))
         self._robot_joint_vel.zero_()
         self._robot_cache_step = self._env.common_step_counter
@@ -1470,8 +1456,8 @@ def robot_body_ori_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
 def motion_joint_pos_rel(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     command = _command(env, command_name)
     return (
-        command.device_robot_joint_pos
-        - command.robot.data.default_joint_pos_torch(env.device)
+        command.robot_joint_pos
+        - command.robot.data.default_joint_pos(env.device)
         - cast(torch.Tensor, command.joint_default_bias)
     )
 
@@ -1480,11 +1466,11 @@ def motion_joint_pos_rel_biased(env: ManagerBasedRlEnv, command_name: str) -> to
     """Joint position relative to the episode default, including encoder bias."""
     command = _command(env, command_name)
     return (
-        command.device_robot_joint_pos
+        command.robot_joint_pos
         + command.robot.data.encoder_bias_tensor.to(
             device=env.device, dtype=torch.float32, non_blocking=True
         )
-        - command.robot.data.default_joint_pos_torch(env.device)
+        - command.robot.data.default_joint_pos(env.device)
         - cast(torch.Tensor, command.joint_default_bias)
     )
 
@@ -1636,7 +1622,7 @@ def motion_joint_position_error_exp(
 ) -> torch.Tensor:
     command = _command(env, command_name)
     scale = _positive_std(std, term_name="motion joint position")
-    error = (command.joint_pos - command.device_robot_joint_pos).square().mean(dim=-1)
+    error = (command.joint_pos - command.robot_joint_pos).square().mean(dim=-1)
     return torch.exp(-error / (scale * scale))
 
 
@@ -1645,7 +1631,7 @@ def motion_joint_velocity_error_exp(
 ) -> torch.Tensor:
     command = _command(env, command_name)
     scale = _positive_std(std, term_name="motion joint velocity")
-    error = (command.joint_vel - command.device_robot_joint_vel).square().mean(dim=-1)
+    error = (command.joint_vel - command.robot_joint_vel).square().mean(dim=-1)
     return torch.exp(-error / (scale * scale))
 
 
@@ -1662,7 +1648,7 @@ def joint_pos_limits(
             "joint-state read plan"
         )
     joint_pos = read_plan.joint_tensor_view(asset).joint_pos[:, asset_cfg.joint_ids]
-    limits = asset.data.soft_joint_pos_limits_torch(env.device)[asset_cfg.joint_ids]
+    limits = asset.data.soft_joint_pos_limits(env.device)[asset_cfg.joint_ids]
     lower_violation = (limits[:, 0] - joint_pos).clamp_min(0.0)
     upper_violation = (joint_pos - limits[:, 1]).clamp_min(0.0)
     return (lower_violation + upper_violation).square().sum(dim=-1)

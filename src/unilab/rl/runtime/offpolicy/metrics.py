@@ -9,7 +9,7 @@ import torch
 
 
 @dataclass
-class TensorMetricFlush:
+class MetricFlush:
     """One host transfer of completed episode and done-count metrics."""
 
     rewards: list[float]
@@ -20,8 +20,8 @@ class TensorMetricFlush:
     reward_component_updates: int = 0
 
 
-class TensorCollectorMetrics:
-    """Accumulate tensor-collector metrics and flush them in one D2H transfer.
+class CollectorMetrics:
+    """Accumulate collector metrics and flush them in one D2H transfer.
 
     A fixed ``interval * num_envs`` window removes per-step scalar ``.item()``,
     ``.tolist()``, and dynamic ``nonzero()`` host synchronization. Compaction is
@@ -37,9 +37,9 @@ class TensorCollectorMetrics:
         reward_component_names: Sequence[str] = (),
     ) -> None:
         if isinstance(num_envs, bool) or not isinstance(num_envs, int) or num_envs <= 0:
-            raise ValueError("tensor collector metrics require a positive environment count")
+            raise ValueError("collector metrics require a positive environment count")
         if isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0:
-            raise ValueError("tensor collector metrics require a positive interval")
+            raise ValueError("collector metrics require a positive interval")
         self.num_envs = int(num_envs)
         self.interval = int(interval)
         self.device = torch.device(device)
@@ -80,39 +80,39 @@ class TensorCollectorMetrics:
         reward_components: torch.Tensor | None = None,
     ) -> None:
         if not isinstance(rewards, torch.Tensor):
-            raise TypeError("tensor metric rewards must be Torch tensors")
+            raise TypeError("collector metric rewards must be Torch tensors")
         if not rewards.is_floating_point():
-            raise TypeError("tensor metric rewards must have a floating dtype")
+            raise TypeError("collector metric rewards must have a floating dtype")
         if not isinstance(done, torch.Tensor) or not isinstance(timeout, torch.Tensor):
-            raise TypeError("tensor metric done and timeout values must be Torch tensors")
+            raise TypeError("collector metric done and timeout values must be Torch tensors")
         if rewards.shape != (self.num_envs,) or done.shape != rewards.shape:
-            raise ValueError("tensor metric values must have environment shape")
+            raise ValueError("collector metric values must have environment shape")
         if timeout.shape != done.shape:
-            raise ValueError("tensor metric timeout values must have environment shape")
+            raise ValueError("collector metric timeout values must have environment shape")
         if done.dtype != torch.bool or timeout.dtype != torch.bool:
-            raise TypeError("tensor metric done and timeout values must be boolean tensors")
+            raise TypeError("collector metric done and timeout values must be boolean tensors")
         if (
             rewards.device != self.device
             or done.device != self.device
             or timeout.device != self.device
         ):
-            raise ValueError("tensor metric values must live on one device")
+            raise ValueError("collector metric values must live on one device")
         if self.reward_component_count:
             if not isinstance(reward_components, torch.Tensor):
-                raise TypeError("tensor metric reward components must be a Torch tensor")
+                raise TypeError("collector metric reward components must be a Torch tensor")
             expected_components = (self.num_envs, self.reward_component_count)
             if reward_components.shape != expected_components:
                 raise ValueError(
-                    f"tensor metric reward components must have shape {expected_components}"
+                    f"collector metric reward components must have shape {expected_components}"
                 )
             if reward_components.dtype != torch.float32 or not reward_components.is_contiguous():
-                raise TypeError("tensor metric reward components must be contiguous float32")
+                raise TypeError("collector metric reward components must be contiguous float32")
             if reward_components.device != self.device:
-                raise ValueError(f"tensor metric reward components must live on {self.device}")
+                raise ValueError(f"collector metric reward components must live on {self.device}")
         elif reward_components is not None:
-            raise ValueError("tensor metric has no reward component names")
+            raise ValueError("collector metric has no reward component names")
         if self._updates >= self.interval:
-            raise RuntimeError("tensor metric window was not flushed before reuse")
+            raise RuntimeError("collector metric window was not flushed before reuse")
 
         episode_rewards = self.current_rewards + rewards
         episode_lengths = self.current_lengths + 1
@@ -130,14 +130,14 @@ class TensorCollectorMetrics:
         self._cursor = (row + 1) % self.interval
         self._updates += 1
 
-    def flush(self) -> TensorMetricFlush:
+    def flush(self) -> MetricFlush:
         if self._finalized:
-            raise RuntimeError("tensor metric window was already finalized")
+            raise RuntimeError("collector metric window was already finalized")
         if not self.ready:
-            raise RuntimeError("tensor metric window is not ready")
+            raise RuntimeError("collector metric window is not ready")
         return self._flush()
 
-    def final_flush(self) -> TensorMetricFlush:
+    def final_flush(self) -> MetricFlush:
         """Flush completed episodes once at collector shutdown.
 
         A partial shutdown flush uses the same device-side compaction and single
@@ -147,13 +147,13 @@ class TensorCollectorMetrics:
         method again is idempotent and performs no additional device transfer.
         """
         if self._finalized:
-            return TensorMetricFlush([], [], 0, 0)
+            return MetricFlush([], [], 0, 0)
         self._finalized = True
         if self._updates == 0:
-            return TensorMetricFlush([], [], 0, 0)
+            return MetricFlush([], [], 0, 0)
         return self._flush()
 
-    def _flush(self) -> TensorMetricFlush:
+    def _flush(self) -> MetricFlush:
         valid = self.finished_valid.reshape(-1)
         rewards = self.finished_rewards.reshape(-1)[valid]
         lengths = self.finished_lengths.reshape(-1)[valid]
@@ -184,7 +184,7 @@ class TensorCollectorMetrics:
             if self.reward_component_count
             else []
         )
-        result = TensorMetricFlush(
+        result = MetricFlush(
             rewards=[float(value) for value in reward_values],
             lengths=[int(value) for value in length_values],
             done_count=int(host_values[-2].item()),
@@ -214,4 +214,4 @@ class TensorCollectorMetrics:
         return result
 
 
-__all__ = ["TensorCollectorMetrics", "TensorMetricFlush"]
+__all__ = ["CollectorMetrics", "MetricFlush"]
