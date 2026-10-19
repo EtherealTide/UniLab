@@ -18,7 +18,7 @@ from unilab.rl.runtime.offpolicy.double_buffer_runner import (
     DoubleBufferOffPolicyRunner,
     reject_removed_inference_request_timeout,
 )
-from unilab.rl.runtime.offpolicy.runtime import (
+from unilab.rl.runtime.offpolicy.resolution import (
     resolve_actor_adapter_modules,
     resolve_custom_offpolicy_runtime,
 )
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from unilab.rl.runtime.distributed.sync import DpParameterSync
 
 
-def build_sac_double_buffer_runner(
+def build_double_buffer_runner(
     cfg: DictConfig,
     *,
     env_factory: EnvFactory,

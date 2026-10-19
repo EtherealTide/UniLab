@@ -436,7 +436,7 @@ def test_sac_owner_custom_runtime_can_override_base_learner_kwargs(
     monkeypatch: pytest.MonkeyPatch,
 ):
     from unilab.rl.algos.sac import double_buffer as owner_module
-    from unilab.rl.runtime.offpolicy.runtime import OffPolicyRuntime
+    from unilab.rl.runtime.offpolicy.resolution import OffPolicyRuntime
 
     cfg = _offpolicy_cfg([])
     custom_runtime = OffPolicyRuntime(
@@ -451,7 +451,7 @@ def test_sac_owner_custom_runtime_can_override_base_learner_kwargs(
     )
     monkeypatch.setattr(owner_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
 
-    runner = owner_module.build_sac_double_buffer_runner(
+    runner = owner_module.build_double_buffer_runner(
         cfg,
         env_factory=_fake_env_factory,
         env_cfg_override={},

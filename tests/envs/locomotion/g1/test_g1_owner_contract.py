@@ -20,7 +20,7 @@ from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
 
 from unilab.base import registry
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
 from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg, mdp
 from unilab.tasks.locomotion.g1 import manager_terms as g1_terms
@@ -267,7 +267,7 @@ def _materialize(
     config_group: str, overrides: Sequence[str], task_name: str
 ) -> tuple[DictConfig, ManagerBasedRlEnvCfg, dict[str, Any]]:
     hydra_cfg = _compose(config_group, overrides)
-    env_override = BackendAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
+    env_override = EnvConfigAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
     env_cfg = registry.materialize_env_config(task_name)
     assert isinstance(env_cfg, ManagerBasedRlEnvCfg)
     apply_cfg_overrides(env_cfg, env_override)
@@ -1017,7 +1017,7 @@ from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
 from unilab.base import registry
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
 from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg, mdp
 
@@ -1034,7 +1034,7 @@ assert hydra_cfg.training.task_name == "G1WalkFlat"
 assert hydra_cfg.training.sim_backend == "genesis"
 assert hydra_cfg.training.play_render_mode == "auto"
 
-env_override = BackendAdapter(
+env_override = EnvConfigAdapter(
     hydra_cfg, root_dir=ROOT, algo_name=CONFIG_GROUP
 ).build_task_env_cfg_override()
 env_cfg = registry.materialize_env_config("G1WalkFlat")

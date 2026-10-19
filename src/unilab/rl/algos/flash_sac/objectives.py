@@ -1,4 +1,4 @@
-"""FlashSAC update helpers."""
+"""FlashSAC objective helpers: LR schedules, TD targets, and entropy targets."""
 
 from __future__ import annotations
 

@@ -44,7 +44,7 @@ def _validate_flashsac_double_buffer_runtime(
         raise ValueError("FlashSAC-B initially supports n_step=1 only")
 
 
-def build_flashsac_double_buffer_runner(
+def build_double_buffer_runner(
     cfg: DictConfig,
     *,
     env_factory: EnvFactory,

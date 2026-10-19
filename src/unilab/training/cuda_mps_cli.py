@@ -52,11 +52,11 @@ _GPU_QUERY_COMMAND = (
 )
 
 
-class CudaMpsCliError(RuntimeError):
+class CudaMpsError(RuntimeError):
     """A user-actionable, fail-closed CUDA MPS CLI error."""
 
 
-class StaleCudaMpsDaemonError(CudaMpsCliError):
+class StaleCudaMpsDaemonError(CudaMpsError):
     """A recorded daemon identity is no longer live; its record was cleaned."""
 
 
@@ -174,30 +174,30 @@ def _run_command(
             kwargs["input"] = input
         result = run_command(list(command), **kwargs)
     except (OSError, subprocess.SubprocessError) as exc:
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"Could not execute {command[0]}: {exc!r}. Verify the NVIDIA deployment and PATH."
         ) from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
         suffix = f": {detail}" if detail else ""
-        raise CudaMpsCliError(f"{command[0]} failed with exit code {result.returncode}{suffix}.")
+        raise CudaMpsError(f"{command[0]} failed with exit code {result.returncode}{suffix}.")
     return result.stdout or ""
 
 
 def _canonical_uuid(value: str, *, field: str = "uuid") -> str:
     uuid = value.strip()
     if uuid.upper().startswith("MIG-"):
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"MIG device {value!r} is not supported by uni-cumps yet; select a physical GPU UUID."
         )
     # Torch properties commonly expose the bare UUID without NVIDIA's GPU- tag.
     if not uuid.upper().startswith("GPU-") and len(uuid) == 36 and uuid.count("-") == 4:
         uuid = f"GPU-{uuid}"
     if not uuid.upper().startswith("GPU-"):
-        raise CudaMpsCliError(f"Invalid NVIDIA GPU {field}: {value!r}; expected a GPU-<id> UUID.")
+        raise CudaMpsError(f"Invalid NVIDIA GPU {field}: {value!r}; expected a GPU-<id> UUID.")
     raw_uuid = uuid[4:]
     if not raw_uuid:
-        raise CudaMpsCliError(f"Invalid NVIDIA GPU {field}: {value!r}; expected a GPU-<id> UUID.")
+        raise CudaMpsError(f"Invalid NVIDIA GPU {field}: {value!r}; expected a GPU-<id> UUID.")
     return f"GPU-{raw_uuid}"
 
 
@@ -209,7 +209,7 @@ def _parse_gpu_rows(output: str) -> tuple[GpuIdentity, ...]:
             continue
         fields = [field.strip() for field in line.split(",")]
         if len(fields) != 3 or not fields[0].isdigit():
-            raise CudaMpsCliError(f"Could not parse nvidia-smi GPU row: {raw_line!r}.")
+            raise CudaMpsError(f"Could not parse nvidia-smi GPU row: {raw_line!r}.")
         index, uuid, _compute_mode = fields
         gpus.append(GpuIdentity(int(index), _canonical_uuid(uuid)))
     return tuple(gpus)
@@ -242,15 +242,13 @@ def _apply_visibility(
         if upper.isdigit():
             matches = [gpu for gpu in gpus if gpu.index == int(upper)]
             if not matches:
-                raise CudaMpsCliError(
-                    f"CUDA_VISIBLE_DEVICES entry {entry!r} has no visible host GPU."
-                )
+                raise CudaMpsError(f"CUDA_VISIBLE_DEVICES entry {entry!r} has no visible host GPU.")
             selected.extend(matches)
             continue
         canonical = _canonical_uuid(entry)
         matches = [gpu for gpu in gpus if gpu.uuid == canonical]
         if not matches:
-            raise CudaMpsCliError(
+            raise CudaMpsError(
                 f"CUDA_VISIBLE_DEVICES entry {entry!r} has no visible host GPU UUID."
             )
         selected.extend(matches)
@@ -275,9 +273,7 @@ def _record_root(root: Path | None = None) -> Path:
     try:
         base.expanduser().resolve()
     except OSError as exc:
-        raise CudaMpsCliError(
-            f"Could not resolve CUDA MPS record directory {base}: {exc}."
-        ) from exc
+        raise CudaMpsError(f"Could not resolve CUDA MPS record directory {base}: {exc}.") from exc
     return base
 
 
@@ -287,7 +283,7 @@ def _validate_record_identity(
     current_uid = os.getuid() if uid is None else uid
     current_host = _hostname() if host is None else host
     if daemon.uid != current_uid or daemon.host != current_host:
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"Daemon record {daemon.name!r} belongs to UID {daemon.uid} on host "
             f"{daemon.host!r}; this process is UID {current_uid} on {current_host!r}."
         )
@@ -295,7 +291,7 @@ def _validate_record_identity(
 
 def _daemon_record_path(root: Path, name: str) -> Path:
     if not _name_is_safe(name):
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             "Daemon name must match [a-z0-9][a-z0-9-]{0,63}; use a label, not a path."
         )
     return root / name / "daemon.json"
@@ -315,7 +311,7 @@ def _record_from_mapping(mapping: Mapping[str, Any], name: str) -> DaemonRecord:
     )
     missing = [key for key in required if key not in mapping]
     if missing:
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"Daemon record {name!r} is missing required fields: {', '.join(missing)}."
         )
     try:
@@ -332,7 +328,7 @@ def _record_from_mapping(mapping: Mapping[str, Any], name: str) -> DaemonRecord:
             created_at=float(mapping["created_at"]),
         )
     except (TypeError, ValueError) as exc:
-        raise CudaMpsCliError(f"Daemon record {name!r} contains invalid values: {exc}.") from exc
+        raise CudaMpsError(f"Daemon record {name!r} contains invalid values: {exc}.") from exc
 
 
 def read_daemon_record(
@@ -361,20 +357,20 @@ def read_daemon_record(
             if not live
             else f"multiple live daemons exist: {', '.join(daemon.name for daemon in live)}"
         )
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"Cannot select a default daemon because {detail}; pass --name explicitly."
         )
     path = _daemon_record_path(_record_root(root), name)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"No UniLab CUDA MPS daemon record named {name!r}. UniLab can stop only recorded daemons."
         ) from exc
     except (OSError, json.JSONDecodeError) as exc:
-        raise CudaMpsCliError(f"Could not read daemon record {path}: {exc}.") from exc
+        raise CudaMpsError(f"Could not read daemon record {path}: {exc}.") from exc
     if not isinstance(payload, dict):
-        raise CudaMpsCliError(f"Daemon record {path} must contain a JSON object.")
+        raise CudaMpsError(f"Daemon record {path} must contain a JSON object.")
     daemon = _record_from_mapping(payload, name)
     _validate_record_identity(daemon, uid=uid, host=host)
     return daemon
@@ -392,9 +388,7 @@ def list_daemon_records(
     try:
         children = sorted(base.iterdir(), key=lambda path: path.name)
     except OSError as exc:
-        raise CudaMpsCliError(
-            f"Could not inspect CUDA MPS record directory {base}: {exc}."
-        ) from exc
+        raise CudaMpsError(f"Could not inspect CUDA MPS record directory {base}: {exc}.") from exc
     current_uid = os.getuid() if uid is None else uid
     current_host = _hostname() if host is None else host
     for child in children:
@@ -411,7 +405,7 @@ def list_daemon_records(
             continue
         try:
             daemon = _record_from_mapping(payload, child.name)
-        except CudaMpsCliError:
+        except CudaMpsError:
             continue
         if daemon.uid == current_uid and daemon.host == current_host:
             records.append(daemon)
@@ -513,7 +507,7 @@ def _wait_for_control_query(
                 timeout=remaining,
                 env=environment,
             )
-        except CudaMpsCliError:
+        except CudaMpsError:
             time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
             continue
         return True
@@ -526,7 +520,7 @@ def _stop_unrecorded_control(
 ) -> bool:
     try:
         _run_command(run_command, _QUIT_COMMAND, input="quit\n", env=environment)
-    except CudaMpsCliError:
+    except CudaMpsError:
         return False
     return True
 
@@ -542,9 +536,7 @@ def _remove_inert_control_artifacts(pipe_directory: Path) -> None:
             if path.is_fifo() or (name == "control_lock" and path.is_file()):
                 path.unlink()
         except OSError as exc:
-            raise CudaMpsCliError(
-                f"Could not clean failed-control artifact {path}: {exc}."
-            ) from exc
+            raise CudaMpsError(f"Could not clean failed-control artifact {path}: {exc}.") from exc
 
 
 def _remove_orphan_default_control_sockets(pipe_directory: Path) -> None:
@@ -566,7 +558,7 @@ def _remove_orphan_default_control_sockets(pipe_directory: Path) -> None:
             if path.is_socket():
                 path.unlink()
         except OSError as exc:
-            raise CudaMpsCliError(f"Could not clean orphan MPS socket {path}: {exc}.") from exc
+            raise CudaMpsError(f"Could not clean orphan MPS socket {path}: {exc}.") from exc
 
 
 def _control_log_tail(log_directory: Path, limit: int = 12) -> str | None:
@@ -607,7 +599,7 @@ def _default_runtime_root(daemon_name: str) -> Path:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         root.chmod(0o700)
     except OSError as exc:
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"Could not create user-owned MPS runtime directory {root}: {exc}."
         ) from exc
     return root
@@ -619,12 +611,12 @@ def _write_daemon_record(root: Path, daemon: DaemonRecord) -> Path:
     try:
         directory.mkdir(parents=True, exist_ok=True)
         if path.exists():
-            raise CudaMpsCliError(f"Refusing to overwrite daemon record {path}.")
+            raise CudaMpsError(f"Refusing to overwrite daemon record {path}.")
         path.write_text(
             json.dumps(daemon.manifest(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
     except OSError as exc:
-        raise CudaMpsCliError(f"Could not write daemon record {path}: {exc}.") from exc
+        raise CudaMpsError(f"Could not write daemon record {path}: {exc}.") from exc
     return path
 
 
@@ -634,23 +626,23 @@ def _unlink_record(root: Path, daemon: DaemonRecord) -> None:
         path.unlink()
         path.parent.rmdir()
     except OSError as exc:
-        raise CudaMpsCliError(f"Could not remove daemon record {path}: {exc}.") from exc
+        raise CudaMpsError(f"Could not remove daemon record {path}: {exc}.") from exc
 
 
 def _resolve_topology(selector: str | None, gpus: Sequence[GpuIdentity]) -> TopologyPlan:
     if selector is None:
         if len(gpus) == 1:
             return TopologyPlan("auto", SINGLE_GPU_MODE, tuple(gpus))
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             "Multiple GPUs are visible. Specify --gpus <index-or-uuid> to select one GPU."
         )
     values = [entry.strip() for entry in selector.split(",") if entry.strip()]
     if selector.strip() == ALL_SELECTOR:
         return TopologyPlan(ALL_SELECTOR, TASK_PER_GPU_MODE, tuple(gpus))
     if not values:
-        raise CudaMpsCliError("GPU selector must not be empty.")
+        raise CudaMpsError("GPU selector must not be empty.")
     if len(values) > 1:
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             "Multi-GPU MPS selectors parse but are not supported yet. A multi-GPU selector "
             "resembles single-task multi-GPU training (discussion #2063 / roadmap #1672); "
             "run one explicit daemon per future topology until that gate lands."
@@ -664,7 +656,7 @@ def _resolve_topology(selector: str | None, gpus: Sequence[GpuIdentity]) -> Topo
         matches = [gpu for gpu in gpus if gpu.uuid == canonical]
         selected = tuple(matches)
     if not selected:
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"GPU selector {value!r} does not match a visible physical GPU UUID or index."
         )
     return TopologyPlan(value, SINGLE_GPU_MODE, selected)
@@ -715,7 +707,7 @@ def host_status(
     try:
         visible = visible_gpus(cuda_visible_devices, run_command)
         available = True
-    except CudaMpsCliError as exc:
+    except CudaMpsError as exc:
         available = False
         diagnostic = str(exc)
     daemons = list_daemon_records(root, uid=uid, host=host)
@@ -752,16 +744,16 @@ def host_status(
 
 def _require_linux_nvidia(gpus: Sequence[GpuIdentity]) -> None:
     if platform.system() != "Linux":
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"CUDA MPS management requires Linux and NVIDIA CUDA; current platform is {platform.system()!r}."
         )
     if not gpus:
-        raise CudaMpsCliError("No visible physical NVIDIA CUDA GPU was found.")
+        raise CudaMpsError("No visible physical NVIDIA CUDA GPU was found.")
 
 
 def _require_executable(name: str) -> None:
     if shutil.which(name) is None:
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"Required executable {name!r} was not found on PATH; install the NVIDIA deployment."
         )
 
@@ -788,12 +780,12 @@ def start_daemon(
     _require_linux_nvidia(gpus)
     plan = _resolve_topology(selector, gpus)
     if plan.topology_mode not in _SUPPORTED_TOPOLOGY_MODES:
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"Topology mode {plan.topology_mode!r} is not supported yet; current support is single_gpu."
         )
     daemon_name = name or _default_name(plan.gpus)
     if not _name_is_safe(daemon_name):
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             "Daemon name must match [a-z0-9][a-z0-9-]{0,63}; use a label, not a path."
         )
     base = _record_root(root)
@@ -802,19 +794,17 @@ def start_daemon(
         if existing_path.exists():
             existing = read_daemon_record(base, daemon_name)
             if daemon_process_is_live(existing):
-                raise CudaMpsCliError(
+                raise CudaMpsError(
                     f"Recorded daemon {daemon_name!r} is already live with PID {existing.pid}. "
                     "Reuse `uni-cumps env` or stop it explicitly first."
                 )
             quarantine = base / ".stale" / f"{daemon_name}-{int(time.time() * 1000)}"
             quarantine.parent.mkdir(parents=True, exist_ok=True)
             existing_path.parent.rename(quarantine)
-    except CudaMpsCliError:
+    except CudaMpsError:
         raise
     except OSError as exc:
-        raise CudaMpsCliError(
-            f"Could not prepare daemon record for {daemon_name!r}: {exc}."
-        ) from exc
+        raise CudaMpsError(f"Could not prepare daemon record for {daemon_name!r}: {exc}.") from exc
     runtime_base = _default_runtime_root(daemon_name)
     using_default_runtime = pipe_dir is None
     pipe_value = pipe_dir or str(runtime_base / "pipe")
@@ -823,13 +813,13 @@ def start_daemon(
         pipe_directory = Path(pipe_value).expanduser().resolve(strict=False)
         log_directory = Path(log_value).expanduser().resolve(strict=False)
     except OSError as exc:
-        raise CudaMpsCliError(f"Could not resolve MPS pipe/log directories: {exc}.") from exc
+        raise CudaMpsError(f"Could not resolve MPS pipe/log directories: {exc}.") from exc
     if pipe_directory == log_directory:
-        raise CudaMpsCliError("MPS pipe and log directories must be different absolute paths.")
+        raise CudaMpsError("MPS pipe and log directories must be different absolute paths.")
     control = pipe_directory / "control"
     control_bytes = len(str(control).encode())
     if control_bytes > _MAX_CONTROL_SOCKET_BYTES:
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"MPS control socket path is too long ({control_bytes} bytes; maximum "
             f"{_MAX_CONTROL_SOCKET_BYTES}): {control}. Choose a shorter --pipe-dir, such as "
             "/tmp/<short-name>/pipe."
@@ -838,7 +828,7 @@ def start_daemon(
     if using_default_runtime:
         _remove_orphan_default_control_sockets(pipe_directory)
     if control.exists():
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"Refusing to attach to an existing control path {control}; remove/rename it or choose a new daemon."
         )
     _require_executable("nvidia-cuda-mps-control")
@@ -854,25 +844,25 @@ def start_daemon(
         pipe_directory.chmod(0o700)
         log_directory.chmod(0o700)
     except OSError as exc:
-        raise CudaMpsCliError(f"Could not create user-owned MPS directories: {exc}.") from exc
+        raise CudaMpsError(f"Could not create user-owned MPS directories: {exc}.") from exc
     command = list(_DEFAULT_CONTROL_COMMAND)
     if daemon:
         try:
             _run_command(run_command, command, env=env)
-        except CudaMpsCliError as exc:
+        except CudaMpsError as exc:
             _remove_inert_control_artifacts(pipe_directory)
             tail = _control_log_tail(log_directory)
             detail = f" Control log tail:\n{tail}" if tail is not None else ""
-            raise CudaMpsCliError(f"{exc}{detail}") from exc
+            raise CudaMpsError(f"{exc}{detail}") from exc
     else:
         runner = foreground_runner if foreground_runner is not None else _foreground_control
         return_code = runner(env)
         if return_code != 0:
-            raise CudaMpsCliError(
+            raise CudaMpsError(
                 f"Foreground MPS control exited with code {return_code}; no daemon record was written."
             )
     if not _wait_for_control(pipe_directory):
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"MPS control did not create a usable control pipe at {control}. "
             "Inspect CUDA_MPS_LOG_DIRECTORY and the host deployment."
         )
@@ -884,13 +874,13 @@ def start_daemon(
         detail = f" Control log tail:\n{tail}" if tail is not None else ""
         if not stopped:
             detail += " The launched control daemon may still be running."
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             "MPS control created a pipe but did not answer a readiness query. "
             f"Inspect CUDA_MPS_LOG_DIRECTORY and the host deployment.{detail}"
         )
     process_identity = _control_daemon_identity(pipe_directory)
     if process_identity is None:
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             "MPS control did not expose a verifiable nvidia-cuda-mps-control PID; "
             "refusing to record a daemon UniLab cannot safely stop."
         )
@@ -950,13 +940,13 @@ def select_environment_for_gpu(
         if canonical in daemon.gpu_uuids and daemon_process_is_live(daemon, proc_stat=proc_stat)
     ]
     if not matching:
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"No live UniLab-recorded CUDA MPS daemon covers GPU {canonical}. "
             "Run `uni-cumps start` first or set CUDA_MPS_PIPE_DIRECTORY explicitly."
         )
     if len(matching) > 1:
         names = ", ".join(daemon.name for daemon in matching)
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"Multiple live UniLab-recorded daemons cover GPU {canonical}: {names}. "
             "Set CUDA_MPS_PIPE_DIRECTORY to the intended daemon explicitly."
         )
@@ -1024,7 +1014,7 @@ def doctor(
     _require_linux_nvidia(visible)
     plan = _resolve_topology(selector=selector, gpus=visible)
     if plan.topology_mode not in _SUPPORTED_TOPOLOGY_MODES:
-        raise CudaMpsCliError(
+        raise CudaMpsError(
             f"Topology mode {plan.topology_mode!r} is not supported yet; current support is single_gpu."
         )
     # Doctor diagnoses host state; it does not rely on an already-created training env.
@@ -1200,7 +1190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "env":
             daemon = read_daemon_record(None, args.name)
             if not daemon_process_is_live(daemon):
-                raise CudaMpsCliError(
+                raise CudaMpsError(
                     f"Recorded daemon {args.name!r} is stale; start it again before requesting env."
                 )
             values = environment_for_daemon(daemon)
@@ -1212,7 +1202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         raise AssertionError(f"Unhandled command: {args.command}")
-    except CudaMpsCliError as exc:
+    except CudaMpsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

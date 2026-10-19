@@ -16,7 +16,7 @@ from omegaconf import DictConfig, OmegaConf
 from tests.fixtures.isaac_lab_cartpole import FIXTURE_ENV_NAME
 from tests.fixtures.isaac_lab_cartpole import task as fixture
 from unilab.base import registry
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
 from unilab.base.entity import EntityTensorStateView
 from unilab.envs import ManagerBasedRLEnvCfg, ManagerBasedRlEnvCfg
@@ -33,7 +33,7 @@ def _compose_fixture() -> DictConfig:
 
 def _materialize_fixture() -> tuple[DictConfig, ManagerBasedRlEnvCfg, dict[str, Any]]:
     hydra_cfg = _compose_fixture()
-    override = BackendAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
+    override = EnvConfigAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
     env_cfg = registry.materialize_env_config(FIXTURE_ENV_NAME)
     assert isinstance(env_cfg, ManagerBasedRlEnvCfg)
     apply_cfg_overrides(env_cfg, override)

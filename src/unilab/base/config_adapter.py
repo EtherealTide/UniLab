@@ -14,7 +14,7 @@ from unilab.base.scene import SceneCfg
 from unilab.utils.reward import extract_reward_config
 
 
-class BackendAdapter:
+class EnvConfigAdapter:
     """Build env/play overrides from the final composed config."""
 
     def __init__(

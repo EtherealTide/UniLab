@@ -956,14 +956,14 @@ def test_run_motrix_rsl_play_loop_uses_render_spacing_and_offset_mode(
 
 
 def test_g1_motion_tracking_appo_reward_extraction_prefers_backend_specific_reward():
-    from unilab.base.config_adapter import BackendAdapter
+    from unilab.base.config_adapter import EnvConfigAdapter
 
     cfg = _appo_cfg(["task=g1_motion_tracking/mujoco"])
 
     assert cfg.reward.motion_body_pos.weight == pytest.approx(1.0)
     cfg.reward.motion_body_pos.weight = 1.5
 
-    env_cfg_override = BackendAdapter(cfg, root_dir=_SRC_DIR.parent).build_task_env_cfg_override()
+    env_cfg_override = EnvConfigAdapter(cfg, root_dir=_SRC_DIR.parent).build_task_env_cfg_override()
 
     assert env_cfg_override["rewards"]["motion_body_pos"]["weight"] == pytest.approx(1.5)
 

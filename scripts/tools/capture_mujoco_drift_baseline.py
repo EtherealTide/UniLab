@@ -8,7 +8,7 @@ fixed model/seed/action-sequence trajectory diff against this baseline
 (issue #1554), not a bit-exact gate.
 
 This script builds each task's training environment through the exact Hydra
-owner path used by the trainer (``conf/ppo`` task config -> ``BackendAdapter``
+owner path used by the trainer (``conf/ppo`` task config -> ``EnvConfigAdapter``
 -> ``registry.make``), seeds every consumed RNG, pins the executor thread
 count via ``cpu_ids``, drives the env with a fixed pseudo-random
 action sequence (seeded ``numpy`` Generator, stored in the artifact; no neural
@@ -67,7 +67,7 @@ from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
 from unilab.base import registry
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.training import ensure_registries
 
 CONF_DIR = ROOT_DIR / "src" / "unilab" / "conf"
@@ -157,7 +157,7 @@ def _compose_task_cfg(task_path: str):
 def _build_env(task_path: str, args: argparse.Namespace):
     hydra_cfg = _compose_task_cfg(task_path)
     task_name = str(hydra_cfg.training.task_name)
-    env_cfg_override = BackendAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
+    env_cfg_override = EnvConfigAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
     env_cfg_override.update(
         {
             "seed": args.seed,

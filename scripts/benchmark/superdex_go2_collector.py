@@ -25,7 +25,7 @@ from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
 from unilab.base import registry
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 
 
 def run(mode: str, *, num_envs: int, workers: int, warmup: int, steps: int, repeats: int) -> dict:
@@ -38,7 +38,7 @@ def run(mode: str, *, num_envs: int, workers: int, warmup: int, steps: int, repe
             config_dir=str(root / "src/unilab/conf/ppo"), version_base="1.3"
         ):
             cfg = compose("config", overrides=["task=go2_joystick_flat/superdex"])
-        override = BackendAdapter(cfg, root_dir=root).build_task_env_cfg_override()
+        override = EnvConfigAdapter(cfg, root_dir=root).build_task_env_cfg_override()
         env = registry.make(
             "Go2JoystickFlat",
             sim_backend="superdex",

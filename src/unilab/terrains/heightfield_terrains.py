@@ -20,7 +20,7 @@ from unisim.terrain.generator import (
     TerrainOutput,
 )
 
-from unilab.terrains.utils import (
+from unilab.terrains.heightfield_utils import (
     bilinear_resample_grid,
     find_flat_patches_from_heightfield,
 )

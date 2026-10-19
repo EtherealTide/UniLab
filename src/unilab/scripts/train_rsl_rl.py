@@ -13,7 +13,7 @@ from omegaconf import DictConfig, OmegaConf
 from unisim.backend.base import DebugPrimitive, RenderClosedError, log_playback_plan
 from unisim.backend.mujoco.xml import materialize_scene_visual_override
 
-from unilab.base.config_adapter import BackendAdapter, create_env
+from unilab.base.config_adapter import EnvConfigAdapter, create_env
 from unilab.base.process_device import (
     apply_backend_env_device_override,
     apply_sim_carrier_device_override,
@@ -79,8 +79,8 @@ except ImportError:
     sys.exit(1)
 
 
-def _backend_adapter(cfg: DictConfig) -> BackendAdapter:
-    return BackendAdapter(
+def _backend_adapter(cfg: DictConfig) -> EnvConfigAdapter:
+    return EnvConfigAdapter(
         cfg,
         root_dir=Path.cwd(),
         algo_name="ppo",

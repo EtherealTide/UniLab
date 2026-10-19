@@ -21,7 +21,7 @@ pytest.importorskip(
 rsl_rl = pytest.importorskip("rsl_rl")
 
 from unilab.base import registry
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.registry import ensure_registries
 from unilab.rl import RslRlVecEnvAdapter
 from unilab.structured_configs import PPOConfig
@@ -59,7 +59,7 @@ def test_rsl_rl_ppo_one_iteration(
         config_dir=str(root_dir / "src" / "unilab" / "conf" / "ppo"), version_base="1.3"
     ):
         hydra_cfg = compose("config", overrides=[f"task={task}"])
-    env_cfg_override = BackendAdapter(hydra_cfg, root_dir=root_dir).build_task_env_cfg_override()
+    env_cfg_override = EnvConfigAdapter(hydra_cfg, root_dir=root_dir).build_task_env_cfg_override()
 
     env = registry.make(
         env_name,

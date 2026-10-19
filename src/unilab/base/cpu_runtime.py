@@ -7,7 +7,7 @@ workers to that block, but the collector's existing host-side native pools did
 not follow and could drift across rank boundaries to compete with sibling
 ranks' pinned physics workers.
 
-``apply_env_cpu_runtime`` is the generic env-level counterpart, applied once on
+``apply_cpu_confinement`` is the generic env-level counterpart, applied once on
 the env-construction cold path, before managers and backend materialization:
 
 - ``os.sched_setaffinity`` pins the calling thread to the block, and every
@@ -49,7 +49,7 @@ def _confine_existing_threads(ids: set[int]) -> None:
             continue
 
 
-def apply_env_cpu_runtime(cpu_ids: Sequence[int] | None) -> None:
+def apply_cpu_confinement(cpu_ids: Sequence[int] | None) -> None:
     """Confine this process's host-side compute to the env-owned CPU block.
 
     Cold path only: call from env construction, before the backend pool or

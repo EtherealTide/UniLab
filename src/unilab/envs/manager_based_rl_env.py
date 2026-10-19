@@ -32,7 +32,7 @@ from unilab.base.config_overrides import (
     CONFIG_MAPPING_POLICY_KEY,
     MANAGER_TERM_MAPPING_POLICY,
 )
-from unilab.base.cpu_runtime import apply_env_cpu_runtime
+from unilab.base.cpu_runtime import apply_cpu_confinement
 from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadPlan, SceneTensorReadSpec
 from unilab.base.reset_state import ResetStateTransaction
 from unilab.base.scene import SceneCfg, resolve_scene_default_qpos
@@ -1754,7 +1754,7 @@ def make_manager_based_rl_env(
         cfg.scene.fixed_variant_plan = _build_fixed_variant_plan(cfg.fixed_model_variants, num_envs)
     # Constrain the process before backend materialization so native pools size
     # themselves from the rank-owned CPU block.
-    apply_env_cpu_runtime(cfg.cpu_ids)
+    apply_cpu_confinement(cfg.cpu_ids)
     assert cfg.scene is not None
     base_name, body_state_requested, tracked_body_names = _resolve_backend_entity_contract(cfg)
     backend_kwargs = env_backend_kwargs(cfg)

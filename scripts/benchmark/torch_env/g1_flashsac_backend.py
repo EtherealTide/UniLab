@@ -156,7 +156,7 @@ _TRANSFER_BOUNDARY_INVENTORY: tuple[dict[str, object], ...] = (
 def _build_cfg(backend: str, num_envs: int, *, isaacsim_test_fixture: bool = False) -> Any:
     from hydra import compose, initialize_config_dir
 
-    from unilab.base.config_adapter import BackendAdapter
+    from unilab.base.config_adapter import EnvConfigAdapter
     from unilab.base.registry import apply_cfg_overrides
     from unilab.envs import ManagerBasedRlEnvCfg
 
@@ -183,7 +183,7 @@ def _build_cfg(backend: str, num_envs: int, *, isaacsim_test_fixture: bool = Fal
                 "hydra/hydra_logging=disabled",
             ],
         )
-    override = BackendAdapter(
+    override = EnvConfigAdapter(
         owner_cfg, root_dir=ROOT_DIR, algo_name="flashsac"
     ).build_task_env_cfg_override()
     cfg = ManagerBasedRlEnvCfg()

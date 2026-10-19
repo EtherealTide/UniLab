@@ -74,7 +74,7 @@ def pyramid_stairs_inv(**overrides: Any) -> HfInvertedPyramidStairsTerrainCfg:
 
 
 @terrain_preset
-def hf_pyramid_slope(**overrides: Any) -> HfPyramidSlopedTerrainCfg:
+def pyramid_slope(**overrides: Any) -> HfPyramidSlopedTerrainCfg:
     defaults: dict[str, Any] = dict(
         slope_range=(0.0, 0.7),
         platform_width=2.0,
@@ -85,7 +85,7 @@ def hf_pyramid_slope(**overrides: Any) -> HfPyramidSlopedTerrainCfg:
 
 
 @terrain_preset
-def hf_pyramid_slope_inv(**overrides: Any) -> HfPyramidSlopedTerrainCfg:
+def pyramid_slope_inv(**overrides: Any) -> HfPyramidSlopedTerrainCfg:
     defaults: dict[str, Any] = dict(
         slope_range=(0.0, 0.7),
         platform_width=2.0,
@@ -129,8 +129,8 @@ ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         "flat": flat(proportion=0.2),
         "pyramid_stairs": pyramid_stairs(proportion=0.2, step_height_range=(0.0, 0.1)),
         "pyramid_stairs_inv": pyramid_stairs_inv(proportion=0.2, step_height_range=(0.0, 0.1)),
-        "hf_pyramid_slope": hf_pyramid_slope(proportion=0.1, slope_range=(0.0, 1.0)),
-        "hf_pyramid_slope_inv": hf_pyramid_slope_inv(proportion=0.1, slope_range=(0.0, 1.0)),
+        "pyramid_slope": pyramid_slope(proportion=0.1, slope_range=(0.0, 1.0)),
+        "pyramid_slope_inv": pyramid_slope_inv(proportion=0.1, slope_range=(0.0, 1.0)),
         "random_rough": random_rough(proportion=0.1),
         "wave_terrain": wave_terrain(proportion=0.1),
     },

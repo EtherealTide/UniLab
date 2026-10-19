@@ -21,8 +21,6 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
-from unilab.cli import build_command
-
 _ARTIFACT_SCHEMA_VERSION = "0.3.0"
 _SUPPORTED_METRIC_SCHEMA_VERSION = 1
 _SUPPORTED_RUNTIME_MANIFEST_SCHEMA_VERSION = 2
@@ -973,44 +971,3 @@ def _residual_processes(last_known: Sequence[Mapping[str, Any]]) -> list[dict[st
         if snapshot is not None:
             residual.append(snapshot)
     return residual
-
-
-def build_g1_flashsac_mjwarp_command(
-    *,
-    num_envs: int,
-    iterations: int,
-    log_dir: Path,
-    extra_overrides: Sequence[str] = (),
-) -> list[str]:
-    """Build the owner-selected, single-process FlashSAC/MJWarp soak command."""
-    if num_envs <= 0:
-        raise ValueError("num_envs must be positive")
-    if iterations <= 0:
-        raise ValueError("iterations must be positive")
-    reserved = {
-        "algo",
-        "task",
-        "training.sim_backend",
-        "training.play_only",
-        "training.no_play",
-        "training.log_dir",
-        "algo.num_envs",
-        "algo.max_iterations",
-    }
-    for override in extra_overrides:
-        key = override.split("=", 1)[0].strip().lstrip("+~")
-        if key in reserved:
-            raise ValueError(f"soak-owned Hydra override cannot be overridden: {key}")
-    return build_command(
-        mode="train",
-        algo="flashsac",
-        task="g1_motion_tracking",
-        sim="mjwarp",
-        overrides=(
-            f"algo.num_envs={num_envs}",
-            f"algo.max_iterations={iterations}",
-            "training.no_play=true",
-            f"training.log_dir={log_dir}",
-            *extra_overrides,
-        ),
-    )

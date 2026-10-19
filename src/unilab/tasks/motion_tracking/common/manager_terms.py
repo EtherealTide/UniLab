@@ -29,7 +29,7 @@ from .tensor_rotation import (
     quat_mul,
     quat_to_rot6,
 )
-from .tensor_sampler import TensorMotionSampler
+from .tensor_sampler import MotionSampler
 
 
 def _quat_error_squared_torch(reference: torch.Tensor, actual: torch.Tensor) -> torch.Tensor:
@@ -714,7 +714,7 @@ class MotionCommand(CommandTerm):
     def _make_tensor_sampler(self) -> None:
         if self._env.rng is None:
             raise NotImplementedError("MotionCommand requires the Manager-owned Torch generator")
-        self.tensor_sampler = TensorMotionSampler(
+        self.tensor_sampler = MotionSampler(
             mode=self.cfg.params.sampling_mode,
             num_envs=self.num_envs,
             num_frames=self.motion.num_frames,
@@ -1565,7 +1565,7 @@ class _BodyTerm(ManagerTermBase):
         return torch.exp(-error / (body_count * scale * scale))
 
 
-class motion_relative_body_position_error_exp(_BodyTerm):
+class MotionRelativeBodyPositionErrorExp(_BodyTerm):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
@@ -1578,7 +1578,7 @@ class motion_relative_body_position_error_exp(_BodyTerm):
         return self._body_reduce(command, "body_pos_relative_w", "robot_body_pos_w", scale)
 
 
-class motion_relative_body_orientation_error_exp(_BodyTerm):
+class MotionRelativeBodyOrientationErrorExp(_BodyTerm):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
@@ -1591,7 +1591,7 @@ class motion_relative_body_orientation_error_exp(_BodyTerm):
         return self._body_reduce(command, "body_quat_relative_w", "robot_body_quat_w", scale)
 
 
-class motion_global_body_linear_velocity_error_exp(_BodyTerm):
+class MotionGlobalBodyLinearVelocityErrorExp(_BodyTerm):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
@@ -1604,7 +1604,7 @@ class motion_global_body_linear_velocity_error_exp(_BodyTerm):
         return self._body_reduce(command, "body_lin_vel_w", "robot_body_lin_vel_w", scale)
 
 
-class motion_global_body_angular_velocity_error_exp(_BodyTerm):
+class MotionGlobalBodyAngularVelocityErrorExp(_BodyTerm):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
@@ -1654,7 +1654,7 @@ def joint_pos_limits(
     return (lower_violation + upper_violation).square().sum(dim=-1)
 
 
-class undesired_body_contacts(_BodyTerm):
+class UndesiredBodyContacts(_BodyTerm):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
@@ -1670,7 +1670,7 @@ class undesired_body_contacts(_BodyTerm):
         )
 
 
-class bad_anchor_pos_z_only(ManagerTermBase):
+class BadAnchorPosZOnly(ManagerTermBase):
     """Anchor-height termination on the command's Torch carrier."""
 
     def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
@@ -1720,7 +1720,7 @@ def bad_anchor_ori(
     return (motion_z - robot_z).abs() > threshold
 
 
-class bad_motion_body_pos_z_only(_BodyTerm):
+class BadMotionBodyPosZOnly(_BodyTerm):
     def __call__(
         self,
         env: ManagerBasedRlEnv,
@@ -1839,23 +1839,23 @@ __all__ = [
     "MotionAnchorOrientationObservation",
     "MotionAnchorPositionObservation",
     "bad_anchor_ori",
-    "bad_anchor_pos_z_only",
-    "bad_motion_body_pos_z_only",
+    "BadAnchorPosZOnly",
+    "BadMotionBodyPosZOnly",
     "joint_pos_limits",
     "motion_anchor_ori_b",
     "motion_anchor_pos_b",
     "motion_clip_end",
     "motion_global_anchor_orientation_error_exp",
     "motion_global_anchor_position_error_exp",
-    "motion_global_body_angular_velocity_error_exp",
-    "motion_global_body_linear_velocity_error_exp",
+    "MotionGlobalBodyAngularVelocityErrorExp",
+    "MotionGlobalBodyLinearVelocityErrorExp",
     "motion_joint_pos_rel",
     "motion_joint_pos_rel_biased",
     "motion_joint_position_error_exp",
     "motion_joint_velocity_error_exp",
-    "motion_relative_body_orientation_error_exp",
-    "motion_relative_body_position_error_exp",
+    "MotionRelativeBodyOrientationErrorExp",
+    "MotionRelativeBodyPositionErrorExp",
     "robot_body_ori_b",
     "robot_body_pos_b",
-    "undesired_body_contacts",
+    "UndesiredBodyContacts",
 ]

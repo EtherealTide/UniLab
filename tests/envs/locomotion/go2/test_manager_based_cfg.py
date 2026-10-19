@@ -15,7 +15,7 @@ from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
 
 from unilab.base import registry
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
 from unilab.envs import ManagerBasedRlEnvCfg, mdp
 
@@ -114,7 +114,7 @@ def _materialize(
     config_group: str, overrides: Sequence[str]
 ) -> tuple[DictConfig, ManagerBasedRlEnvCfg, dict[str, Any]]:
     hydra_cfg = _compose(config_group, overrides)
-    env_override = BackendAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
+    env_override = EnvConfigAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
     env_cfg = registry.materialize_env_config("Go2JoystickFlat")
     assert isinstance(env_cfg, ManagerBasedRlEnvCfg)
     apply_cfg_overrides(env_cfg, env_override)

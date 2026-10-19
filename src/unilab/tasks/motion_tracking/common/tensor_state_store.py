@@ -19,7 +19,7 @@ from unisim.backend.base import (
 )
 
 
-class TensorDeviceStateStore:
+class DeviceStateStore:
     """Read qpos/qvel, scalar sensors, and tracked body state on one device."""
 
     def __init__(
@@ -331,4 +331,4 @@ class TensorDeviceStateStore:
                 raise ValueError("tensor robot state contains NaN or Inf")
 
 
-__all__ = ["TensorDeviceStateStore"]
+__all__ = ["DeviceStateStore"]

@@ -8,9 +8,9 @@ from typing import Any
 import pytest
 import torch
 
-import unilab.rl.algos.common.learner_boilerplate as learner_boilerplate
+import unilab.rl.algos.common.learner_base as learner_base
 import unilab.rl.algos.sac.learner as sac_module
-from unilab.rl.algos.common.learner_boilerplate import mps_bf16_autocast_supported
+from unilab.rl.algos.common.learner_base import mps_bf16_autocast_supported
 from unilab.rl.algos.sac.learner import (
     DistributionalQNetwork,
     SACActor,
@@ -202,7 +202,7 @@ def test_sac_mps_bf16_fails_closed_without_runtime_support(monkeypatch) -> None:
 def test_sac_mps_bf16_capability_requires_autocast_linear_output(
     monkeypatch,
 ) -> None:
-    learner_boilerplate._MPS_BF16_AUTOCAST_SUPPORTED = None
+    learner_base._MPS_BF16_AUTOCAST_SUPPORTED = None
 
     @contextmanager
     def no_op_autocast(*_args, **_kwargs):

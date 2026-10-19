@@ -174,7 +174,7 @@ def build_demo_command(
     raise SystemExit(f"Unknown demo entry kind: {spec.entry!r}")
 
 
-def _mxpython_executable() -> str:
+def _motrix_python_executable() -> str:
     if Path(sys.executable).name == "mxpython":
         return sys.executable
 
@@ -196,7 +196,7 @@ def _mxpython_executable() -> str:
 def _run_teaser_demo() -> int:
     if platform.system() == "Darwin" and Path(sys.executable).name != "mxpython":
         command = [
-            _mxpython_executable(),
+            _motrix_python_executable(),
             str(_package_root() / "visualization" / "teaser.py"),
         ]
         env = os.environ.copy()

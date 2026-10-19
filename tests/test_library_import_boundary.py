@@ -48,7 +48,7 @@ _SINGLE_OWNER_SYMBOLS = {
     "apply_worker_seed": _RL_PACKAGE / "runtime" / "seed.py",
     "resolve_backend_process_device": _LIBRARY_PACKAGE / "base" / "process_device.py",
     "configure_backend_process_device": _LIBRARY_PACKAGE / "base" / "process_device.py",
-    "TensorNanGuard": _LIBRARY_PACKAGE / "training" / "tensor_diagnostics.py",
+    "NanGuard": _LIBRARY_PACKAGE / "training" / "tensor_diagnostics.py",
 }
 
 

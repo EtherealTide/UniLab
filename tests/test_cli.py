@@ -1020,7 +1020,7 @@ def test_demo_teaser_uses_mxpython_subprocess_on_macos(
     calls: list[tuple[list[str], dict[str, str]]] = []
     monkeypatch.setattr(demo.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(demo.sys, "executable", "/tmp/unilab/.venv/bin/python")
-    monkeypatch.setattr(demo, "_mxpython_executable", lambda: "/tmp/unilab/.venv/bin/mxpython")
+    monkeypatch.setattr(demo, "_motrix_python_executable", lambda: "/tmp/unilab/.venv/bin/mxpython")
 
     def fake_run(command: list[str], *, check: bool, env: dict[str, str]) -> SimpleNamespace:
         assert check is False
