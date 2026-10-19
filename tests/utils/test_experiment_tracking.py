@@ -404,6 +404,34 @@ def test_experiment_tracker_writes_local_run_files(tmp_path, monkeypatch, capsys
     assert run_summary["wall_time_sec"] >= 0.0
 
 
+def test_run_config_snapshot_passes_sim2sim_reader(tmp_path):
+    # The current run writer's payload must round-trip through the sim2sim
+    # contract reader: same-schema snapshots are the minimum supported format.
+    from omegaconf import OmegaConf
+
+    from unilab.utils.sim2sim import extract_contract_snapshot, resolve_sim2sim_config
+
+    full_cfg = OmegaConf.create(
+        {
+            "training": {"sim_backend": "mujoco"},
+            "algo": {
+                "obs_groups": {"actor": ["actor"]},
+                "actor": {"hidden_dims": [512, 256, 128], "obs_normalization": False},
+            },
+            "env": {"control_config": {"action_scale": 0.25}, "ctrl_dt": 0.01},
+        }
+    )
+    experiment_module.write_run_config_snapshot(
+        tmp_path,
+        run_metadata={"algo": "ppo", "task": "Task"},
+        full_cfg=full_cfg,
+        contract_snapshot=extract_contract_snapshot(full_cfg),
+    )
+
+    target = OmegaConf.create(OmegaConf.to_container(full_cfg, resolve=True))
+    assert resolve_sim2sim_config(tmp_path, target) is target
+
+
 def test_onpolicy_logger_reuses_existing_wandb_run(monkeypatch):
     fake_run = _FakeRun()
     fake_wandb = _FakeWandb(existing_run=fake_run)
