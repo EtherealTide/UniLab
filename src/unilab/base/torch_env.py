@@ -732,14 +732,6 @@ class TorchEnv(ABEnv):
             supports_mocap_playback=capabilities.supports_mocap_playback,
         )
 
-    def render_play_frame(self) -> None:
-        """Render one interactive playback frame through the env contract."""
-        if not self.play_capabilities.supports_native_interactive_renderer:
-            raise NotImplementedError(
-                f"{self._backend.__class__.__name__} does not support native interactive playback"
-            )
-        self._backend.render()
-
     def render(self, mode: str = "rgb_array") -> np.ndarray:
         """Render the current state to an RGB array through the play renderer."""
         if mode != "rgb_array":

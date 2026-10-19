@@ -491,12 +491,6 @@ class ABEnv(abc.ABC):
             f"{self.__class__.__name__} does not support render(mode={mode!r})"
         )
 
-    def render_play_frame(self) -> None:
-        """Render one frame through the env-facing interactive playback contract."""
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support native interactive playback"
-        )
-
     def capture_play_video_frame(self) -> np.ndarray:
         """Capture one RGB frame through the env-facing video contract."""
         raise NotImplementedError(

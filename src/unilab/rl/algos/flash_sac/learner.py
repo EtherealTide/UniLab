@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import os
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Sequence, cast
@@ -980,7 +979,7 @@ class FlashSACLearner(WholeCycleLearnerMixin):
 
     @property
     def _update_cycle_capture_error_mode(self) -> str:
-        return os.environ.get("UNI_RL_CAPTURE_ERROR_MODE", "thread_local")
+        return "thread_local"
 
     @property
     def _whole_cycle_capture_fallback(self) -> bool:

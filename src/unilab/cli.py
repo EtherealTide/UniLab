@@ -201,19 +201,6 @@ def _check_runtime_requirements(algo: str, sim: str) -> None:
             )
 
 
-def _override_bool(overrides: Sequence[str], key: str) -> bool | None:
-    selected: bool | None = None
-    for override in overrides:
-        if _override_key(override) != key or "=" not in override:
-            continue
-        value = override.split("=", 1)[1].strip().lower()
-        if value in {"true", "1", "yes", "on"}:
-            selected = True
-        elif value in {"false", "0", "no", "off"}:
-            selected = False
-    return selected
-
-
 def _override_value(overrides: Sequence[str], key: str) -> str | None:
     selected: str | None = None
     for override in overrides:

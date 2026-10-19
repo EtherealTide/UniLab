@@ -3,7 +3,6 @@
 from typing import TYPE_CHECKING, Any
 
 from unilab.rl.runtime.ipc.replay_buffer import ReplayBuffer
-from unilab.rl.runtime.ipc.rollout_ring_buffer import RolloutRingBuffer
 from unilab.rl.runtime.ipc.tensor_rollout_ring_buffer import TensorRolloutRingBuffer
 from unilab.rl.runtime.ipc.weight_sync import SharedWeightSync
 
@@ -12,7 +11,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "SharedWeightSync",
-    "RolloutRingBuffer",
     "TensorRolloutRingBuffer",
     "AsyncRunner",
     "ReplayBuffer",

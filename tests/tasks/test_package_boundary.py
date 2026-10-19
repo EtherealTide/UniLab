@@ -51,10 +51,9 @@ _PRODUCTION_NUMPY_IMPORT_ALLOWLIST = {
     "src/unilab/visualization/viser_scene.py",
     # Cold NPZ motion ingestion.
     *_RUNTIME_NUMPY_ALLOWLIST,
-    # RL runtime NumPy leaves merged from unilab-rl (ADR-0016): host-side ring
-    # buffers, weight sync, NaN diagnostics, RNG application, tensor conversion.
+    # RL runtime NumPy leaves merged from unilab-rl (ADR-0016): replay ring,
+    # weight sync, NaN diagnostics, RNG application, tensor conversion.
     "src/unilab/rl/runtime/ipc/replay_buffer.py",
-    "src/unilab/rl/runtime/ipc/rollout_ring_buffer.py",
     "src/unilab/rl/runtime/ipc/weight_sync.py",
     "src/unilab/rl/runtime/offpolicy/actor_adapter.py",
     "src/unilab/rl/runtime/seed.py",

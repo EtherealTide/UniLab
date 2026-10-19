@@ -278,7 +278,6 @@ def test_contracts_import_without_simulator_packages() -> None:
         "import unilab.rl.contracts.env\n"
         "import unilab.rl.contracts.observations\n"
         "import unilab.rl.contracts.probe\n"
-        "import unilab.rl.contracts.training_state\n"
         "bad = [m for m in sys.modules if m == 'unisim' or m.startswith('unisim.')]\n"
         "assert not bad, f'contracts pulled in simulator packages: {bad}'\n"
     )
