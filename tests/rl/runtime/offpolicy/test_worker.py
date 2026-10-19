@@ -661,7 +661,7 @@ def test_collector_binds_backend_device_before_env_materialization(
             algo_type="sac",
             actor_adapter_modules=None,
             metrics_queue=None,
-            inference_transport="cpu",
+            inference_transport="host",
             sim_backend="mjwarp",
             backend_device="cuda:3",
             env_cfg_override=None,
@@ -1052,7 +1052,7 @@ def test_tensor_collector_steps_env_with_ring_tensor_actions(
         algo_type="sac",
         actor_adapter_modules=None,
         metrics_queue=metrics_queue,
-        inference_transport="cpu",
+        inference_transport="host",
         sim_backend="mujoco",
         backend_device=None,
         env_cfg_override=None,
@@ -1669,7 +1669,7 @@ def test_collector_rejects_transport_metadata_in_env_override() -> None:
             algo_type="sac",
             actor_adapter_modules=None,
             metrics_queue=queue.Queue(),
-            inference_transport="cpu",
+            inference_transport="host",
             sim_backend="mujoco",
             backend_device=None,
             env_cfg_override={"inference_transport": "gpu"},
@@ -1713,7 +1713,7 @@ class _CudaStubDeviceTensor(torch.Tensor):
         return torch.device("cuda")
 
 
-def test_explicit_cpu_transport_rejects_cuda_tensor_observations() -> None:
+def test_explicit_host_transport_rejects_cuda_tensor_observations() -> None:
     stop_event = threading.Event()
 
     class _State:
@@ -1730,7 +1730,7 @@ def test_explicit_cpu_transport_rejects_cuda_tensor_observations() -> None:
     ring = SharedInferenceRing(1, 2, 2, device="cpu")
 
     with pytest.raises(
-        ValueError, match="CPU inference transport received CUDA tensor observations"
+        ValueError, match="Host inference transport received CUDA tensor observations"
     ):
         worker_module._run_collector(
             stop_event=stop_event,
@@ -1747,7 +1747,7 @@ def test_explicit_cpu_transport_rejects_cuda_tensor_observations() -> None:
             algo_type="sac",
             actor_adapter_modules=None,
             metrics_queue=queue.Queue(),
-            inference_transport="cpu",
+            inference_transport="host",
             sim_backend="mujoco",
             backend_device=None,
             env_cfg_override={},

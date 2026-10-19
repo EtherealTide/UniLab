@@ -144,7 +144,7 @@ def _collect_one_step(monkeypatch: pytest.MonkeyPatch) -> tuple[ReplayBuffer, to
         algo_type="sac",
         actor_adapter_modules=None,
         metrics_queue=None,
-        inference_transport="cpu",
+        inference_transport="host",
         sim_backend="mujoco",
         backend_device=None,
         env_cfg_override=None,

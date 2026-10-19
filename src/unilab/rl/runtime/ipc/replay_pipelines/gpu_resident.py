@@ -33,7 +33,15 @@ from unilab.rl.runtime.ipc.replay_pipelines.transfer import build_replay_transfe
 
 
 def require_offpolicy_replay_device(device: str | None) -> str:
-    """Reject devices that cannot own the single-device replay ring."""
+    """Validate and return the authoritative off-policy replay device.
+
+    The invariant is intentionally narrower than inference transport: the replay
+    ring and learner must use one identical Torch device whose type is either
+    ``cuda`` (NVIDIA CUDA or AMD ROCm) or Apple ``mps``. A CPU/host device may
+    own the inference boundary, but it cannot own the device-resident replay
+    ring. CUDA-family transport does not enable NVIDIA-only backend or CUDA
+    process-sharing capabilities.
+    """
     if device is None:
         from unilab.rl.runtime.device import get_default_device
 
@@ -45,8 +53,8 @@ def require_offpolicy_replay_device(device: str | None) -> str:
         raise ValueError(f"Invalid off-policy learner device {resolved!r}") from exc
     if device_type not in {"cuda", "mps"}:
         raise ValueError(
-            "Off-policy training requires a CUDA or MPS learner device for "
-            f"device-authoritative replay; got {device_type!r}"
+            "Off-policy training requires the replay device to equal the learner "
+            f"device and have Torch type 'cuda' or 'mps'; got {device_type!r}"
         )
     return resolved
 

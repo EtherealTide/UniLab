@@ -297,7 +297,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         self.collector_backend_device = collector_backend_device
         if inference_placement is None:
             inference_placement = InferencePlacement(
-                mode=InferenceTransport.CPU,
+                mode=InferenceTransport.HOST,
                 env_device="cpu",
                 ring_device="cpu",
                 learner_device=str(kwargs["device"]),
@@ -420,16 +420,16 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
 
         if torch.device(placement.ring_device).type != "cpu":
             raise ValueError(
-                "CPU inference transport requires a CPU inference ring; "
+                "Host inference transport requires a CPU inference ring; "
                 f"got {placement.ring_device!r}"
             )
         if placement.collector_tensor_native:
             raise ValueError(
-                "CPU inference transport requires non-tensor-native collector transitions"
+                "Host inference transport requires non-tensor-native collector transitions"
             )
         if torch.device(placement.env_device).type != "cpu":
             raise ValueError(
-                "CPU inference transport requires CPU env public tensors; "
+                "Host inference transport requires CPU env public tensors; "
                 f"got {placement.env_device!r}"
             )
 
@@ -1100,8 +1100,8 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         )
         h2d_end_ns = time.perf_counter_ns()
 
-        # CPU transport owns exactly one persistent ring->actor H2D boundary.
-        if self.inference_placement.mode is InferenceTransport.CPU:
+        # Host transport owns exactly one persistent ring->actor H2D boundary.
+        if self.inference_placement.mode is InferenceTransport.HOST:
             actor_obs_device.copy_(obs_device, non_blocking=False)
             actor_dones_device.copy_(dones_device, non_blocking=False)
         else:
@@ -1131,12 +1131,12 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         forward_timer.stop()
 
         d2h_start_ns = time.perf_counter_ns()
-        # CPU transport owns exactly one actor->host action D2H boundary into a
+        # Host transport owns exactly one actor->host action D2H boundary into a
         # persistent tensor; CUDA actions remain on the ring device.
         actions_for_ring = actions_device
-        if self.inference_placement.mode is InferenceTransport.CPU:
+        if self.inference_placement.mode is InferenceTransport.HOST:
             if actions_host is None:
-                raise RuntimeError("CPU inference transport lost its action staging tensor")
+                raise RuntimeError("Host inference transport lost its action staging tensor")
             actions_host.copy_(actions_device, non_blocking=False)
             actions_for_ring = actions_host
         inference_slot.publish_action(
@@ -1517,7 +1517,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             ingress_slot_rows=self.replay_ingress_slot_rows,
             ingress_depth=self.replay_ingress_depth,
             ingress_device=self.device if gpu_centric_collector else "cpu",
-            # CPU transport still owns a CUDA replay device and CPU ingress.
+            # Host transport still owns a CUDA replay device and CPU ingress.
             require_completion_receipt=self.produces_completion_receipts,
         )
         self._active_replay_buffer = replay_buffer
@@ -1586,10 +1586,10 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             dtype=torch.float32,
             device=inference_ring_device,
         )
-        # CPU transport owns persistent learner-side actor staging. Copies into
+        # Host transport owns persistent learner-side actor staging. Copies into
         # these tensors are its sole ring->actor H2D boundary; CUDA transport
         # deliberately reuses the ring-device scratch with no host detour.
-        if self.inference_placement.mode is InferenceTransport.CPU:
+        if self.inference_placement.mode is InferenceTransport.HOST:
             inference_obs_actor = torch.empty(
                 inference_obs_device.shape,
                 dtype=inference_obs_device.dtype,

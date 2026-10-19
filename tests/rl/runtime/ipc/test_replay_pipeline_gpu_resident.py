@@ -18,6 +18,7 @@ from unilab.rl.runtime.ipc.replay_pipelines.gpu_resident import (
     _device_memory_budget,
     _ring_spans,
     _validate_device_memory_budget,
+    require_offpolicy_replay_device,
 )
 
 _HAS_CUDA = torch.cuda.is_available()
@@ -376,7 +377,7 @@ class TestMPSIngressEventLifecycle:
 class TestConstructionGuards:
     def test_non_accelerator_device_rejected(self):
         rb = _make_replay(device="cpu")
-        with pytest.raises(ValueError, match="CUDA or MPS"):
+        with pytest.raises(ValueError, match="have Torch type 'cuda' or 'mps'"):
             GPUResidentReplayPipeline(rb, device="cpu", sample_count=8)
 
     def test_runner_rejects_non_accelerator_before_base_initialization(self):
@@ -384,8 +385,33 @@ class TestConstructionGuards:
             DoubleBufferOffPolicyRunner,
         )
 
-        with pytest.raises(ValueError, match="CUDA or MPS"):
+        with pytest.raises(ValueError, match="have Torch type 'cuda' or 'mps'"):
             DoubleBufferOffPolicyRunner(device="cpu")
+
+    @pytest.mark.parametrize("device", ["cuda:0", "cuda:7", "mps", "mps:0"])
+    def test_supported_learner_device_types_are_returned_verbatim(self, device: str):
+        assert require_offpolicy_replay_device(device) == device
+
+    def test_direct_builders_reject_host_replay_before_env_work(self):
+        import unilab.rl.algos.flash_sac.double_buffer as flashsac_builder
+        import unilab.rl.algos.sac.double_buffer as sac_builder
+
+        builders = (
+            sac_builder.build_sac_double_buffer_runner,
+            flashsac_builder.build_flashsac_double_buffer_runner,
+        )
+        for builder in builders:
+            with pytest.raises(
+                ValueError,
+                match="replay device to equal the learner device",
+            ):
+                builder(
+                    object(),  # rejected before the owner DictConfig is read
+                    env_factory=lambda *_args, **_kwargs: None,
+                    env_cfg_override=None,
+                    replay_prefetch_mode="one_tick",
+                    device="cpu",
+                )
 
     def test_mps_memory_budget_uses_recommended_budget(self, monkeypatch):
         monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: 1_000)
