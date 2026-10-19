@@ -26,6 +26,7 @@ from unilab.rl.runtime.offpolicy.coordination import (
 )
 from unilab.rl.runtime.offpolicy.tensor_metrics import TensorCollectorMetrics, TensorMetricFlush
 from unilab.rl.runtime.offpolicy.thread_budget import apply_torch_thread_runtime
+from unilab.rl.runtime.placement import InferenceTransport
 from unilab.rl.runtime.seed import apply_worker_seed
 
 # Exclusive phases for one collector loop iteration (one vectorized env.step).
@@ -370,11 +371,10 @@ def _run_collector(
     # ``unilab.rl.contracts.env``); this layer never touches an env registry.
     env = env_factory(num_envs, env_cfg_override)
     requested_transport = inference_transport
-    if requested_transport not in {"host", "cuda", "legacy_tensor"}:
+    if requested_transport not in {item.value for item in InferenceTransport}:
         raise ValueError(
-            "Collector inference transport must be 'host', 'cuda', or the internal "
-            f"'legacy_tensor' compatibility marker (use 'host' for the CPU ring), "
-            f"got {requested_transport!r}"
+            "Collector inference transport must be one of "
+            f"{{'host', 'cuda'}}, got {requested_transport!r}"
         )
     if "inference_transport" in (env_cfg_override or {}):
         raise ValueError("Collector env override must not set inference_transport")

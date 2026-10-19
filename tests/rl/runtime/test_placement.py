@@ -17,6 +17,6 @@ def test_inference_transport_request_must_be_named_device() -> None:
         resolve_inference_placement(
             learner_device="cuda:0",
             transport="accel",
-            tensor_runtime=True,
+            env_tensor_native=True,
             algo_name="SAC",
         )

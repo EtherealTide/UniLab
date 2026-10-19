@@ -500,7 +500,7 @@ def _make_device_runner(
     if placement is None and collector_tensor_native is not None:
         placement = resolve_inference_placement(
             learner_device=device,
-            tensor_runtime=collector_tensor_native,
+            env_tensor_native=collector_tensor_native,
             algo_name="TestRunner",
         )
     return device_runner_module.DoubleBufferOffPolicyRunner(

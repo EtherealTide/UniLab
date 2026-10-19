@@ -63,11 +63,9 @@ def resolve_inference_transport(
             f"{algo_name} training.inference_transport must be a string or omitted, "
             f"got {requested_transport!r}"
         )
-    env_device = None
     return resolve_inference_placement(
         learner_device=device,
         transport=requested_transport,
-        resolved_tensor_runtime_device=env_device,
         env_tensor_native=env_tensor_native,
         algo_name=algo_name,
     )

@@ -1011,11 +1011,13 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         override = dict(self.env_cfg_override or {})
         if self.collector_cpu_ids is not None:
             override["cpu_ids"] = list(self.collector_cpu_ids)
-        # Keep the resolved env public-device request on the same rank-local
-        # CUDA device as the ring. Copying here avoids mutating the probe env's
-        # opaque owner mapping while still validating it before spawn.
-        override.pop("tensor_runtime", None)
-        override.pop("tensor_runtime_device", None)
+        removed_tensor_runtime_fields = {"tensor_runtime", "tensor_runtime_device"} & set(override)
+        if removed_tensor_runtime_fields:
+            raise ValueError(
+                "Collector env override must not set removed tensor_runtime fields; "
+                "inference transport is an explicit worker argument and carrier "
+                "placement is owned by training.sim_carrier_device"
+            )
         # Inference transport is process-local metadata, not an EnvCfg field.
         # The resolved placement reaches the worker only through the explicit
         # collector argument below; EnvCfg remains owned by UniLab.
