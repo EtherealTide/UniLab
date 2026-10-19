@@ -412,10 +412,8 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
         expected_events
     )
     if backend in _TENSOR_RESET_EVENT_BACKENDS or backend in _MOTRIX_PACKED_HOST_BRIDGE_BACKENDS:
-        assert env_cfg.events["reset_scene_to_default"].func is mdp.reset_scene_to_default_tensor
-        assert (
-            env_cfg.events["reset_root_state_uniform"].func is mdp.reset_root_state_uniform_tensor
-        )
+        assert env_cfg.events["reset_scene_to_default"].func is mdp.skip_scene_reset
+        assert env_cfg.events["reset_root_state_uniform"].func is mdp.reset_root_state_uniform_fused
     assert tuple(name for name, term in env_cfg.rewards.items() if term is not None) == (
         expected_rewards
     )

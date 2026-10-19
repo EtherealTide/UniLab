@@ -1,1 +1,1 @@
-"""Hydra-owned motion tracking tasks on the NumPy Manager-Based runtime."""
+"""Hydra-owned motion tracking tasks on the Torch-first Manager-Based runtime."""

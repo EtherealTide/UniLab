@@ -3132,7 +3132,7 @@ def test_device_resident_tensor_root_event_commits_selected_rows_once() -> None:
     }
     cfg.events = {
         "reset_root_state_uniform": EventTermCfg(
-            func=mdp.reset_root_state_uniform_tensor,
+            func=mdp.reset_root_state_uniform_fused,
             mode="reset",
             params={
                 "pose_range": {

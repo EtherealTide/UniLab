@@ -53,9 +53,9 @@ env:
       command_name: twist
   events:
     reset_scene_to_default:
-      func: unilab.envs.mdp.reset_scene_to_default_tensor
+      func: unilab.envs.mdp.skip_scene_reset
     reset_root_state_uniform:
-      func: unilab.envs.mdp.reset_root_state_uniform_tensor
+      func: unilab.envs.mdp.reset_root_state_uniform_fused
     # The training owner keeps state-only reset semantics.
     pd_gains: null
   terminations:

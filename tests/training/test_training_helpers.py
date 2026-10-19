@@ -333,12 +333,11 @@ def test_backend_adapter_preserves_mask_reset_owner_yaml():
         cfg, root_dir=_ROOT_DIR, algo_name="sac"
     ).build_task_env_cfg_override()
     assert (
-        override["events"]["reset_scene_to_default"]["func"]
-        == "unilab.envs.mdp.reset_scene_to_default_tensor"
+        override["events"]["reset_scene_to_default"]["func"] == "unilab.envs.mdp.skip_scene_reset"
     )
     assert (
         override["events"]["reset_root_state_uniform"]["func"]
-        == "unilab.envs.mdp.reset_root_state_uniform_tensor"
+        == "unilab.envs.mdp.reset_root_state_uniform_fused"
     )
 
 

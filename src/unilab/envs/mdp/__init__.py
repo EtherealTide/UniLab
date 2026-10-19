@@ -1,4 +1,4 @@
-"""Community-style built-in MDP terms for UniLab's NumPy manager runtime."""
+"""Community-style built-in MDP terms for UniLab's Torch-first manager runtime."""
 
 from unilab.envs.mdp.actions import JointEffortAction as JointEffortAction
 from unilab.envs.mdp.actions import JointEffortActionCfg as JointEffortActionCfg
@@ -35,13 +35,13 @@ from unilab.envs.mdp.events import randomize_rigid_body_com as randomize_rigid_b
 from unilab.envs.mdp.events import randomize_rigid_body_mass as randomize_rigid_body_mass
 from unilab.envs.mdp.events import reset_root_state_uniform as reset_root_state_uniform
 from unilab.envs.mdp.events import (
-    reset_root_state_uniform_tensor as reset_root_state_uniform_tensor,
+    reset_root_state_uniform_fused as reset_root_state_uniform_fused,
 )
 from unilab.envs.mdp.events import reset_scene_to_default as reset_scene_to_default
-from unilab.envs.mdp.events import (
-    reset_scene_to_default_tensor as reset_scene_to_default_tensor,
-)
 from unilab.envs.mdp.events import resolve_env_ids as resolve_env_ids
+from unilab.envs.mdp.events import (
+    skip_scene_reset as skip_scene_reset,
+)
 from unilab.envs.mdp.observations import base_ang_vel as base_ang_vel
 from unilab.envs.mdp.observations import (
     base_ang_vel_imu_misaligned as base_ang_vel_imu_misaligned,
@@ -133,9 +133,9 @@ __all__ = [
     "projected_gravity_from_sensor",
     "projected_gravity_imu_misaligned",
     "reset_root_state_uniform",
-    "reset_root_state_uniform_tensor",
+    "reset_root_state_uniform_fused",
     "reset_scene_to_default",
-    "reset_scene_to_default_tensor",
+    "skip_scene_reset",
     "resolve_env_ids",
     "reward_curriculum",
     "root_height_below_minimum",

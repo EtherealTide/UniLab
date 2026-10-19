@@ -455,9 +455,8 @@ class ABEnv(abc.ABC):
     def step(self, actions: Any) -> Any:
         """Step the environment with owner-declared action carrier.
 
-        The abstract base stays runtime-neutral during the staged NumPy-to-Torch
-        migration. Concrete owners validate the declared carrier; the final
-        Torch-only lifecycle accepts only Torch tensors.
+        The abstract base stays runtime-neutral. Concrete owners validate the
+        declared carrier; the Torch lifecycle accepts Torch tensors.
         """
 
     @abc.abstractmethod

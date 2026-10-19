@@ -1,11 +1,9 @@
 """Rotation helpers owned by the base/reset boundary.
 
-The ``np_*`` helpers are intentionally private to ``unilab.base``. They serve
-the explicit reset/entity host boundary; task cold loaders own their
-data-format conversion locally rather than depending on this transition shim.
-``quat_apply_inverse`` is the Torch counterpart used by the packed reset
-transaction's device-side pose/velocity encoding. No compatibility import for
-``unilab.utils.rotation`` is retained.
+The ``np_*`` helpers implement the explicit reset/entity host boundary. Task
+cold loaders own their data-format conversion locally rather than depending on
+these base helpers. ``quat_apply_inverse`` is the Torch counterpart used by the
+packed reset transaction's device-side pose/velocity encoding.
 """
 
 from __future__ import annotations
