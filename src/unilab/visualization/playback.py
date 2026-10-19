@@ -38,7 +38,6 @@ def camera_cfg_from_training(training_cfg: Any) -> CameraCfg:
 def render_play_mode(
     env,
     *,
-    sim_backend: str,
     initialize: Callable[[], ObsT],
     step: Callable[[ObsT], ObsT],
     num_steps: int | None,
@@ -54,11 +53,9 @@ def render_play_mode(
 ) -> str | None:
     """Run playback through the env/backend playback contract.
 
-    ``sim_backend`` is accepted but ignored; backend selection belongs to
-    ``env.run_playback()`` and the concrete backend implementations. The
-    parameter itself is scheduled for removal under #2415.
+    Backend selection belongs to ``env.run_playback()`` and the concrete
+    backend implementations.
     """
-    del sim_backend
     return cast(
         str | None,
         env.run_playback(
