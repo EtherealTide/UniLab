@@ -75,20 +75,6 @@ def test_pull_assets_all_covers_every_registered_robot(
     assert output_lines[-1].startswith(f"Robot assets ready: {len(robots)} robots")
 
 
-def test_pull_assets_verbose_keeps_output_compact(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-):
-    target = _populate(tmp_path / "meshes", suffix=".STL", count=2)
-    calls: list[bool] = []
-
-    def fake_resolver(directory: str, *, marker: str, show_progress: bool) -> Path:
-        calls.append(show_progress)
-        return target
-
-    monkeypatch.setattr(pull_assets, "resolve_robot_asset_dir", fake_resolver)
-
-    assert pull_assets.main(["--robot", "go2", "--verbose"]) == 0
-    assert calls == [False]
-    assert len(capsys.readouterr().out.strip().splitlines()) == 2
+def test_pull_assets_rejects_unknown_verbose_option():
+    with pytest.raises(SystemExit):
+        pull_assets.main(["--robot", "g1", "--verbose"])

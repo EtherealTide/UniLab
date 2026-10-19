@@ -43,11 +43,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=[*_sorted_robots(), _ALL],
         help="Robot whose binary assets to download, or 'all' (default: g1).",
     )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Retained for compatibility; Hugging Face output remains suppressed.",
-    )
     return parser.parse_args(argv)
 
 
