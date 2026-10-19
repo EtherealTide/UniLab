@@ -7,8 +7,12 @@ References:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
-from unisim.terrain.generator import FlatPatchSamplingCfg  # noqa: F401
+
+if TYPE_CHECKING:
+    from unisim.terrain.generator import FlatPatchSamplingCfg
 
 
 def bilinear_zoom_2d(arr: np.ndarray, zoom_factors: float | tuple[float, float]) -> np.ndarray:

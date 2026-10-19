@@ -41,7 +41,7 @@ class ReplayBuffer(SharedBufferBase):
         ingress_device: str | torch.device = "cpu",
         require_completion_receipt: bool = True,
     ):
-        super().__init__(capacity, device, defer_gpu=True)
+        super().__init__(capacity, device)
         self._obs_dim = obs_dim
         self._action_dim = action_dim
         self._critic_dim = critic_dim

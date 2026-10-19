@@ -110,12 +110,6 @@ import mujoco
 import mujoco.viewer
 
 SUPPORTED_INTERACTIVE_ALGOS = ("ppo", "appo", "sac", "flashsac")
-_CONFIG_ROOT_BY_ALGO = {
-    "ppo": "ppo",
-    "appo": "appo",
-    "sac": "sac",
-    "flashsac": "flashsac",
-}
 _OFFPOLICY_INTERACTIVE_ALGOS = {"sac", "flashsac"}
 
 
@@ -176,23 +170,13 @@ def _interactive_overrides_from_cli(
     return normalized
 
 
-def _normalize_interactive_overrides(algo: str, overrides: list[str]) -> list[str]:
-    # All algos now compose uniformly from their own tree with
-    # `task=<task>/<sim>`; no per-algo override rewriting is needed.
-    return list(overrides)
-
-
 def _compose_interactive_config(algo: str, overrides: list[str]) -> DictConfig:
-    config_group = _CONFIG_ROOT_BY_ALGO[algo]
     GlobalHydra.instance().clear()
     with initialize_config_dir(
-        config_dir=str(_PACKAGE_CONF_ROOT / config_group),
+        config_dir=str(_PACKAGE_CONF_ROOT / algo),
         version_base="1.3",
     ):
-        return compose(
-            config_name="config",
-            overrides=_normalize_interactive_overrides(algo, overrides),
-        )
+        return compose(config_name="config", overrides=overrides)
 
 
 def _select_playback_device(cfg: DictConfig) -> str:

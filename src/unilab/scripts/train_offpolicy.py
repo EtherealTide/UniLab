@@ -80,11 +80,13 @@ from unilab.visualization.interactive_playback import (
 
 
 def _rank_local_cuda_device() -> str | None:
-    """Resolve local ``cuda:0`` without requiring a new sibling API export."""
-    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if raw is None:
-        return None
-    entries = tuple(entry.strip() for entry in raw.split(",") if entry.strip())
+    """Resolve the local device exposed by a one-entry CUDA visibility mask."""
+
+    entries = tuple(
+        entry.strip()
+        for entry in (os.environ.get("CUDA_VISIBLE_DEVICES") or "").split(",")
+        if entry.strip()
+    )
     return "cuda:0" if len(entries) == 1 else None
 
 

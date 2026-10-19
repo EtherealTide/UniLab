@@ -6,8 +6,7 @@ import torch
 class SharedBufferBase:
     """Device-adaptive shared memory buffer base class."""
 
-    def __init__(self, capacity: int, device: str, defer_gpu: bool = False):
-        del defer_gpu
+    def __init__(self, capacity: int, device: str):
         self.capacity = capacity
         self.device = device
         self.ptr = torch.zeros(1, dtype=torch.int64).share_memory_()

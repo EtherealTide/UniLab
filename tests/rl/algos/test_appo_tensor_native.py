@@ -132,7 +132,7 @@ def test_gaussian_distribution_std_handles_scalar_and_log_parameterization() -> 
     assert torch.allclose(gaussian_distribution_std(log_actor), expected)
 
 
-def test_timeout_bootstrap_correction_accepts_actor_observation_fallback() -> None:
+def test_timeout_bootstrap_correction_uses_final_critic_value() -> None:
     from unilab.rl.algos.appo.worker import compute_timeout_bootstrap_correction
 
     class _Critic:
@@ -144,7 +144,6 @@ def test_timeout_bootstrap_correction_accepts_actor_observation_fallback() -> No
         collector_device="cpu",
         gamma=0.5,
         timeout_mask=torch.tensor([True, False]),
-        final_obs=torch.tensor([[2.0, 3.0], [9.0, 9.0]]),
         final_critic=torch.tensor([[2.0, 3.0], [9.0, 9.0]]),
     )
     torch.testing.assert_close(correction, torch.tensor([2.5, 0.0]))
@@ -162,7 +161,7 @@ def test_strict_tensor_env_rejects_numpy_reset_indices() -> None:
         env.reset(np.array([0], dtype=np.int64))
 
 
-def test_timeout_bootstrap_correction_supports_cross_device_final_observation() -> None:
+def test_timeout_bootstrap_correction_supports_cross_device_final_critic() -> None:
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
 
@@ -180,7 +179,6 @@ def test_timeout_bootstrap_correction_supports_cross_device_final_observation() 
         collector_device="cuda",
         gamma=0.5,
         timeout_mask=cuda_mask,
-        final_obs=cpu_final,
         final_critic=cpu_final,
     )
 

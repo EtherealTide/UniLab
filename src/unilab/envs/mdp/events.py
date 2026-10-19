@@ -481,9 +481,6 @@ class _ModelFieldRandomizer(_ResetRandomizationTerm):
     ) -> None:
         raise NotImplementedError
 
-    def _write_tensor(self, values: torch.Tensor, env_ids: torch.Tensor) -> None:
-        raise NotImplementedError
-
     def _select_string_ranges(
         self,
         local_ids: torch.Tensor,
