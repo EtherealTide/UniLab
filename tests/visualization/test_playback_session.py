@@ -232,7 +232,6 @@ def test_render_play_mode_forwards_overlay_and_on_frame() -> None:
     on_frame = lambda i, frame: frame  # noqa: E731
     result = render_play_mode(
         _Env(),
-        sim_backend="mujoco",
         initialize=lambda: None,
         step=lambda obs: obs,
         num_steps=1,
