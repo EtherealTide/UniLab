@@ -41,23 +41,22 @@ def _select_seed(cfg: Any, path: str) -> Any:
 
 
 def resolve_training_seed(cfg: Any) -> TrainingSeedInfo:
-    """Resolve the configured seed, preferring the algorithm-level contract."""
-    candidates = (
-        ("algo.seed", _select_seed(cfg, "algo.seed")),
-        ("training.seed", _select_seed(cfg, "training.seed")),
-    )
-    for source, raw_seed in candidates:
-        if raw_seed is None:
-            continue
-        seed = int(raw_seed)
-        if seed < 0:
-            raise ValueError(f"{source} must be non-negative, got {seed}")
+    """Resolve the configured seed from the algorithm-level ``algo.seed`` contract."""
+    raw_seed = _select_seed(cfg, "algo.seed")
+    if raw_seed is None:
+        if _select_seed(cfg, "training.seed") is not None:
+            raise ValueError("training.seed is no longer supported; configure algo.seed instead")
         return TrainingSeedInfo(
-            configured_seed=seed,
-            configured_seed_source=source,
-            effective_seed=seed,
+            configured_seed=None, configured_seed_source=None, effective_seed=None
         )
-    return TrainingSeedInfo(configured_seed=None, configured_seed_source=None, effective_seed=None)
+    seed = int(raw_seed)
+    if seed < 0:
+        raise ValueError(f"algo.seed must be non-negative, got {seed}")
+    return TrainingSeedInfo(
+        configured_seed=seed,
+        configured_seed_source="algo.seed",
+        effective_seed=seed,
+    )
 
 
 def apply_training_seed(

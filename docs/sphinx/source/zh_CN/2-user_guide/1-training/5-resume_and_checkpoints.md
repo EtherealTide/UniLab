@@ -49,5 +49,7 @@ uv run eval --algo ppo --task go2_joystick_flat --sim mujoco --load-run -1
 
 ## 随机种子
 
-训练种子的解析在 `src/unilab/training/seed.py` 中实现。算法配置目前携带
-`algo.seed`，并且在实验跟踪启用时，该辅助逻辑会记录种子元数据。
+训练种子的解析在 `src/unilab/training/seed.py` 中实现。仅认可算法级
+`algo.seed`；旧 `training.seed` fallback 已删除，配置了 `training.seed`
+但缺少 `algo.seed` 时会 fail closed。在实验跟踪启用时，该辅助逻辑会记录
+种子元数据。
