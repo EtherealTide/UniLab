@@ -7,13 +7,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
 
 from unilab.rl.runtime.distributed.affinity import resolve_collector_cpu_ids
-from unilab.training.dp_config import apply_dp_rank_config, reject_removed_device_config
+from unilab.training.dp_config import apply_dp_rank_config
 
 _ROOT = Path(__file__).parent.parent.parent
 _CONF_DIR = _ROOT / "src" / "unilab" / "conf"
@@ -26,32 +25,6 @@ def _offpolicy_cfg(overrides: list[str] | None = None):
         normalized.append("task=g1_walk_flat/mujoco")
     with initialize_config_dir(config_dir=str(_CONF_DIR / "sac"), version_base="1.3"):
         return compose("config", overrides=normalized)
-
-
-# ---------------------------------------------------------------------------
-# removed training.devices
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("devices_cfg", [None, []])
-def test_removed_device_config_accepts_empty_defaults(devices_cfg):
-    reject_removed_device_config(devices_cfg)
-
-
-def test_removed_device_config_fails_closed():
-    with pytest.raises(ValueError, match="training.devices was removed"):
-        reject_removed_device_config((0, 1))
-
-
-# ---------------------------------------------------------------------------
-# Hydra compose surface
-# ---------------------------------------------------------------------------
-
-
-def test_offpolicy_config_no_longer_exposes_devices():
-    cfg = _offpolicy_cfg()
-
-    assert "devices" not in cfg.training
 
 
 # ---------------------------------------------------------------------------

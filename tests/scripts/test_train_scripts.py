@@ -397,7 +397,7 @@ def test_host_bridge_env_overrides_route_explicit_sim_carrier_device(monkeypatch
 def test_offpolicy_backend_env_follows_rank_local_cuda_visibility(
     monkeypatch: pytest.MonkeyPatch, backend: str, field: str
 ) -> None:
-    """Single-entry CVD owns the rank namespace without training.devices."""
+    """Single-entry CVD owns the rank namespace."""
 
     mod = _offpolicy()
     cfg = _offpolicy_cfg([f"task=g1_walk_flat/{backend}"])
@@ -409,14 +409,6 @@ def test_offpolicy_backend_env_follows_rank_local_cuda_visibility(
 
     assert override is not None
     assert override[field] == 0
-
-
-def test_removed_training_devices_fails_closed() -> None:
-    mod = _offpolicy()
-    cfg = _offpolicy_cfg(["+training.devices=[0]"])
-
-    with pytest.raises(ValueError, match="training.devices was removed"):
-        mod.main(cfg)
 
 
 @pytest.mark.parametrize(

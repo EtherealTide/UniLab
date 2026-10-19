@@ -33,7 +33,6 @@ from unilab.rl import (
     finish_rsl_rl_distributed,
     launch_torchrun_workers,
     ppo_samples_per_iteration,
-    reject_removed_device_config,
     resolve_collector_cpu_ids,
     resolve_rsl_rl_device,
     rsl_rl_single_process_topology,
@@ -414,7 +413,6 @@ def play_rsl_rl(cfg: DictConfig, device: str) -> str | None:
 
 @hydra.main(version_base="1.3", config_path="../conf/ppo", config_name="config")
 def main(cfg: DictConfig) -> None:
-    reject_removed_device_config(OmegaConf.select(cfg, "training.devices", default=None))
     rank = current_torch_distributed_rank()
     local_rank = current_torch_distributed_local_rank()
     world_size = current_torch_distributed_world_size()
