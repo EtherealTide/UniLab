@@ -12,7 +12,7 @@ from unilab.tasks.motion_tracking.common.manager_terms import MotionJointPositio
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
@@ -73,7 +73,7 @@ class joint_acc_l2(ManagerTermBase):
         return acceleration.square().sum(dim=-1).to(dtype=torch.float32)
 
     def _joint_view(self):
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
         if read_plan is not None and read_plan.ready:
             return read_plan.joint_tensor_view(self._entity)
         return self._entity.joint_tensor_view(self._device)
@@ -123,7 +123,7 @@ class joint_torque_l2(ManagerTermBase):
         asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     ) -> torch.Tensor:
         del env, action_name, asset_cfg
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
         if read_plan is not None and read_plan.ready:
             joint_view = read_plan.joint_tensor_view(self._entity)
         else:

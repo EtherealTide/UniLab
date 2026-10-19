@@ -16,7 +16,7 @@ from prettytable import PrettyTable
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 @dataclass(kw_only=True)
@@ -116,7 +116,7 @@ class CurriculumManager(ManagerBase):
     def compute(self, reset_mask: torch.Tensor | None = None) -> None:
         """Compute global and, when declared, mask-scoped curriculum terms."""
         for name, term_cfg in zip(self._term_names, self._term_cfgs, strict=False):
-            callable_mask = getattr(term_cfg.func, "__call_reset__", None)
+            callable_mask = getattr(term_cfg.func, "reset_scoped", None)
             if callable(callable_mask):
                 if reset_mask is None:
                     raise ValueError(f"CurriculumManager term '{name}' requires a reset mask")

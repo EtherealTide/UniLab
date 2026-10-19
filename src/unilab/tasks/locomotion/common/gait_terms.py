@@ -27,11 +27,11 @@ import torch
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
 
-from .manager_terms import SensorTermBase, _command, _real
+from .manager_terms import SensorTermBase, require_command, require_real
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
@@ -69,7 +69,7 @@ def _command_gate(
     """mjlab command gate: planar norm plus yaw magnitude above the threshold."""
     if command_name is None:
         return None
-    command = _command(env, term, command_name)
+    command = require_command(env, term, command_name)
     command_tensor = _torch_state(command)
     total = torch.linalg.vector_norm(command_tensor[:, :2], dim=1) + torch.abs(command_tensor[:, 2])
     return total > command_threshold
@@ -98,7 +98,7 @@ def _feet_body_tensor_view(
     asset_cfg: SceneEntityCfg,
     body_names: tuple[str, ...],
 ) -> Any:
-    read_plan = getattr(env.scene, "_tensor_read_plan", None)
+    read_plan = getattr(env.scene, "read_plan", None)
     if read_plan is None:
         raise NotImplementedError(f"{term} requires the Manager packed foot-body read plan")
     entity = env.scene[asset_cfg.name]
@@ -117,7 +117,7 @@ class _FootContactTerm(SensorTermBase):
     def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
         self._groups = _sensor_groups(self.name, cfg.params.get("sensor_groups"))
-        self._contact_threshold = _real(
+        self._contact_threshold = require_real(
             self.name, "contact_threshold", cfg.params.get("contact_threshold", 0.0), minimum=0.0
         )
         flat = tuple(name for group in self._groups for name in group)
@@ -167,7 +167,7 @@ class _FootContactTerm(SensorTermBase):
         return getattr(self, "_body_names", ())
 
     def _contact_values(self, env: ManagerBasedRlEnv) -> torch.Tensor:
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         names = self.tensor_sensor_names
         if read_plan is None or not set(names).issubset(
             set(read_plan.sensor_names.get("robot", ()))
@@ -217,10 +217,10 @@ class feet_air_time(_FootContactTerm):
 
     def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
-        self._threshold_min = _real(
+        self._threshold_min = require_real(
             self.name, "threshold_min", cfg.params.get("threshold_min", 0.05), minimum=0.0
         )
-        self._threshold_max = _real(
+        self._threshold_max = require_real(
             self.name,
             "threshold_max",
             cfg.params.get("threshold_max", 0.5),
@@ -235,7 +235,7 @@ class feet_air_time(_FootContactTerm):
         self._command_name = _command_name_param(
             self.name, cfg.params.get("command_name"), required=False
         )
-        self._command_threshold = _real(
+        self._command_threshold = require_real(
             self.name, "command_threshold", cfg.params.get("command_threshold", 0.5), minimum=0.0
         )
         self._air_time = torch.zeros(
@@ -248,7 +248,7 @@ class feet_air_time(_FootContactTerm):
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
         contact = self._contact_feet(env)
-        step_dt = _real(self.name, "step_dt", env.step_dt, minimum=0.0, strict_minimum=True)
+        step_dt = require_real(self.name, "step_dt", env.step_dt, minimum=0.0, strict_minimum=True)
         self._air_time = torch.where(
             contact, torch.zeros_like(self._air_time), self._air_time + step_dt
         )
@@ -281,7 +281,7 @@ class feet_swing_height(_FootContactTerm):
 
     def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
-        self._target = _real(
+        self._target = require_real(
             self.name,
             "target_height",
             cfg.params.get("target_height"),
@@ -291,7 +291,7 @@ class feet_swing_height(_FootContactTerm):
         self._command_name = _command_name_param(
             self.name, cfg.params.get("command_name"), required=True
         )
-        self._command_threshold = _real(
+        self._command_threshold = require_real(
             self.name, "command_threshold", cfg.params.get("command_threshold"), minimum=0.0
         )
         asset_cfg = cfg.params.get("asset_cfg", _DEFAULT_ASSET_CFG)
@@ -355,7 +355,7 @@ class feet_slip(_FootContactTerm):
         self._command_name = _command_name_param(
             self.name, cfg.params.get("command_name"), required=True
         )
-        self._command_threshold = _real(
+        self._command_threshold = require_real(
             self.name, "command_threshold", cfg.params.get("command_threshold", 0.01), minimum=0.0
         )
         asset_cfg = cfg.params.get("asset_cfg", _DEFAULT_ASSET_CFG)
@@ -394,7 +394,7 @@ class feet_clearance(ManagerTermBase):
 
     def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
         super().__init__(env)
-        self._target_height = _real(
+        self._target_height = require_real(
             self.name,
             "target_height",
             cfg.params["target_height"],
@@ -404,7 +404,7 @@ class feet_clearance(ManagerTermBase):
             cfg.params.get("command_name"),
             required=False,
         )
-        self._command_threshold = _real(
+        self._command_threshold = require_real(
             self.name,
             "command_threshold",
             cfg.params.get("command_threshold", 0.01),
@@ -488,7 +488,7 @@ class angular_momentum_penalty(SensorTermBase):
         return self._read_tensor_values(env).square().sum(dim=1)
 
     def _read_tensor_values(self, env: ManagerBasedRlEnv) -> torch.Tensor:
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         names = self.tensor_sensor_names
         if read_plan is None or not set(names).issubset(
             set(read_plan.sensor_names.get("robot", ()))
@@ -572,7 +572,7 @@ class foot_air_time(_FootContactTerm):
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
         contact = self._contact_feet(env)
-        step_dt = _real(self.name, "step_dt", env.step_dt, minimum=0.0, strict_minimum=True)
+        step_dt = require_real(self.name, "step_dt", env.step_dt, minimum=0.0, strict_minimum=True)
         self._air_time = torch.where(
             contact, torch.zeros_like(self._air_time), self._air_time + step_dt
         )
@@ -612,7 +612,7 @@ class foot_contact_forces(_FootContactTerm):
         return forces.sign() * forces.abs().log1p()
 
     def _force_values(self, env: ManagerBasedRlEnv) -> torch.Tensor:
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         names = self.tensor_sensor_names
         if read_plan is None or not set(names).issubset(
             set(read_plan.sensor_names.get("robot", ()))

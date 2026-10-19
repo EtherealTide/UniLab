@@ -18,7 +18,7 @@ from unilab.managers.action_manager import ActionTerm, ActionTermCfg
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 def _real(value: Any, *, label: str) -> float:
@@ -312,7 +312,7 @@ class RelativeJointPositionAction(BaseAction):
     """Control joints via position targets relative to current positions."""
 
     def _joint_state(self):
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
         if read_plan is not None:
             return read_plan.joint_tensor_view(self._entity)
         return self._entity.joint_tensor_view(self._device)

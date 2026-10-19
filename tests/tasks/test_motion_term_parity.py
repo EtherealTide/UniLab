@@ -551,7 +551,7 @@ def test_joint_pos_limits_matches_reference_equation() -> None:
 
     scene = _Scene(
         robot=asset,
-        _tensor_read_plan=SimpleNamespace(
+        read_plan=SimpleNamespace(
             joint_tensor_view=lambda entity: SimpleNamespace(joint_pos=torch.from_numpy(joint_pos))
         ),
     )

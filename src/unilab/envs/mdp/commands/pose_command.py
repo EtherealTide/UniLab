@@ -18,7 +18,7 @@ from unilab.managers.command_manager import CommandTerm, CommandTermCfg
 from unilab.managers.rng import ManagerRng
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 def _real(value: object, *, label: str, minimum: float | None = None) -> float:

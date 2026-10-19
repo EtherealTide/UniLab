@@ -6,7 +6,7 @@ import os
 from os import PathLike
 from pathlib import Path
 
-_TEST_LOG_ROOT_ENV = "UNILAB_TEST_LOG_ROOT"
+TEST_LOG_ROOT_ENV = "UNILAB_TEST_LOG_ROOT"
 
 
 def get_entrypoint_log_root(
@@ -21,7 +21,7 @@ def get_entrypoint_log_root(
         return (
             configured_root if configured_root.is_absolute() else Path(root_dir) / configured_root
         )
-    test_log_root = os.environ.get(_TEST_LOG_ROOT_ENV)
+    test_log_root = os.environ.get(TEST_LOG_ROOT_ENV)
     if test_log_root:
         return Path(test_log_root) / algo_log_name
     return Path(root_dir) / "logs" / algo_log_name
@@ -61,7 +61,7 @@ def get_latest_checkpoint(run_dir: str | Path, *, suffix: str = ".pt") -> Path |
     return max(model_files, key=_iteration)
 
 
-def _normalize_load_run(load_run: str | int | PathLike[str]) -> str:
+def normalize_load_run(load_run: str | int | PathLike[str]) -> str:
     return str(load_run)
 
 
@@ -81,7 +81,7 @@ def resolve_checkpoint_path(
 ) -> tuple[Path | None, Path | None]:
     """Resolve a latest or explicit checkpoint path from a task log root."""
     base_dir = Path(base_log_dir)
-    selected_run = _normalize_load_run(load_run)
+    selected_run = normalize_load_run(load_run)
     if selected_run == "-1":
         run_dir = get_latest_run(base_dir)
         if run_dir is None:
@@ -121,7 +121,7 @@ def resolve_task_checkpoint_path(
     )
 
     run_dir: Path | None
-    selected_run = _normalize_load_run(load_run)
+    selected_run = normalize_load_run(load_run)
     if selected_run == "-1":
         run_dir = get_latest_run(task_log_root)
     else:

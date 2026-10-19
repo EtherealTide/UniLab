@@ -2604,7 +2604,7 @@ def test_play_interactive_respects_training_device_override():
 def test_play_interactive_parses_explicit_cli():
     mod = _play_interactive()
 
-    parsed = mod._parse_interactive_cli(
+    parsed = mod.parse_interactive_cli(
         ["--algo", "ppo", "--task", "go2_joystick_flat", "--sim", "mujoco"]
     )
 
@@ -2618,7 +2618,7 @@ def test_play_interactive_parses_explicit_cli():
 def test_play_interactive_parses_feature_algo_flags(algo: str):
     mod = _play_interactive()
 
-    parsed = mod._parse_interactive_cli(
+    parsed = mod.parse_interactive_cli(
         [f"--algo={algo}", "--task", "g1_walk_flat", "--sim", "mujoco"]
     )
 
@@ -2629,14 +2629,14 @@ def test_play_interactive_parses_feature_algo_flags(algo: str):
 def test_play_interactive_cli_respects_owner_action_mode_and_user_override():
     mod = _play_interactive()
 
-    default_parsed = mod._parse_interactive_cli(
+    default_parsed = mod.parse_interactive_cli(
         ["--algo", "ppo", "--task", "go2_joystick_flat", "--sim", "mujoco"]
     )
-    default_cfg = mod._compose_interactive_config(default_parsed.algo, default_parsed.overrides)
+    default_cfg = mod.compose_interactive_config(default_parsed.algo, default_parsed.overrides)
 
     assert default_cfg.interactive.action_mode == "zero"
 
-    parsed = mod._parse_interactive_cli(
+    parsed = mod.parse_interactive_cli(
         [
             "--algo",
             "ppo",
@@ -2647,7 +2647,7 @@ def test_play_interactive_cli_respects_owner_action_mode_and_user_override():
             "interactive.action_mode=random",
         ]
     )
-    cfg = mod._compose_interactive_config(parsed.algo, parsed.overrides)
+    cfg = mod.compose_interactive_config(parsed.algo, parsed.overrides)
 
     assert parsed.overrides == [
         "task=go2_joystick_flat/mujoco",
@@ -2660,7 +2660,7 @@ def test_play_interactive_rejects_unknown_algo_flag():
     mod = _play_interactive()
 
     with pytest.raises(SystemExit):
-        mod._parse_interactive_cli(
+        mod.parse_interactive_cli(
             ["--algo=unknown", "--task", "go2_joystick_flat", "--sim", "mujoco"]
         )
 
@@ -2668,9 +2668,9 @@ def test_play_interactive_rejects_unknown_algo_flag():
 def test_play_interactive_dynamic_compose_supports_algo_roots():
     mod = _play_interactive()
 
-    ppo_cfg = mod._compose_interactive_config("ppo", ["task=go2_joystick_flat/mujoco"])
-    appo_cfg = mod._compose_interactive_config("appo", ["task=g1_walk_flat/mujoco"])
-    sac_cfg = mod._compose_interactive_config("sac", ["task=g1_walk_flat/mujoco"])
+    ppo_cfg = mod.compose_interactive_config("ppo", ["task=go2_joystick_flat/mujoco"])
+    appo_cfg = mod.compose_interactive_config("appo", ["task=g1_walk_flat/mujoco"])
+    sac_cfg = mod.compose_interactive_config("sac", ["task=g1_walk_flat/mujoco"])
 
     assert ppo_cfg.algo.algo == "ppo"
     assert appo_cfg.algo.algo == "appo"

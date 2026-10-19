@@ -12,8 +12,8 @@ import torch
 from unisim.backend.base import BackendSensorView
 
 from unilab.managers import RewardManager, RewardTermCfg
-from unilab.managers._types import ManagerBasedRlEnv
 from unilab.managers.scene_entity_config import SceneEntityCfg
+from unilab.managers.types import ManagerBasedRlEnv
 from unilab.tasks.locomotion.common import gait_terms
 
 LEFT = ("left_contact_0", "left_contact_1")
@@ -45,7 +45,7 @@ class _Scene:
         self.refresh_tensor_read_plan()
 
     def refresh_tensor_read_plan(self) -> None:
-        self._tensor_read_plan = SimpleNamespace(
+        self.read_plan = SimpleNamespace(
             sensor_names={"robot": tuple(self.contacts)},
             sensor_tensor_views=lambda entity, names: SimpleNamespace(
                 values={
@@ -529,7 +529,7 @@ def test_common_gait_terms_fail_closed_without_packed_sensor_reads() -> None:
     env = _env(scene)
     angular = _term(gait_terms.angular_momentum_penalty, env, sensor_name="angmom")
     forces = _term(gait_terms.foot_contact_forces, env, sensor_groups=GROUPS)
-    scene._tensor_read_plan.sensor_names = {"robot": ("unrelated",)}
+    scene.read_plan.sensor_names = {"robot": ("unrelated",)}
 
     with pytest.raises(NotImplementedError, match="named sensors"):
         angular(env)

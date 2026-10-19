@@ -18,7 +18,7 @@ from unilab.managers import SceneEntityCfg
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 FIXTURE_ENV_NAME = "MjlabCartpoleBalanceFixture"

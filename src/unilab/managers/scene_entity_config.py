@@ -6,7 +6,7 @@
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
-from unilab.managers._types import ManagerEntity, ManagerScene
+from unilab.managers.types import ManagerEntity, ManagerScene
 
 
 class _FieldConfig(NamedTuple):

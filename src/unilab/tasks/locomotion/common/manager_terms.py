@@ -19,7 +19,7 @@ from unilab.managers.scene_entity_config import SceneEntityCfg
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv, ManagerSensorView
+    from unilab.managers.types import ManagerBasedRlEnv, ManagerSensorView
 
     class _GaitEnv(ManagerBasedRlEnv, Protocol):
         @property
@@ -30,7 +30,7 @@ _OFFSETS = (0.0, 0.5, 0.5, 0.0)
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
 
-def _real(
+def require_real(
     term: str,
     name: str,
     value: Any,
@@ -59,7 +59,7 @@ def _offsets(term: str, value: Any) -> torch.Tensor:
     if len(items) != 4:
         raise ValueError(f"{term} phase_offsets must contain 4 values, got {len(items)}")
     return torch.tensor(
-        [_real(term, f"phase_offsets[{index}]", item) for index, item in enumerate(items)],
+        [require_real(term, f"phase_offsets[{index}]", item) for index, item in enumerate(items)],
         dtype=torch.float32,
     )
 
@@ -77,7 +77,7 @@ def _names(term: str, value: Any) -> tuple[str, ...]:
     return names
 
 
-def _command(env: ManagerBasedRlEnv, term: str, command_name: str) -> torch.Tensor:
+def require_command(env: ManagerBasedRlEnv, term: str, command_name: str) -> torch.Tensor:
     if not isinstance(command_name, str) or not command_name:
         raise ValueError(f"{term} command_name must be a non-empty string")
     try:
@@ -127,7 +127,7 @@ class base_height_l2(ManagerTermBase):
 
     def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
         super().__init__(env)
-        self._target_height = _real(
+        self._target_height = require_real(
             self.name,
             "target_height",
             cfg.params["target_height"],
@@ -157,7 +157,7 @@ class base_height_l2(ManagerTermBase):
         asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     ) -> torch.Tensor:
         del target_height, asset_cfg
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         if read_plan is None:
             raise NotImplementedError(
                 f"{self.name} requires the Manager packed root-body read plan"
@@ -195,7 +195,7 @@ class joint_deviation_l1(ManagerTermBase):
         asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     ) -> torch.Tensor:
         del asset_cfg
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         if read_plan is None:
             raise NotImplementedError(
                 f"{self.name} requires the Manager packed joint-state read plan"
@@ -215,7 +215,7 @@ class stand_still_l1(joint_deviation_l1):
         self._command_name = cfg.params["command_name"]
         if not isinstance(self._command_name, str) or not self._command_name:
             raise ValueError(f"{self.name} command_name must be a non-empty string")
-        self._command_threshold = _real(
+        self._command_threshold = require_real(
             self.name,
             "command_threshold",
             cfg.params.get("command_threshold", 0.1),
@@ -230,7 +230,7 @@ class stand_still_l1(joint_deviation_l1):
         asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     ) -> torch.Tensor:
         del command_name, command_threshold, asset_cfg
-        command = _command(env, self.name, self._command_name)
+        command = require_command(env, self.name, self._command_name)
         if not isinstance(command, torch.Tensor):
             command = _torch_state(command)
         stopped = torch.linalg.vector_norm(command, dim=1) < self._command_threshold
@@ -247,19 +247,21 @@ class _GaitTerm(ManagerTermBase):
         unexpected = set(cfg.params) - self._allowed_params
         if unexpected:
             raise TypeError(f"{self.name} received unsupported parameters: {sorted(unexpected)}")
-        self._frequency = _real(
+        self._frequency = require_real(
             self.name, "frequency", cfg.params.get("frequency", 2.0), minimum=0.0
         )
         self._device = torch.device(getattr(env, "device", "cpu"))
         self._offsets = _offsets(self.name, cfg.params.get("phase_offsets", _OFFSETS)).to(
             device=self._device
         )
-        self._step_dt = _real(self.name, "step_dt", env.step_dt, minimum=0.0, strict_minimum=True)
+        self._step_dt = require_real(
+            self.name, "step_dt", env.step_dt, minimum=0.0, strict_minimum=True
+        )
         command_name = cfg.params.get("command_name")
         if command_name is not None and (not isinstance(command_name, str) or not command_name):
             raise ValueError(f"{self.name} command_name must be a non-empty string or None")
         self._command_name = command_name
-        self._command_threshold = _real(
+        self._command_threshold = require_real(
             self.name,
             "command_threshold",
             cfg.params.get("command_threshold", 0.0),
@@ -280,7 +282,9 @@ class _GaitTerm(ManagerTermBase):
     def _moving(self, env: _GaitEnv) -> torch.Tensor:
         if self._command_name is None:
             return torch.ones(env.num_envs, dtype=torch.bool, device=self._device)
-        command = torch.as_tensor(_command(env, self.name, self._command_name), device=self._device)
+        command = torch.as_tensor(
+            require_command(env, self.name, self._command_name), device=self._device
+        )
         return torch.linalg.vector_norm(command, dim=1) > self._command_threshold
 
     def _advance_to(self, env: _GaitEnv, counter: int) -> None:
@@ -329,7 +333,7 @@ class _FootSensorTerm(_GaitTerm):
         return self._sensor_names
 
     def _read(self) -> torch.Tensor:
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
         sensor_names = getattr(read_plan, "sensor_names", {}).get("robot", ())
         if read_plan is None or not set(self._sensor_names).issubset(set(sensor_names)):
             raise NotImplementedError(
@@ -351,10 +355,10 @@ class feet_phase_contact(_FootSensorTerm):
 
     def __init__(self, cfg: ManagerTermBaseCfg, env: _GaitEnv):
         super().__init__(cfg, env)
-        self._contact_threshold = _real(
+        self._contact_threshold = require_real(
             self.name, "contact_threshold", cfg.params.get("contact_threshold", 0.1), minimum=0.0
         )
-        self._stance_threshold = _real(
+        self._stance_threshold = require_real(
             self.name,
             "stance_threshold",
             cfg.params.get("stance_threshold", 0.6),
@@ -381,7 +385,7 @@ class feet_phase_contact(_FootSensorTerm):
         return self._sensor_names
 
     def _read_contact(self) -> torch.Tensor:
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
         sensor_names = getattr(read_plan, "sensor_names", {}).get("robot", ())
         if read_plan is None or not set(self._sensor_names).issubset(set(sensor_names)):
             raise NotImplementedError(
@@ -414,17 +418,17 @@ class feet_phase_swing_height(_FootSensorTerm):
 
     def __init__(self, cfg: ManagerTermBaseCfg, env: _GaitEnv):
         super().__init__(cfg, env)
-        self._target = _real(
+        self._target = require_real(
             self.name, "target_height", cfg.params.get("target_height", 0.1), minimum=0.0
         )
-        self._kernel = _real(
+        self._kernel = require_real(
             self.name,
             "kernel",
             cfg.params.get("kernel", 0.01),
             minimum=0.0,
             strict_minimum=True,
         )
-        self._swing_start = _real(
+        self._swing_start = require_real(
             self.name,
             "swing_start",
             cfg.params.get("swing_start", 0.6),
@@ -465,13 +469,13 @@ class feet_air_while_standing(ManagerTermBase):
         if not isinstance(command_name, str) or not command_name:
             raise ValueError(f"{self.name} command_name must be a non-empty string")
         self._command_name = command_name
-        self._command_threshold = _real(
+        self._command_threshold = require_real(
             self.name,
             "command_threshold",
             cfg.params.get("command_threshold", 0.1),
             minimum=0.0,
         )
-        self._contact_threshold = _real(
+        self._contact_threshold = require_real(
             self.name,
             "contact_threshold",
             cfg.params.get("contact_threshold", 0.1),
@@ -504,7 +508,7 @@ class feet_air_while_standing(ManagerTermBase):
         return self._sensor_names
 
     def _read_contact(self) -> torch.Tensor:
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
         sensor_names = getattr(read_plan, "sensor_names", {}).get("robot", ())
         if read_plan is None or not set(self._sensor_names).issubset(set(sensor_names)):
             raise NotImplementedError(
@@ -530,7 +534,7 @@ def _command_tensor(
     term: str,
     command_name: str,
 ) -> torch.Tensor:
-    return _command(env, term, command_name).to(dtype=torch.float32)
+    return require_command(env, term, command_name).to(dtype=torch.float32)
 
 
 def _torch_state(value: torch.Tensor, *, dtype: torch.dtype = torch.float32) -> torch.Tensor:

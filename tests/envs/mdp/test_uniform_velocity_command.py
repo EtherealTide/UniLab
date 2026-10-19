@@ -20,8 +20,8 @@ from unilab.envs.mdp.commands import (
     UniformVelocityCommandCfg as ExportedUniformVelocityCommandCfg,
 )
 from unilab.managers import CommandManager
-from unilab.managers._types import ManagerBasedRlEnv
 from unilab.managers.rng import ManagerRng
+from unilab.managers.types import ManagerBasedRlEnv
 
 
 class _Backend:
@@ -101,7 +101,7 @@ def _env(seed: int = 7) -> tuple[ManagerBasedRlEnv, _Backend]:
         {"robot": EntityCfg(root_body_name="base")},
         cast(SimBackend, backend),
     )
-    scene._tensor_read_plan = SimpleNamespace(
+    scene.read_plan = SimpleNamespace(
         sensor_names={"robot": ("pelvis_local_linvel", "torso_gyro")},
         body_tensor_view=lambda entity, names: SimpleNamespace(
             quat_w=torch.from_numpy(backend.body_quat[:, 0]).unsqueeze(1)

@@ -12,7 +12,7 @@ import torch
 from unisim.backend.base import BackendSensorView
 
 from unilab.managers import RewardTermCfg
-from unilab.managers._types import ManagerBasedRlEnv
+from unilab.managers.types import ManagerBasedRlEnv
 from unilab.tasks.locomotion.common import manager_terms, sensor_reward_terms
 
 
@@ -47,7 +47,7 @@ class _Scene:
         def sensor_tensor_views(entity, names):
             return SimpleNamespace(values={name: values[name] for name in names})
 
-        self._tensor_read_plan = SimpleNamespace(
+        self.read_plan = SimpleNamespace(
             device=device,
             sensor_names={"robot": tuple(self.values)},
             sensor_tensor_views=sensor_tensor_views,

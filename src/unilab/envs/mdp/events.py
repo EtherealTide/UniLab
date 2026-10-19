@@ -22,7 +22,7 @@ from unilab.managers.scene_entity_config import SceneEntityCfg
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
@@ -1726,7 +1726,7 @@ class ApplyBodyImpulse(ManagerTermBase):
                 self._torque_range[0], self._torque_range[1], count * num_bodies * 3
             ).reshape(count, num_bodies, 3)
             if self._body_point_offset is not None:
-                read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+                read_plan = getattr(self._env.scene, "read_plan", None)
                 if read_plan is None:
                     raise NotImplementedError(
                         "EventManager term 'apply_body_impulse' requires the packed "
@@ -2062,14 +2062,14 @@ def reset_root_state_uniform_fused(
         if velocity_range is not None
         else (asset_cfg.name, tuple(sorted(pose_range.items())), None)
     )
-    pose_bounds_tensor = getattr(env, "_tensor_reset_pose_bounds", None)
-    velocity_bounds_tensor = getattr(env, "_tensor_reset_velocity_bounds", None)
-    if pose_bounds_tensor is None or getattr(env, "_tensor_reset_bounds_key", None) != bounds_key:
+    pose_bounds_tensor = getattr(env, "tensor_reset_pose_bounds", None)
+    velocity_bounds_tensor = getattr(env, "tensor_reset_velocity_bounds", None)
+    if pose_bounds_tensor is None or getattr(env, "tensor_reset_bounds_key", None) != bounds_key:
         new_pose_bounds = _se3_bounds(pose_range).to(device=device)
         new_velocity_bounds = _se3_bounds(velocity_range).to(device=device)
-        env._tensor_reset_pose_bounds = new_pose_bounds
-        env._tensor_reset_velocity_bounds = new_velocity_bounds
-        env._tensor_reset_bounds_key = bounds_key
+        env.tensor_reset_pose_bounds = new_pose_bounds
+        env.tensor_reset_velocity_bounds = new_velocity_bounds
+        env.tensor_reset_bounds_key = bounds_key
         pose_bounds_tensor = new_pose_bounds
         velocity_bounds_tensor = new_velocity_bounds
     reset_unit = torch.rand(

@@ -14,10 +14,10 @@ from omegaconf import DictConfig, OmegaConf
 from unisim.backend.base import normalize_play_render_mode
 
 from unilab.utils.checkpoint import (
-    _TEST_LOG_ROOT_ENV,
-    _normalize_load_run,
+    TEST_LOG_ROOT_ENV,
     get_latest_checkpoint,
     get_latest_run,
+    normalize_load_run,
     resolve_task_checkpoint_path,
 )
 
@@ -144,7 +144,7 @@ def get_log_root(root_dir: str | Path, cfg: DictConfig) -> Path:
     if configured_root:
         log_root = Path(str(configured_root))
         return log_root if log_root.is_absolute() else Path(root_dir) / log_root
-    test_log_root = os.environ.get(_TEST_LOG_ROOT_ENV)
+    test_log_root = os.environ.get(TEST_LOG_ROOT_ENV)
     if test_log_root:
         return Path(test_log_root) / str(OmegaConf.select(cfg, "algo.algo_log_name"))
     return Path(root_dir) / "logs" / str(OmegaConf.select(cfg, "algo.algo_log_name"))
@@ -162,7 +162,7 @@ def parse_checkpoint_path(
     """Resolve a checkpoint path from Hydra config and repository root."""
     selected_task = task_name or str(OmegaConf.select(cfg, "training.task_name"))
     selected_run = (
-        _normalize_load_run(load_run)
+        normalize_load_run(load_run)
         if load_run is not None
         else str(OmegaConf.select(cfg, "algo.load_run", default="-1"))
     )

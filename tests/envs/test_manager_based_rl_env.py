@@ -792,7 +792,7 @@ class _TensorBodyAction(ActionTerm):
         )
 
     def apply_actions(self) -> None:
-        state = self._env.scene._tensor_read_plan
+        state = self._env.scene.read_plan
         if state is None:
             self._processed.zero_()
         else:
@@ -830,7 +830,7 @@ class _Command(CommandTerm):
         samples = rng.uniform(0.0, 1.0, self._command.shape, dtype=torch.float32)
         self._command.copy_(torch.where(reset_mask[:, None], samples, self._command))
 
-    def _update_command_reset(self, reset_mask: torch.Tensor) -> None:
+    def update_command_reset(self, reset_mask: torch.Tensor) -> None:
         self.reset(reset_mask)
 
     def post_compute_reset(self) -> None:
@@ -859,7 +859,7 @@ class _CommandBodyObservation:
 
     def __call__(self, env: _TestEnv, **params: Any) -> torch.Tensor:
         del params
-        plan = env.scene._tensor_read_plan
+        plan = env.scene.read_plan
         if plan is None:
             return torch.zeros((env.num_envs, 1), dtype=torch.float32)
         view = plan.body_tensor_view(self.entity_name, self.tensor_body_names)
@@ -886,7 +886,7 @@ class _StateWritingCommand(_Command):
         )
         return {}
 
-    def _update_command_reset(self, reset_mask: torch.Tensor) -> None:
+    def update_command_reset(self, reset_mask: torch.Tensor) -> None:
         self._command.copy_(
             torch.where(
                 reset_mask.reshape(-1, 1),
@@ -922,7 +922,7 @@ class _TensorStateWritingCommand(_Command):
         )
         return {}
 
-    def _update_command_reset(self, reset_mask: torch.Tensor) -> None:
+    def update_command_reset(self, reset_mask: torch.Tensor) -> None:
         self._command.copy_(
             torch.where(
                 reset_mask.reshape(-1, 1),
@@ -993,7 +993,7 @@ class _AliasedSensorCommand(CommandTerm):
         return None
 
     def _metric_velocities(self) -> tuple[torch.Tensor, torch.Tensor]:
-        read_plan = self._env.scene._tensor_read_plan
+        read_plan = self._env.scene.read_plan
         packed = read_plan.sensor_names.get("robot", ()) if read_plan else ()
         if len(packed) == 2:
             entity = self._env.scene["robot"]
@@ -1034,7 +1034,7 @@ class _NamedSensorTensorObservation:
 
     def __call__(self, env: _TestEnv) -> torch.Tensor:
         assert env is self._env
-        plan = env.scene._tensor_read_plan
+        plan = env.scene.read_plan
         if plan is None:
             # Manager construction probes the term shape before the cold-path
             # read plan exists. The cold probe mirrors one packed sensor row;
@@ -1153,7 +1153,7 @@ def _curriculum_mask(env: _TestEnv, reset_mask: torch.Tensor) -> float:
     return float(reset_mask.sum().item())
 
 
-setattr(_curriculum, "__call_reset__", _curriculum_mask)
+setattr(_curriculum, "reset_scoped", _curriculum_mask)
 
 
 def _event(env: _TestEnv, env_ids: np.ndarray | None) -> None:
@@ -2559,7 +2559,7 @@ def test_scene_read_plan_refreshes_once_per_phase_and_after_mutations() -> None:
     backend = _ScenePlanBackend(2)
     env = _TestEnv(cfg, cast(SimBackend, backend), 2)
     try:
-        plan = env.scene._tensor_read_plan
+        plan = env.scene.read_plan
         assert plan is not None
 
         obs, _ = env.reset()
@@ -2584,13 +2584,13 @@ def test_scene_read_plan_refreshes_once_per_phase_and_after_mutations() -> None:
         assert state.obs["obs"].shape == (2, 2)
 
         plan.close()
-        env.scene._tensor_read_plan = None
+        env.scene.read_plan = None
         state = env.step(torch.zeros((2, 1), dtype=torch.float32))
         assert state.obs["obs"].shape == (2, 2)
     finally:
-        if env.scene._tensor_read_plan is not None:
-            env.scene._tensor_read_plan.close()
-            env.scene._tensor_read_plan = None
+        if env.scene.read_plan is not None:
+            env.scene.read_plan.close()
+            env.scene.read_plan = None
         env.close()
 
 
@@ -2624,7 +2624,7 @@ def test_scene_read_plan_compiles_named_sensor_observation_requests() -> None:
     backend.sensors["track_pos_w_ball"].add_(5.0)
     env = _TestEnv(cfg, cast(SimBackend, backend), 2)
     try:
-        plan = env.scene._tensor_read_plan
+        plan = env.scene.read_plan
         assert plan is not None
         assert plan.host_plan is None
         assert "track_pos_w_ball" in plan.sensor_names["robot"]
@@ -2637,9 +2637,9 @@ def test_scene_read_plan_compiles_named_sensor_observation_requests() -> None:
         )
         assert backend.selected_reads == 0
     finally:
-        if env.scene._tensor_read_plan is not None:
-            env.scene._tensor_read_plan.close()
-            env.scene._tensor_read_plan = None
+        if env.scene.read_plan is not None:
+            env.scene.read_plan.close()
+            env.scene.read_plan = None
         env.close()
 
 
@@ -2674,7 +2674,7 @@ def test_generic_root_and_joint_terms_compile_packed_views() -> None:
     backend = _ScenePlanBackend(2)
     env = _TestEnv(cfg, cast(SimBackend, backend), 2)
     try:
-        plan = env.scene._tensor_read_plan
+        plan = env.scene.read_plan
         assert plan is not None
         assert plan.body_names["robot"] == ("base",)
         assert "robot" in plan.entities
@@ -2684,9 +2684,9 @@ def test_generic_root_and_joint_terms_compile_packed_views() -> None:
         joints = plan.joint_tensor_view("robot")
         assert joints.joint_pos.shape == (2, 1)
     finally:
-        if env.scene._tensor_read_plan is not None:
-            env.scene._tensor_read_plan.close()
-            env.scene._tensor_read_plan = None
+        if env.scene.read_plan is not None:
+            env.scene.read_plan.close()
+            env.scene.read_plan = None
         env.close()
 
 
@@ -2737,17 +2737,17 @@ def test_device_resident_generic_packed_terms_keep_carriers_on_device() -> None:
     env = _TestEnv(cfg, cast(SimBackend, _DeviceResidentScenePlanBackend(2)), 2)
     try:
         assert env.device.type == "cuda"
-        assert env.scene._tensor_read_plan is not None
-        assert env.scene._tensor_read_plan.device == env.device
+        assert env.scene.read_plan is not None
+        assert env.scene.read_plan.device == env.device
         state = env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
         assert state.obs["obs"].device == env.device
         assert state.obs["critic"].device == env.device
         assert state.reward.device == env.device
         assert state.terminated.device == env.device
     finally:
-        if env.scene._tensor_read_plan is not None:
-            env.scene._tensor_read_plan.close()
-            env.scene._tensor_read_plan = None
+        if env.scene.read_plan is not None:
+            env.scene.read_plan.close()
+            env.scene.read_plan = None
         env.close()
 
 
@@ -2776,7 +2776,7 @@ def test_scene_read_plan_compiles_class_observation_body_requests() -> None:
     backend = _ScenePlanBackend(2)
     env = _TestEnv(cfg, cast(SimBackend, backend), 2)
     try:
-        plan = env.scene._tensor_read_plan
+        plan = env.scene.read_plan
         assert plan is not None
         assert plan.host_plan is None
         assert plan.body_names["robot"] == ("platform", "ball")
@@ -2790,9 +2790,9 @@ def test_scene_read_plan_compiles_class_observation_body_requests() -> None:
         assert term.tensor_body_names == ("platform", "ball")
         assert obs["obs"].shape == (2, 1)
     finally:
-        if env.scene._tensor_read_plan is not None:
-            env.scene._tensor_read_plan.close()
-            env.scene._tensor_read_plan = None
+        if env.scene.read_plan is not None:
+            env.scene.read_plan.close()
+            env.scene.read_plan = None
         env.close()
 
 
@@ -2821,7 +2821,7 @@ def test_scene_read_plan_compiles_command_body_requests() -> None:
     backend = _ScenePlanBackend(2)
     env = _TestEnv(cfg, cast(SimBackend, backend), 2)
     try:
-        plan = env.scene._tensor_read_plan
+        plan = env.scene.read_plan
         assert plan is not None
         assert plan.host_plan is None
         assert plan.body_names["robot"] == ("platform", "ball")
@@ -2833,9 +2833,9 @@ def test_scene_read_plan_compiles_command_body_requests() -> None:
         view = plan.body_tensor_view("robot", command.tensor_body_names)
         assert view.pos_w.shape == (2, 2, 3)
     finally:
-        if env.scene._tensor_read_plan is not None:
-            env.scene._tensor_read_plan.close()
-            env.scene._tensor_read_plan = None
+        if env.scene.read_plan is not None:
+            env.scene.read_plan.close()
+            env.scene.read_plan = None
         env.close()
 
 
@@ -2897,7 +2897,7 @@ def test_scene_read_plan_pairs_reset_with_selected_packed_transfer() -> None:
     backend = _ScenePlanBackend(2)
     env = _TestEnv(cfg, cast(SimBackend, backend), 2)
     try:
-        plan = env.scene._tensor_read_plan
+        plan = env.scene.read_plan
         assert plan is not None
         assert plan.host_plan is None
 
@@ -2925,9 +2925,9 @@ def test_scene_read_plan_pairs_reset_with_selected_packed_transfer() -> None:
         assert backend.full_reads == 0
         assert backend.selected_reads == 0
     finally:
-        if env.scene._tensor_read_plan is not None:
-            env.scene._tensor_read_plan.close()
-            env.scene._tensor_read_plan = None
+        if env.scene.read_plan is not None:
+            env.scene.read_plan.close()
+            env.scene.read_plan = None
         env.close()
 
 
@@ -3021,9 +3021,9 @@ def test_reset_randomization_commits_through_packed_boundary() -> None:
         assert replay is not None
         np.testing.assert_allclose(replay.body_mass.numpy(), [[15.0]], rtol=1e-6)
     finally:
-        if env.scene._tensor_read_plan is not None:
-            env.scene._tensor_read_plan.close()
-            env.scene._tensor_read_plan = None
+        if env.scene.read_plan is not None:
+            env.scene.read_plan.close()
+            env.scene.read_plan = None
         env.close()
 
 
@@ -3055,7 +3055,7 @@ def test_device_resident_reset_dispatches_selected_tensor_commit() -> None:
     backend = _DeviceResidentScenePlanBackend(2)
     env = _TestEnv(cfg, cast(SimBackend, backend), 2)
     try:
-        plan = env.scene._tensor_read_plan
+        plan = env.scene.read_plan
         assert plan is not None
         assert plan.host_plan is None
 
@@ -3099,9 +3099,9 @@ def test_device_resident_reset_dispatches_selected_tensor_commit() -> None:
         assert backend.set_state_calls == []
         assert backend.reset_calls == []
     finally:
-        if env.scene._tensor_read_plan is not None:
-            env.scene._tensor_read_plan.close()
-            env.scene._tensor_read_plan = None
+        if env.scene.read_plan is not None:
+            env.scene.read_plan.close()
+            env.scene.read_plan = None
         env.close()
 
 
@@ -3186,7 +3186,7 @@ def test_device_resident_tensor_root_event_commits_selected_rows_once() -> None:
     backend = _TensorRootBackend(2)
     env = _TestEnv(cfg, cast(SimBackend, backend), 2)
     try:
-        assert env.scene._tensor_read_plan is not None
+        assert env.scene.read_plan is not None
         env.reset()
         assert len(backend.tensor_reset_calls) == 1
         committed_rows, qpos, qvel = backend.tensor_reset_calls[0]
@@ -3205,9 +3205,9 @@ def test_device_resident_tensor_root_event_commits_selected_rows_once() -> None:
             torch.tensor([[0.5, 1.0, 0.0, 0.0, 0.0, 0.25]] * 2, device=env.device),
         )
     finally:
-        if env.scene._tensor_read_plan is not None:
-            env.scene._tensor_read_plan.close()
-            env.scene._tensor_read_plan = None
+        if env.scene.read_plan is not None:
+            env.scene.read_plan.close()
+            env.scene.read_plan = None
         env.close()
 
 
@@ -3271,7 +3271,7 @@ def test_device_resident_tensor_joint_event_commits_selected_columns_once() -> N
     backend = _TensorJointBackend(2)
     env = _TestEnv(cfg, cast(SimBackend, backend), 2)
     try:
-        assert env.scene._tensor_read_plan is not None
+        assert env.scene.read_plan is not None
         env.reset()
         assert len(backend.tensor_reset_calls) == 1
         committed_rows, qpos, qvel = backend.tensor_reset_calls[0]
@@ -3290,9 +3290,9 @@ def test_device_resident_tensor_joint_event_commits_selected_columns_once() -> N
             torch.tensor([[0.0, 0.0, 0.5, 1.0, 0.0, 0.0, 0.0]] * 2, device=env.device),
         )
     finally:
-        if env.scene._tensor_read_plan is not None:
-            env.scene._tensor_read_plan.close()
-            env.scene._tensor_read_plan = None
+        if env.scene.read_plan is not None:
+            env.scene.read_plan.close()
+            env.scene.read_plan = None
         env.close()
 
 
@@ -3350,7 +3350,7 @@ def test_device_resident_tensor_command_reset_commits_selected_rows_once() -> No
     backend = _TensorCommandBackend(2)
     env = _TestEnv(cfg, cast(SimBackend, backend), 2)
     try:
-        assert env.scene._tensor_read_plan is not None
+        assert env.scene.read_plan is not None
         env.reset()
         assert len(backend.tensor_reset_calls) == 1
         committed_rows, qpos, qvel = backend.tensor_reset_calls[0]
@@ -3366,9 +3366,9 @@ def test_device_resident_tensor_command_reset_commits_selected_rows_once() -> No
         command = env.command_manager.get_command("target")
         torch.testing.assert_close(command, torch.full((2, 1), 0.75, device=env.device))
     finally:
-        if env.scene._tensor_read_plan is not None:
-            env.scene._tensor_read_plan.close()
-            env.scene._tensor_read_plan = None
+        if env.scene.read_plan is not None:
+            env.scene.read_plan.close()
+            env.scene.read_plan = None
         env.close()
 
 

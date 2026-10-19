@@ -415,7 +415,7 @@ def _bind_compiled_motion_post_compute() -> _MotionPostComputeFn:
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 SamplingMode = Literal["start", "clip_start", "uniform", "adaptive", "mixed"]
@@ -683,7 +683,7 @@ class MotionCommand(CommandTerm):
             return
         self._bind_read_phase = True
         self._refresh_motion_torch()
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
         if read_plan is not None:
             read_plan.refresh()
             self._refresh_robot_state(force=True)
@@ -742,7 +742,7 @@ class MotionCommand(CommandTerm):
         step = self._env.common_step_counter
         if not force and self._robot_cache_step == step:
             return
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
         if read_plan is None or not read_plan.ready:
             # Manager term construction probes command carriers before the scene
             # read plan exists. Before `bind_read_phase`, immutable defaults are
@@ -800,14 +800,14 @@ class MotionCommand(CommandTerm):
 
     @property
     def robot_joint_pos(self) -> torch.Tensor:
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
         if read_plan is not None and read_plan.ready:
             self._robot_joint_pos = read_plan.joint_tensor_view(self.robot).joint_pos
         return self._robot_joint_pos
 
     @property
     def robot_joint_vel(self) -> torch.Tensor:
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
         if read_plan is not None and read_plan.ready:
             self._robot_joint_vel = read_plan.joint_tensor_view(self.robot).joint_vel
         return self._robot_joint_vel
@@ -1053,7 +1053,7 @@ class MotionCommand(CommandTerm):
             time.perf_counter() - refresh_started
         ) * 1000.0
 
-    def _update_command_reset(self, reset_mask: torch.Tensor) -> None:
+    def update_command_reset(self, reset_mask: torch.Tensor) -> None:
         """Consume the full-width reset mask without row comparison."""
         timing = self.last_step_timing_ms
         ingested = self._tensor_resample_ingested_mask
@@ -1078,7 +1078,7 @@ class MotionCommand(CommandTerm):
         )
 
     def post_compute(self) -> None:
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
         view_started = time.perf_counter()
         if read_plan is None or not read_plan.ready:
             if not self._bind_read_phase:
@@ -1641,7 +1641,7 @@ def joint_pos_limits(
 ) -> torch.Tensor:
     """Penalize selected joint-limit violations through the packed joint read."""
     asset = cast("Entity", env.scene[asset_cfg.name])
-    read_plan = getattr(env.scene, "_tensor_read_plan", None)
+    read_plan = getattr(env.scene, "read_plan", None)
     if read_plan is None:
         raise NotImplementedError(
             "Motion tracking term 'joint_pos_limits' requires the Manager packed "
@@ -1793,7 +1793,7 @@ class MotionAnchorPositionObservation(MotionAnchorObservation):
                 f"Motion anchor position observation was bound to {self._command_name!r}, "
                 f"received {command_name!r}"
             )
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         if read_plan is None:
             return self._cold_observation(_command(env, self._command_name))
         view = read_plan.body_tensor_view(self._entity_name, self._body_names)
@@ -1815,7 +1815,7 @@ class MotionAnchorOrientationObservation(MotionAnchorObservation):
                 f"Motion anchor orientation observation was bound to {self._command_name!r}, "
                 f"received {command_name!r}"
             )
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         if read_plan is None:
             return self._cold_observation(_command(env, self._command_name))
         view = read_plan.body_tensor_view(self._entity_name, self._body_names)

@@ -40,7 +40,7 @@ from unilab.tasks.locomotion.common.manager_terms import SensorTermBase
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
     class _RewardTermCfgView(Protocol):
         weight: float
@@ -153,7 +153,7 @@ class _SensorTerm(SensorTermBase):
         shape: tuple[int, ...],
     ) -> torch.Tensor:
         view, sensor_names = binding
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         owner_sensors = set(getattr(read_plan, "sensor_names", {}).get("robot", ()))
         if read_plan is None or not set(sensor_names).issubset(owner_sensors):
             raise NotImplementedError(
@@ -703,7 +703,7 @@ class g1_base_height_below_minimum(ManagerTermBase):
 
     def __call__(self, env: _G1Env, **params: Any) -> torch.Tensor:
         del params
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         if read_plan is None:
             raise NotImplementedError(
                 f"Manager term '{self.name}' requires the packed root-body read plan"
@@ -811,7 +811,7 @@ class weighted_pose(ManagerTermBase):
         asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     ) -> torch.Tensor:
         del pose_weights, asset_cfg
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         if read_plan is None:
             raise NotImplementedError(
                 f"{self.name} requires the Manager packed joint-state read plan"
@@ -1016,7 +1016,7 @@ class G1PenaltyCurriculum(ManagerTermBase):
         """Mask boundary for the global curriculum state."""
         del reset_mask
 
-    def __call_reset__(
+    def reset_scoped(
         self,
         env: _G1Env,
         reset_mask: torch.Tensor,
@@ -1189,7 +1189,7 @@ class G1WalkRewardPack(ManagerTermBase):
         )
 
     def _read_sensors(self, env: _G1Env) -> dict[str, torch.Tensor]:
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         if read_plan is None or read_plan.device.type != self._device.type:
             raise NotImplementedError(
                 "G1WalkRewardPack requires the declared tensor sensor read plan"
@@ -1218,7 +1218,7 @@ class G1WalkRewardPack(ManagerTermBase):
         for name in _FOOT_POS_SENSORS[1:]:
             foot_pos = torch.cat((foot_pos, values[name]), dim=1)
         action_manager = cast(Any, self._env.action_manager)
-        joint_state = getattr(env.scene, "_tensor_read_plan", None)
+        joint_state = getattr(env.scene, "read_plan", None)
         if joint_state is None:
             raise NotImplementedError("G1WalkRewardPack requires the tensor joint read plan")
         joint_pos = joint_state.joint_tensor_view(self._entity).joint_pos
@@ -1331,7 +1331,7 @@ class G1WalkTerminationPack(ManagerTermBase):
         del reset_mask
 
     def __call__(self, env: _G1Env) -> torch.Tensor:
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         if read_plan is None or read_plan.device.type != self._device.type:
             raise NotImplementedError(
                 "G1WalkTerminationPack requires the declared tensor sensor/body read plan"

@@ -12,7 +12,7 @@ import torch
 from unilab.base.entity import EntityTensorBodyStateView
 from unilab.base.rotation import np_matrix_first_two_cols_from_quat
 from unilab.managers import ManagerTermBaseCfg
-from unilab.managers._types import ManagerBasedRlEnv
+from unilab.managers.types import ManagerBasedRlEnv
 from unilab.tasks.motion_tracking.common import manager_terms as mt
 from unilab.tasks.motion_tracking.common.manager_terms import MotionCommand
 from unilab.tasks.motion_tracking.common.tensor_rotation import quat_to_rot6
@@ -62,7 +62,7 @@ def _env(command: Any, view: EntityTensorBodyStateView) -> Any:
         pass
 
     scene = _Scene()
-    scene._tensor_read_plan = SimpleNamespace(
+    scene.read_plan = SimpleNamespace(
         body_tensor_view=lambda *_: view,
         sensor_tensor_views=lambda *_: SimpleNamespace(
             values={
@@ -156,7 +156,7 @@ def test_anchor_position_uses_reference_and_aggregate_body_view() -> None:
     body_pos_w, _ = _reference_state()
     command = _command(body_pos_w=body_pos_w.copy(), body_quat_w=np.zeros((2, 2, 4)))
     env = _env(command, _view())
-    view = env.scene._tensor_read_plan.body_tensor_view(None, None)
+    view = env.scene.read_plan.body_tensor_view(None, None)
     term = mt.MotionAnchorPositionObservation(
         _cfg(mt.MotionAnchorPositionObservation), cast(ManagerBasedRlEnv, env)
     )
@@ -176,7 +176,7 @@ def test_anchor_orientation_uses_reference_and_aggregate_body_view() -> None:
     _, body_quat_w = _reference_state()
     command = _command(body_pos_w=np.zeros((2, 2, 3)), body_quat_w=body_quat_w.copy())
     env = _env(command, _view())
-    view = env.scene._tensor_read_plan.body_tensor_view(None, None)
+    view = env.scene.read_plan.body_tensor_view(None, None)
     term = mt.MotionAnchorOrientationObservation(_cfg(mt.MotionAnchorOrientationObservation), env)
 
     value = term(cast(ManagerBasedRlEnv, env), command_name="motion")
@@ -198,7 +198,7 @@ def test_anchor_terms_return_default_shape_probe_without_read_plan() -> None:
         body_quat_w=np.zeros((2, 2, 4), dtype=np.float32),
     )
     env = _env(command, _view())
-    env.scene._tensor_read_plan = None
+    env.scene.read_plan = None
     position = mt.MotionAnchorPositionObservation(_cfg(mt.MotionAnchorPositionObservation), env)
     orientation = mt.MotionAnchorOrientationObservation(
         _cfg(mt.MotionAnchorOrientationObservation), env

@@ -30,7 +30,7 @@ def _fake_scene(sensor_data: dict[str, np.ndarray]) -> Any:
         def __init__(self) -> None:
             super().__init__()
             self["robot"] = SimpleNamespace()
-            self._tensor_read_plan = None
+            self.read_plan = None
 
         def bind_sensor_data(self, names):
             arrays = [sensor_data[name] for name in names]
@@ -50,7 +50,7 @@ def _fake_scene(sensor_data: dict[str, np.ndarray]) -> Any:
             def sensor_tensor_views(entity, names):
                 return SimpleNamespace(values={name: values[name] for name in names})
 
-            self._tensor_read_plan = SimpleNamespace(
+            self.read_plan = SimpleNamespace(
                 device=device,
                 sensor_names={"robot": tuple(sensor_data)},
                 sensor_tensor_views=sensor_tensor_views,
