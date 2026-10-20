@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 from prettytable import PrettyTable
 
+from unilab.base.reset_selectors import resolve_reset_env_ids
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
 
 if TYPE_CHECKING:
@@ -112,14 +113,17 @@ class RewardManager(ManagerBase):
 
     # Methods.
 
-    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        """Clear stateful reward terms through a fixed-width bool mask."""
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
+        """Clear stateful reward terms for the selected environment rows."""
+        ids = resolve_reset_env_ids(
+            env_ids, num_envs=self.num_envs, device=self._device, owner="RewardManager.reset"
+        )
         for term_cfg in self._class_term_cfgs:
             if not callable(getattr(term_cfg.func, "reset", None)):
                 raise NotImplementedError(
-                    "RewardManager stateful term does not define the mask-preserving reset boundary"
+                    "RewardManager stateful term does not define the reset boundary"
                 )
-            term_cfg.func.reset(reset_mask)
+            term_cfg.func.reset(ids)
         return {}
 
     def compute(self, dt: float) -> torch.Tensor:

@@ -79,7 +79,7 @@ class TorchEnv(ABEnv):
     """Backend-agnostic Torch environment lifecycle.
 
     Concrete owners implement action transformation, tensor state update, and
-    fixed-width mask reset. The base deliberately rejects NumPy input and never
+    selected-row (``env_ids``) reset. The base deliberately rejects NumPy input and never
     sanitizes non-finite tensors: invalid actions, controls, observations, and
     rewards fail closed.
     """
@@ -225,9 +225,14 @@ class TorchEnv(ABEnv):
         return torch.zeros((self._num_envs,), dtype=torch.int64, device=self._device)
 
     def reset(
-        self, reset_mask: torch.Tensor | None = None
+        self, env_ids: torch.Tensor | None = None
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
-        """Reset the true rows of a full-batch mask; ``None`` resets all rows."""
+        """Reset the selected environment rows; ``None`` resets all rows.
+
+        The public selector follows the IsaacLab/mjlab ``env_ids`` row-index
+        form. A fixed-width bool mask is the deprecated form: it is accepted
+        for one release with a ``DeprecationWarning`` (removed in v1.6).
+        """
         raise NotImplementedError(f"{type(self).__name__} must define a tensor reset lifecycle")
 
     def step(self, actions: torch.Tensor) -> TorchEnvState:
@@ -486,10 +491,12 @@ class TorchEnv(ABEnv):
         return self._truncated_scratch
 
     def _reset_done_envs(self) -> None:
-        """Run the fixed-shape mask-driven autoreset lifecycle.
+        """Run the selected-row autoreset lifecycle.
 
-        Eager execution retains the semantic no-done gate; backends and managers
-        own mask semantics and no reset env-id row carrier is materialized.
+        Eager execution retains the semantic no-done gate. The public reset
+        contract speaks ``env_ids``; this boundary materializes the done rows
+        once, and the concrete env owns the ids→mask conversion at the backend
+        transaction edge (backend inputs stay fixed-width masks).
         """
         assert self._state is not None
         reset_total_started = time.perf_counter()
@@ -515,7 +522,9 @@ class TorchEnv(ABEnv):
         self._autoreset_reset_active = True
         self._autoreset_scattered_reset_obs = False
         try:
-            new_obs, reset_info = self.reset(done)
+            new_obs, reset_info = self.reset(
+                torch.nonzero(done, as_tuple=False).flatten(),
+            )
         finally:
             self._autoreset_reset_active = False
         detail_timing["reset_done_reset_call_ms"] = (time.perf_counter() - reset_started) * 1000.0

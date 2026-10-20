@@ -719,8 +719,7 @@ def test_g1_walk_newton_mask_reset_preserves_rows_and_rng() -> None:
 
         rows = torch.tensor([1, 3], dtype=torch.int64, device=device)
         keep = torch.tensor([0, 2], dtype=torch.int64, device=device)
-        reset_mask = torch.tensor([False, True, False, True], dtype=torch.bool, device=device)
-        reset_obs, _ = env.reset(reset_mask=reset_mask)
+        reset_obs, _ = env.reset(env_ids=rows)
 
         refreshed = env.backend.get_state_views(("qpos", "qvel"), device=device)
         # The public reset event publishes default-derived rows; it is not a
@@ -745,7 +744,7 @@ def test_g1_walk_newton_mask_reset_preserves_rows_and_rng() -> None:
         )
 
         env.rng.set_state(rng_state)
-        reference_obs, _ = env.reset(reset_mask=reset_mask)
+        reference_obs, _ = env.reset(env_ids=rows)
         reference_command = env.command_manager.get_command("twist")
         torch.testing.assert_close(
             reference_command[rows],
@@ -799,7 +798,9 @@ def test_g1_walk_mask_reset_preserves_phase_and_action_observation() -> None:
         torch.testing.assert_close(action_before, torch.full_like(action_before, 0.25))
 
         reset_mask = torch.tensor([False, True, False, True], dtype=torch.bool, device=env.device)
-        reset_obs, _reset_info = env.reset(reset_mask=reset_mask)
+        reset_obs, _reset_info = env.reset(
+            env_ids=torch.nonzero(reset_mask, as_tuple=False).flatten()
+        )
         reset_action = reset_obs["obs"][:, 64:93]
         reset_phase = reset_obs["obs"][:, 96:98]
         keep = ~reset_mask

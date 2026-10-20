@@ -85,9 +85,7 @@ def test_mjlab_fixture_real_mujoco_manager_runs_packed_reset_lifecycle() -> None
         state = env.init_state()
         assert all(torch.isfinite(values).all() for values in state.obs.values())
         assert state.obs["obs"].shape[0] == 8
-        reset_mask = torch.zeros(8, dtype=torch.bool, device=env.device)
-        reset_mask[1] = True
-        obs, _ = env.reset(reset_mask)
+        obs, _ = env.reset(torch.tensor([1], dtype=torch.int64, device=env.device))
         assert obs["obs"].shape[0] == 8
     finally:
         env.close()

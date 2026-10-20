@@ -191,7 +191,7 @@ def test_resampling_is_seeded_and_partial_reset_is_local() -> None:
 
     before_command = left.get_command("twist").clone()
     before_counter = left.get_term("twist").command_counter.clone()
-    left.reset(torch.tensor([False, True, False, True], dtype=torch.bool, device=left_env.device))
+    left.reset(torch.tensor([1, 3], dtype=torch.int64, device=left_env.device))
     np.testing.assert_array_equal(left.get_command("twist")[[0, 2]], before_command[[0, 2]])
     np.testing.assert_array_equal(
         left.get_term("twist").command_counter[[0, 2]], before_counter[[0, 2]]

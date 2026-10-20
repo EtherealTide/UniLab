@@ -169,9 +169,9 @@ class _NamedSensorObservation(ManagerTermBase):
     def tensor_sensor_names(self) -> tuple[str, ...]:
         return self._tensor_sensor_names
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        """Mask boundary for stateless sensor observations."""
-        del reset_mask
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        """Row boundary for stateless sensor observations."""
+        del env_ids
 
 
 class builtin_sensor(_NamedSensorObservation):

@@ -15,7 +15,7 @@ Contract summary (tensor-native, autoresetting vectorized env):
 - ``obs_groups_spec`` maps observation group name -> dim, e.g. ``{"obs": 48}``
   or ``{"obs": 48, "critic": 101}``. ``"obs"`` is the actor group;
   ``"critic"`` is the optional privileged critic group.
-- ``reset(env_indices)`` accepts a one-dimensional Torch integer tensor on the
+- ``reset(env_ids)`` accepts a one-dimensional Torch integer tensor on the
   environment device (or ``None``) and returns selected-row observations.
   ``init_state()`` performs cold-path initialization and returns the first
   state; ``state`` is ``None`` before it is called.
@@ -195,7 +195,7 @@ class EnvProtocol(Protocol):
     def step(self, actions: torch.Tensor) -> EnvStateProtocol: ...
 
     def reset(
-        self, env_indices: torch.Tensor | None
+        self, env_ids: torch.Tensor | None
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]: ...
 
     def set_nan_guard(self, guard: Any) -> None: ...

@@ -453,7 +453,7 @@ def test_flashsac_g1_motion_mjwarp_anchor_observations_roll_out() -> None:
             return original_step(*args, **kwargs)
 
         env.backend.step_tensor = count_step  # type: ignore[method-assign]
-        env.reset(reset_mask=torch.tensor([False, True], dtype=torch.bool, device=env.device))
+        env.reset(env_ids=torch.tensor([1], dtype=torch.int64, device=env.device))
         assert step_calls == 0
         assert state.obs["obs"].shape == (2, 160)
         assert state.obs["critic"].shape == (2, 289)
@@ -513,7 +513,7 @@ def test_flashsac_g1_motion_mujoco_tensor_command_roll_out() -> None:
                 return original_step(*args, **kwargs)
 
             env.backend.step_tensor = count_step
-            env.reset(reset_mask=torch.tensor([False, True], dtype=torch.bool))
+            env.reset(env_ids=torch.tensor([1], dtype=torch.int64))
             assert not step_calls
             state = env.step(torch.zeros((2, 29), dtype=torch.float32))
             assert torch.isfinite(state.obs["obs"]).all()
@@ -630,7 +630,7 @@ def test_flashsac_g1_motion_mujoco_tensor_command_model_field_dr_roll_out(
         assert torch.isfinite(state.reward).all()
         assert all(torch.isfinite(values).all() for values in state.obs.values())
 
-        obs, _ = env.reset(reset_mask=torch.tensor([False, True], dtype=torch.bool))
+        obs, _ = env.reset(env_ids=torch.tensor([1], dtype=torch.int64))
         assert all(torch.isfinite(values).all() for values in obs.values())
     finally:
         env.close()
@@ -792,7 +792,7 @@ def test_selected_reset_publication_requires_no_manager_readiness_step(
             return original_step(*args, **kwargs)
 
         env.backend.step_tensor = count_step  # type: ignore[method-assign]
-        env.reset(reset_mask=torch.tensor([False, True], dtype=torch.bool, device=env.device))
+        env.reset(env_ids=torch.tensor([1], dtype=torch.int64, device=env.device))
         assert step_calls == 0
 
         state_views = env.backend.get_state_views(("qpos", "qvel"), device=env.device)
@@ -974,9 +974,7 @@ def test_flashsac_motion_selected_reset_uses_generic_manager_lifecycle() -> None
         env.reset_time_outs[rows] = True
         env.reset_buf.fill_(False)
         env.reset_buf[rows] = True
-        reset_mask = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-        reset_mask[rows] = True
-        obs, _info = env.reset(reset_mask=reset_mask)
+        obs, _info = env.reset(env_ids=rows)
 
         assert all(torch.isfinite(values).all() for values in obs.values())
         command = env.command_manager.get_term("motion")

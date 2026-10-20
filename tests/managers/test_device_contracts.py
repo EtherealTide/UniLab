@@ -100,8 +100,7 @@ def test_observation_row_scoped_indexing_and_reset_on_cuda() -> None:
     assert terms[0][0] == "policy-obs"
     assert terms[0][1] == pytest.approx([4.0, 1.5])
 
-    reset_mask = torch.tensor([True, False, True, False], dtype=torch.bool, device=env.device)
-    assert manager.reset(reset_mask) == {}
+    assert manager.reset(torch.tensor([0, 2], dtype=torch.int64, device=env.device)) == {}
     recomputed = manager.compute()["policy"]
     assert isinstance(recomputed, torch.Tensor)
     assert recomputed.device == env.device

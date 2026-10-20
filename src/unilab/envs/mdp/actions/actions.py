@@ -215,9 +215,12 @@ class BaseAction(ActionTerm):
                 max=self._clip[..., 1],
             )
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        """Mask-preserving raw-action reset."""
-        self._raw_actions.masked_fill_(reset_mask.reshape(-1, 1), 0.0)
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        """Zero the raw actions of the selected envs."""
+        if env_ids is None:
+            self._raw_actions.zero_()
+            return
+        self._raw_actions[env_ids] = 0.0
 
     def _entity_values(self, values: torch.Tensor) -> torch.Tensor:
         """Publish processed controls on the public Torch control boundary."""

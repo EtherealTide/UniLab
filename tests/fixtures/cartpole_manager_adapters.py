@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 import torch
 
+from unilab.base.reset_selectors import reset_env_ids_mask
 from unilab.managers import ActionTerm, ActionTermCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
 
@@ -120,30 +121,24 @@ class JointEffortAction(ActionTerm):
             actuator_ids=self._actuator_ids,
         )
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        expanded = reset_mask[:, None]
-        self._raw_actions.copy_(
-            torch.where(expanded, torch.zeros_like(self._raw_actions), self._raw_actions)
-        )
-        self._processed_actions.copy_(
-            torch.where(
-                expanded,
-                torch.zeros_like(self._processed_actions),
-                self._processed_actions,
-            )
-        )
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if env_ids is None:
+            self._raw_actions.zero_()
+            self._processed_actions.zero_()
+            return
+        self._raw_actions[env_ids] = 0.0
+        self._processed_actions[env_ids] = 0.0
 
 
 def reset_joints_by_offset(
     env: ManagerBasedRlEnv,
-    reset_mask: torch.Tensor,
+    env_ids: torch.Tensor,
     position_range: tuple[float, float] | list[float],
     velocity_range: tuple[float, float] | list[float],
     asset_cfg: SceneEntityCfg,
 ) -> None:
     """Write uniformly offset joint defaults through the reset transaction."""
-    if reset_mask.shape != (env.num_envs,) or reset_mask.dtype != torch.bool:
-        raise ValueError("reset_joints_by_offset requires a full-width bool reset mask")
+    reset_mask = reset_env_ids_mask(env_ids, num_envs=env.num_envs, device=torch.device(env.device))
     position_lower, position_upper = numeric_range(position_range, label="position_range")
     velocity_lower, velocity_upper = numeric_range(velocity_range, label="velocity_range")
     asset = cast("Entity", env.scene[asset_cfg.name])
@@ -168,9 +163,6 @@ def reset_joints_by_offset(
         reset_mask,
         joint_ids=joint_ids,
     )
-
-
-setattr(reset_joints_by_offset, "reset", reset_joints_by_offset)
 
 
 __all__ = [

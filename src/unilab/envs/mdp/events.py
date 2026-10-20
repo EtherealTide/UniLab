@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 import torch
 
+from unilab.base.reset_selectors import ResetMaskBuffer
 from unilab.managers.event_manager import EventTermCfg
 from unilab.managers.manager_base import ManagerTermBase
 from unilab.managers.rng import ManagerRng
@@ -384,24 +385,15 @@ def _shared_parameter_groups(
 
 
 class _ResetRandomizationTerm(ManagerTermBase):
-    """Reset DR base delegating the mask reset to the packed transaction.
+    """Reset DR base whose ``__call__`` stages rows into the packed transaction.
 
     The environment owns the packed reset transaction
-    (``ResetStateTransaction.scoped_device_event_tensor``); ``reset`` resolves
-    the selected rows from the fixed-width mask and reuses the term's
-    ``__call__`` sampling and facade staging, so the whole lifecycle composes
-    into the same exactly-once commit. Backends missing a field's reset
-    capability still fail closed at construction binding.
+    (``ResetStateTransaction.scoped_device_event_tensor``); the event manager
+    dispatches reset terms as ``term(env, env_ids, **params)``, so each term's
+    ``__call__`` sampling and facade staging compose into the same
+    exactly-once commit. Backends missing a field's reset capability still
+    fail closed at construction binding.
     """
-
-    def reset(
-        self,
-        env: ManagerBasedRlEnv,
-        reset_mask: torch.Tensor,
-        **kwargs: Any,
-    ) -> None:
-        rows = torch.nonzero(reset_mask, as_tuple=False).flatten()
-        self(env, rows, **kwargs)
 
 
 class _ModelFieldRandomizer(_ResetRandomizationTerm):
@@ -783,8 +775,6 @@ dof_armature = DofArmature
 class PdGains(_ResetRandomizationTerm):
     """Pinned-mjlab-compatible PD gain randomization on UniLab reset payloads."""
 
-    mask_reset_supported = True
-
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedRlEnv):
         super().__init__(env)
         if cfg.mode != "reset":
@@ -838,47 +828,6 @@ class PdGains(_ResetRandomizationTerm):
                 asset_cfg.actuator_ids,
                 term_name="pd_gains",
             )
-        )
-
-    def reset(
-        self,
-        env: ManagerBasedRlEnv,
-        reset_mask: torch.Tensor,
-        **kwargs: object,
-    ) -> None:
-        """Sample full-width final gains and commit only masked rows."""
-        del kwargs
-        ids = torch.arange(env.num_envs, dtype=torch.int64, device=reset_mask.device)
-        shape = (ids.numel(), len(self._actuator_ids))
-        kp = _sample_gain_range(
-            _require_rng(env, "pd_gains"), self._kp_range, shape, self._distribution
-        )
-        kd = _sample_gain_range(
-            _require_rng(env, "pd_gains"), self._kd_range, shape, self._distribution
-        )
-        if self._operation == "scale":
-            default_kp = _selected_reset_defaults(
-                self._default_kp,
-                ids,
-                canonical_ndim=1,
-                device=kp.device,
-            )
-            default_kd = _selected_reset_defaults(
-                self._default_kd,
-                ids,
-                canonical_ndim=1,
-                device=kd.device,
-            )
-            kp = kp * default_kp.to(dtype=kp.dtype, device=kp.device)
-            kd = kd * default_kd.to(dtype=kd.dtype, device=kd.device)
-        kp = kp.to(dtype=torch.float32).contiguous()
-        kd = kd.to(dtype=torch.float32).contiguous()
-        self._entity.write_actuator_gains_tensor_mask(
-            reset_mask,
-            kp,
-            kd,
-            actuator_ids=self._actuator_ids,
-            term_name="pd_gains",
         )
 
     def __call__(
@@ -1765,29 +1714,20 @@ class ApplyBodyImpulse(ManagerTermBase):
                 term_name="apply_body_impulse",
             )
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        was_active = self._active.any()
-        forces = self._active_forces.clone()
-        torques = self._active_torques.clone()
-        keep_mask = ~reset_mask
-        self._active.copy_(self._active & keep_mask)
-        self._active_forces.copy_(self._active_forces * keep_mask[:, None, None])
-        self._active_torques.copy_(self._active_torques * keep_mask[:, None, None])
-        self._time_remaining.copy_(self._time_remaining * keep_mask)
-        self._interval_time_left.copy_(
-            torch.where(
-                reset_mask,
-                self._sample_cooldown(self.num_envs),
-                self._interval_time_left,
-            )
-        )
-        if bool(was_active):
-            zeros = torch.zeros_like(self._active_forces)
-            full_forces = torch.where(reset_mask[:, None, None], zeros, forces)
-            full_torques = torch.where(reset_mask[:, None, None], zeros, torques)
+    def reset(self, env_ids: torch.Tensor) -> None:
+        """Clear transient impulse state for the selected envs (state-clearing hook)."""
+        was_active = bool(self._active.any())
+        self._active[env_ids] = False
+        self._active_forces[env_ids] = 0.0
+        self._active_torques[env_ids] = 0.0
+        self._time_remaining[env_ids] = 0.0
+        self._interval_time_left[env_ids] = self._sample_cooldown(env_ids.numel())
+        if was_active:
+            # Reset rows now stage zeros, which actively clears persistent
+            # channels; other rows re-stage their unchanged wrench.
             self._entity.apply_body_wrench_to_sim(
-                full_forces,
-                full_torques if self._uses_torque else None,
+                self._active_forces,
+                self._active_torques if self._uses_torque else None,
                 self._backend_body_ids,
                 env_ids=None,
                 term_name="apply_body_impulse",
@@ -1852,11 +1792,12 @@ class RandomizeEncoderBias(ManagerTermBase):
                 f"EventManager term '{term_name}' asset_cfg must select at least one joint"
             )
         self._joint_ids = joint_ids
+        self._reset_mask_buffer = ResetMaskBuffer(self.num_envs, torch.device(env.device))
 
-    def reset(
+    def __call__(
         self,
         env: ManagerBasedRlEnv,
-        reset_mask: torch.Tensor,
+        env_ids: torch.Tensor | None,
         bias_range: tuple[float, float],
         asset_cfg: SceneEntityCfg,
     ) -> None:
@@ -1867,6 +1808,7 @@ class RandomizeEncoderBias(ManagerTermBase):
             rng_owner = getattr(env, "rng", None)
             if rng_owner is None:
                 raise NotImplementedError("Tensor encoder-bias reset requires the Manager RNG")
+            ids = resolve_env_ids(env, env_ids)
             lower, upper = self._range
             sampled = rng_owner.uniform(
                 lower,
@@ -1874,6 +1816,7 @@ class RandomizeEncoderBias(ManagerTermBase):
                 (self.num_envs, columns.numel()),
                 dtype=torch.float32,
             )
+            reset_mask = self._reset_mask_buffer.scatter(ids)
             self._entity.data.update_encoder_bias_tensor_mask(reset_mask, columns, sampled)
             return
         raise NotImplementedError(
@@ -1884,19 +1827,17 @@ class RandomizeEncoderBias(ManagerTermBase):
 randomize_encoder_bias = RandomizeEncoderBias
 
 
-def reset_scene_to_default(env: ManagerBasedRlEnv, reset_mask: torch.Tensor) -> None:
+def reset_scene_to_default(env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> None:
     """Reset all materialized scene entities to backend default qpos/qvel."""
     if not env.scene.entities:
         return
+    reset_mask = env.event_term_mask_buffer.scatter(env_ids)
     env.scene.reset_to_default(reset_mask, term_name="reset_scene_to_default")
-
-
-setattr(reset_scene_to_default, "reset", reset_scene_to_default)
 
 
 def reset_root_state_uniform(
     env: ManagerBasedRlEnv,
-    reset_mask: torch.Tensor,
+    env_ids: torch.Tensor,
     pose_range: dict[str, tuple[float, float]],
     velocity_range: dict[str, tuple[float, float]] | None = None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
@@ -1908,8 +1849,7 @@ def reset_root_state_uniform(
     the entity's cached floating-root capability instead of falling back.
     """
     asset = cast("Entity", env.scene[asset_cfg.name])
-    if reset_mask.shape != (env.num_envs,) or reset_mask.dtype != torch.bool:
-        raise ValueError("reset_root_state_uniform requires a full-width bool reset mask")
+    reset_mask = env.event_term_mask_buffer.scatter(env_ids)
     try:
         default_root_state = asset.data.default_root_state(torch.device(env.device))
         root_states = default_root_state.clone()
@@ -1938,9 +1878,6 @@ def reset_root_state_uniform(
     )
     root_states[:, 7:13] = root_states[:, 7:13] + velocity_samples.to(dtype=root_states.dtype)
     asset.write_root_state_tensor_to_sim(root_states, reset_mask)
-
-
-setattr(reset_root_state_uniform, "reset", reset_root_state_uniform)
 
 
 def _se3_bounds(range_dict: dict[str, tuple[float, float]] | None) -> torch.Tensor:
@@ -2040,7 +1977,7 @@ def _bind_root_reset() -> _RootResetFn:
 
 def reset_root_state_uniform_fused(
     env: ManagerBasedRlEnv,
-    reset_mask: torch.Tensor,
+    env_ids: torch.Tensor,
     pose_range: dict[str, tuple[float, float]],
     velocity_range: dict[str, tuple[float, float]] | None = None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
@@ -2050,10 +1987,9 @@ def reset_root_state_uniform_fused(
         raise NotImplementedError(
             "reset_root_state_uniform_fused requires env.rng on a CUDA Manager tensor runtime"
         )
-    if reset_mask.device != torch.device(env.device):
-        raise ValueError("reset_root_state_uniform_fused mask must live on env.device")
-    asset = cast("Entity", env.scene[asset_cfg.name])
     device = torch.device(env.device)
+    reset_mask = env.event_term_mask_buffer.scatter(env_ids)
+    asset = cast("Entity", env.scene[asset_cfg.name])
     asset.data.default_root_state(device)
     num_envs = env.num_envs
     bounds_key = (
@@ -2091,18 +2027,12 @@ def reset_root_state_uniform_fused(
     asset.write_root_state_tensor_to_sim(root_state, reset_mask)
 
 
-setattr(reset_root_state_uniform_fused, "reset", reset_root_state_uniform_fused)
-
-
 def skip_scene_reset(
     env: ManagerBasedRlEnv,
-    reset_mask: torch.Tensor,
+    env_ids: torch.Tensor,
 ) -> None:
-    """Mask-preserving no-op hook for the canonical MJWarp reset scene term."""
-    del env, reset_mask
-
-
-setattr(skip_scene_reset, "reset", skip_scene_reset)
+    """No-op reset hook for the canonical MJWarp reset scene term."""
+    del env, env_ids
 
 
 __all__ = [

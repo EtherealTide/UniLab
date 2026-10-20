@@ -38,6 +38,7 @@ from unisim.dr.types import (
 )
 
 from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadSpec
+from unilab.base.reset_selectors import ResetMaskBuffer
 from unilab.base.reset_state import ResetStateTransaction
 from unilab.envs import mdp
 from unilab.managers import EventManager, EventTermCfg, SceneEntityCfg
@@ -114,6 +115,7 @@ def _capture_env(
             device=torch.device("cpu"),
             rng=ManagerRng.seeded(seed),
             scene=_CaptureScene(entity, env_origins),
+            event_term_mask_buffer=ResetMaskBuffer(3, torch.device("cpu")),
         ),
     )
     return env, entity
@@ -134,7 +136,7 @@ def test_uniform_root_state_applies_pinned_pose_velocity_and_origin_semantics() 
 
     mdp.reset_root_state_uniform(
         env,
-        reset_mask,
+        torch.tensor([1, 2], dtype=torch.int64),
         pose_range={
             "x": (1.0, 1.0),
             "y": (-2.0, -2.0),
@@ -173,10 +175,10 @@ def test_uniform_root_state_applies_pinned_pose_velocity_and_origin_semantics() 
 def test_generic_event_randomization_fails_closed_without_rng() -> None:
     env, _entity = _capture_env()
     env.rng = None
-    reset_mask = torch.tensor([True, True, False])
-
     with pytest.raises(RuntimeError, match="Manager-owned Torch generator"):
-        mdp.reset_root_state_uniform(env, reset_mask, {"x": (0.1, 0.2)})
+        mdp.reset_root_state_uniform(
+            env, torch.tensor([0, 1], dtype=torch.int64), {"x": (0.1, 0.2)}
+        )
 
 
 def test_physics_scene_gravity_diagnostic_names_public_term() -> None:
@@ -203,7 +205,9 @@ def test_physics_scene_gravity_diagnostic_names_public_term() -> None:
         RuntimeError,
         match="term 'randomize_physics_scene_gravity' requires",
     ):
-        manager.dispatch_reset(torch.tensor([True, True, False]), global_env_step_count=0)
+        manager.apply(
+            "reset", env_ids=torch.tensor([0, 1], dtype=torch.int64), global_env_step_count=0
+        )
 
 
 def test_uniform_root_state_uses_env_rng_and_preserves_single_env_shape() -> None:
@@ -212,9 +216,10 @@ def test_uniform_root_state_uses_env_rng_and_preserves_single_env_shape() -> Non
     left, left_entity = _capture_env(seed=9)
     right, right_entity = _capture_env(seed=9)
     reset_mask = torch.tensor([False, True, False])
+    env_ids = torch.tensor([1], dtype=torch.int64)
 
-    mdp.reset_root_state_uniform(left, reset_mask, pose_range, velocity_range)
-    mdp.reset_root_state_uniform(right, reset_mask, pose_range, velocity_range)
+    mdp.reset_root_state_uniform(left, env_ids, pose_range, velocity_range)
+    mdp.reset_root_state_uniform(right, env_ids, pose_range, velocity_range)
 
     left_state, left_mask = left_entity.writes[0]
     right_state, right_mask = right_entity.writes[0]
@@ -228,7 +233,7 @@ def test_uniform_root_state_none_ids_targets_all_environments() -> None:
     env, entity = _capture_env()
 
     reset_mask = torch.ones(3, dtype=torch.bool)
-    mdp.reset_root_state_uniform(env, reset_mask, pose_range={})
+    mdp.reset_root_state_uniform(env, torch.arange(3, dtype=torch.int64), pose_range={})
 
     root_state, written_mask = entity.writes[0]
     torch.testing.assert_close(written_mask, reset_mask)
@@ -557,6 +562,7 @@ def _transaction_env(
             scene=scene,
             step_dt=step_dt,
             backend=backend,
+            event_term_mask_buffer=ResetMaskBuffer(backend.num_envs, torch.device("cpu")),
         ),
     )
     return env, backend, transaction
@@ -567,11 +573,12 @@ def test_uniform_root_state_composes_in_one_reset_transaction_commit() -> None:
     transaction.declare_packed_reset_device(torch.device("cpu"))
     reset_mask = torch.tensor([True, False, True])
 
+    env_ids = torch.tensor([0, 2], dtype=torch.int64)
     with transaction.scoped_device_event_tensor(reset_mask):
-        mdp.reset_scene_to_default(env, reset_mask)
+        mdp.reset_scene_to_default(env, env_ids)
         mdp.reset_root_state_uniform(
             env,
-            reset_mask,
+            env_ids,
             pose_range={"x": (1.0, 1.0)},
             velocity_range={"x": (0.5, 0.5)},
         )
@@ -584,6 +591,56 @@ def test_uniform_root_state_composes_in_one_reset_transaction_commit() -> None:
     np.testing.assert_array_equal(qpos[1], backend.default_qpos + [1.0, 0, 0, 0, 0, 0, 0])
     np.testing.assert_array_equal(qvel[0], backend.init_qvel + [0.5, 0, 0, 0, 0, 0])
     np.testing.assert_array_equal(qvel[1], backend.init_qvel + [0.5, 0, 0, 0, 0, 0])
+
+
+def test_dispatch_reset_mask_form_is_deprecated_but_functional() -> None:
+    env, backend, transaction = _transaction_env(rng_seed=11)
+    manager = EventManager(
+        {
+            "randomize_pd": EventTermCfg(
+                func=mdp.pd_gains,
+                mode="reset",
+                params={"kp_range": (2.0, 2.0), "kd_range": (3.0, 3.0)},
+            )
+        },
+        env,
+    )
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    reset_mask = torch.tensor([True, False, True])
+
+    with transaction.scoped_device_event_tensor(reset_mask):
+        with pytest.warns(DeprecationWarning, match="mask"):
+            manager.dispatch_reset(reset_mask, global_env_step_count=0)
+
+    assert len(backend.set_state_calls) == 1
+    committed_rows, _, _ = backend.set_state_calls[0]
+    np.testing.assert_array_equal(committed_rows, [0, 2])
+
+
+def test_mask_form_reset_term_is_deprecated_but_still_dispatched() -> None:
+    env, backend, transaction = _transaction_env()
+    calls: list[torch.Tensor] = []
+
+    def mask_form_term(env: Any, reset_mask: torch.Tensor) -> None:
+        del env
+        calls.append(reset_mask.clone())
+
+    setattr(mask_form_term, "reset", mask_form_term)
+    with pytest.warns(DeprecationWarning, match="mask-form reset boundary"):
+        manager = EventManager(
+            {"legacy_term": EventTermCfg(func=mask_form_term, mode="reset")},
+            env,
+        )
+    transaction.declare_packed_reset_device(torch.device("cpu"))
+    reset_mask = torch.tensor([False, True, True])
+
+    with transaction.scoped_device_event_tensor(reset_mask):
+        manager.apply(
+            "reset", env_ids=torch.tensor([1, 2], dtype=torch.int64), global_env_step_count=0
+        )
+
+    assert len(calls) == 1
+    torch.testing.assert_close(calls[0], reset_mask)
 
 
 def test_pd_gains_reset_randomization_commits_in_one_packed_transaction() -> None:
@@ -602,7 +659,11 @@ def test_pd_gains_reset_randomization_commits_in_one_packed_transaction() -> Non
     reset_mask = torch.tensor([True, False, True])
 
     with transaction.scoped_device_event_tensor(reset_mask):
-        manager.dispatch_reset(reset_mask, global_env_step_count=0)
+        manager.apply(
+            "reset",
+            env_ids=torch.nonzero(reset_mask, as_tuple=False).flatten(),
+            global_env_step_count=0,
+        )
         assert backend.set_state_calls == []
 
     assert len(backend.set_state_calls) == 1
@@ -675,7 +736,11 @@ def test_reset_dr_terms_compose_in_one_packed_transaction(
     reset_mask = torch.tensor([True, False, True])
 
     with transaction.scoped_device_event_tensor(reset_mask):
-        manager.dispatch_reset(reset_mask, global_env_step_count=0)
+        manager.apply(
+            "reset",
+            env_ids=torch.nonzero(reset_mask, as_tuple=False).flatten(),
+            global_env_step_count=0,
+        )
         assert backend.set_state_calls == []
 
     assert len(backend.set_state_calls) == 1
@@ -699,7 +764,11 @@ def test_randomize_body_mass_inertia_reset_commits_scaled_mass_and_inertia() -> 
     reset_mask = torch.tensor([True, False, True])
 
     with transaction.scoped_device_event_tensor(reset_mask):
-        manager.dispatch_reset(reset_mask, global_env_step_count=0)
+        manager.apply(
+            "reset",
+            env_ids=torch.nonzero(reset_mask, as_tuple=False).flatten(),
+            global_env_step_count=0,
+        )
         assert backend.set_state_calls == []
 
     assert len(backend.set_state_calls) == 1
@@ -720,7 +789,9 @@ def test_randomize_body_mass_inertia_reset_commits_scaled_mass_and_inertia() -> 
     # The scale factor is sampled once per environment and replayed on later
     # resets: recommitting row 0 reproduces the identical scaled values.
     with transaction.scoped_device_event_tensor(torch.tensor([True, False, False])):
-        manager.dispatch_reset(torch.tensor([True, False, False]), global_env_step_count=1)
+        manager.apply(
+            "reset", env_ids=torch.tensor([0], dtype=torch.int64), global_env_step_count=1
+        )
     replay = backend.randomization_calls[-1]
     assert replay is not None
     np.testing.assert_allclose(replay.body_mass.numpy(), mass[[0]], rtol=1e-6)
@@ -786,7 +857,11 @@ def test_pd_gains_commits_masked_packed_model_fields() -> None:
     transaction.declare_packed_reset_device(torch.device("cpu"))
 
     with transaction.scoped_device_event_tensor(reset_mask):
-        manager.dispatch_reset(reset_mask, global_env_step_count=0)
+        manager.apply(
+            "reset",
+            env_ids=torch.nonzero(reset_mask, as_tuple=False).flatten(),
+            global_env_step_count=0,
+        )
 
     assert len(backend.set_state_calls) == 1
     rows, _qpos, _qvel = backend.set_state_calls[0]
@@ -837,7 +912,11 @@ def test_model_field_invalid_requests_fail_explicitly(func, params, match: str) 
         reset_mask = torch.tensor([True, False, True])
         with pytest.raises(ValueError, match=match):
             with transaction.scoped_device_event_tensor(reset_mask):
-                manager.dispatch_reset(reset_mask, global_env_step_count=0)
+                manager.apply(
+                    "reset",
+                    env_ids=torch.nonzero(reset_mask, as_tuple=False).flatten(),
+                    global_env_step_count=0,
+                )
     assert backend.set_state_calls == []
 
 
@@ -932,7 +1011,7 @@ def test_startup_mass_and_com_sample_once_and_persist_across_resets() -> None:
     with transaction.scoped_device_event_tensor(selected_mask):
         # Startup terms are not reset terms. A masked state reset must not
         # resample or recommit their model fields.
-        mdp.reset_scene_to_default(env, selected_mask)
+        mdp.reset_scene_to_default(env, torch.tensor([1, 2], dtype=torch.int64))
     assert len(backend.set_state_calls) == 2
     replay = backend.randomization_calls[-1]
     assert replay is None or replay.body_mass is None
@@ -1100,7 +1179,7 @@ def test_apply_body_impulse_reset_clears_active_wrench() -> None:
     manager.apply(mode="step", dt=0.02)
     assert len(backend.interval_plans) == 1
 
-    manager.reset(torch.tensor([False, True, False]))
+    manager.reset(torch.tensor([1], dtype=torch.int64))
     assert len(backend.interval_plans) == 2
     force_op = _interval_op(backend.interval_plans[1], INTERVAL_TERM_BODY_FORCE)
     assert force_op is not None
@@ -1307,7 +1386,7 @@ def test_uniform_root_state_fixed_or_mocap_capability_fails_closed() -> None:
         NotImplementedError,
         match="reset_root_state_uniform.*entity 'robot'.*fixed-base/mocap.*backend 'fake'",
     ):
-        mdp.reset_root_state_uniform(env, torch.tensor([False, True, False]), pose_range={})
+        mdp.reset_root_state_uniform(env, torch.tensor([1], dtype=torch.int64), pose_range={})
 
     assert backend.set_state_calls == []
 
@@ -1326,7 +1405,7 @@ def test_uniform_root_state_invalid_ranges_fail_before_write(
     env, entity = _capture_env()
 
     with pytest.raises(ValueError, match=message):
-        mdp.reset_root_state_uniform(env, torch.tensor([True, False, False]), pose_range)
+        mdp.reset_root_state_uniform(env, torch.tensor([0], dtype=torch.int64), pose_range)
 
     assert entity.writes == []
 
@@ -1398,7 +1477,7 @@ def test_randomize_encoder_bias_samples_selected_joints_within_range() -> None:
         env,
     )
 
-    manager.dispatch_reset(torch.tensor([True, False, True]), global_env_step_count=0)
+    manager.apply("reset", env_ids=torch.tensor([0, 2], dtype=torch.int64), global_env_step_count=0)
 
     bias = env.scene["robot"].data.encoder_bias
     assert bias.shape == (3, 4)
@@ -1425,7 +1504,9 @@ def test_randomize_encoder_bias_fails_closed_without_torch_control_plane() -> No
     )
 
     with pytest.raises(NotImplementedError, match="Torch control plane"):
-        manager.dispatch_reset(torch.tensor([True, False, True]), global_env_step_count=0)
+        manager.apply(
+            "reset", env_ids=torch.tensor([0, 2], dtype=torch.int64), global_env_step_count=0
+        )
 
 
 def test_randomize_encoder_bias_rejects_invalid_cfg_at_construction() -> None:
@@ -1813,7 +1894,11 @@ def test_reset_randomization_payload_commits_on_cuda_without_host_detour() -> No
     reset_mask = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
 
     with transaction.scoped_device_event_tensor(reset_mask):
-        manager.dispatch_reset(reset_mask, global_env_step_count=0)
+        manager.apply(
+            "reset",
+            env_ids=torch.nonzero(reset_mask, as_tuple=False).flatten(),
+            global_env_step_count=0,
+        )
         assert backend.tensor_reset_calls == []
 
     assert len(backend.tensor_reset_calls) == 1

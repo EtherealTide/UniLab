@@ -24,6 +24,32 @@ def test_reset_chain_does_not_materialize_dynamic_done_rows() -> None:
         assert not any(token in source for token in forbidden), relative_path
 
 
+def test_public_reset_boundaries_speak_env_ids() -> None:
+    """The public reset contract is the IsaacLab/mjlab ``env_ids`` row-index form."""
+    checked = (
+        ("base/torch_env.py", "reset"),
+        ("managers/manager_base.py", "reset"),
+        ("managers/event_manager.py", "reset"),
+        ("managers/event_manager.py", "apply"),
+    )
+    for relative_path, function in checked:
+        tree = ast.parse((SOURCE_ROOT / relative_path).read_text(encoding="utf-8"))
+        signatures = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function
+        ]
+        assert signatures, (relative_path, function)
+        for node in signatures:
+            arg_names = {
+                arg.arg for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
+            }
+            assert "env_ids" in arg_names, (relative_path, function)
+            assert "reset_mask" not in arg_names, (relative_path, function)
+    event_source = (SOURCE_ROOT / "managers" / "event_manager.py").read_text(encoding="utf-8")
+    assert "min_step_count_between_reset" in event_source
+
+
 def test_removed_reset_row_contracts_stay_removed() -> None:
     removed = (
         "uses_tensor_reset_rows",

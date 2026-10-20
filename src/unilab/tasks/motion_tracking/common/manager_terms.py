@@ -895,18 +895,12 @@ class MotionCommand(CommandTerm):
     def anchor_ang_vel_w(self) -> torch.Tensor:
         return cast("torch.Tensor", self._motion_data.body_ang_vel_w)[:, self.anchor_body_idx]
 
-    def reset(self, reset_mask: torch.Tensor, *, publish_metrics: bool = True) -> dict[str, float]:
-        """Full-width motion command reset."""
+    def reset(
+        self, env_ids: torch.Tensor | slice | None = None, *, publish_metrics: bool = True
+    ) -> dict[str, float]:
+        """Selected-row motion command reset."""
         del publish_metrics
-        if (
-            reset_mask.shape != (self.num_envs,)
-            or reset_mask.dtype != torch.bool
-            or reset_mask.device != self._device
-        ):
-            raise ValueError(
-                f"MotionCommand reset mask must have shape {(self.num_envs,)}, "
-                f"bool dtype, and device {self._device}"
-            )
+        reset_mask = self._reset_mask_buffer.resolve(env_ids, owner="MotionCommand.reset")
         if self._env.rng is None:
             raise NotImplementedError(
                 "MotionCommand reset requires the Manager-owned Torch generator"
@@ -1374,9 +1368,12 @@ class MotionJointPositionAction(JointPositionAction):
         """Publish the current latency-adjusted raw-input finite verdict."""
         self.publish_validation_verdict()
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        super().reset(reset_mask)
-        self._previous_raw_actions.masked_fill_(reset_mask.reshape(-1, 1), 0.0)
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        super().reset(env_ids)
+        if env_ids is None:
+            self._previous_raw_actions.zero_()
+            return
+        self._previous_raw_actions[env_ids] = 0.0
 
     def apply_actions(self) -> None:
         if isinstance(self._entity.data.control_buffer, torch.Tensor):
@@ -1539,9 +1536,9 @@ class _BodyTerm(ManagerTermBase):
             )
         return _command(self._env, command_name), _positive_std(std, term_name=type(self).__name__)
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        """Mask boundary for stateless motion reward reads."""
-        del reset_mask
+    def reset(self, env_ids: torch.Tensor) -> None:
+        """Row boundary for stateless motion reward reads."""
+        del env_ids
 
     @staticmethod
     def _body_reduce(
@@ -1700,9 +1697,9 @@ class BadAnchorPosZOnly(ManagerTermBase):
             - robot_anchor_pos[:, command.anchor_body_idx, 2]
         ).abs() > threshold
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        """Mask boundary for the stateless termination read."""
-        del reset_mask
+    def reset(self, env_ids: torch.Tensor) -> None:
+        """Row boundary for the stateless termination read."""
+        del env_ids
 
 
 def bad_anchor_ori(

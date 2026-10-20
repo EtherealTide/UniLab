@@ -18,6 +18,7 @@ from unilab.base.config_overrides import (
     CONFIG_MAPPING_POLICY_KEY,
     MANAGER_TERM_MAPPING_POLICY,
 )
+from unilab.base.reset_selectors import ResetMaskBuffer, resolve_reset_env_ids
 from unilab.managers._buffers import CircularBuffer, DelayBuffer
 from unilab.managers._noise import noise_cfg, noise_model
 from unilab.managers._noise.noise_cfg import NoiseCfg, NoiseModelCfg
@@ -170,6 +171,7 @@ class ObservationManager(ManagerBase):
                 f"does not match observations on {self._device}."
             )
         self._generator = self._rng.generator if self._rng is not None else None
+        self._reset_mask_buffer = ResetMaskBuffer(env.num_envs, torch.device(self._device))
         super().__init__(env=env)
 
         self._group_obs_dim: dict[str, tuple[int, ...] | list[tuple[int, ...]]] = dict()
@@ -318,47 +320,47 @@ class ObservationManager(ManagerBase):
         index = self._group_obs_term_names[group_name].index(term_name)
         return self._group_obs_term_cfgs[group_name][index]
 
-    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        """Fixed-shape observation state reset."""
-        self._validate_reset_mask(reset_mask)
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
+        """Reset observation state for the selected environment rows.
+
+        Class-term state, delay/history buffers, and noise models are cleared
+        for the selected rows only; the buffers backfill those rows with their
+        first post-reset frame on the reset-boundary compute while every other
+        row's history, delay schedule, and lag RNG stay untouched.
+        """
+        ids = resolve_reset_env_ids(
+            env_ids,
+            num_envs=self.num_envs,
+            device=self._device,
+            owner="ObservationManager.reset",
+        )
+        reset_mask = self._reset_mask_buffer.scatter(ids)
         self._obs_buffer = None
         for group_cfg in self._group_obs_class_term_cfgs.values():
             for term_cfg in group_cfg:
                 if not callable(getattr(term_cfg.func, "reset", None)):
                     raise NotImplementedError(
                         f"ObservationManager term '{term_cfg.func}' does not define "
-                        "the mask-preserving reset boundary"
+                        "the reset boundary"
                     )
-                term_cfg.func.reset(reset_mask)
+                term_cfg.func.reset(ids)
         for group_name in self._group_obs_term_names:
             for term_name in self._group_obs_term_names[group_name]:
                 delay = self._group_obs_term_delay_buffer[group_name].get(term_name)
                 if delay is not None:
-                    raise NotImplementedError("the mask reset does not support delay buffers")
+                    delay.reset(batch_ids=ids)
                 history = self._group_obs_term_history_buffer[group_name].get(term_name)
                 if history is not None:
-                    raise NotImplementedError("the mask reset does not support history buffers")
+                    history.reset(batch_ids=ids)
         for group_mods in self._group_obs_class_instances.values():
             for mod in group_mods.values():
                 if not callable(getattr(mod, "reset", None)):
                     raise NotImplementedError(
                         f"ObservationManager term '{type(mod).__name__}' does not define "
-                        "the mask-preserving reset boundary"
+                        "the reset boundary"
                     )
                 mod.reset(reset_mask)
         return {}
-
-    def _validate_reset_mask(self, reset_mask: torch.Tensor) -> None:
-        if (
-            reset_mask.ndim != 1
-            or reset_mask.shape[0] != self.num_envs
-            or reset_mask.dtype != torch.bool
-            or reset_mask.device != self._device
-        ):
-            raise ValueError(
-                f"ObservationManager reset mask must have shape {(self.num_envs,)}, "
-                f"bool dtype, and device {self._device}"
-            )
 
     def _check_and_handle_nans(
         self,
@@ -427,13 +429,22 @@ class ObservationManager(ManagerBase):
     def compute(
         self,
         update_history: bool = False,
+        env_ids: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
         """Compute observations for all groups.
 
-        Every computation is full-width. History and delay buffers are shared
-        reset-runtime state and fail closed during construction until they gain
-        a fixed-width mask boundary.
+        Every computation returns full-width rows. With ``env_ids=None`` (the
+        per-step path), history and delay buffers advance for all envs and the
+        result is cached. With ``env_ids`` (the reset path, which requires
+        ``update_history=True``), temporal terms backfill the selected rows with
+        their post-reset frame and read out with ``peek``: the circular pointer,
+        delay lag schedule, and lag RNG of every row are left untouched, so a
+        partial reset does not advance non-reset rows' observation timelines.
+        The reset-path result is not cached (``reset()`` invalidated the cache;
+        the next per-step compute refreshes it).
         """
+        if env_ids is not None and not update_history:
+            raise ValueError("env_ids is only meaningful with update_history=True.")
         # Return cached observations if not updating and cache exists.
         # This prevents double-pushing to delay buffers when compute() is called
         # multiple times per control step (e.g., in get_observations() after step()).
@@ -463,25 +474,28 @@ class ObservationManager(ManagerBase):
         share_cache: dict[tuple, torch.Tensor] = {}
         for group_name in self._group_obs_term_names:
             obs_buffer[group_name] = self.compute_group(
-                group_name, update_history, share_cache=share_cache
+                group_name, update_history, env_ids, share_cache=share_cache
             )
         groups_ms = time.perf_counter() - groups_started
         cache_started = time.perf_counter()
-        self._obs_buffer = obs_buffer
+        if env_ids is None:
+            self._obs_buffer = obs_buffer
         cache_ms = time.perf_counter() - cache_started
-        # Exclude phases already published by nested compute_group calls.
-        # The remainder retains top-level group iteration, setup, timing
-        # calls, and any uninstrumented group branch; it is not GPU work.
-        child_ms = sum(float(timing[key]) for key in child_keys if key in timing)
-        timing["update_state_observation_manager_residual_ms"] = max(
-            (groups_ms + cache_ms - child_ms) * 1000.0, 0.0
-        )
+        if env_ids is None:
+            # Exclude phases already published by nested compute_group calls.
+            # The remainder retains top-level group iteration, setup, timing
+            # calls, and any uninstrumented group branch; it is not GPU work.
+            child_ms = sum(float(timing[key]) for key in child_keys if key in timing)
+            timing["update_state_observation_manager_residual_ms"] = max(
+                (groups_ms + cache_ms - child_ms) * 1000.0, 0.0
+            )
         return obs_buffer
 
     def compute_group(
         self,
         group_name: str,
         update_history: bool = False,
+        env_ids: torch.Tensor | None = None,
         *,
         share_cache: dict[tuple, torch.Tensor] | None = None,
     ) -> torch.Tensor | dict[str, torch.Tensor]:
@@ -497,7 +511,7 @@ class ObservationManager(ManagerBase):
         if timing is None:
             timing = {}
             self.last_step_timing_ms = timing
-        group_timing = timing
+        group_timing = timing if env_ids is None else None
         dispatch_ms = 0.0
         validation_ms = 0.0
         noise_ms = 0.0
@@ -627,12 +641,24 @@ class ObservationManager(ManagerBase):
 
             if term_cfg.delay_max_lag > 0:
                 delay_buffer = self._group_obs_term_delay_buffer[group_name][term_name]
-                delay_buffer.append(cast("torch.Tensor", obs))
-                obs = delay_buffer.compute()
+                if env_ids is None or not delay_buffer.is_initialized:
+                    delay_buffer.append(cast("torch.Tensor", obs))
+                    obs = delay_buffer.compute()
+                else:
+                    # Reset path: backfill the reset rows with their post-reset
+                    # frame and read out with peek, leaving the lag schedule and
+                    # lag RNG of every row untouched.
+                    delay_buffer.backfill(cast("torch.Tensor", obs), env_ids)
+                    obs = delay_buffer.peek()
             if term_cfg.history_length > 0:
                 circular_buffer = self._group_obs_term_history_buffer[group_name][term_name]
-                if update_history or not circular_buffer.is_initialized:
-                    circular_buffer.append(cast("torch.Tensor", obs))
+                if env_ids is None or not circular_buffer.is_initialized:
+                    if update_history or not circular_buffer.is_initialized:
+                        circular_buffer.append(cast("torch.Tensor", obs))
+                else:
+                    # Reset path: backfill the reset rows without advancing the
+                    # circular pointer, so non-reset rows keep their history.
+                    circular_buffer.backfill(cast("torch.Tensor", obs), env_ids)
 
                 if term_cfg.flatten_history_dim:
                     history = circular_buffer.buffer
@@ -842,11 +868,6 @@ class ObservationManager(ManagerBase):
                 if group_cfg.history_length is not None:
                     term_cfg.history_length = group_cfg.history_length
                     term_cfg.flatten_history_dim = group_cfg.flatten_history_dim
-                if term_cfg.delay_max_lag > 0 or term_cfg.history_length > 0:
-                    raise NotImplementedError(
-                        f"ObservationManager term '{group_name}/{term_name}' uses delay or "
-                        "history state, which has no fixed-width mask reset boundary"
-                    )
                 if hasattr(term_cfg.func, "compute_reset_rows"):
                     raise NotImplementedError(
                         f"ObservationManager term '{group_name}/{term_name}' declares the "

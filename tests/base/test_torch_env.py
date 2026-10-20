@@ -78,7 +78,7 @@ class _StubTorchEnv(TorchEnv):
     ):
         super().__init__(cfg or _StubCfg(), backend or _backend(), num_envs, device=device)
         self.terminate = terminate
-        self.reset_masks: list[torch.Tensor] = []
+        self.reset_ids: list[torch.Tensor] = []
 
     @property
     def obs_groups_spec(self) -> dict[str, int]:
@@ -110,11 +110,11 @@ class _StubTorchEnv(TorchEnv):
         )
 
     def reset(
-        self, reset_mask: torch.Tensor | None = None
+        self, env_ids: torch.Tensor | None = None
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
-        if reset_mask is None:
-            reset_mask = torch.ones((self.num_envs,), dtype=torch.bool, device=self.device)
-        self.reset_masks.append(reset_mask.clone())
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, dtype=torch.int64, device=self.device)
+        self.reset_ids.append(env_ids.clone())
         count = self.num_envs
         return (
             {
@@ -168,7 +168,7 @@ def test_step_uses_backend_tensor_contract_and_autoreset() -> None:
     backend = _backend()
     env = _StubTorchEnv(backend=backend)
     env.init_state()
-    env.reset_masks.clear()
+    env.reset_ids.clear()
     actions = _actions(env)
 
     state = env.step(actions)
@@ -176,7 +176,7 @@ def test_step_uses_backend_tensor_contract_and_autoreset() -> None:
     backend.step_tensor.assert_called_once()
     assert backend.step_tensor.call_args.args[1] == 1
     torch.testing.assert_close(backend.step_tensor.call_args.args[0], actions * 2.0)
-    assert [mask.tolist() for mask in env.reset_masks] == [[True, True, True]]
+    assert [ids.tolist() for ids in env.reset_ids] == [[0, 1, 2]]
     torch.testing.assert_close(state.reward, torch.full((3,), 2.0))
     torch.testing.assert_close(state.obs["obs"], torch.full((3, 3), -1.0))
     assert state.final_observation is not None
@@ -212,10 +212,10 @@ def test_unsupported_backend_tensor_runtime_fails_closed() -> None:
 def test_step_without_done_preserves_eager_autoreset_gate() -> None:
     env = _StubTorchEnv(terminate=False)
     env.init_state()
-    env.reset_masks.clear()
+    env.reset_ids.clear()
     state = env.step(_actions(env))
 
-    assert env.reset_masks == []
+    assert env.reset_ids == []
     assert state.final_observation is None
     assert state.info["timing"]["reset_done_count"] == 0.0
 
@@ -241,10 +241,10 @@ def test_partial_autoreset_preserves_non_done_rows() -> None:
 
     env = _PartialEnv()
     env.init_state()
-    env.reset_masks.clear()
+    env.reset_ids.clear()
     state = env.step(_actions(env))
 
-    assert [mask.tolist() for mask in env.reset_masks] == [[True, False, True]]
+    assert [ids.tolist() for ids in env.reset_ids] == [[0, 2]]
     torch.testing.assert_close(state.obs["obs"], torch.tensor([[-1.0] * 3, [1.0] * 3, [-1.0] * 3]))
     torch.testing.assert_close(state.info["steps"], torch.tensor([0, 1, 0], dtype=torch.int64))
     assert state.final_observation is not None
@@ -254,11 +254,11 @@ def test_partial_autoreset_preserves_non_done_rows() -> None:
 def test_manual_autoreset_disabled_keeps_terminal_state() -> None:
     env = _StubTorchEnv()
     env.init_state()
-    env.reset_masks.clear()
+    env.reset_ids.clear()
     env.set_autoreset(False)
     state = env.step(_actions(env))
 
-    assert env.reset_masks == []
+    assert env.reset_ids == []
     assert state.final_observation is None
     torch.testing.assert_close(state.obs["obs"], torch.ones((3, 3)))
     torch.testing.assert_close(state.info["steps"], torch.ones(3, dtype=torch.int64))
@@ -267,7 +267,7 @@ def test_manual_autoreset_disabled_keeps_terminal_state() -> None:
 def test_autoreset_does_not_materialize_reset_rows() -> None:
     env = _StubTorchEnv()
     env.init_state()
-    env.reset_masks.clear()
+    env.reset_ids.clear()
 
     class _PartialEnv(_StubTorchEnv):
         def update_state(self, state: TorchEnvState) -> TorchEnvState:
@@ -277,7 +277,7 @@ def test_autoreset_does_not_materialize_reset_rows() -> None:
 
     partial = _PartialEnv(backend=env.backend)
     partial.init_state()
-    partial.reset_masks.clear()
+    partial.reset_ids.clear()
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(
             torch.Tensor,
@@ -288,20 +288,20 @@ def test_autoreset_does_not_materialize_reset_rows() -> None:
         )
         partial.step(_actions(partial))
 
-    assert partial.reset_masks[0].tolist() == [True, False, True]
+    assert partial.reset_ids[0].tolist() == [0, 2]
 
 
 def test_timeout_computes_truncation_and_mask_reset() -> None:
     env = _StubTorchEnv(cfg=_StubCfg(max_episode_seconds=0.2), terminate=False)
     env.init_state()
-    env.reset_masks.clear()
+    env.reset_ids.clear()
 
     first = env.step(_actions(env))
     second = env.step(_actions(env))
 
     assert not bool(first.truncated.any())
     assert bool(second.truncated.any())
-    assert [mask.tolist() for mask in env.reset_masks] == [[True, True, True]]
+    assert [ids.tolist() for ids in env.reset_ids] == [[0, 1, 2]]
 
 
 def test_numpy_actions_and_wrong_device_fail_closed() -> None:
@@ -309,7 +309,7 @@ def test_numpy_actions_and_wrong_device_fail_closed() -> None:
 
     with pytest.raises(TypeError, match="torch.Tensor"):
         env.step(cast(Any, np.zeros((env.num_envs, 4), dtype=np.float32)))
-    assert env.reset_masks == []
+    assert env.reset_ids == []
     assert env.state is None
     with pytest.raises(ValueError, match="shape"):
         env.step(torch.zeros((env.num_envs, 5)))

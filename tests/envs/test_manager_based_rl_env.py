@@ -724,14 +724,11 @@ class _DriveAction(ActionTerm):
         self._env.action_input_types.append(type(actions))
         self._processed.copy_(actions * cast(_DriveCfg, self.cfg).gain)
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        self._processed.copy_(
-            torch.where(
-                reset_mask.reshape(-1, 1),
-                torch.zeros_like(self._processed),
-                self._processed,
-            )
-        )
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if env_ids is None:
+            self._processed.zero_()
+            return
+        self._processed[env_ids] = 0.0
 
     def apply_actions(self) -> None:
         self._env.trace.append("action_apply")
@@ -782,14 +779,11 @@ class _TensorBodyAction(ActionTerm):
     def process_actions(self, actions: torch.Tensor) -> None:
         self._processed.copy_(actions)
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        self._processed.copy_(
-            torch.where(
-                reset_mask.reshape(-1, 1),
-                torch.zeros_like(self._processed),
-                self._processed,
-            )
-        )
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if env_ids is None:
+            self._processed.zero_()
+            return
+        self._processed[env_ids] = 0.0
 
     def apply_actions(self) -> None:
         state = self._env.scene.read_plan
@@ -831,7 +825,7 @@ class _Command(CommandTerm):
         self._command.copy_(torch.where(reset_mask[:, None], samples, self._command))
 
     def refresh_reset(self, reset_mask: torch.Tensor) -> None:
-        self.reset(reset_mask)
+        self.reset(torch.nonzero(reset_mask, as_tuple=False).flatten())
 
     def post_compute_reset(self) -> None:
         return None
@@ -873,7 +867,15 @@ class _StateWritingCommandCfg(CommandTermCfg):
 
 
 class _StateWritingCommand(_Command):
-    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
+    def reset(
+        self, env_ids: torch.Tensor | None = None, *, publish_metrics: bool = True
+    ) -> dict[str, float]:
+        del publish_metrics
+        reset_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
+        if env_ids is None:
+            reset_mask[:] = True
+        else:
+            reset_mask[env_ids] = True
         self._command.copy_(
             torch.where(
                 reset_mask.reshape(-1, 1), torch.full_like(self._command, 0.75), self._command
@@ -909,7 +911,15 @@ class _TensorStateWritingCommandCfg(CommandTermCfg):
 
 
 class _TensorStateWritingCommand(_Command):
-    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
+    def reset(
+        self, env_ids: torch.Tensor | None = None, *, publish_metrics: bool = True
+    ) -> dict[str, float]:
+        del publish_metrics
+        reset_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
+        if env_ids is None:
+            reset_mask[:] = True
+        else:
+            reset_mask[env_ids] = True
         self._command.copy_(
             torch.where(
                 reset_mask.reshape(-1, 1), torch.full_like(self._command, 0.75), self._command
@@ -1003,11 +1013,11 @@ class _AliasedSensorCommand(CommandTerm):
 
 
 class _Recorder(RecorderTerm):
-    def record_pre_reset(self, reset_mask: torch.Tensor) -> None:
-        self._env.trace.append(("pre_reset", reset_mask.detach().cpu().tolist()))
+    def record_pre_reset(self, env_ids: torch.Tensor) -> None:
+        self._env.trace.append(("pre_reset", env_ids.detach().cpu().tolist()))
 
-    def record_post_reset(self, reset_mask: torch.Tensor) -> None:
-        self._env.trace.append(("post_reset", reset_mask.detach().cpu().tolist()))
+    def record_post_reset(self, env_ids: torch.Tensor) -> None:
+        self._env.trace.append(("post_reset", env_ids.detach().cpu().tolist()))
 
     def record_post_step(self) -> None:
         self._env.trace.append("post_step")
@@ -1148,12 +1158,12 @@ def _curriculum(env: _TestEnv, env_ids: np.ndarray | slice) -> float:
     return float(len(env_ids)) if isinstance(env_ids, np.ndarray) else 0.0
 
 
-def _curriculum_mask(env: _TestEnv, reset_mask: torch.Tensor) -> float:
+def _curriculum_scoped(env: _TestEnv, env_ids: torch.Tensor) -> float:
     del env
-    return float(reset_mask.sum().item())
+    return float(env_ids.numel())
 
 
-setattr(_curriculum, "reset_scoped", _curriculum_mask)
+setattr(_curriculum, "reset_scoped", _curriculum_scoped)
 
 
 def _event(env: _TestEnv, env_ids: np.ndarray | None) -> None:
@@ -1445,7 +1455,7 @@ def test_no_done_explicit_reset_skips_pre_reset_recorder_in_eager_mode() -> None
 
     assert obs["obs"].shape == (2, 2)
     assert env.reset_buf.tolist() == [False, False]
-    assert ("pre_reset", [False, False]) not in env.trace
+    assert ("pre_reset", []) not in env.trace
     env.close()
 
 
@@ -1458,8 +1468,8 @@ def test_manager_public_inputs_and_episode_counters_are_tensor_first() -> None:
         env.step(np.zeros((env.num_envs, 1), dtype=np.float32))
     with pytest.raises(TypeError, match="env_ids"):
         env.reset(env_ids=np.array([0], dtype=np.int32))  # type: ignore[call-arg]
-    with pytest.raises(ValueError, match="reset mask"):
-        env.reset(torch.tensor([0, 0], dtype=torch.int64))
+    with pytest.raises(ValueError, match="env_ids"):
+        env.reset(torch.tensor([0, env.num_envs], dtype=torch.int64))
 
     values = torch.tensor([2, 3], dtype=torch.int64)
     env.set_episode_length_buf(values)
@@ -1574,7 +1584,7 @@ def test_mujoco_host_bridge_packed_reset_lifecycle(
         assert state.obs["obs"].device == env.device
         assert all(torch.isfinite(values).all() for values in state.obs.values())
         env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
-        obs, _ = env.reset(torch.tensor([False, True], dtype=torch.bool, device=env.device))
+        obs, _ = env.reset(torch.tensor([1], dtype=torch.int64, device=env.device))
         assert obs["obs"].shape == (2, 1)
         assert all(torch.isfinite(values).all() for values in obs.values())
         env.close()
@@ -1964,7 +1974,7 @@ def test_startup_model_field_dr_commits_after_backend_materialization() -> None:
     assert len(backend.randomization_calls) == 2
     assert backend.randomization_calls[-1] is None
 
-    env.reset(torch.tensor([True, False], dtype=torch.bool))
+    env.reset(torch.tensor([0], dtype=torch.int64))
     env.step(torch.zeros((2, 1), dtype=torch.float32))
     env.reset()
 
@@ -2082,7 +2092,7 @@ def test_named_keyframe_snapshot_is_shared_by_entity_and_reset_cold_path() -> No
 
     source_qpos[:] = 9.0
     env.reset()
-    env.reset(torch.tensor([False, True], dtype=torch.bool))
+    env.reset(torch.tensor([1], dtype=torch.int64))
 
     assert backend.keyframe_qpos_calls == 1
     assert backend.default_qpos_calls == 0
@@ -2135,7 +2145,7 @@ def test_real_mujoco_backend_runs_packed_reset_lifecycle() -> None:
         stepped = env.step(torch.empty((2, 0), dtype=torch.float32, device=env.device))
         assert torch.isfinite(stepped.obs["obs"]).all()
         assert torch.isfinite(stepped.reward).all()
-        obs, _ = env.reset(torch.tensor([True, False], dtype=torch.bool))
+        obs, _ = env.reset(torch.tensor([0], dtype=torch.int64))
         assert obs["obs"].shape == (2, 1)
         assert torch.isfinite(obs["obs"]).all()
     finally:
@@ -2303,8 +2313,8 @@ def test_torch_env_owns_substeps_autoreset_and_final_observation() -> None:
     assert state.info["log"]["Episode_Termination/time_out"] == 2
     assert not any(key.startswith("mba_") for key in state.info["timing"])
 
-    pre_index = env.trace.index(("pre_reset", [True, True]))
-    post_reset_index = env.trace.index(("post_reset", [True, True]), pre_index)
+    pre_index = env.trace.index(("pre_reset", [0, 1]))
+    post_reset_index = env.trace.index(("post_reset", [0, 1]), pre_index)
     post_step_index = len(env.trace) - 1
     assert env.trace[post_step_index] == "post_step"
     assert pre_index < post_reset_index < post_step_index
@@ -2422,7 +2432,7 @@ def test_reset_events_compose_then_commit_default_state_once() -> None:
     np.testing.assert_array_equal(qvel, [[0.0, 0.0, -0.5], [0.0, 0.0, -0.5]])
     assert backend.joint_layout_calls == 2
 
-    env.reset(torch.tensor([False, True], dtype=torch.bool))
+    env.reset(torch.tensor([1], dtype=torch.int64))
     assert ("commit_count_during_event", 1) in env.trace
     assert len(backend.set_state_calls) == 2
     np.testing.assert_array_equal(backend.set_state_calls[1][0], [1])
@@ -2460,7 +2470,7 @@ def test_reset_event_and_command_state_writes_share_one_commit() -> None:
 def test_pure_reset_event_does_not_request_backend_state_capability() -> None:
     env, backend = _make_env()
     env.reset()
-    env.reset(torch.tensor([True, False], dtype=torch.bool))
+    env.reset(torch.tensor([0], dtype=torch.int64))
 
     assert isinstance(backend, _FakeBackend)
     assert backend.set_state_calls == []
@@ -2919,7 +2929,7 @@ def test_scene_read_plan_pairs_reset_with_selected_packed_transfer() -> None:
         assert backend.full_reads == 0
         assert backend.selected_reads == 0
 
-        env.reset(torch.tensor([False, True], dtype=torch.bool))
+        env.reset(torch.tensor([1], dtype=torch.int64))
         assert len(backend.set_state_calls) == 2
         np.testing.assert_array_equal(backend.set_state_calls[1][0], [1])
         assert backend.full_reads == 0
@@ -3014,7 +3024,7 @@ def test_reset_randomization_commits_through_packed_boundary() -> None:
         np.testing.assert_allclose(payload.kd.numpy(), [[3.0], [3.0]], rtol=1e-6)
 
         # A partial mask reset recomposes only the selected rows in one commit.
-        env.reset(torch.tensor([False, True], dtype=torch.bool))
+        env.reset(torch.tensor([1], dtype=torch.int64))
         assert len(backend.set_state_calls) == 2
         np.testing.assert_array_equal(backend.set_state_calls[1][0], [1])
         replay = backend.randomization_calls[1]
@@ -3090,7 +3100,7 @@ def test_device_resident_reset_dispatches_selected_tensor_commit() -> None:
         env.set_episode_length_buf(torch.zeros(2, dtype=torch.int64, device=env.device))
 
         env.step(torch.zeros((2, 1), dtype=torch.float32, device=env.device))
-        env.reset(torch.tensor([False, True], dtype=torch.bool, device=env.device))
+        env.reset(torch.tensor([1], dtype=torch.int64, device=env.device))
         assert len(backend.tensor_reset_calls) == 2
         torch.testing.assert_close(
             backend.tensor_reset_calls[1][0],
@@ -3408,7 +3418,7 @@ def test_manual_reset_is_required_when_autoreset_is_disabled() -> None:
     with pytest.raises(RuntimeError, match="must be reset"):
         env.step(torch.zeros((2, 1), dtype=torch.float32))
 
-    reset_obs, info = env.reset(torch.tensor([True, False], dtype=torch.bool))
+    reset_obs, info = env.reset(torch.tensor([0], dtype=torch.int64))
     assert reset_obs["obs"].shape == (2, 2)
     assert "log" in info
     assert not state.terminated[0]
@@ -3422,7 +3432,7 @@ def test_reset_seed_updates_the_shared_generator_in_place() -> None:
     env.init_state()
     generator = env.rng
 
-    env.reset(seed=123, reset_mask=torch.tensor([True, False], dtype=torch.bool))
+    env.reset(seed=123, env_ids=torch.tensor([0], dtype=torch.int64))
 
     assert env.rng is generator
     expected = ManagerRng.seeded(123).random(1)
@@ -3798,16 +3808,16 @@ def test_eager_public_observations_survive_later_steps() -> None:
 class _RecordingResetOwner(ResetOwner):
     def __init__(self, cfg: ResetOwnerCfg, env) -> None:
         super().__init__(cfg, env)
-        self.transaction_masks: list[torch.Tensor] = []
-        self.committed_masks: list[torch.Tensor] = []
+        self.transaction_ids: list[torch.Tensor] = []
+        self.committed_ids: list[torch.Tensor] = []
 
-    def reset_transaction(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        self.transaction_masks.append(reset_mask.clone())
+    def reset_transaction(self, env_ids: torch.Tensor) -> dict[str, float]:
+        self.transaction_ids.append(env_ids.clone())
         return {}
 
-    def reset_committed(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        self.committed_masks.append(reset_mask.clone())
-        self._env.action_manager.clear_action_state(reset_mask)
+    def reset_committed(self, env_ids: torch.Tensor) -> dict[str, float]:
+        self.committed_ids.append(env_ids.clone())
+        self._env.action_manager.clear_action_state(env_ids)
         return {}
 
 
@@ -3837,52 +3847,51 @@ def test_reset_owner_replaces_command_and_post_commit_state_passes() -> None:
     command_resets = 0
     action_resets = 0
     metric_resets = 0
-    initial_owner_transactions = len(owner.transaction_masks)
-    initial_owner_commits = len(owner.committed_masks)
+    initial_owner_transactions = len(owner.transaction_ids)
+    initial_owner_commits = len(owner.committed_ids)
 
-    def count_command_reset(reset_mask):
+    def count_command_reset(env_ids):
         nonlocal command_resets
         command_resets += 1
-        return original_command_reset(reset_mask)
+        return original_command_reset(env_ids)
 
-    def count_action_reset(reset_mask):
+    def count_action_reset(env_ids):
         nonlocal action_resets
         action_resets += 1
-        return original_action_reset(reset_mask)
+        return original_action_reset(env_ids)
 
-    def count_metric_reset(reset_mask):
+    def count_metric_reset(env_ids):
         nonlocal metric_resets
         metric_resets += 1
-        return original_metric_reset(reset_mask)
+        return original_metric_reset(env_ids)
 
     env.command_manager.reset = count_command_reset  # type: ignore[method-assign]
     env.action_manager.reset = count_action_reset  # type: ignore[method-assign]
     env.metrics_manager.reset = count_metric_reset  # type: ignore[method-assign]
-    reset_mask = torch.tensor([False, True], dtype=torch.bool)
-    env.reset(reset_mask)
+    env_ids = torch.tensor([1], dtype=torch.int64)
+    env.reset(env_ids)
 
     assert command_resets == 0
     assert action_resets == 0
     assert metric_resets == 0
-    assert len(owner.transaction_masks) == initial_owner_transactions + 1
-    torch.testing.assert_close(owner.transaction_masks[-1], reset_mask)
-    assert len(owner.committed_masks) == initial_owner_commits + 1
-    torch.testing.assert_close(owner.committed_masks[-1], reset_mask)
+    assert len(owner.transaction_ids) == initial_owner_transactions + 1
+    torch.testing.assert_close(owner.transaction_ids[-1], env_ids)
+    assert len(owner.committed_ids) == initial_owner_commits + 1
+    torch.testing.assert_close(owner.committed_ids[-1], env_ids)
     timing = env.state.info["timing"]
     assert timing["reset_done_command_term_count"] == 1.0
     assert timing["reset_done_manager_reset_count"] == 5.0
     env.close()
 
 
-def test_mask_reset_publishes_cleared_action_observation() -> None:
+def test_selected_reset_publishes_cleared_action_observation() -> None:
     """Post-reset observations must not expose a terminated episode's action."""
     env, _backend = _make_env(_make_cfg(auto_reset=False))
     try:
         env.reset()
         env.step(torch.tensor([[0.25], [0.75]], dtype=torch.float32))
-        reset_mask = torch.tensor([False, True], dtype=torch.bool)
 
-        reset_obs, _info = env.reset(reset_mask=reset_mask)
+        reset_obs, _info = env.reset(env_ids=torch.tensor([1], dtype=torch.int64))
 
         torch.testing.assert_close(reset_obs["obs"][0, 1], torch.tensor(0.25))
         torch.testing.assert_close(reset_obs["obs"][1, 1], torch.tensor(0.0))
@@ -3919,10 +3928,10 @@ def test_autoreset_empty_partial_and_full_masks_share_one_fixed_width_lifecycle(
     assert second.final_observation is None
     assert third.final_observation is not None
     trace = env.trace[recorder_traces_before:]
-    assert trace.count(("pre_reset", [False, False])) == 0
-    assert trace.count(("post_reset", [False, False])) == 0
-    assert ("pre_reset", [True, True]) in trace
-    assert ("post_reset", [True, True]) in trace
+    assert trace.count(("pre_reset", [])) == 0
+    assert trace.count(("post_reset", [])) == 0
+    assert ("pre_reset", [0, 1]) in trace
+    assert ("post_reset", [0, 1]) in trace
     assert trace.count("post_step") == 3
     env.close()
 
@@ -4080,3 +4089,40 @@ def _method_name(name: str) -> str:
         "command_post": "_post_compute_commands",
         "observations": "_compute_observations",
     }[name]
+
+
+def test_env_reset_backfills_history_terms_without_touching_other_rows() -> None:
+    """End-to-end: partial env reset backfills temporal terms for reset rows only."""
+    cfg = _make_cfg(
+        observations={
+            "actor": ObservationGroupCfg(
+                terms={"policy": ObservationTermCfg(func=_policy_obs, history_length=3)}
+            ),
+            "value": ObservationGroupCfg(terms={"critic": ObservationTermCfg(func=_critic_obs)}),
+        },
+    )
+    cfg.terminations = {"failure": TerminationTermCfg(func=_failure)}
+    env, _backend = _make_env(cfg, num_envs=4)
+    obs, _ = env.reset()
+    assert obs["obs"].shape == (4, 6)
+    assert env.obs_groups_spec == {"obs": 6, "critic": 1}
+
+    actions = torch.zeros((4, 1), dtype=torch.float32)
+    for _ in range(3):
+        env.step(actions)
+    history_buffer = env.observation_manager._group_obs_term_history_buffer["actor"]["policy"]
+    history_before = history_buffer.buffer.clone()
+
+    ids = torch.tensor([1], dtype=torch.int64, device=env.device)
+    obs, _ = env.reset(ids)
+
+    keep = torch.tensor([0, 2, 3])
+    history_after = history_buffer.buffer
+    torch.testing.assert_close(history_after[keep], history_before[keep])
+    reset_slots = history_after[1]
+    torch.testing.assert_close(reset_slots, reset_slots[-1].expand_as(reset_slots))
+    # The public reset observation publishes the backfilled history for the
+    # reset row (episode length zeroed by the reset, action still zero).
+    torch.testing.assert_close(obs["obs"][1].reshape(3, 2), reset_slots)
+    torch.testing.assert_close(reset_slots[-1], torch.zeros(2))
+    env.close()

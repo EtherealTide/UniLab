@@ -177,7 +177,11 @@ class CircularBuffer:
         Args:
           batch_ids: Batch indices to reset, or None to reset all.
         """
-        self._initialize_counters()
+        # Reset may run before the first append (env bootstrap); bind the
+        # counters to the selecting rows' device so later appends, which bind
+        # to the observation device, stay consistent.
+        device = batch_ids.device if isinstance(batch_ids, torch.Tensor) else None
+        self._initialize_counters(device)
         assert self._num_pushes is not None
         ids: Sequence[int] | torch.Tensor | slice = slice(None) if batch_ids is None else batch_ids
         self._num_pushes[ids] = 0

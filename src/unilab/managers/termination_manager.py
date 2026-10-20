@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Sequence
 import torch
 from prettytable import PrettyTable
 
+from unilab.base.reset_selectors import resolve_reset_env_ids
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
 
 if TYPE_CHECKING:
@@ -93,31 +94,23 @@ class TerminationManager(ManagerBase):
 
     # Methods.
 
-    def reset(self, reset_mask: torch.Tensor) -> dict[str, int]:
-        """Publish episodic counts and clear terms through a fixed-width mask."""
-        if (
-            reset_mask.ndim != 1
-            or reset_mask.shape[0] != self.num_envs
-            or reset_mask.dtype != torch.bool
-            or reset_mask.device != self._device
-        ):
-            raise ValueError(
-                f"TerminationManager reset mask must have shape "
-                f"{(self.num_envs,)}, bool dtype, and device {self._device}"
-            )
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, int]:
+        """Publish episodic counts and clear terms for the selected rows."""
+        ids = resolve_reset_env_ids(
+            env_ids, num_envs=self.num_envs, device=self._device, owner="TerminationManager.reset"
+        )
         extras: dict[str, int] = {}
         keys = list(self._term_dones)
-        counts = [self._term_dones[key].masked_select(reset_mask).sum() for key in keys]
+        counts = [self._term_dones[key][ids].sum() for key in keys]
         host_counts = torch.stack(counts).detach().cpu().tolist() if counts else []
         for key, count in zip(keys, host_counts, strict=True):
             extras["Episode_Termination/" + key] = int(count)
         for term_cfg in self._class_term_cfgs:
             if not callable(getattr(term_cfg.func, "reset", None)):
                 raise NotImplementedError(
-                    "TerminationManager stateful term does not define the "
-                    "mask-preserving reset boundary"
+                    "TerminationManager stateful term does not define the reset boundary"
                 )
-            term_cfg.func.reset(reset_mask)
+            term_cfg.func.reset(ids)
         return extras
 
     def compute(self) -> torch.Tensor:
