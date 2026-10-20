@@ -380,6 +380,12 @@ class ABEnv(abc.ABC):
         ``supports_interactive_debug_overlay`` — when the backend lacks it the
         getter is dropped with a warning so interactive playback still runs
         without overlays.
+
+        ``camera_kwargs`` is a record/offline camera profile.  Some native
+        interactive viewers (for example the Isaac family) fail closed when
+        they receive one because the user owns the camera in the window; in
+        that case the profile is dropped with a warning and playback retried
+        without it, so interactive playback still runs.
         """
         plan = self.resolve_play_render_plan(
             play_render_mode=play_render_mode,
@@ -398,7 +404,7 @@ class ABEnv(abc.ABC):
                     stacklevel=2,
                 )
                 debug_overlay_getter = None
-        return self.run_playback(
+        playback_kwargs: dict[str, Any] = dict(
             initialize=initialize,
             step=step,
             num_steps=plan.num_steps,
@@ -408,10 +414,25 @@ class ABEnv(abc.ABC):
             headless=plan.headless,
             record_video=plan.record_video,
             frame_state_getter=frame_state_getter,
-            camera_kwargs=camera_kwargs,
             debug_overlay_getter=debug_overlay_getter,
             on_frame=on_frame,
         )
+        try:
+            return self.run_playback(camera_kwargs=camera_kwargs, **playback_kwargs)
+        except NotImplementedError as exc:
+            if (
+                plan.mode != "interactive"
+                or camera_kwargs is None
+                or "camera_kwargs" not in str(exc)
+            ):
+                raise
+            warnings.warn(
+                f"{self.__class__.__name__} backend does not apply camera_kwargs to its "
+                "native interactive viewer; dropping the camera profile for this "
+                "interactive playback (adjust the view in the viewer window)",
+                stacklevel=2,
+            )
+            return self.run_playback(camera_kwargs=None, **playback_kwargs)
 
     @property
     @abc.abstractmethod
