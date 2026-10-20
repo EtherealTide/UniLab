@@ -4089,3 +4089,40 @@ def _method_name(name: str) -> str:
         "command_post": "_post_compute_commands",
         "observations": "_compute_observations",
     }[name]
+
+
+def test_env_reset_backfills_history_terms_without_touching_other_rows() -> None:
+    """End-to-end: partial env reset backfills temporal terms for reset rows only."""
+    cfg = _make_cfg(
+        observations={
+            "actor": ObservationGroupCfg(
+                terms={"policy": ObservationTermCfg(func=_policy_obs, history_length=3)}
+            ),
+            "value": ObservationGroupCfg(terms={"critic": ObservationTermCfg(func=_critic_obs)}),
+        },
+    )
+    cfg.terminations = {"failure": TerminationTermCfg(func=_failure)}
+    env, _backend = _make_env(cfg, num_envs=4)
+    obs, _ = env.reset()
+    assert obs["obs"].shape == (4, 6)
+    assert env.obs_groups_spec == {"obs": 6, "critic": 1}
+
+    actions = torch.zeros((4, 1), dtype=torch.float32)
+    for _ in range(3):
+        env.step(actions)
+    history_buffer = env.observation_manager._group_obs_term_history_buffer["actor"]["policy"]
+    history_before = history_buffer.buffer.clone()
+
+    ids = torch.tensor([1], dtype=torch.int64, device=env.device)
+    obs, _ = env.reset(ids)
+
+    keep = torch.tensor([0, 2, 3])
+    history_after = history_buffer.buffer
+    torch.testing.assert_close(history_after[keep], history_before[keep])
+    reset_slots = history_after[1]
+    torch.testing.assert_close(reset_slots, reset_slots[-1].expand_as(reset_slots))
+    # The public reset observation publishes the backfilled history for the
+    # reset row (episode length zeroed by the reset, action still zero).
+    torch.testing.assert_close(obs["obs"][1].reshape(3, 2), reset_slots)
+    torch.testing.assert_close(reset_slots[-1], torch.zeros(2))
+    env.close()

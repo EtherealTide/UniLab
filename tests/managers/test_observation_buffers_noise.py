@@ -21,6 +21,17 @@ from unilab.managers._noise import (
 from .conftest import FakeEnv
 
 
+def test_temporal_buffers_are_publicly_exported() -> None:
+    """Downstream temporal owners must not need the private ``_buffers`` package."""
+    import unilab.managers
+    from unilab.managers import _buffers
+
+    assert unilab.managers.CircularBuffer is _buffers.CircularBuffer
+    assert unilab.managers.DelayBuffer is _buffers.DelayBuffer
+    assert CircularBuffer is _buffers.CircularBuffer
+    assert DelayBuffer is _buffers.DelayBuffer
+
+
 def test_circular_buffer_history_backfill_lag_and_partial_reset() -> None:
     buffer = CircularBuffer(max_len=3, batch_size=2)
     first = torch.tensor([[1.0], [10.0]], dtype=torch.float32)
@@ -298,6 +309,7 @@ def test_observation_groups_pipeline_order_and_history(fake_env: FakeEnv) -> Non
                     func=lambda env: env.obs,
                     clip=(-1.0, 4.0),
                     scale=2.0,
+                    history_length=2,
                 ),
                 "bias": ObservationTermCfg(
                     func=lambda env: torch.ones((env.num_envs, 1), dtype=torch.float32)
@@ -312,14 +324,19 @@ def test_observation_groups_pipeline_order_and_history(fake_env: FakeEnv) -> Non
     manager = ObservationManager(cfg, fake_env)
     first = manager.compute(update_history=True)
     expected_first = fake_env.obs.clamp(-1, 4) * 2
-    torch.testing.assert_close(first["policy"][:, :2], expected_first)
+    # First-frame backfill: every history slot holds the first (clipped and
+    # scaled) frame; the group width is 2 frames x 2 columns + 1 bias column.
+    torch.testing.assert_close(first["policy"][:, :4], expected_first.repeat(1, 2))
     assert list(first["dict_group"]) == ["state"]
-    assert manager.group_obs_dim["policy"] == (3,)
+    assert manager.group_obs_dim["policy"] == (5,)
 
     fake_env.obs = fake_env.obs + 10
     second = manager.compute(update_history=True)["policy"]
     expected_second = fake_env.obs.clamp(-1, 4) * 2
-    torch.testing.assert_close(second[:, :2], expected_second)
+    # Slots are ordered oldest -> newest and already-stored frames are not
+    # re-clipped or re-scaled when a new frame arrives.
+    torch.testing.assert_close(second[:, :2], expected_first)
+    torch.testing.assert_close(second[:, 2:4], expected_second)
     assert manager.get_active_iterable_terms(0)[0][0] == "policy-state"
 
 
@@ -395,32 +412,135 @@ def test_non_temporal_tensor_terms_stay_on_device_for_clip_scale_concat(
     assert source.isfinite().all()
 
 
+def test_tensor_delay_and_history_stay_on_device_without_host_detour(
+    fake_env: FakeEnv,
+) -> None:
+    device = fake_env.device
+    source = torch.arange(fake_env.num_envs * 2, dtype=torch.float32, device=device).reshape(
+        fake_env.num_envs, 2
+    )
+    manager = ObservationManager(
+        {
+            "policy": ObservationGroupCfg(
+                terms={
+                    "delayed": ObservationTermCfg(
+                        func=lambda env: source, delay_min_lag=1, delay_max_lag=1
+                    ),
+                    "history": ObservationTermCfg(func=lambda env: source, history_length=2),
+                }
+            )
+        },
+        fake_env,
+    )
+
+    first = manager.compute(update_history=True)["policy"]
+    assert isinstance(first, torch.Tensor)
+    assert first.device == device
+
+    history_buffer = manager._group_obs_term_history_buffer["policy"]["history"]
+    delay_buffer = manager._group_obs_term_delay_buffer["policy"]["delayed"]
+    assert history_buffer.buffer.device == device
+    assert delay_buffer.peek().device == device
+
+    source = source + 10
+    second = manager.compute(update_history=True)["policy"]
+    assert second.device == device
+    # Delayed term (lag=1) replays the previous frame; the history term keeps
+    # the previous frame in its oldest slot and appends the current frame.
+    torch.testing.assert_close(second[:, :2], first[:, :2])
+    torch.testing.assert_close(second[:, 2:4], first[:, 2:4])
+    torch.testing.assert_close(second[:, 4:6], source)
+
+
+def test_noise_is_sampled_per_frame_before_history(fake_env: FakeEnv) -> None:
+    """Noise applies to the current frame before it enters the history stack.
+
+    Each append stores one independently noised frame; already-stored slots
+    never change when a new frame arrives.
+    """
+    manager = ObservationManager(
+        {
+            "policy": ObservationGroupCfg(
+                terms={
+                    "state": ObservationTermCfg(
+                        func=lambda env: env.obs,
+                        noise=UniformNoiseCfg(n_min=-0.5, n_max=0.5),
+                        history_length=3,
+                    )
+                },
+                enable_corruption=True,
+            )
+        },
+        fake_env,
+    )
+    frames = []
+    for _ in range(3):
+        fake_env.obs = fake_env.obs + 1
+        frames.append(manager.compute(update_history=True)["policy"].clone())
+
+    width = fake_env.obs.shape[1]
+    # t0 backfilled every slot with the first noised frame.
+    torch.testing.assert_close(frames[0][:, :width], frames[0][:, width : 2 * width])
+    torch.testing.assert_close(frames[0][:, :width], frames[0][:, 2 * width :])
+    # Rolling: t1's newest slot is t2's middle slot, t0's frame is t2's oldest.
+    torch.testing.assert_close(frames[1][:, 2 * width :], frames[2][:, width : 2 * width])
+    torch.testing.assert_close(frames[0][:, 2 * width :], frames[2][:, :width])
+    # Noise was actually drawn for each appended frame.
+    raw_latest = fake_env.obs
+    noise = frames[2][:, 2 * width :] - raw_latest
+    assert float(noise.abs().max()) > 0.0
+    assert float(noise.abs().max()) <= 0.5 + 1e-6
+
+
 @pytest.mark.parametrize(
-    ("term_name", "term_cfg", "message"),
+    "term_cfg",
     [
-        (
-            "delayed",
-            ObservationTermCfg(func=lambda env: env.obs, delay_min_lag=1, delay_max_lag=1),
-            "delay or history state",
-        ),
-        (
-            "history",
-            ObservationTermCfg(func=lambda env: env.obs, history_length=2),
-            "delay or history state",
+        ObservationTermCfg(func=lambda env: env.obs, delay_min_lag=1, delay_max_lag=1),
+        ObservationTermCfg(func=lambda env: env.obs, history_length=2),
+        ObservationTermCfg(
+            func=lambda env: env.obs, delay_min_lag=1, delay_max_lag=1, history_length=2
         ),
     ],
+    ids=["delay-only", "history-only", "delay+history"],
 )
-def test_tensor_delay_and_history_fail_closed(
-    fake_env: FakeEnv,
-    term_name: str,
-    term_cfg: ObservationTermCfg,
-    message: str,
+def test_temporal_terms_compose_and_reset_under_env_ids(
+    fake_env: FakeEnv, term_cfg: ObservationTermCfg
 ) -> None:
-    with pytest.raises(NotImplementedError, match=message):
-        ObservationManager(
-            {"policy": ObservationGroupCfg(terms={term_name: term_cfg})},
-            fake_env,
+    manager = ObservationManager(
+        {"policy": ObservationGroupCfg(terms={"state": term_cfg})},
+        fake_env,
+    )
+    expected_width = fake_env.obs.shape[1]
+    if term_cfg.history_length > 0:
+        expected_width *= term_cfg.history_length
+
+    for _ in range(3):
+        fake_env.obs = fake_env.obs + 1
+        out = manager.compute(update_history=True)["policy"]
+        assert out.shape == (fake_env.num_envs, expected_width)
+
+    ids = torch.tensor([0, 2], dtype=torch.int64)
+    keep_ids = torch.tensor([1, 3], dtype=torch.int64)
+    manager.reset(ids)
+    reset_out = manager.compute(update_history=True, env_ids=ids)["policy"]
+    assert reset_out.shape == (fake_env.num_envs, expected_width)
+
+    if term_cfg.history_length > 0:
+        history_buffer = manager._group_obs_term_history_buffer["policy"]["state"]
+        # Reset rows are backfilled with their post-reset frame in every slot.
+        for row in ids.tolist():
+            slots = history_buffer.buffer[row]
+            torch.testing.assert_close(slots, slots[-1].expand_as(slots))
+        # A later step rolls every row forward again. With delay+history the
+        # history stores delayed frames, so its newest slot lags one step.
+        previous_obs = fake_env.obs.clone()
+        fake_env.obs = fake_env.obs + 1
+        stepped = manager.compute(update_history=True)["policy"]
+        assert stepped.shape == (fake_env.num_envs, expected_width)
+        expected_newest = (
+            previous_obs[keep_ids] if term_cfg.delay_max_lag > 0 else fake_env.obs[keep_ids]
         )
+        torch.testing.assert_close(history_buffer.buffer[keep_ids][:, -1], expected_newest)
 
 
 def test_tensor_noise_stays_on_device_without_observation_host_detour(
@@ -479,7 +599,7 @@ def test_tensor_terms_compute_at_full_width(fake_env: FakeEnv) -> None:
     )
 
     rows = manager.compute(update_history=True)["policy"]
-    manager.reset(torch.zeros(fake_env.num_envs, dtype=torch.bool, device=device))
+    manager.reset(torch.empty(0, dtype=torch.int64, device=device))
 
     assert isinstance(rows, torch.Tensor)
     assert rows.device == device

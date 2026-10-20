@@ -3,6 +3,8 @@
 # Modified by UniLab for NumPy and UniLab contracts; licensed under Apache-2.0.
 """Environment managers."""
 
+from unilab.managers._buffers import CircularBuffer as CircularBuffer
+from unilab.managers._buffers import DelayBuffer as DelayBuffer
 from unilab.managers._noise.noise_cfg import ConstantNoiseCfg as ConstantNoiseCfg
 from unilab.managers._noise.noise_cfg import GaussianNoiseCfg as GaussianNoiseCfg
 from unilab.managers._noise.noise_cfg import NoiseCfg as NoiseCfg
