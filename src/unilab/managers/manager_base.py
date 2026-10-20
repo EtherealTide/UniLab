@@ -57,8 +57,8 @@ class ManagerTermBaseCfg:
 
         RewardTermCfg(func=posture, params={"std": {".*knee.*": 0.3}}, weight=1.0)
 
-    Class-based terms can optionally implement ``reset(reset_mask)`` for fixed-width
-    per-episode state.
+    Class-based terms can optionally implement ``reset(env_ids)`` for per-episode
+    state.
     """
 
     func: Any
@@ -114,9 +114,15 @@ class ManagerBase(abc.ABC):
 
     # Methods.
 
-    def reset(self, reset_mask: torch.Tensor) -> dict[str, Any]:
-        """Resets manager state through the fixed-width mask boundary."""
-        del reset_mask
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, Any]:
+        """Resets manager state for the selected environment rows.
+
+        The public selector follows the IsaacLab/mjlab ``env_ids`` row-index
+        form (``None`` selects every row). A fixed-width bool mask is the
+        deprecated form: it is accepted for one release with a
+        ``DeprecationWarning`` (removed in v1.6).
+        """
+        del env_ids
         return {}
 
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:

@@ -5,14 +5,20 @@
 
 from __future__ import annotations
 
+import inspect
 import math
+import warnings
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import torch
 from prettytable import PrettyTable
 
+from unilab.base.reset_selectors import (
+    reset_env_ids_mask,
+    resolve_reset_env_ids,
+)
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
 from unilab.managers.rng import ManagerRng
 
@@ -149,23 +155,24 @@ class EventManager(ManagerBase):
                 return self._mode_term_cfgs[mode][index]
         raise ValueError(f"Event term '{term_name}' not found in active terms.")
 
-    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        """Clear stateful event terms through the fixed-width mask."""
-        self._validate_reset_mask(reset_mask)
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
+        """Clear stateful event terms for the selected environment rows."""
+        ids = resolve_reset_env_ids(
+            env_ids, num_envs=self.num_envs, device=self._device, owner="EventManager.reset"
+        )
         for mode, mode_cfg in self._mode_class_term_cfgs.items():
             if mode == "reset":
                 continue
             for term_cfg in mode_cfg:
-                term_cfg.func.reset(reset_mask)
+                term_cfg.func.reset(ids)
         # Iterate the full interval term list: _interval_term_time_left is parallel
         # to _mode_term_cfgs["interval"], not the class-only subset.
         for index, term_cfg in enumerate(self._mode_term_cfgs.get("interval", ())):
             if not term_cfg.is_global_time:
                 assert term_cfg.interval_range_s is not None
                 lower, upper = term_cfg.interval_range_s
-                sampled = self._sample_interval(lower, upper, self.num_envs)
-                timer = self._interval_term_time_left[index]
-                timer.copy_(torch.where(reset_mask, sampled, timer))
+                sampled = self._sample_interval(lower, upper, ids.numel())
+                self._interval_term_time_left[index][ids] = sampled
         return {}
 
     def apply(
@@ -173,6 +180,7 @@ class EventManager(ManagerBase):
         mode: EventMode,
         env_ids: torch.Tensor | slice | None = None,
         dt: float | None = None,
+        global_env_step_count: int | None = None,
     ):
         if mode not in ("startup", "reset", "interval", "step"):
             raise ValueError(f"Unsupported event mode '{mode}'.")
@@ -185,10 +193,22 @@ class EventManager(ManagerBase):
                 f"Event mode '{mode}' does not require environment indices. This is an undefined behavior"
                 " as the environment indices are computed based on the time left for each environment."
             )
-        if mode == "reset":
-            raise ValueError("Event reset terms are dispatched through dispatch_reset(mask).")
+        if mode == "reset" and global_env_step_count is None:
+            raise ValueError(
+                f"Event mode '{mode}' requires the total number of environment steps to be provided."
+            )
         if mode == "step" and dt is None:
             raise ValueError(f"Event mode '{mode}' requires the time-step of the environment.")
+
+        if mode == "reset":
+            # Reset events require concrete indices: callers (e.g.
+            # ManagerBasedRlEnv) resolve None to all environments upstream.
+            # Enforce that here so a future caller passing None fails loudly
+            # instead of leaking a slice into event functions.
+            if env_ids is None or isinstance(env_ids, slice):
+                raise ValueError("Event mode 'reset' requires concrete environment indices.")
+            self._apply_reset(env_ids, global_env_step_count=cast(int, global_env_step_count))
+            return
 
         for index, term_cfg in enumerate(self._mode_term_cfgs[mode]):
             if mode == "interval":
@@ -217,39 +237,66 @@ class EventManager(ManagerBase):
             else:
                 term_cfg.func(self._env, env_ids, **term_cfg.params)
 
+    def _apply_reset(self, env_ids: torch.Tensor, *, global_env_step_count: int) -> None:
+        """Dispatch reset event terms to the selected rows (mjlab-style)."""
+        for index, term_cfg in enumerate(self._mode_term_cfgs["reset"]):
+            min_step_count = term_cfg.min_step_count_between_reset
+            if min_step_count == 0:
+                self._reset_term_last_triggered_step_id[index][env_ids] = global_env_step_count
+                self._reset_term_last_triggered_once[index][env_ids] = True
+                self._call_reset_term(index, term_cfg, env_ids)
+            else:
+                last_triggered_step = self._reset_term_last_triggered_step_id[index][env_ids]
+                triggered_at_least_once = self._reset_term_last_triggered_once[index][env_ids]
+                steps_since_triggered = global_env_step_count - last_triggered_step
+                valid_trigger = steps_since_triggered >= min_step_count
+                valid_trigger |= (last_triggered_step == 0) & ~triggered_at_least_once
+                valid_env_ids = env_ids[valid_trigger]
+                if valid_env_ids.numel() > 0:
+                    self._reset_term_last_triggered_once[index][valid_env_ids] = True
+                    self._reset_term_last_triggered_step_id[index][valid_env_ids] = (
+                        global_env_step_count
+                    )
+                    self._call_reset_term(index, term_cfg, valid_env_ids)
+
+    def _call_reset_term(self, index: int, term_cfg: EventTermCfg, env_ids: torch.Tensor) -> None:
+        """Invoke one reset term with env_ids, or its deprecated mask boundary."""
+        if self._reset_term_mask_form[index]:
+            term_reset = getattr(term_cfg.func, "reset", None)
+            assert callable(term_reset)
+            term_reset(
+                self._env,
+                reset_env_ids_mask(env_ids, num_envs=self.num_envs, device=self._device),
+                **term_cfg.params,
+            )
+            return
+        term_cfg.func(self._env, env_ids, **term_cfg.params)
+
     def dispatch_reset(
         self,
         reset_mask: torch.Tensor,
         *,
         global_env_step_count: int,
     ) -> None:
-        """Dispatch fixed-shape reset events."""
-        self._validate_reset_mask(reset_mask)
-        for index, term_cfg in enumerate(self._mode_term_cfgs["reset"]):
-            term_func = getattr(term_cfg, "func", None)
-            if not callable(getattr(term_func, "reset", None)):
-                raise NotImplementedError(
-                    f"EventManager term '{self._mode_term_names['reset'][index]}' does not "
-                    "define the mask-preserving reset boundary; func="
-                    f"{getattr(term_func, '__name__', type(term_func).__name__)}"
-                )
-            self._reset_term_last_triggered_step_id[index].masked_fill_(
-                reset_mask, global_env_step_count
-            )
-            self._reset_term_last_triggered_once[index].masked_fill_(reset_mask, True)
-            assert term_func is not None
-            term_func.reset(self._env, reset_mask, **term_cfg.params)
+        """Deprecated mask-form reset dispatch; use ``apply(mode="reset", env_ids=...)``.
 
-    def _validate_reset_mask(self, reset_mask: torch.Tensor) -> None:
-        if reset_mask.ndim != 1 or reset_mask.shape[0] != self.num_envs:
-            raise ValueError(f"EventManager reset mask must have shape {(self.num_envs,)}")
-        if reset_mask.dtype != torch.bool or reset_mask.device != self._device:
-            raise ValueError(f"EventManager reset mask must be bool on {self._device}")
+        Kept for one release with a ``DeprecationWarning``; removed in v1.6.
+        """
+        env_ids = resolve_reset_env_ids(
+            reset_mask,
+            num_envs=self.num_envs,
+            device=self._device,
+            owner="EventManager.dispatch_reset",
+        )
+        if "reset" not in self._mode_term_cfgs:
+            return
+        self._apply_reset(env_ids, global_env_step_count=global_env_step_count)
 
     def _prepare_terms(self) -> None:
         self._interval_term_time_left: list[torch.Tensor] = list()
         self._reset_term_last_triggered_step_id: list[torch.Tensor] = list()
         self._reset_term_last_triggered_once: list[torch.Tensor] = list()
+        self._reset_term_mask_form: list[bool] = list()
 
         for term_name, term_cfg in self.cfg.items():
             if term_cfg is None:
@@ -273,17 +320,7 @@ class EventManager(ManagerBase):
             ):
                 self._mode_class_term_cfgs[term_cfg.mode].append(term_cfg)
             if term_cfg.mode == "reset":
-                if term_cfg.min_step_count_between_reset:
-                    raise NotImplementedError(
-                        f"EventManager reset term '{term_name}' uses "
-                        "min_step_count_between_reset, which is incompatible with the "
-                        "fixed-width mask reset contract"
-                    )
-                if not callable(getattr(term_cfg.func, "reset", None)):
-                    raise NotImplementedError(
-                        f"EventManager reset term '{term_name}' does not define the "
-                        "mask-preserving reset boundary"
-                    )
+                self._reset_term_mask_form.append(self._detect_mask_form_reset(term_name, term_cfg))
             if term_cfg.mode == "interval":
                 if term_cfg.interval_range_s is None:
                     raise ValueError(
@@ -309,6 +346,41 @@ class EventManager(ManagerBase):
                     f"EventManager term '{term_name}' requests direct model-field mutation; "
                     "this capability is unsupported by the standalone UniLab manager core."
                 )
+
+    def _detect_mask_form_reset(self, term_name: str, term_cfg: EventTermCfg) -> bool:
+        """Detect the deprecated mask-form reset boundary on a reset term.
+
+        Reset terms are called as ``func(env, env_ids, **params)``. Terms
+        written against the 1.4 mask contract instead define a ``reset`` entry
+        taking ``(env, reset_mask, **params)``; those keep working for one
+        release with a ``DeprecationWarning`` and are removed in v1.6. A
+        one-argument ``reset(env_ids)`` is the state-clearing hook of a
+        stateful term, not the mask-form boundary.
+        """
+        term_reset = getattr(term_cfg.func, "reset", None)
+        if not callable(term_reset):
+            return False
+        try:
+            signature = inspect.signature(term_reset)
+        except (TypeError, ValueError):
+            return False
+        positional = [
+            parameter
+            for parameter in signature.parameters.values()
+            if parameter.kind
+            in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        if len(positional) < 2:
+            return False
+        warnings.warn(
+            f"EventManager reset term '{term_name}' defines the deprecated mask-form "
+            "reset boundary reset(env, reset_mask, **params); reset terms are called as "
+            "func(env, env_ids, **params). The mask form is deprecated since v1.5 and "
+            "will be removed in v1.6.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return True
 
     def _sample_interval(self, lower: float, upper: float, count: int) -> torch.Tensor:
         return self._rng.uniform(lower, upper, (count,), dtype=torch.float64).reshape(count)

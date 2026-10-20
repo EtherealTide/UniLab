@@ -444,7 +444,7 @@ def test_foot_air_time_reset_clears_only_targeted_rows() -> None:
     scene.set_foot_contact(0, False)
     scene.set_foot_contact(1, False)
     term(env)  # Both feet at 0.02 s air time in both envs.
-    term.reset(torch.tensor([False, True], dtype=torch.bool))
+    term.reset(torch.tensor([1], dtype=torch.int64))
     np.testing.assert_allclose(term(env), [[0.04, 0.04], [0.02, 0.02]])
 
 
@@ -458,8 +458,8 @@ def test_air_time_reset_accepts_torch_row_selector_without_host_conversion() -> 
     term(env)
     window(env)
 
-    term.reset(torch.tensor([True, False], dtype=torch.bool))
-    window.reset(torch.tensor([True, False], dtype=torch.bool))
+    term.reset(torch.tensor([0], dtype=torch.int64))
+    window.reset(torch.tensor([0], dtype=torch.int64))
 
     np.testing.assert_allclose(term(env), [0.0, 0.0])
     np.testing.assert_allclose(window(env), [[0.02, 0.02], [0.04, 0.04]])
@@ -470,7 +470,7 @@ def test_gait_reset_rejects_numpy_carriers() -> None:
     env = _env(scene)
     term = _term(gait_terms.feet_air_time, env, sensor_groups=GROUPS)
 
-    with pytest.raises(TypeError, match="masked_fill_"):
+    with pytest.raises(TypeError, match="env_ids"):
         term.reset(np.array([1]))
 
 

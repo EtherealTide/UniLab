@@ -315,7 +315,7 @@ def test_go2_flat_registry_executes_real_manager_runtime(backend: str, owner: st
         state = env.init_state()
         assert all(torch.isfinite(values).all() for values in state.obs.values())
         assert state.obs["obs"].shape[0] == 2
-        obs, _ = env.reset(torch.tensor([False, True], dtype=torch.bool, device=env.device))
+        obs, _ = env.reset(torch.tensor([1], dtype=torch.int64, device=env.device))
         assert obs["obs"].shape[0] == 2
     finally:
         env.close()

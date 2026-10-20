@@ -70,9 +70,9 @@ def test_observation_mask_reset_contract() -> None:
         obs_before = {name: values.clone() for name, values in env.state.obs.items()}
         reset_ids = np.array([0, 2], dtype=np.int32)
         keep_ids = np.array([1, 3], dtype=np.int32)
-        reset_mask = torch.zeros(num_envs, dtype=torch.bool, device=env.device)
-        reset_mask[torch.from_numpy(reset_ids).to(env.device)] = True
-        reset_obs, _ = env.reset(reset_mask=reset_mask)
+        reset_obs, _ = env.reset(
+            env_ids=torch.from_numpy(reset_ids).to(device=env.device, dtype=torch.int64)
+        )
 
         for group, values in reset_obs.items():
             assert values.shape == obs_before[group].shape

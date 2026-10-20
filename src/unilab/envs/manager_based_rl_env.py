@@ -34,6 +34,7 @@ from unilab.base.config_overrides import (
 )
 from unilab.base.cpu_runtime import apply_cpu_confinement
 from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadPlan, SceneTensorReadSpec
+from unilab.base.reset_selectors import reset_env_ids_mask, resolve_reset_env_ids
 from unilab.base.reset_state import ResetStateTransaction
 from unilab.base.scene import SceneCfg, resolve_scene_default_qpos
 from unilab.base.torch_env import TorchEnv, TorchEnvState
@@ -1473,39 +1474,37 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def reset(
         self,
-        reset_mask: torch.Tensor | None = None,
+        env_ids: torch.Tensor | None = None,
         *,
         seed: int | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
-        """Execute the fixed-shape mask-driven Manager reset lifecycle."""
+        """Execute the selected-row (``env_ids``) Manager reset lifecycle."""
         del options
         if self._state is None:
             state = self.init_state()
             return state.obs, {"log": state.info.get("log", {})}
-        if reset_mask is None:
-            reset_mask = self._all_env_reset_mask
         if seed is not None:
             self.seed(seed)
-        if (
-            reset_mask.shape != (self.num_envs,)
-            or reset_mask.dtype != torch.bool
-            or reset_mask.device != self.device
-        ):
-            raise ValueError(
-                f"ManagerBasedRlEnv reset mask must have shape "
-                f"{(self.num_envs,)}, bool dtype, and device {self.device}"
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+            reset_mask = self._all_env_reset_mask
+        else:
+            env_ids = resolve_reset_env_ids(
+                env_ids,
+                num_envs=self.num_envs,
+                device=self.device,
+                owner="ManagerBasedRlEnv.reset",
             )
-        if self._state is None:
-            raise RuntimeError("ManagerBasedRlEnv requires init_state before mask reset")
+            reset_mask = reset_env_ids_mask(env_ids, num_envs=self.num_envs, device=self.device)
         reset_timing: dict[str, float] = {}
         read_plan = self.scene.read_plan
         # An empty explicit reset does not publish a pre-reset recorder boundary.
-        if self._has_transition and bool(reset_mask.any()):
-            self.recorder_manager.record_pre_reset(reset_mask)
+        if self._has_transition and env_ids.numel() > 0:
+            self.recorder_manager.record_pre_reset(env_ids)
         # Match the selected-row lifecycle: curriculum consumes the terminal
         # episode state before reset clears the public counters.
-        self.curriculum_manager.compute(reset_mask)
+        self.curriculum_manager.compute(env_ids)
         self._reset_state.declare_packed_reset_device(
             read_plan.device if read_plan is not None else self.device
         )
@@ -1515,8 +1514,8 @@ class ManagerBasedRlEnv(TorchEnv):
         log: dict[str, Any] = {}
         with reset_context:
             if "reset" in self.event_manager.available_modes:
-                self.event_manager.dispatch_reset(
-                    reset_mask, global_env_step_count=self.step_counter
+                self.event_manager.apply(
+                    mode="reset", env_ids=env_ids, global_env_step_count=self.step_counter
                 )
             reset_owner = self.reset_owner_manager.owner
             owns_command_reset = bool(
@@ -1524,9 +1523,9 @@ class ManagerBasedRlEnv(TorchEnv):
             )
             if owns_command_reset:
                 assert reset_owner is not None
-                log.update(reset_owner.reset_transaction(reset_mask))
+                log.update(reset_owner.reset_transaction(env_ids))
             else:
-                log.update(self.command_manager.reset(reset_mask))
+                log.update(self.command_manager.reset(env_ids))
             reset_timing.update(getattr(self.command_manager, "last_reset_timing_ms", {}))
             reset_timing.update(self.command_manager.reset_diagnostics())
 
@@ -1573,9 +1572,9 @@ class ManagerBasedRlEnv(TorchEnv):
             reset_impl = getattr(manager, "reset", None)
             if not callable(reset_impl):
                 raise NotImplementedError(
-                    f"{type(manager).__name__} does not define the mask-preserving reset boundary"
+                    f"{type(manager).__name__} does not define the reset boundary"
                 )
-            log.update(reset_impl(reset_mask))
+            log.update(reset_impl(env_ids))
         reset_timing.update(
             {
                 "reset_done_event_term_count": float(
@@ -1589,7 +1588,7 @@ class ManagerBasedRlEnv(TorchEnv):
             }
         )
         if reset_owner is not None:
-            log.update(reset_owner.reset_committed(reset_mask))
+            log.update(reset_owner.reset_committed(env_ids))
 
         with self.scene._scoped_state_reads():
             read_plan = self.scene.read_plan
@@ -1629,7 +1628,7 @@ class ManagerBasedRlEnv(TorchEnv):
                     torch.where(reset_mask[:, None], values, self.obs_buf[name])
                 )
         self.extras = self._state.info
-        self.recorder_manager.record_post_reset(reset_mask)
+        self.recorder_manager.record_post_reset(env_ids)
         return self._state.obs, {"log": log}
 
     def _map_observations(

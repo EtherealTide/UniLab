@@ -1,4 +1,4 @@
-"""Fixed-width mask reset tests for ObservationManager."""
+"""Selected-row (env_ids) reset tests for ObservationManager."""
 
 from __future__ import annotations
 
@@ -10,34 +10,34 @@ from unilab.managers import ObservationGroupCfg, ObservationManager, Observation
 from .conftest import FakeEnv
 
 
-class MaskTerm:
+class IdsTerm:
     def __init__(self) -> None:
-        self.reset_masks: list[torch.Tensor] = []
+        self.reset_ids: list[torch.Tensor] = []
 
     def __call__(self, env: FakeEnv) -> torch.Tensor:
         return env.obs.clone()
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        self.reset_masks.append(reset_mask.clone())
+    def reset(self, env_ids: torch.Tensor) -> None:
+        self.reset_ids.append(env_ids.clone())
 
 
-def test_mask_reset_passes_full_width_mask_and_invalidates_cache() -> None:
+def test_selected_reset_passes_env_ids_and_invalidates_cache() -> None:
     env = FakeEnv(seed=3)
-    source_term = MaskTerm()
+    source_term = IdsTerm()
     manager = ObservationManager(
         {"policy": ObservationGroupCfg(terms={"state": ObservationTermCfg(func=source_term)})},
         env,
     )
     term = manager.get_term_cfg("policy", "state").func
-    assert isinstance(term, MaskTerm)
+    assert isinstance(term, IdsTerm)
     full_obs = manager.compute(update_history=True)
     assert manager._obs_buffer is not None
 
-    reset_mask = torch.tensor([False, True, False, True], dtype=torch.bool)
-    assert manager.reset(reset_mask) == {}
+    env_ids = torch.tensor([1, 3], dtype=torch.int64)
+    assert manager.reset(env_ids) == {}
     assert manager._obs_buffer is None
-    assert len(term.reset_masks) == 1
-    torch.testing.assert_close(term.reset_masks[0], reset_mask)
+    assert len(term.reset_ids) == 1
+    torch.testing.assert_close(term.reset_ids[0], env_ids)
 
     reset_obs = manager.compute(update_history=True)
     assert reset_obs["policy"].shape == full_obs["policy"].shape
@@ -71,7 +71,7 @@ def test_temporal_terms_fail_closed_at_construction(field: str, value: int) -> N
 
 
 def test_removed_reset_row_contract_fails_closed_at_construction() -> None:
-    class RemovedRowTerm(MaskTerm):
+    class RemovedRowTerm(IdsTerm):
         def compute_reset_rows(self, env: FakeEnv, env_ids: torch.Tensor) -> torch.Tensor:
             return env.obs[env_ids]
 

@@ -19,6 +19,7 @@ import torch
 
 from unilab.base.backend_factory import create_backend, env_backend_kwargs
 from unilab.base.curriculum import EpisodeLengthTracker
+from unilab.base.reset_selectors import reset_env_ids_mask
 from unilab.envs.manager_based_rl_env import (
     ManagerBasedRlEnv as _ConcreteManagerBasedRlEnv,
 )
@@ -348,8 +349,12 @@ class G1GaitPhase(ManagerTermBase):
             return phase
         return phase.copy()
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        _resample_gait_mask(cast("_G1Env", self._env), self._context, reset_mask)
+    def reset(self, env_ids: torch.Tensor) -> None:
+        env = cast("_G1Env", self._env)
+        reset_mask = reset_env_ids_mask(
+            env_ids, num_envs=env.num_envs, device=torch.device(env.device)
+        )
+        _resample_gait_mask(env, self._context, reset_mask)
 
 
 class _GaitRewardTerm(_SensorTerm):
@@ -539,8 +544,8 @@ class feet_air_time(_FootContactTerm):
             (env.num_envs, 2), dtype=torch.float32, device=torch.device(env.device)
         )
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        self._air_time.masked_fill_(reset_mask.reshape(-1, 1), 0.0)
+    def reset(self, env_ids: torch.Tensor) -> None:
+        self._air_time[env_ids] = 0.0
 
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
@@ -827,8 +832,8 @@ class weighted_pose(ManagerTermBase):
             )
         return (self._weights * (position - default).square()).sum(dim=1)
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        del reset_mask
+    def reset(self, env_ids: torch.Tensor) -> None:
+        del env_ids
 
 
 class upper_body_pose(weighted_pose):
@@ -1012,18 +1017,21 @@ class G1PenaltyCurriculum(ManagerTermBase):
             "penalty_scale": self._current_scale,
         }
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        """Mask boundary for the global curriculum state."""
-        del reset_mask
+    def reset(self, env_ids: torch.Tensor) -> None:
+        """Row boundary for the global curriculum state."""
+        del env_ids
 
     def reset_scoped(
         self,
         env: _G1Env,
-        reset_mask: torch.Tensor,
+        env_ids: torch.Tensor,
         **params: Any,
     ) -> dict[str, float]:
-        """Fixed-shape curriculum update at reset."""
+        """Selected-row curriculum update at reset."""
         del params
+        reset_mask = reset_env_ids_mask(
+            env_ids, num_envs=env.num_envs, device=torch.device(env.device)
+        )
         reset_buf = env.reset_buf
         if not isinstance(reset_buf, torch.Tensor):
             raise TypeError(f"{self.name} requires reset_buf to be a Torch tensor")
@@ -1092,21 +1100,21 @@ class G1WalkResetOwner(ResetOwner):
         if getattr(env, "rng", None) is None:
             raise NotImplementedError("G1WalkResetOwner requires the Manager RNG")
 
-    def reset_transaction(self, reset_mask: torch.Tensor) -> dict[str, float]:
+    def reset_transaction(self, env_ids: torch.Tensor) -> dict[str, float]:
         env = cast("_G1Env", self._env)
         command = env.command_manager.get_term(self.cfg.command_name)
         if not callable(getattr(command, "reset", None)):
             raise NotImplementedError(
                 f"G1WalkResetOwner command '{self.cfg.command_name}' does not define "
-                "the mask-preserving reset boundary"
+                "the reset boundary"
             )
-        command.reset(reset_mask)
+        command.reset(env_ids)
         return {}
 
-    def reset_committed(self, reset_mask: torch.Tensor) -> dict[str, float]:
+    def reset_committed(self, env_ids: torch.Tensor) -> dict[str, float]:
         env = cast("_G1Env", self._env)
-        env.action_manager.clear_action_state(reset_mask)
-        env.metrics_manager.clear_episode_state(reset_mask)
+        env.action_manager.clear_action_state(env_ids)
+        env.metrics_manager.clear_episode_state(env_ids)
         return {}
 
 
@@ -1326,9 +1334,9 @@ class G1WalkTerminationPack(ManagerTermBase):
     def entity_name(self) -> str:
         return self.cfg.entity_name
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        """Mask boundary for the stateless termination pack."""
-        del reset_mask
+    def reset(self, env_ids: torch.Tensor) -> None:
+        """Row boundary for the stateless termination pack."""
+        del env_ids
 
     def __call__(self, env: _G1Env) -> torch.Tensor:
         read_plan = getattr(env.scene, "read_plan", None)

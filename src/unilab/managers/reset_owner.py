@@ -41,12 +41,12 @@ class ResetOwner(ManagerTermBase):
         self.cfg = cfg
         super().__init__(env)
 
-    def reset_transaction(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        """Execute fixed-shape reset ownership before commit."""
+    def reset_transaction(self, env_ids: torch.Tensor) -> dict[str, float]:
+        """Execute reset ownership for the selected envs before commit."""
         raise NotImplementedError(type(self).__name__)
 
-    def reset_committed(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        """Execute fixed-shape reset ownership after commit."""
+    def reset_committed(self, env_ids: torch.Tensor) -> dict[str, float]:
+        """Execute reset ownership for the selected envs after commit."""
         raise NotImplementedError(type(self).__name__)
 
 
@@ -88,16 +88,16 @@ class ResetOwnerManager:
         except KeyError as exc:
             raise KeyError(f"Reset owner '{name}' is not configured") from exc
 
-    def reset_transaction(self, reset_mask: torch.Tensor) -> dict[str, float]:
+    def reset_transaction(self, env_ids: torch.Tensor) -> dict[str, float]:
         extras: dict[str, float] = {}
         for term in self._terms.values():
-            extras.update(term.reset_transaction(reset_mask))
+            extras.update(term.reset_transaction(env_ids))
         return extras
 
-    def reset_committed(self, reset_mask: torch.Tensor) -> dict[str, float]:
+    def reset_committed(self, env_ids: torch.Tensor) -> dict[str, float]:
         extras: dict[str, float] = {}
         for term in self._terms.values():
-            extras.update(term.reset_committed(reset_mask))
+            extras.update(term.reset_committed(env_ids))
         return extras
 
     def __str__(self) -> str:
@@ -121,12 +121,12 @@ class NullResetOwnerManager:
     def get_term(self, name: str) -> None:
         raise KeyError(f"Reset owner '{name}' is not configured")
 
-    def reset_transaction(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        del reset_mask
+    def reset_transaction(self, env_ids: torch.Tensor) -> dict[str, float]:
+        del env_ids
         return {}
 
-    def reset_committed(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        del reset_mask
+    def reset_committed(self, env_ids: torch.Tensor) -> dict[str, float]:
+        del env_ids
         return {}
 
     def __str__(self) -> str:

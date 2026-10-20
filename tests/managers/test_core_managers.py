@@ -49,7 +49,7 @@ class DummyAction(ActionTerm):
     def apply_actions(self) -> None:
         self.applied += 1
 
-    def reset(self, env_ids: np.ndarray | slice | None) -> None:
+    def reset(self, env_ids: torch.Tensor | slice | None) -> None:
         self.reset_ids = env_ids
         self._raw[env_ids] = 0.0
 
@@ -98,7 +98,7 @@ def test_action_split_history_apply_and_partial_reset(fake_env: FakeEnv) -> None
     torch.testing.assert_close(manager.get_term("legs").raw_action, second[:, :2])
     manager.apply_action()
     assert manager.get_term("legs").applied == 1
-    manager.reset(torch.tensor([False, True, False, True], dtype=torch.bool))
+    manager.reset(torch.tensor([1, 3], dtype=torch.int64))
     torch.testing.assert_close(manager.action[[1, 3]], torch.zeros(2, 3))
     torch.testing.assert_close(manager.action[[0, 2]], second[[0, 2]])
 
@@ -198,7 +198,7 @@ class StatefulReward:
     def __call__(self, env: FakeEnv) -> torch.Tensor:
         return env.value.clone()
 
-    def reset(self, env_ids: np.ndarray | slice | None) -> None:
+    def reset(self, env_ids: torch.Tensor | slice | None) -> None:
         self.reset_ids = env_ids
 
 
@@ -210,11 +210,11 @@ def test_reward_dt_scaling_reset_and_config_immutability(fake_env: FakeEnv) -> N
     assert reward.device.type == "cpu"
     torch.testing.assert_close(reward, fake_env.value * 0.5)
     assert manager.get_active_iterable_terms(2) == [("stateful", [4.0])]
-    reset_ids = np.array([1, 2])
+    reset_ids = torch.tensor([1, 2], dtype=torch.int64)
     extras = manager.reset(reset_ids)
     assert extras == {}
     assert not any(key.startswith("Episode_Reward/") for key in extras)
-    assert manager.get_term_cfg("stateful").func.reset_ids is reset_ids
+    torch.testing.assert_close(manager.get_term_cfg("stateful").func.reset_ids, reset_ids)
     assert cfg["stateful"].func is StatefulReward
     assert isinstance(manager.get_term_cfg("stateful").func, StatefulReward)
 
@@ -469,7 +469,7 @@ def test_termination_splits_timeouts_and_failures(fake_env: FakeEnv) -> None:
     torch.testing.assert_close(dones, timeout | failure)
     torch.testing.assert_close(manager.time_outs, timeout)
     torch.testing.assert_close(manager.terminated, failure)
-    assert manager.reset(torch.tensor([True, True, False, False], dtype=torch.bool)) == {
+    assert manager.reset(torch.tensor([0, 1], dtype=torch.int64)) == {
         "Episode_Termination/timeout": 1,
         "Episode_Termination/failure": 1,
     }
@@ -590,11 +590,10 @@ def test_curriculum_and_null_semantics(fake_env: FakeEnv) -> None:
 
     manager = CurriculumManager({"terrain": CurriculumTermCfg(func=update)}, fake_env)
     manager.compute()
-    reset_mask = torch.ones(4, dtype=torch.bool)
-    assert manager.reset(reset_mask)["Curriculum/terrain/difficulty"] == 3.0
+    assert manager.reset(None)["Curriculum/terrain/difficulty"] == 3.0
     null = NullCurriculumManager()
     assert null.active_terms == []
-    assert null.reset(reset_mask) == {}
+    assert null.reset(None) == {}
 
     bad = CurriculumManager({"bad": CurriculumTermCfg(func=lambda env, env_ids: np.nan)}, fake_env)
     with pytest.raises(ValueError, match="CurriculumManager term 'bad'"):

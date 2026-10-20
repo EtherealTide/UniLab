@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Sequence, cast
 import torch
 from prettytable import PrettyTable
 
+from unilab.base.reset_selectors import resolve_reset_env_ids, resolve_reset_mask
 from unilab.managers.manager_base import ManagerBase, ManagerTermBase
 from unilab.managers.rng import ManagerRng
 
@@ -83,20 +84,16 @@ class CommandTerm(ManagerTermBase):
 
     def reset(
         self,
-        reset_mask: torch.Tensor,
+        env_ids: torch.Tensor | slice | None = None,
         *,
         publish_metrics: bool = True,
     ) -> dict[str, float]:
-        if (
-            not isinstance(reset_mask, torch.Tensor)
-            or reset_mask.shape != (self.num_envs,)
-            or reset_mask.dtype != torch.bool
-            or reset_mask.device != self._device
-        ):
-            raise ValueError(
-                f"CommandTerm '{self.name}' reset mask must have shape "
-                f"{(self.num_envs,)}, bool dtype, and device {self._device}"
-            )
+        reset_mask = resolve_reset_mask(
+            env_ids,
+            num_envs=self.num_envs,
+            device=self._device,
+            owner=f"CommandTerm '{self.name}' reset",
+        )
         extras: dict[str, float] = {}
         metrics_started = time.perf_counter()
         metric_values = list(self.metrics.items())
@@ -352,40 +349,25 @@ class CommandManager(ManagerBase):
             terms.append((name, command[env_idx].detach().cpu().tolist()))
         return terms
 
-    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        """Full-width command reset.
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
+        """Reset command terms for the selected environment rows.
 
-        Every term must provide a mask-preserving owner implementation; a row
-        fallback would invalidate the fixed-shape contract.
+        Every term consumes the public ``env_ids`` row selector; the packed
+        internals keep their fixed-width mask form behind the selector
+        conversion.
         """
-        self._validate_reset_mask(reset_mask)
+        ids = resolve_reset_env_ids(
+            env_ids, num_envs=self.num_envs, device=self._device, owner="CommandManager.reset"
+        )
         extras: dict[str, float] = {}
         for name, term in self._terms.items():
-            if not callable(getattr(term, "reset", None)):
-                raise NotImplementedError(
-                    f"CommandManager term '{name}' does not define the "
-                    "mask-preserving reset boundary"
-                )
-            metrics = term.reset(reset_mask)
+            metrics = term.reset(ids)
             for metric_name, metric_value in metrics.items():
                 extras[f"Metrics/{name}/{metric_name}"] = metric_value
         self._last_term_reset_timing_ms.clear()
         for name, term in self._terms.items():
             self._last_term_reset_timing_ms.update(term.last_reset_timing_ms)
         return extras
-
-    def _validate_reset_mask(self, reset_mask: torch.Tensor) -> None:
-        if (
-            not isinstance(reset_mask, torch.Tensor)
-            or reset_mask.ndim != 1
-            or reset_mask.shape[0] != self.num_envs
-            or reset_mask.dtype != torch.bool
-            or reset_mask.device != self._device
-        ):
-            raise ValueError(
-                f"CommandManager reset mask must have shape {(self.num_envs,)}, "
-                f"bool dtype, and device {self._device}"
-            )
 
     def compute(self, dt: float | torch.Tensor) -> None:
         step_timing: dict[str, float] = {}
@@ -532,8 +514,8 @@ class NullCommandManager:
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:
         return []
 
-    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        del reset_mask
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
+        del env_ids
         return {}
 
     def reset_diagnostics(self) -> dict[str, float]:
