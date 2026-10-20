@@ -84,9 +84,19 @@ and [quick demo guide](https://unilabsim.github.io/UniLab-doc/en/1-getting_start
 ## Train and evaluate
 
 ```bash
-# Train the g1 flat-walking task with MuJoCo and replay it with Motrix.
+# Train the g1 flat-walking task with MuJoCo and replay it.
 uv run train --algo sac --task g1_walk_flat --sim mujoco
+uv run eval --algo sac --task g1_walk_flat --sim mujoco --render-mode viser
+
+# sim2sim
+#   motrixsim
 uv run --extra motrix eval --algo sac --task g1_walk_flat --sim motrix --render-mode interactive --load-run -1
+#   newton
+uv run --extra newton eval --algo sac --task g1_walk_flat --sim newton --load-run -1
+#   isaacgym
+bash scripts/tools/setup_isaacgym_env.sh
+uv run eval --algo sac --task g1_walk_flat --sim isaacgym --load-run -1
+
 
 # Train the g1 motion-tracking task with mjwarp and replay it with Genesis physics.
 uv run --extra mjwarp train --algo flashsac --task g1_motion_tracking --sim mjwarp

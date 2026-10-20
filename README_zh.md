@@ -77,9 +77,19 @@ Windows、macOS、CUDA、ROCm、XPU、可选后端和无头渲染的说明，请
 ## 训练与评估
 
 ```bash
-# 使用 MuJoCo 训练并用 Motrix 回放 g1平地行走 任务
+# 使用 MuJoCo 训练并回放 g1平地行走 任务
 uv run train --algo sac --task g1_walk_flat --sim mujoco
+uv run eval --algo sac --task g1_walk_flat --sim mujoco --render-mode viser
+
+# sim2sim
+#   motrixsim
 uv run --extra motrix eval --algo sac --task g1_walk_flat --sim motrix --render-mode interactive --load-run -1
+#   newton
+uv run --extra newton eval --algo sac --task g1_walk_flat --sim newton --load-run -1
+#   isaacgym
+bash scripts/tools/setup_isaacgym_env.sh
+uv run eval --algo sac --task g1_walk_flat --sim isaacgym --load-run -1
+
 
 # 使用 mjwarp 训练并用 genesis 物理 回放 g1动作跟踪 任务
 uv run --extra mjwarp train --algo flashsac --task g1_motion_tracking --sim mjwarp
