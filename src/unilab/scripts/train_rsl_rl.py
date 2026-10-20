@@ -143,26 +143,6 @@ def build_ppo_play_env_cfg_override(cfg: DictConfig) -> dict[str, Any]:
     )
 
 
-def run_motrix_rsl_play_loop(
-    wrapped_env,
-    policy,
-    *,
-    render_spacing: float,
-    render_offset_mode: str,
-    num_steps: int | None = None,
-) -> None:
-    env = wrapped_env.env
-
-    with torch.inference_mode():
-        env.run_playback(
-            render_spacing=render_spacing,
-            render_offset_mode=render_offset_mode,
-            num_steps=num_steps,
-            initialize=lambda: wrapped_env.reset()[0],
-            step=lambda obs: wrapped_env.step(policy(obs))[0],
-        )
-
-
 def validate_ppo_run_completion_topology(
     cfg: DictConfig,
     *,
@@ -254,7 +234,7 @@ def _playback_debug_overlay_getter(env):
     return _ee_goal_debug_overlay_getter(env)
 
 
-def play_rsl_rl(cfg: DictConfig, device: str) -> str | None:
+def play_ppo(cfg: DictConfig, device: str) -> str | None:
     """Play mode for RSL-RL."""
     rl_cfg = algo_config_dict(cfg)
 
@@ -675,7 +655,7 @@ def main(cfg: DictConfig) -> None:
             # them while playback constructs a new runner so rank 0 does not
             # initialize a second NCCL group after sibling workers have exited.
             with rsl_rl_single_process_topology():
-                play_video_path = play_rsl_rl(cfg, device)
+                play_video_path = play_ppo(cfg, device)
             if tracker is not None:
                 tracker.log_video(play_video_path)
     finally:

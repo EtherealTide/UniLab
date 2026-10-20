@@ -19,7 +19,7 @@ class _CaptureSacTargetCritic(torch.nn.Module):
         probs[:, :, 0] = 1.0
         return probs
 
-    def get_value(self, probs):
+    def expected_value(self, probs):
         return probs[:, :, 0]
 
 

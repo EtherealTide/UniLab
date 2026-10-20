@@ -80,7 +80,7 @@ def _unique_parameters(parameters: Iterable[torch.nn.Parameter]) -> list[torch.n
     return unique
 
 
-def vtrace_advantages(
+def compute_vtrace_advantages(
     behavior_log_probs,  # [T, N]  log π_b(a|s) from worker
     target_log_probs,  # [T, N]  log π_target(a|s) from target network
     rewards,  # [T, N]
@@ -440,7 +440,7 @@ class APPOLearner:
             }
 
         # V-trace targets and advantages
-        vs, advantages = vtrace_advantages(
+        vs, advantages = compute_vtrace_advantages(
             behavior_log_probs=behavior_log_probs,
             target_log_probs=target_log_probs,
             rewards=rewards,

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar, cast
 
 import numpy as np
+import torch
 from unisim.backend.base import CameraCfg, DebugOverlayGetter
 
 ObsT = TypeVar("ObsT")
@@ -72,7 +73,32 @@ def render_play_mode(
     )
 
 
+def run_native_viewer_play_loop(
+    env,
+    *,
+    initialize: Callable[[], ObsT],
+    step: Callable[[ObsT], ObsT],
+    num_steps: int | None = None,
+    render_spacing: float | None = None,
+    render_offset_mode: str | None = None,
+) -> None:
+    """Run the backend-native viewer loop under ``torch.inference_mode()``.
+
+    Shared by the training entrypoints' native-viewer playback paths; callers
+    own the policy wiring through the ``initialize``/``step`` callbacks.
+    """
+    with torch.inference_mode():
+        env.run_playback(
+            render_spacing=render_spacing,
+            render_offset_mode=render_offset_mode,
+            num_steps=num_steps,
+            initialize=initialize,
+            step=step,
+        )
+
+
 __all__ = [
     "camera_cfg_from_training",
     "render_play_mode",
+    "run_native_viewer_play_loop",
 ]

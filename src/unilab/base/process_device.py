@@ -106,13 +106,6 @@ def _cuda_device_index(device: str | None) -> int | None:
     return index
 
 
-def rank_local_visible_cuda_entries(
-    current_visible_devices: str | None = None,
-) -> tuple[str, ...]:
-    """Return opaque rank-local CUDA visibility entries before Torch init."""
-    return visible_cuda_entries(current_visible_devices)
-
-
 def resolve_backend_env_device_id(
     backend_type: str,
     *,
@@ -130,7 +123,7 @@ def resolve_backend_env_device_id(
     if field is None:
         return None
 
-    visible_entries = rank_local_visible_cuda_entries()
+    visible_entries = visible_cuda_entries()
     if len(visible_entries) == 1:
         return 0
     if visible_entries:
@@ -382,10 +375,10 @@ def configure_backend_process_device(
             resolved,
             backend_device_id=backend_device_id,
         )
-    return bind_backend_process_device_for_backend(backend_type, resolved)
+    return bind_backend_process_device(backend_type, resolved)
 
 
-def bind_backend_process_device_for_backend(backend_type: str, resolved: str) -> str | None:
+def bind_backend_process_device(backend_type: str, resolved: str) -> str | None:
     """Bind one backend's process-global accelerator device.
 
     This top-level callable is intentionally backend-aware and lazy.  It can
@@ -523,11 +516,10 @@ __all__ = [
     "canonicalize_sim_carrier_device",
     "apply_backend_env_device_override",
     "apply_sim_carrier_device_override",
-    "bind_backend_process_device_for_backend",
+    "bind_backend_process_device",
     "bind_genesis_process_device",
     "configure_backend_process_device",
     "pin_genesis_device_before_cuda_init",
-    "rank_local_visible_cuda_entries",
     "resolve_backend_env_device_id",
     "resolve_backend_process_device",
 ]

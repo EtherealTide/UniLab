@@ -1053,7 +1053,7 @@ class MotionCommand(CommandTerm):
             time.perf_counter() - refresh_started
         ) * 1000.0
 
-    def update_command_reset(self, reset_mask: torch.Tensor) -> None:
+    def refresh_reset(self, reset_mask: torch.Tensor) -> None:
         """Consume the full-width reset mask without row comparison."""
         timing = self.last_step_timing_ms
         ingested = self._tensor_resample_ingested_mask

@@ -830,7 +830,7 @@ class _Command(CommandTerm):
         samples = rng.uniform(0.0, 1.0, self._command.shape, dtype=torch.float32)
         self._command.copy_(torch.where(reset_mask[:, None], samples, self._command))
 
-    def update_command_reset(self, reset_mask: torch.Tensor) -> None:
+    def refresh_reset(self, reset_mask: torch.Tensor) -> None:
         self.reset(reset_mask)
 
     def post_compute_reset(self) -> None:
@@ -886,7 +886,7 @@ class _StateWritingCommand(_Command):
         )
         return {}
 
-    def update_command_reset(self, reset_mask: torch.Tensor) -> None:
+    def refresh_reset(self, reset_mask: torch.Tensor) -> None:
         self._command.copy_(
             torch.where(
                 reset_mask.reshape(-1, 1),
@@ -922,7 +922,7 @@ class _TensorStateWritingCommand(_Command):
         )
         return {}
 
-    def update_command_reset(self, reset_mask: torch.Tensor) -> None:
+    def refresh_reset(self, reset_mask: torch.Tensor) -> None:
         self._command.copy_(
             torch.where(
                 reset_mask.reshape(-1, 1),

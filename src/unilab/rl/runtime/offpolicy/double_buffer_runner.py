@@ -29,8 +29,8 @@ from unilab.rl.logging.runtime_manifest_schema import (
 from unilab.rl.runtime.async_runner import _SPAWN_CTX
 from unilab.rl.runtime.device import (
     DeviceTimer,
+    build_device_timer,
     device_runtime_capabilities,
-    make_device_timer,
     sync_device,
 )
 from unilab.rl.runtime.ipc.inference_ring import (
@@ -61,7 +61,7 @@ from unilab.rl.runtime.offpolicy.warmup import (
 )
 from unilab.rl.runtime.offpolicy.worker import (
     COLLECTOR_READY_TICK,
-    off_policy_collector_fn,
+    offpolicy_collector_fn,
     sample_offpolicy_actions,
 )
 from unilab.rl.runtime.placement import (
@@ -85,7 +85,7 @@ _ALGO_DISPLAY_NAMES = {
 }
 
 
-def reject_removed_inference_request_timeout(training: Mapping[str, Any]) -> None:
+def validate_no_inference_request_timeout(training: Mapping[str, Any]) -> None:
     if "inference_request_timeout_sec" in training:
         raise ValueError(
             "training.inference_request_timeout_sec was removed; off-policy "
@@ -613,7 +613,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
     def _prepare_inference_timing_events(self) -> None:
         """Allocate the validated inference forward timer."""
         try:
-            self._inference_forward_timer = make_device_timer(self.device)
+            self._inference_forward_timer = build_device_timer(self.device)
         except BaseException:
             if hasattr(self, "_inference_forward_timer"):
                 delattr(self, "_inference_forward_timer")
@@ -1417,7 +1417,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         from unilab.rl.runtime.ipc.memory_budget import (
             estimate_cuda_inference_ipc_bytes,
             estimate_cuda_tensor_runtime_bytes,
-            estimate_offpolicy_bytes,
+            estimate_host_offpolicy_bytes,
             raise_if_cuda_memory_over_budget,
             raise_if_shared_memory_over_budget,
             warn_if_over_budget,
@@ -1433,7 +1433,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             self.action_dim,
             capacity=self.inference_slot_capacity,
         )
-        mem_est = estimate_offpolicy_bytes(
+        mem_est = estimate_host_offpolicy_bytes(
             num_envs=self.num_envs,
             replay_buffer_n=self.replay_buffer_n,
             obs_dim=self.obs_dim,
@@ -1732,7 +1732,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             self._learner_coordination.mark_waiting()
             with torch_thread_env(self.torch_thread_runtime, role="collector"):
                 self._start_collector(
-                    target_fn=off_policy_collector_fn,
+                    target_fn=offpolicy_collector_fn,
                     kwargs={"stop_event": self._stop_event, **collector_kwargs},
                 )
             self._shutdown_recorder.set_phase(owner="learner", phase="training/startup_complete")

@@ -10,8 +10,8 @@ from typing import Any, Callable
 
 from unilab.rl.runtime.ipc.collector_error import (
     ExceptionWrapper,
+    build_error_pipe,
     collector_error_guard,
-    create_error_pipe,
     format_collector_death,
 )
 from unilab.rl.runtime.ipc.parent_watchdog import (
@@ -105,7 +105,7 @@ class AsyncRunner(ABC):
     ) -> None: ...
 
     def _start_collector(self, target_fn: Callable, kwargs: dict) -> None:
-        self._error_recv, self._error_send = create_error_pipe()
+        self._error_recv, self._error_send = build_error_pipe()
 
         # Hand the learner PID to the collector for its parent-death
         # watchdog. The child cannot read it back from getppid(): a learner

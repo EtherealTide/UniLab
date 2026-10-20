@@ -1555,7 +1555,7 @@ def test_mps_learner_serves_cpu_ring_inference_with_device_copy(
     runner.algo_type = "dummy_mps_sac"
     runner.learner = SimpleNamespace(actor=actor)
     runner.inference_epoch = 0
-    runner._inference_forward_timer = device_runner_module.make_device_timer("cpu")
+    runner._inference_forward_timer = device_runner_module.build_device_timer("cpu")
     runner.inference_placement = InferencePlacement(
         mode=InferenceTransport.HOST,
         env_device="cpu",
@@ -2588,7 +2588,7 @@ def test_learner_inference_matches_existing_actor_exploration(algo_type: str) ->
     runner.algo_type = algo_type
     runner.learner = SimpleNamespace(actor=actor)
     runner.inference_epoch = 0
-    runner._inference_forward_timer = device_runner_module.make_device_timer("cpu")
+    runner._inference_forward_timer = device_runner_module.build_device_timer("cpu")
     runner.inference_placement = InferencePlacement(
         mode=InferenceTransport.HOST,
         env_device="cpu",
@@ -2662,7 +2662,7 @@ def test_adapter_learner_inference_uses_actor_context(
     runner.algo_type = "dummy_priv_sac"
     runner.learner = SimpleNamespace(actor=actor)
     runner.inference_epoch = 0
-    runner._inference_forward_timer = device_runner_module.make_device_timer("cpu")
+    runner._inference_forward_timer = device_runner_module.build_device_timer("cpu")
     runner.inference_placement = InferencePlacement(
         mode=InferenceTransport.HOST,
         env_device="cpu",

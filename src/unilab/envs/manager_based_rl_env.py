@@ -1515,7 +1515,9 @@ class ManagerBasedRlEnv(TorchEnv):
         log: dict[str, Any] = {}
         with reset_context:
             if "reset" in self.event_manager.available_modes:
-                self.event_manager.apply_reset(reset_mask, global_env_step_count=self.step_counter)
+                self.event_manager.dispatch_reset(
+                    reset_mask, global_env_step_count=self.step_counter
+                )
             reset_owner = self.reset_owner_manager.owner
             owns_command_reset = bool(
                 reset_owner is not None and reset_owner.cfg.owns_command_reset
@@ -1593,7 +1595,7 @@ class ManagerBasedRlEnv(TorchEnv):
             read_plan = self.scene.read_plan
             if read_plan is not None:
                 read_plan.refresh()
-            self.command_manager.compute_reset(dt=0.0, reset_mask=reset_mask)
+            self.command_manager.refresh_reset(reset_mask)
             self.command_manager.post_compute_reset()
             reset_timing.update(getattr(self.command_manager, "last_post_compute_timing_ms", {}))
             manager_obs = self.observation_manager.compute(update_history=True)

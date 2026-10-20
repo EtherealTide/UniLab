@@ -651,7 +651,7 @@ def _build_rsl_lifecycle_case(
         del args, kwargs
         captured["playback"] += 1
 
-    monkeypatch.setattr(mod, "play_rsl_rl", playback)
+    monkeypatch.setattr(mod, "play_ppo", playback)
     return mod, cfg, captured, learn_exception
 
 
@@ -868,13 +868,11 @@ def test_build_ppo_play_env_cfg_override_keeps_task_owned_manager_scene(
     assert env_cfg_override["scene"]["entities"]["robot"]["joint_names"]
 
 
-def test_run_motrix_rsl_play_loop_uses_render_spacing_and_offset_mode(
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_run_native_viewer_play_loop_uses_render_spacing_and_offset_mode():
     import torch
     from tensordict import TensorDict
 
-    mod = _train_rsl_rl(monkeypatch)
+    from unilab.visualization.playback import run_native_viewer_play_loop
 
     class FakePolicy:
         def __call__(self, obs):
@@ -940,13 +938,15 @@ def test_run_motrix_rsl_play_loop_uses_render_spacing_and_offset_mode(
             )
 
     wrapped_env = FakeWrapper()
+    policy = FakePolicy()
 
-    mod.run_motrix_rsl_play_loop(
-        wrapped_env=wrapped_env,
-        policy=FakePolicy(),
+    run_native_viewer_play_loop(
+        wrapped_env.env,
         render_spacing=2.5,
         render_offset_mode="zero",
         num_steps=3,
+        initialize=lambda: wrapped_env.reset()[0],
+        step=lambda obs: wrapped_env.step(policy(obs))[0],
     )
 
     assert wrapped_env.reset_calls == 1
@@ -1039,8 +1039,8 @@ def test_appo_host_bridge_carriers_follow_sim_carrier_device_auto(monkeypatch):
     assert explicit_cuda["env_cfg_overrides"]["sim_carrier_device"] == "cuda"
 
 
-def test_run_motrix_play_loop_runs_without_physics_state():
-    mod = _train_appo()
+def test_run_native_viewer_play_loop_runs_without_physics_state():
+    from unilab.visualization.playback import run_native_viewer_play_loop
 
     class FakeActor:
         def __call__(self, td):
@@ -1115,14 +1115,29 @@ def test_run_motrix_play_loop_runs_without_physics_state():
             )
 
     env = FakeEnv()
+    actor = FakeActor()
 
-    mod.run_motrix_play_loop(
-        env=env,
-        actor=FakeActor(),
-        device="cpu",
-        play_env_num=2,
-        num_steps=3,
-    )
+    def _reset_obs() -> torch.Tensor:
+        obs = env.reset(torch.ones(2, dtype=torch.bool, device=env.device))[0]["obs"]
+        assert isinstance(obs, torch.Tensor)
+        return obs
+
+    def _step(obs: torch.Tensor) -> torch.Tensor:
+        from tensordict import TensorDict
+
+        assert isinstance(obs, torch.Tensor)
+        action = actor(
+            TensorDict(
+                {"policy": obs.to(device="cpu", dtype=torch.float32)},
+                batch_size=2,
+            )
+        ).to(device=env.device, dtype=torch.float32)
+        return env.step(action.contiguous()).obs["obs"]
+
+    if env.state is None:
+        env.init_state()
+
+    run_native_viewer_play_loop(env, num_steps=3, initialize=_reset_obs, step=_step)
 
     assert env.init_state_calls == 1
     assert env.reset_calls == 1
@@ -2320,11 +2335,11 @@ def test_train_rsl_rl_play_missing_checkpoint_skips_env_creation_and_prints_cont
         mod,
         "create_env",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("play_rsl_rl should not create an env before checkpoint resolution")
+            AssertionError("play_ppo should not create an env before checkpoint resolution")
         ),
     )
 
-    result = mod.play_rsl_rl(cfg, device="cpu")
+    result = mod.play_ppo(cfg, device="cpu")
 
     captured = capsys.readouterr().out
     expected_task_log_root = tmp_path / "logs" / "custom_ppo" / cfg.training.task_name
@@ -2356,11 +2371,11 @@ def test_train_rsl_rl_play_reports_missing_requested_checkpoint_in_resolved_run(
         mod,
         "create_env",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("play_rsl_rl should not create an env before checkpoint resolution")
+            AssertionError("play_ppo should not create an env before checkpoint resolution")
         ),
     )
 
-    result = mod.play_rsl_rl(cfg, device="cpu")
+    result = mod.play_ppo(cfg, device="cpu")
 
     captured = capsys.readouterr().out
 
@@ -2458,7 +2473,7 @@ def test_train_rsl_rl_auto_play_is_interactive(monkeypatch: pytest.MonkeyPatch, 
         ),
     )
 
-    result = mod.play_rsl_rl(cfg, device="cpu")
+    result = mod.play_ppo(cfg, device="cpu")
 
     assert result is None
     assert captured["headless"] is False
@@ -2559,7 +2574,7 @@ def test_train_rsl_rl_record_play_uses_backend_plan(
         ),
     )
 
-    result = mod.play_rsl_rl(cfg, device="cpu")
+    result = mod.play_ppo(cfg, device="cpu")
 
     assert result == str(run_dir / "play_video.mp4")
     assert captured["headless"] is True
@@ -2988,7 +3003,7 @@ def test_train_rsl_rl_play_uses_shared_playback_session_factory(
     )
     monkeypatch.setattr(mod, "create_rsl_rl_playback_session", fake_create_session)
 
-    result = mod.play_rsl_rl(cfg, device="cpu")
+    result = mod.play_ppo(cfg, device="cpu")
 
     assert result == str(run_dir / "play_video.mp4")
     factory_kwargs = captured["factory_kwargs"]
@@ -3001,7 +3016,7 @@ def test_train_rsl_rl_play_uses_shared_playback_session_factory(
     assert factory_kwargs["device"] == "cpu"
     assert factory_kwargs["root_dir"] == Path.cwd()
     # The session factory resolves the UniLab adapter and the upstream
-    # OnPolicyRunner itself; play_rsl_rl no longer forwards them.
+    # OnPolicyRunner itself; play_ppo no longer forwards them.
     assert "wrapper_cls" not in factory_kwargs
     assert "runner_cls" not in factory_kwargs
     assert "train_cfg_normalizer" not in factory_kwargs

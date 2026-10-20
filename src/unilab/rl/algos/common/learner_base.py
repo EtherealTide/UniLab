@@ -25,8 +25,8 @@ from unilab.rl.algos.common.normalization import EmpiricalNormalization
 from unilab.rl.runtime.device import sync_device
 from unilab.rl.runtime.offpolicy.warmup import (
     OffPolicyWarmupContext,
+    build_offpolicy_warmup_batch,
     capture_rng_state,
-    make_offpolicy_warmup_batch,
     restore_rng_state,
 )
 
@@ -489,7 +489,7 @@ class WholeCycleLearnerMixin(LearnerBaseMixin):
 
     def prepare_for_collection(self, warmup_context: OffPolicyWarmupContext) -> None:
         """Exercise learner cold paths while preserving all training state."""
-        large_batch = warmup_context.replay_batch or make_offpolicy_warmup_batch(
+        large_batch = warmup_context.replay_batch or build_offpolicy_warmup_batch(
             warmup_context,
             obs_dim=self.obs_dim,
             critic_obs_dim=self.critic_obs_dim,

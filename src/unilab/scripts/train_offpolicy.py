@@ -471,9 +471,9 @@ def _attach_cuda_process_sharing_manifest(
 
     runtime_manifest = getattr(runner, "runtime_manifest", None)
     if isinstance(runtime_manifest, dict):
-        runtime_manifest["cuda_process_sharing"] = evidence.manifest()
+        runtime_manifest["cuda_process_sharing"] = evidence.to_dict()
         return
-    runner.runtime_manifest = {"cuda_process_sharing": evidence.manifest()}
+    runner.runtime_manifest = {"cuda_process_sharing": evidence.to_dict()}
 
 
 def resolve_train_resume_checkpoint(cfg: DictConfig) -> str | None:

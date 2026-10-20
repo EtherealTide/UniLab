@@ -1032,7 +1032,7 @@ class G1PenaltyCurriculum(ManagerTermBase):
         if not isinstance(episode_lengths, torch.Tensor):
             raise TypeError(f"{self.name} requires episode_length_buf to be a Torch tensor")
         done_count = done_mask.sum()
-        self._tracker.update_mask(episode_lengths, done_mask)
+        self._tracker.update_masked(episode_lengths, done_mask)
 
         average = self._tracker.average
         average_value = float(average.item())

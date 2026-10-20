@@ -362,7 +362,7 @@ class TestSpawnSafety:
 class TestPlayValidation:
     def test_play_load_validates_actor_semantics(self) -> None:
         from unilab.rl.algos.common.actor_factory import build_actor
-        from unilab.rl.algos.flash_sac.actor_spec import custom_actor_semantics
+        from unilab.rl.algos.flash_sac.actor_spec import build_custom_actor_semantics
         from unilab.visualization.interactive_playback import load_play_actor
 
         actor = build_actor(
@@ -375,7 +375,7 @@ class TestPlayValidation:
             actor_config=_actor_config(hidden_dim=8, action_scale=2.0),
         )
         spec = FlashSACActorSpec.from_config(_actor_config(hidden_dim=8, action_scale=2.0))
-        semantics = custom_actor_semantics(
+        semantics = build_custom_actor_semantics(
             spec,
             obs_dim=_OBS_DIM,
             action_dim=_ACTION_DIM,
@@ -406,7 +406,7 @@ class TestPlayValidation:
         from unilab.rl.algos.common.actor_factory import build_actor
         from unilab.rl.algos.flash_sac.actor_spec import (
             FlashSACActorSpec,
-            custom_actor_semantics,
+            build_custom_actor_semantics,
         )
         from unilab.visualization.interactive_playback import load_play_actor
 
@@ -419,7 +419,7 @@ class TestPlayValidation:
             device="cpu",
             actor_config=_actor_config(hidden_dim=8),
         )
-        semantics = custom_actor_semantics(
+        semantics = build_custom_actor_semantics(
             FlashSACActorSpec.from_config(_actor_config(hidden_dim=8)),
             obs_dim=_OBS_DIM,
             action_dim=_ACTION_DIM,

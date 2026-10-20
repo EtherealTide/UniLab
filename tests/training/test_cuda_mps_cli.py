@@ -93,7 +93,7 @@ def daemon_record(root: Path, **overrides: Any) -> mps.DaemonRecord:
 def write_record(root: Path, record: mps.DaemonRecord) -> Path:
     path = root / record.name / "daemon.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record.manifest()), encoding="utf-8")
+    path.write_text(json.dumps(record.to_dict()), encoding="utf-8")
     return path
 
 

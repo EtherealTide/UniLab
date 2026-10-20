@@ -212,9 +212,12 @@ class APPORunner(AsyncRunner):
             _sync_resume_target_actor(learner)
 
         # --- memory budget check ---
-        from unilab.rl.runtime.ipc.memory_budget import estimate_appo_bytes, warn_if_over_budget
+        from unilab.rl.runtime.ipc.memory_budget import (
+            estimate_host_appo_bytes,
+            warn_if_over_budget,
+        )
 
-        mem_est = estimate_appo_bytes(
+        mem_est = estimate_host_appo_bytes(
             num_envs=self.num_envs,
             steps_per_env=self.steps_per_env,
             obs_dim=self.obs_dim,

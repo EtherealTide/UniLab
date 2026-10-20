@@ -90,7 +90,7 @@ class RecorderTerm(ManagerTermBase):
         ``(obs_t, action_t, reward_t, done=True)`` for each resetting environment.
 
         Args:
-          env_ids: Indices of environments that are about to be reset.
+          reset_mask: Boolean mask of environments that are about to be reset.
         """
         del reset_mask  # Unused in base implementation.
 
@@ -101,15 +101,15 @@ class RecorderTerm(ManagerTermBase):
         and within ``env.step()`` for each batch of environments that terminates, after
         state has been overwritten and new observations computed.
 
-        At this point ``obs_buf[env_ids]`` holds the initial observation of the new episode
-        and ``action_manager.action[env_ids]`` is zero (no action has been taken in the new
+        At this point ``obs_buf[reset_mask]`` holds the initial observation of the new episode
+        and ``action_manager.action[reset_mask]`` is zero (no action has been taken in the new
         episode yet).
 
         Use this hook to initialize per-episode state or record the first observation of a
         new episode.
 
         Args:
-          env_ids: Indices of environments that were reset.
+          reset_mask: Boolean mask of environments that were reset.
         """
         del reset_mask  # Unused in base implementation.
 

@@ -28,7 +28,7 @@ class EpisodeLengthTracker:
         )
         self._average.add_((batch_average - self._average) * weight)
 
-    def update_mask(self, episode_lengths: torch.Tensor, mask: torch.Tensor) -> None:
+    def update_masked(self, episode_lengths: torch.Tensor, mask: torch.Tensor) -> None:
         """Update from a fixed-width episode-length carrier and bool mask.
 
         This boundary avoids materializing reset

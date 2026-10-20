@@ -343,7 +343,7 @@ def test_sac_builder_forwards_custom_runtime_preparation_hook(
 
 
 @pytest.mark.parametrize("algo", ["sac", "flashsac"])
-def test_double_buffer_builders_reject_removed_inference_request_timeout(
+def test_double_buffer_builders_validate_no_inference_request_timeout(
     monkeypatch: pytest.MonkeyPatch, algo: str
 ) -> None:
     if algo == "sac":

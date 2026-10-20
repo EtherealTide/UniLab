@@ -32,8 +32,8 @@ class ExceptionWrapper:
         self.where = where
 
 
-def create_error_pipe() -> tuple[Any, Any]:
-    """Create a unidirectional pipe for error reporting.
+def build_error_pipe() -> tuple[Any, Any]:
+    """Build a unidirectional pipe for error reporting.
 
     Returns (recv_conn, send_conn). Parent keeps recv, child gets send.
     """
