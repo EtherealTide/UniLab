@@ -1,7 +1,7 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681),
 # src/mjlab/envs/mdp/rewards.py and src/mjlab/tasks/velocity/mdp/rewards.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy and the base-owned entity facade; Apache-2.0.
+# Modified by UniLab for Torch and the base-owned entity facade; Apache-2.0.
 """Community-style reward terms for the Manager runtime."""
 
 from __future__ import annotations
@@ -13,18 +13,18 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 import torch
 
 from unilab.envs.mdp.observations import (
-    _joint_view,
-    _quat_apply_inverse,
-    _read_plan,
-    _root_body_view,
-    _world_to_body_vector,
+    joint_view,
+    quat_apply_inverse,
+    require_read_plan,
+    root_body_view,
+    world_to_body_vector,
 )
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
@@ -115,7 +115,7 @@ def root_height(
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """Return the world-frame root height as a scalar reward or metric term."""
-    _, view = _root_body_view(env, asset_cfg, "root_height")
+    _, view = root_body_view(env, asset_cfg, "root_height")
     return _reward(view.pos_w[:, 0, 2])
 
 
@@ -124,7 +124,7 @@ def joint_vel_l2(
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """Penalize selected joint velocities with an L2-squared kernel."""
-    joint_vel = _joint_view(env, asset_cfg, "joint_vel_l2").joint_vel[:, asset_cfg.joint_ids]
+    joint_vel = joint_view(env, asset_cfg, "joint_vel_l2").joint_vel[:, asset_cfg.joint_ids]
     return torch.sum(torch.square(joint_vel), dim=1)
 
 
@@ -149,9 +149,9 @@ def flat_orientation_l2(
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """Penalize non-flat base orientation."""
-    asset, view = _root_body_view(env, asset_cfg, "flat_orientation_l2")
-    gravity_w = asset.data.gravity_vec_w_torch(getattr(env, "device", torch.device("cpu")))[0]
-    gravity = _quat_apply_inverse(view.quat_w[:, 0, :], gravity_w.expand((view.quat_w.shape[0], 3)))
+    asset, view = root_body_view(env, asset_cfg, "flat_orientation_l2")
+    gravity_w = asset.data.gravity_vec_w(getattr(env, "device", torch.device("cpu")))[0]
+    gravity = quat_apply_inverse(view.quat_w[:, 0, :], gravity_w.expand((view.quat_w.shape[0], 3)))
     return torch.sum(torch.square(gravity[:, :2]), dim=1)
 
 
@@ -169,7 +169,7 @@ def upright(
     scale = _positive_std("upright", std)
     asset = cast("Entity", env.scene[asset_cfg.name])
     selected_names = _selected_body_names(asset, asset_cfg)
-    body_quat_w = _read_plan(env, "upright").body_tensor_view(asset, selected_names).quat_w
+    body_quat_w = require_read_plan(env, "upright").body_tensor_view(asset, selected_names).quat_w
     if body_quat_w.shape != (env.num_envs, 1, 4):
         raise ValueError(
             f"upright requires exactly one body; received state shape {body_quat_w.shape}"
@@ -179,7 +179,7 @@ def upright(
         dtype=torch.float32,
         device=getattr(env, "device", torch.device("cpu")),
     )
-    gravity = asset.data.gravity_vec_w_torch(getattr(env, "device", torch.device("cpu")))[0]
+    gravity = asset.data.gravity_vec_w(getattr(env, "device", torch.device("cpu")))[0]
     gravity = gravity.expand((quat.shape[0], 3))
     quat_w, quat_xyz = quat[:, 0:1], quat[:, 1:4]
     cross = 2.0 * torch.linalg.cross(quat_xyz.expand_as(gravity), gravity, dim=-1)
@@ -198,9 +198,9 @@ def track_linear_velocity(
 ) -> torch.Tensor:
     """Reward commanded base linear velocity, assuming commanded z is zero."""
     scale = _positive_std("track_linear_velocity", std)
-    _, view = _root_body_view(env, asset_cfg, "track_linear_velocity")
+    _, view = root_body_view(env, asset_cfg, "track_linear_velocity")
     command = _command(env, command_name)
-    actual = _world_to_body_vector(view.quat_w[:, 0, :], view.lin_vel_w[:, 0, :])
+    actual = world_to_body_vector(view.quat_w[:, 0, :], view.lin_vel_w[:, 0, :])
     command_t = torch.as_tensor(
         command, dtype=torch.float32, device=getattr(env, "device", torch.device("cpu"))
     )
@@ -217,9 +217,9 @@ def track_angular_velocity(
 ) -> torch.Tensor:
     """Reward commanded yaw rate while keeping roll/pitch rates near zero."""
     scale = _positive_std("track_angular_velocity", std)
-    _, view = _root_body_view(env, asset_cfg, "track_angular_velocity")
+    _, view = root_body_view(env, asset_cfg, "track_angular_velocity")
     command = _command(env, command_name)
-    actual = _world_to_body_vector(view.quat_w[:, 0, :], view.ang_vel_w[:, 0, :])
+    actual = world_to_body_vector(view.quat_w[:, 0, :], view.ang_vel_w[:, 0, :])
     command_t = torch.as_tensor(
         command, dtype=torch.float32, device=getattr(env, "device", torch.device("cpu"))
     )
@@ -236,7 +236,7 @@ def body_angular_velocity_penalty(
     asset = cast("Entity", env.scene[asset_cfg.name])
     selected_names = _selected_body_names(asset, asset_cfg)
     ang_vel = (
-        _read_plan(env, "body_angular_velocity_penalty")
+        require_read_plan(env, "body_angular_velocity_penalty")
         .body_tensor_view(asset, selected_names)
         .ang_vel_w
     )
@@ -257,10 +257,10 @@ def joint_pos_limits(
 ) -> torch.Tensor:
     """Penalize joint positions if they cross the soft limits."""
     asset = env.scene[asset_cfg.name]
-    limits = asset.data.soft_joint_pos_limits_torch(getattr(env, "device", torch.device("cpu")))[
+    limits = asset.data.soft_joint_pos_limits(getattr(env, "device", torch.device("cpu")))[
         asset_cfg.joint_ids
     ]
-    joint_pos = _joint_view(env, asset_cfg, "joint_pos_limits").joint_pos[:, asset_cfg.joint_ids]
+    joint_pos = joint_view(env, asset_cfg, "joint_pos_limits").joint_pos[:, asset_cfg.joint_ids]
     lower_violation = torch.clamp_min(limits[None, :, 0] - joint_pos, 0.0)
     upper_violation = torch.clamp_min(joint_pos - limits[None, :, 1], 0.0)
     return torch.sum(lower_violation + upper_violation, dim=1)
@@ -302,7 +302,7 @@ class posture(ManagerTermBase):
         self._std = _resolve_std_dict(
             self.name, "std", cfg.params.get("std"), _selected_joint_names(asset, asset_cfg)
         )
-        self._default_joint_pos = asset.data.default_joint_pos_torch(
+        self._default_joint_pos = asset.data.default_joint_pos(
             getattr(env, "device", torch.device("cpu"))
         )
         self._std = torch.tensor(
@@ -312,7 +312,7 @@ class posture(ManagerTermBase):
     def __call__(self, env: ManagerBasedRlEnv, **params: object) -> torch.Tensor:
         del params
         current = torch.as_tensor(
-            _joint_view(env, self._asset_cfg, self.name).joint_pos[:, self._asset_cfg.joint_ids],
+            joint_view(env, self._asset_cfg, self.name).joint_pos[:, self._asset_cfg.joint_ids],
             dtype=torch.float32,
             device=getattr(env, "device", torch.device("cpu")),
         )
@@ -376,7 +376,7 @@ class variable_posture(ManagerTermBase):
                 f"{self.name} walking_threshold must be below running_threshold, got "
                 f"{self._walking_threshold} >= {self._running_threshold}"
             )
-        self._default_joint_pos = asset.data.default_joint_pos_torch(
+        self._default_joint_pos = asset.data.default_joint_pos(
             getattr(env, "device", torch.device("cpu"))
         )
         device = getattr(env, "device", torch.device("cpu"))
@@ -401,7 +401,7 @@ class variable_posture(ManagerTermBase):
             + self._std_walking[None, :] * walking[:, None]
             + self._std_running[None, :] * running[:, None]
         )
-        current = _joint_view(env, self._asset_cfg, self.name).joint_pos[
+        current = joint_view(env, self._asset_cfg, self.name).joint_pos[
             :, self._asset_cfg.joint_ids
         ]
         desired = self._default_joint_pos[:, self._asset_cfg.joint_ids]

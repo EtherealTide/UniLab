@@ -24,8 +24,8 @@ EXPECTED_PRESETS = {
     "flat",
     "pyramid_stairs",
     "pyramid_stairs_inv",
-    "hf_pyramid_slope",
-    "hf_pyramid_slope_inv",
+    "pyramid_slope",
+    "pyramid_slope_inv",
     "random_rough",
     "wave_terrain",
 }

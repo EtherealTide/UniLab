@@ -12,8 +12,8 @@ import torch
 from unilab.base.entity import EntityTensorBodyStateView, EntityTensorStateView
 from unilab.envs import mdp
 from unilab.managers import RewardManager, RewardTermCfg
-from unilab.managers._types import ManagerBasedRlEnv
 from unilab.managers.scene_entity_config import SceneEntityCfg
+from unilab.managers.types import ManagerBasedRlEnv
 
 
 class _Entity:
@@ -22,20 +22,12 @@ class _Entity:
     num_joints = 3
     num_bodies = 2
     name = "robot"
-    _root_body_name = "base"
+    root_body_name = "base"
 
     def __init__(self) -> None:
         self.data = SimpleNamespace(
             joint_pos=np.asarray(
                 [[0.1, -0.2, 0.3], [0.0, 0.4, -0.1], [0.2, 0.0, 0.5]],
-                dtype=np.float32,
-            ),
-            default_joint_pos=np.asarray(
-                [[0.1, 0.0, 0.2], [0.1, 0.0, 0.2], [0.1, 0.0, 0.2]],
-                dtype=np.float32,
-            ),
-            soft_joint_pos_limits=np.asarray(
-                [[-0.15, 0.15], [-0.3, 0.3], [-0.4, 0.4]],
                 dtype=np.float32,
             ),
             joint_vel=np.asarray(
@@ -78,14 +70,13 @@ class _Entity:
                 ],
                 dtype=np.float32,
             ),
-            gravity_vec_w=np.asarray([0.0, 0.0, -1.0], dtype=np.float32),
-            default_joint_pos_torch=lambda device: torch.as_tensor(
+            default_joint_pos=lambda device: torch.as_tensor(
                 [[0.1, 0.0, 0.2]] * 3, dtype=torch.float32, device=device
             ),
-            soft_joint_pos_limits_torch=lambda device: torch.as_tensor(
+            soft_joint_pos_limits=lambda device: torch.as_tensor(
                 [[-0.15, 0.15], [-0.3, 0.3], [-0.4, 0.4]], dtype=torch.float32, device=device
             ),
-            gravity_vec_w_torch=lambda device: torch.as_tensor(
+            gravity_vec_w=lambda device: torch.as_tensor(
                 [[0.0, 0.0, -1.0]] * 3, dtype=torch.float32, device=device
             ),
         )
@@ -174,7 +165,7 @@ def _projected_gravity(quat: np.ndarray) -> np.ndarray:
 class _Scene(dict):
     def __init__(self, entity: _Entity, plan: _ReadPlan):
         super().__init__({"robot": entity})
-        self._tensor_read_plan = plan
+        self.read_plan = plan
 
 
 def test_generic_reward_terms_match_pinned_numpy_semantics() -> None:
@@ -284,7 +275,7 @@ def test_joint_pos_limits_matches_mjlab_soft_limit_equation() -> None:
     env = _env()
     entity = cast(Any, env.scene["robot"])
     joint_pos = entity.data.joint_pos = np.asarray(entity.data.joint_pos)
-    limits = entity.data.soft_joint_pos_limits_torch(torch.device("cpu")).numpy()
+    limits = entity.data.soft_joint_pos_limits(torch.device("cpu")).numpy()
     expected = -np.clip(joint_pos - limits[:, 0], min=None, max=0.0)
     expected += np.clip(joint_pos - limits[:, 1], min=0.0, max=None)
     np.testing.assert_allclose(mdp.joint_pos_limits(env), np.sum(expected, axis=1))
@@ -297,7 +288,7 @@ def test_joint_pos_limits_matches_mjlab_soft_limit_equation() -> None:
 def _posture_expected(entity: Any, std: np.ndarray, joint_ids: list[int]) -> np.ndarray:
     error_squared = np.square(
         entity.data.joint_pos[:, joint_ids]
-        - entity.data.default_joint_pos_torch(torch.device("cpu")).numpy()[:, joint_ids]
+        - entity.data.default_joint_pos(torch.device("cpu")).numpy()[:, joint_ids]
     )
     return np.exp(-np.mean(error_squared / np.square(std), axis=1))
 

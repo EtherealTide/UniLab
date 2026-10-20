@@ -29,10 +29,10 @@ from unilab.visualization.viser_playback import run_viser_playback_from_cfg
 ensure_registries()
 
 from unilab.scripts.play_interactive import (
-    _build_play_args,
-    _compose_interactive_config,
-    _parse_interactive_cli,
+    build_play_args,
+    compose_interactive_config,
     create_playback_session,
+    parse_interactive_cli,
 )
 
 
@@ -55,9 +55,9 @@ def play_viser(args: PlayInteractiveArgs, cfg: DictConfig, *, algo: str = "ppo")
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    parsed = _parse_interactive_cli(sys.argv[1:] if argv is None else argv)
-    cfg = _compose_interactive_config(parsed.algo, parsed.overrides)
-    play_viser(_build_play_args(cfg, algo=parsed.algo), cfg, algo=parsed.algo)
+    parsed = parse_interactive_cli(sys.argv[1:] if argv is None else argv)
+    cfg = compose_interactive_config(parsed.algo, parsed.overrides)
+    play_viser(build_play_args(cfg, algo=parsed.algo), cfg, algo=parsed.algo)
 
 
 if __name__ == "__main__":

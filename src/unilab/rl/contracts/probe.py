@@ -48,13 +48,4 @@ def probe_env_contract(
     )
 
 
-def get_env_dims(
-    env_factory: EnvFactory,
-    env_cfg_override: Mapping[str, Any] | None = None,
-) -> tuple[int, int, int]:
-    """Get (actor_obs_dim, action_dim, critic_obs_dim) from a probe env."""
-    probe = probe_env_contract(env_factory, env_cfg_override)
-    return probe.obs_dim, probe.action_dim, probe.critic_obs_dim
-
-
-__all__ = ["EnvContractProbe", "get_env_dims", "probe_env_contract"]
+__all__ = ["EnvContractProbe", "probe_env_contract"]

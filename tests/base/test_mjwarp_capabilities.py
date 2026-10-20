@@ -45,7 +45,7 @@ def test_unsupported_matrix_fails_before_step() -> None:
     with pytest.raises(NotImplementedError, match="body positions"):
         backend.get_body_pos_w(np.asarray([1], dtype=np.int32))
     with pytest.raises(NotImplementedError, match="height-field scanners"):
-        backend.create_hfield_scanner(
+        backend.bind_height_scanner(
             hfield_geom_id=0,
             offsets=np.zeros((1, 2), dtype=np.float32),
             frame_body_id=1,

@@ -210,13 +210,6 @@ def _override_value(overrides: Sequence[str], key: str) -> str | None:
     return selected
 
 
-def _python_executable_for_route(mode: str, sim: str, overrides: Sequence[str]) -> str:
-    del mode, sim, overrides
-    if platform.system() != "Darwin":
-        return sys.executable
-    return sys.executable
-
-
 def _mujoco_package_dir() -> Path:
     spec = find_spec("mujoco")
     if spec is None or spec.origin is None:
@@ -503,7 +496,8 @@ def build_command(
                 raise SystemExit("Use either --load-run or algo.load_run=..., not both.")
             generated.append(f"algo.load_run={load_run}")
 
-    executable = _python_executable_for_route(mode, sim, (*generated, *overrides))
+    del mode, sim
+    executable = sys.executable
     if use_interactive_play and platform.system() == "Darwin":
         executable = _interactive_mujoco_executable()
     if use_viewer_play:

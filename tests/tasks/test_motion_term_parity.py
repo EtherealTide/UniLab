@@ -111,12 +111,8 @@ def body_setup(monkeypatch: pytest.MonkeyPatch):
         robot_anchor_quat_w=robot_body_quat_w[:, anchor_body_idx],
         joint_pos=torch.from_numpy(rng.standard_normal((num_envs, 29), dtype=np.float32)),
         joint_vel=torch.from_numpy(rng.standard_normal((num_envs, 29), dtype=np.float32)),
-        device_robot_joint_pos=torch.from_numpy(
-            rng.standard_normal((num_envs, 29), dtype=np.float32)
-        ),
-        device_robot_joint_vel=torch.from_numpy(
-            rng.standard_normal((num_envs, 29), dtype=np.float32)
-        ),
+        robot_joint_pos=torch.from_numpy(rng.standard_normal((num_envs, 29), dtype=np.float32)),
+        robot_joint_vel=torch.from_numpy(rng.standard_normal((num_envs, 29), dtype=np.float32)),
         body_pos_relative_w=body_pos_relative_w,
         body_quat_relative_w=body_quat_relative_w,
         robot_body_quat_w=robot_body_quat_w,
@@ -177,8 +173,8 @@ def _expected_body_reward(
             0.3,
             False,
         ),
-        (mt.motion_joint_position_error_exp, "joint_pos", "device_robot_joint_pos", 0.2, True),
-        (mt.motion_joint_velocity_error_exp, "joint_vel", "device_robot_joint_vel", 1.0, True),
+        (mt.motion_joint_position_error_exp, "joint_pos", "robot_joint_pos", 0.2, True),
+        (mt.motion_joint_velocity_error_exp, "joint_vel", "robot_joint_vel", 1.0, True),
     ],
 )
 def test_tensor_scalar_error_rewards_match_numpy_and_do_not_mutate(
@@ -223,9 +219,9 @@ def test_tensor_joint_rewards_use_device_resident_actual_state(
     tensor_command = SimpleNamespace(
         tensor_carrier=True,
         joint_pos=motion_joint_pos,
-        device_robot_joint_pos=device_joint_pos,
+        robot_joint_pos=device_joint_pos,
         joint_vel=motion_joint_vel,
-        device_robot_joint_vel=device_joint_vel,
+        robot_joint_vel=device_joint_vel,
     )
     monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
 
@@ -295,10 +291,10 @@ def test_tensor_anchor_position_termination_matches_numpy(
     tensor_command = _tensor_command_from_snapshots(command, snapshots)
     monkeypatch.setattr(mt, "_command", lambda env, name: tensor_command)
     cfg = TerminationTermCfg(
-        func=mt.bad_anchor_pos_z_only,
+        func=mt.BadAnchorPosZOnly,
         params={"command_name": "motion", "threshold": 0.15},
     )
-    term = mt.bad_anchor_pos_z_only(cfg, env)
+    term = mt.BadAnchorPosZOnly(cfg, env)
 
     out = term(env, "motion", threshold=0.15)
     expected = (
@@ -342,7 +338,7 @@ def test_tensor_anchor_orientation_termination_matches_numpy(
 @pytest.mark.parametrize(
     ("term_type", "reference_name", "actual_name", "threshold"),
     [
-        (mt.bad_motion_body_pos_z_only, "body_pos_relative_w", "robot_body_pos_w", 0.5),
+        (mt.BadMotionBodyPosZOnly, "body_pos_relative_w", "robot_body_pos_w", 0.5),
     ],
 )
 def test_tensor_body_terminations_match_numpy(
@@ -403,28 +399,28 @@ def test_tensor_motion_clip_end_uses_current_rows(monkeypatch, body_setup) -> No
     ("term_type", "reference_name", "actual_name", "std", "orientation"),
     [
         (
-            mt.motion_relative_body_position_error_exp,
+            mt.MotionRelativeBodyPositionErrorExp,
             "body_pos_relative_w",
             "robot_body_pos_w",
             0.3,
             False,
         ),
         (
-            mt.motion_relative_body_orientation_error_exp,
+            mt.MotionRelativeBodyOrientationErrorExp,
             "body_quat_relative_w",
             "robot_body_quat_w",
             0.4,
             True,
         ),
         (
-            mt.motion_global_body_linear_velocity_error_exp,
+            mt.MotionGlobalBodyLinearVelocityErrorExp,
             "body_lin_vel_w",
             "robot_body_lin_vel_w",
             1.0,
             False,
         ),
         (
-            mt.motion_global_body_angular_velocity_error_exp,
+            mt.MotionGlobalBodyAngularVelocityErrorExp,
             "body_ang_vel_w",
             "robot_body_ang_vel_w",
             3.14,
@@ -543,7 +539,7 @@ def test_joint_pos_limits_matches_reference_equation() -> None:
     limits = np.asarray([[-1.0, 1.0]] * 5, dtype=np.float32)
     asset = SimpleNamespace(
         data=SimpleNamespace(
-            soft_joint_pos_limits_torch=lambda device: torch.as_tensor(
+            soft_joint_pos_limits=lambda device: torch.as_tensor(
                 limits, dtype=torch.float32, device=device
             ),
         )
@@ -555,7 +551,7 @@ def test_joint_pos_limits_matches_reference_equation() -> None:
 
     scene = _Scene(
         robot=asset,
-        _tensor_read_plan=SimpleNamespace(
+        read_plan=SimpleNamespace(
             joint_tensor_view=lambda entity: SimpleNamespace(joint_pos=torch.from_numpy(joint_pos))
         ),
     )
@@ -580,7 +576,7 @@ def test_tensor_command_publishes_sampler_advance_exactly_once() -> None:
     command._device = torch.device("cpu")
     command.last_step_timing_ms = {}
     command.time_steps = torch.tensor([4, 0, 9], dtype=torch.int32)
-    command.tensor_sampler = mt.TensorMotionSampler(
+    command.tensor_sampler = mt.MotionSampler(
         mode="adaptive",
         num_envs=3,
         num_frames=11,
@@ -659,7 +655,7 @@ def test_tensor_command_full_refresh_gathers_advanced_frames() -> None:
     command._device = torch.device("cpu")
     command.last_step_timing_ms = {}
     command.time_steps = torch.tensor([4, 0, 9], dtype=torch.int32)
-    command.tensor_sampler = mt.TensorMotionSampler(
+    command.tensor_sampler = mt.MotionSampler(
         mode="adaptive",
         num_envs=3,
         num_frames=11,
@@ -706,7 +702,7 @@ def test_tensor_command_empty_mask_preserves_rng_and_skips_sampler() -> None:
     command = mt.MotionCommand.__new__(mt.MotionCommand)
     command._device = torch.device("cpu")
     command.last_reset_timing_ms = {}
-    command.tensor_sampler = mt.TensorMotionSampler(
+    command.tensor_sampler = mt.MotionSampler(
         mode="adaptive",
         num_envs=3,
         num_frames=11,
@@ -776,7 +772,7 @@ def test_tensor_command_empty_mask_preserves_rng_and_skips_sampler() -> None:
     command._soft_joint_limits = torch.tensor(((-1.0, 1.0), (-1.0, 1.0)), dtype=torch.float32)
     command._env = SimpleNamespace(
         num_envs=3,
-        torch_rng=SimpleNamespace(
+        rng=SimpleNamespace(
             generator=torch.Generator(),
             uniform=_uniform,
         ),
@@ -789,7 +785,7 @@ def test_tensor_command_empty_mask_preserves_rng_and_skips_sampler() -> None:
     )
     writes: list[dict[str, object]] = []
     ingested: list[tuple[torch.Tensor, torch.Tensor]] = []
-    generator = command._env.torch_rng.generator
+    generator = command._env.rng.generator
     rng_state = generator.get_state()
 
     command._resample_command(torch.zeros(3, dtype=torch.bool))
@@ -806,7 +802,7 @@ def test_tensor_command_syncs_sampler_mirrors_at_full_width() -> None:
     command._tensor_all_rows = torch.arange(3, dtype=torch.int64)
     command.time_steps = torch.tensor([4, 20, 9], dtype=torch.int32)
     command.current_clip_end_frames = torch.tensor([90, 90, 90], dtype=torch.int32)
-    command.tensor_sampler = mt.TensorMotionSampler(
+    command.tensor_sampler = mt.MotionSampler(
         mode="adaptive",
         num_envs=3,
         num_frames=11,
@@ -836,7 +832,7 @@ def test_tensor_clip_wrap_fails_closed_before_resampling_without_owner_transacti
     command._device = torch.device("cpu")
     command.last_step_timing_ms = {}
     command.time_steps = torch.tensor([4, 0, 10], dtype=torch.int32)
-    command.tensor_sampler = mt.TensorMotionSampler(
+    command.tensor_sampler = mt.MotionSampler(
         mode="adaptive",
         num_envs=3,
         num_frames=11,

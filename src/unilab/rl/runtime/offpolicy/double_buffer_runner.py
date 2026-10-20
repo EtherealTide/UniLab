@@ -29,8 +29,8 @@ from unilab.rl.logging.runtime_manifest_schema import (
 from unilab.rl.runtime.async_runner import _SPAWN_CTX
 from unilab.rl.runtime.device import (
     DeviceTimer,
+    build_device_timer,
     device_runtime_capabilities,
-    make_device_timer,
     sync_device,
 )
 from unilab.rl.runtime.ipc.inference_ring import (
@@ -38,8 +38,8 @@ from unilab.rl.runtime.ipc.inference_ring import (
     estimate_inference_ring_bytes,
 )
 from unilab.rl.runtime.ipc.replay_buffer import ReplayBuffer
-from unilab.rl.runtime.ipc.replay_pipelines.gpu_resident import (
-    GPUResidentReplayPipeline,
+from unilab.rl.runtime.ipc.replay_pipelines.device import (
+    DeviceReplayPipeline,
     require_offpolicy_replay_device,
 )
 from unilab.rl.runtime.offpolicy.actor_adapter import get_offpolicy_actor_adapter
@@ -61,7 +61,7 @@ from unilab.rl.runtime.offpolicy.warmup import (
 )
 from unilab.rl.runtime.offpolicy.worker import (
     COLLECTOR_READY_TICK,
-    off_policy_collector_fn,
+    offpolicy_collector_fn,
     sample_offpolicy_actions,
 )
 from unilab.rl.runtime.placement import (
@@ -74,7 +74,7 @@ from unilab.rl.runtime.settings import (
     DEFAULT_COLLECTOR_METRICS_INTERVAL,
     DEFAULT_INFERENCE_SLOT_CAPACITY,
     DEFAULT_REPLAY_INGRESS_DEPTH,
-    TensorRuntimeSettings,
+    RuntimeSettings,
 )
 
 # Terminal/W&B display names for the off-policy algo types. Keep these
@@ -85,7 +85,7 @@ _ALGO_DISPLAY_NAMES = {
 }
 
 
-def reject_removed_inference_request_timeout(training: Mapping[str, Any]) -> None:
+def validate_no_inference_request_timeout(training: Mapping[str, Any]) -> None:
     if "inference_request_timeout_sec" in training:
         raise ValueError(
             "training.inference_request_timeout_sec was removed; off-policy "
@@ -202,11 +202,11 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         learner_prepare_hook: Callable[[Any, OffPolicyWarmupContext], None] | None = None,
         backend_device_resolver: Callable[[str, str | None], str | None] | None = None,
         backend_device_configurer: Callable[[str, str | None], str | None] | None = None,
-        replay_pipeline_factory: Callable[..., GPUResidentReplayPipeline] | None = None,
+        replay_pipeline_factory: Callable[..., DeviceReplayPipeline] | None = None,
         target_frequency: int = 1,
         policy_before_critic: bool = False,
         inference_placement: InferencePlacement | None = None,
-        tensor_runtime_settings: TensorRuntimeSettings | None = None,
+        runtime_settings: RuntimeSettings | None = None,
         inference_slot_capacity: int | None = None,
         inference_epoch: int = 0,
         collector_metrics_interval: int | None = None,
@@ -224,7 +224,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             if backend_device_resolver is not None
             else None
         )
-        if tensor_runtime_settings is None:
+        if runtime_settings is None:
             effective_inference_capacity = (
                 DEFAULT_INFERENCE_SLOT_CAPACITY
                 if inference_slot_capacity is None
@@ -235,7 +235,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                 if collector_metrics_interval is None
                 else collector_metrics_interval
             )
-            tensor_runtime_settings = TensorRuntimeSettings(
+            runtime_settings = RuntimeSettings(
                 inference_slot_capacity=effective_inference_capacity,
                 collector_metrics_interval=effective_metrics_interval,
                 replay_ingress_depth=DEFAULT_REPLAY_INGRESS_DEPTH,
@@ -248,21 +248,21 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             explicit_values = {
                 "inference_slot_capacity": (
                     inference_slot_capacity,
-                    tensor_runtime_settings.inference_slot_capacity,
+                    runtime_settings.inference_slot_capacity,
                 ),
                 "collector_metrics_interval": (
                     collector_metrics_interval,
-                    tensor_runtime_settings.collector_metrics_interval,
+                    runtime_settings.collector_metrics_interval,
                 ),
                 "batch_size": (
                     kwargs.get("batch_size"),
-                    tensor_runtime_settings.batch_size,
+                    runtime_settings.batch_size,
                 ),
                 "updates_per_step": (
                     kwargs.get("updates_per_step"),
-                    tensor_runtime_settings.updates_per_step,
+                    runtime_settings.updates_per_step,
                 ),
-                "num_envs": (kwargs.get("num_envs"), tensor_runtime_settings.num_envs),
+                "num_envs": (kwargs.get("num_envs"), runtime_settings.num_envs),
             }
             for name, (value, _) in explicit_values.items():
                 if value is not None and type(value) is not int:
@@ -278,7 +278,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                     for name, (value, expected) in mismatches.items()
                 )
                 raise ValueError(
-                    f"Direct runner arguments conflict with tensor_runtime_settings: {details}"
+                    f"Direct runner arguments conflict with runtime_settings: {details}"
                 )
         super().__init__(**kwargs)
         if replay_prefetch_mode != "one_tick":
@@ -313,16 +313,16 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         )
         self.inference_placement = inference_placement
         self.collector_tensor_native = inference_placement.collector_tensor_native
-        self.tensor_runtime_settings = tensor_runtime_settings
-        self.inference_slot_capacity = tensor_runtime_settings.inference_slot_capacity
+        self.runtime_settings = runtime_settings
+        self.inference_slot_capacity = runtime_settings.inference_slot_capacity
         if isinstance(inference_epoch, bool) or not isinstance(inference_epoch, int):
             raise TypeError(f"inference_epoch must be an integer, got {inference_epoch!r}")
         if inference_epoch < 0:
             raise ValueError("inference_epoch must be non-negative")
         self.inference_epoch = int(inference_epoch)
-        self.collector_metrics_interval = tensor_runtime_settings.collector_metrics_interval
-        self.replay_ingress_depth = tensor_runtime_settings.replay_ingress_depth
-        self.replay_ingress_slot_rows = tensor_runtime_settings.replay_ingress_slot_rows
+        self.collector_metrics_interval = runtime_settings.collector_metrics_interval
+        self.replay_ingress_depth = runtime_settings.replay_ingress_depth
+        self.replay_ingress_slot_rows = runtime_settings.replay_ingress_slot_rows
         # Backend-owned process-device configurer forwarded to the collector
         # subprocess (e.g. mjwarp); None for backends that need no binding.
         self.backend_device_configurer = backend_device_configurer
@@ -356,7 +356,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             "learner_device": self.inference_placement.learner_device,
             "inference_staging_policy": self.inference_placement.staging_policy,
             "inference_ring_capacity": self.inference_slot_capacity,
-            "runtime_limits": self.tensor_runtime_settings.manifest(),
+            "runtime_limits": self.runtime_settings.manifest(),
             "inference_flight": {
                 "queue_depth": 0,
                 "publication_lag": 0,
@@ -486,15 +486,15 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         tier = getattr(self.learner, "_performance_tier", None)
         return tier.manifest() if tier is not None else None
 
-    def _dp_initial_sync_tensors(self) -> dict[str, torch.Tensor]:
+    def _dp_initial_sync(self) -> dict[str, torch.Tensor]:
         """Live model-state references broadcast once before collection."""
-        initial_tensors = getattr(self.learner, "dp_initial_sync_tensors", None)
-        if not callable(initial_tensors):
+        initial_sync = getattr(self.learner, "dp_initial_sync", None)
+        if not callable(initial_sync):
             raise TypeError(
-                f"{type(self.learner).__name__} must implement dp_initial_sync_tensors() "
+                f"{type(self.learner).__name__} must implement dp_initial_sync() "
                 "for multi-GPU data parallelism"
             )
-        return cast(dict[str, torch.Tensor], initial_tensors())
+        return cast(dict[str, torch.Tensor], initial_sync())
 
     def _dp_init_broadcast(self) -> None:
         """Align initial parameters from rank 0 before the collector starts.
@@ -505,7 +505,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         if self.dp_sync is None:
             return
         self.dp_sync.start()
-        self.dp_sync.broadcast_from_rank0(self._dp_initial_sync_tensors())
+        self.dp_sync.broadcast_from_rank0(self._dp_initial_sync())
 
     def _warm_representative_actor(self, context: OffPolicyWarmupContext) -> None:
         """Run one actor-shaped cold path and restore exploration RNG state."""
@@ -534,9 +534,9 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                     actions = sample_offpolicy_actions(
                         actor=self.learner.actor,
                         algo_type=self.algo_type,
-                        obs_torch=actor_obs,
-                        prev_dones_torch=context.inference_dones,
-                        priv_info_torch=actor_context,
+                        obs=actor_obs,
+                        prev_dones=context.inference_dones,
+                        priv_info=actor_context,
                     )
                 else:
                     actions = action_fn(
@@ -613,7 +613,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
     def _prepare_inference_timing_events(self) -> None:
         """Allocate the validated inference forward timer."""
         try:
-            self._inference_forward_timer = make_device_timer(self.device)
+            self._inference_forward_timer = build_device_timer(self.device)
         except BaseException:
             if hasattr(self, "_inference_forward_timer"):
                 delattr(self, "_inference_forward_timer")
@@ -644,7 +644,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         """Consume the collector's final metric publication after quiesce.
 
         ``_shutdown_collector`` joins the process before this call. The worker
-        publishes its final partial tensor-metric window from its ``finally``
+        publishes its final partial collector-metric window from its ``finally``
         block, so a bounded queue still preserves every message. Draining here
         is therefore safe even when the process exits between the learner's
         normal polling points.
@@ -1125,9 +1125,9 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             actions_device = sample_offpolicy_actions(
                 actor=self.learner.actor,
                 algo_type=self.algo_type,
-                obs_torch=actor_obs,
-                prev_dones_torch=actor_dones_device,
-                priv_info_torch=actor_context,
+                obs=actor_obs,
+                prev_dones=actor_dones_device,
+                priv_info=actor_context,
             )
         forward_end_ns = time.perf_counter_ns()
         forward_timer.stop()
@@ -1417,7 +1417,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         from unilab.rl.runtime.ipc.memory_budget import (
             estimate_cuda_inference_ipc_bytes,
             estimate_cuda_tensor_runtime_bytes,
-            estimate_offpolicy_bytes,
+            estimate_host_offpolicy_bytes,
             raise_if_cuda_memory_over_budget,
             raise_if_shared_memory_over_budget,
             warn_if_over_budget,
@@ -1433,7 +1433,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             self.action_dim,
             capacity=self.inference_slot_capacity,
         )
-        mem_est = estimate_offpolicy_bytes(
+        mem_est = estimate_host_offpolicy_bytes(
             num_envs=self.num_envs,
             replay_buffer_n=self.replay_buffer_n,
             obs_dim=self.obs_dim,
@@ -1469,7 +1469,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                 action_dim=self.action_dim,
                 critic_dim=self.critic_obs_dim,
                 inference_obs_dim=inference_input_dim,
-                sample_count=self.tensor_runtime_settings.learner_sample_count,
+                sample_count=self.runtime_settings.learner_sample_count,
                 inference_slot_capacity=self.inference_slot_capacity,
                 replay_ingress_depth=self.replay_ingress_depth,
                 replay_ingress_slot_rows=self.replay_ingress_slot_rows,
@@ -1529,8 +1529,8 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         replay_buffer.trace_cuda_events = self.trace_cuda_events
 
         # --- authoritative device ring and hot/cold learner batches ---
-        sample_count = self.tensor_runtime_settings.learner_sample_count
-        replay_pipeline_factory = self.replay_pipeline_factory or GPUResidentReplayPipeline
+        sample_count = self.runtime_settings.learner_sample_count
+        replay_pipeline_factory = self.replay_pipeline_factory or DeviceReplayPipeline
         replay_pipeline = replay_pipeline_factory(
             replay_buffer,
             device=self.device,
@@ -1732,7 +1732,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             self._learner_coordination.mark_waiting()
             with torch_thread_env(self.torch_thread_runtime, role="collector"):
                 self._start_collector(
-                    target_fn=off_policy_collector_fn,
+                    target_fn=offpolicy_collector_fn,
                     kwargs={"stop_event": self._stop_event, **collector_kwargs},
                 )
             self._shutdown_recorder.set_phase(owner="learner", phase="training/startup_complete")
@@ -1977,7 +1977,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                             end_ns=time.perf_counter_ns(),
                             args={
                                 "total_batch": sample_count,
-                                "pipeline": "gpu_resident",
+                                "pipeline": "device",
                                 "batch_ready": batch_ready,
                                 "prefetch_mode": self.replay_prefetch_mode,
                                 "replay_pack_executor": self.replay_pack_executor,
@@ -2257,7 +2257,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                     end_ns=time.perf_counter_ns(),
                     args={
                         "iterations": iteration,
-                        "pipeline": "gpu_resident",
+                        "pipeline": "device",
                         "replay_h2d_submitter": self.replay_h2d_submitter,
                         "replay_transfer_backend": self.replay_transfer_backend,
                         "learner_log_interval": self.log_interval,

@@ -6,7 +6,7 @@ from collections import Counter
 
 import numpy as np
 import pytest
-from unisim.backend.base import BackendSensorView, SimBackend
+from unisim.backend.base import SensorView, SimBackend
 
 
 class _SensorBackend:
@@ -38,7 +38,7 @@ def test_bind_sensor_data_validates_once_and_reads_through_formal_view() -> None
 
     view = SimBackend.bind_sensor_data(backend, ("contact_a", "contact_b"))  # type: ignore[arg-type]
 
-    assert isinstance(view, BackendSensorView)
+    assert isinstance(view, SensorView)
     assert view.names == ("contact_a", "contact_b")
     assert view.dimensions == (1, 1)
     assert view.width == 2
@@ -112,7 +112,7 @@ def test_backend_sensor_view_detects_runtime_contract_drift(
 
 
 def test_backend_sensor_view_metadata_is_immutable() -> None:
-    view = BackendSensorView(
+    view = SensorView(
         backend_type="fake",
         names=("sensor",),
         dimensions=(1,),

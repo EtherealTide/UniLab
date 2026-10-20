@@ -20,7 +20,7 @@ from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
 
 from unilab.base import registry
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
 from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg, mdp
 from unilab.tasks.locomotion.g1 import manager_terms as g1_terms
@@ -267,7 +267,7 @@ def _materialize(
     config_group: str, overrides: Sequence[str], task_name: str
 ) -> tuple[DictConfig, ManagerBasedRlEnvCfg, dict[str, Any]]:
     hydra_cfg = _compose(config_group, overrides)
-    env_override = BackendAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
+    env_override = EnvConfigAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
     env_cfg = registry.materialize_env_config(task_name)
     assert isinstance(env_cfg, ManagerBasedRlEnvCfg)
     apply_cfg_overrides(env_cfg, env_override)
@@ -412,10 +412,8 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
         expected_events
     )
     if backend in _TENSOR_RESET_EVENT_BACKENDS or backend in _MOTRIX_PACKED_HOST_BRIDGE_BACKENDS:
-        assert env_cfg.events["reset_scene_to_default"].func is mdp.reset_scene_to_default_tensor
-        assert (
-            env_cfg.events["reset_root_state_uniform"].func is mdp.reset_root_state_uniform_tensor
-        )
+        assert env_cfg.events["reset_scene_to_default"].func is mdp.skip_scene_reset
+        assert env_cfg.events["reset_root_state_uniform"].func is mdp.reset_root_state_uniform_fused
     assert tuple(name for name, term in env_cfg.rewards.items() if term is not None) == (
         expected_rewards
     )
@@ -716,7 +714,7 @@ def test_g1_walk_newton_mask_reset_preserves_rows_and_rng() -> None:
         qpos_before = views["qpos"].clone()
         qvel_before = views["qvel"].clone()
         command = env.command_manager.get_command("twist").clone()
-        rng_state = env.torch_rng.get_state().clone() if env.torch_rng is not None else None
+        rng_state = env.rng.get_state().clone() if env.rng is not None else None
         assert rng_state is not None
 
         rows = torch.tensor([1, 3], dtype=torch.int64, device=device)
@@ -746,7 +744,7 @@ def test_g1_walk_newton_mask_reset_preserves_rows_and_rng() -> None:
             new_command[keep], command[keep], msg="untouched command rows changed"
         )
 
-        env.torch_rng.set_state(rng_state)
+        env.rng.set_state(rng_state)
         reference_obs, _ = env.reset(reset_mask=reset_mask)
         reference_command = env.command_manager.get_command("twist")
         torch.testing.assert_close(
@@ -1019,7 +1017,7 @@ from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
 from unilab.base import registry
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
 from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg, mdp
 
@@ -1036,7 +1034,7 @@ assert hydra_cfg.training.task_name == "G1WalkFlat"
 assert hydra_cfg.training.sim_backend == "genesis"
 assert hydra_cfg.training.play_render_mode == "auto"
 
-env_override = BackendAdapter(
+env_override = EnvConfigAdapter(
     hydra_cfg, root_dir=ROOT, algo_name=CONFIG_GROUP
 ).build_task_env_cfg_override()
 env_cfg = registry.materialize_env_config("G1WalkFlat")

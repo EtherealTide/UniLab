@@ -18,8 +18,8 @@ from typing import TYPE_CHECKING, Any, TypedDict
 import torch
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
     from unilab.managers.curriculum_manager import CurriculumTermCfg
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 # Stage schemas.

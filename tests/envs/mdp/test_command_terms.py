@@ -9,15 +9,14 @@ import pytest
 import torch
 
 from unilab.envs.mdp import UniformPoseCommand, UniformPoseCommandCfg
-from unilab.managers.torch_rng import TorchManagerRng
+from unilab.managers.rng import ManagerRng
 
 
 def _env(num_envs: int = 2) -> SimpleNamespace:
     return SimpleNamespace(
         num_envs=num_envs,
         device=torch.device("cpu"),
-        torch_rng=TorchManagerRng.seeded(11),
-        rng=np.random.default_rng(11),
+        rng=ManagerRng.seeded(11),
     )
 
 
@@ -54,9 +53,9 @@ def test_uniform_pose_command_reads_curriculum_updates_without_changing_width() 
         term.reset(reset_mask)
 
 
-def test_uniform_pose_command_fails_closed_without_torch_rng() -> None:
+def test_uniform_pose_command_fails_closed_without_rng() -> None:
     env = _env()
-    env.torch_rng = None
+    env.rng = None
 
     with pytest.raises(RuntimeError, match="CommandTerm scheduling"):
         UniformPoseCommandCfg(

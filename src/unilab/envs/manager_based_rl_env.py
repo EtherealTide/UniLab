@@ -32,14 +32,14 @@ from unilab.base.config_overrides import (
     CONFIG_MAPPING_POLICY_KEY,
     MANAGER_TERM_MAPPING_POLICY,
 )
-from unilab.base.cpu_runtime import apply_env_cpu_runtime
+from unilab.base.cpu_runtime import apply_cpu_confinement
 from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadPlan, SceneTensorReadSpec
 from unilab.base.reset_state import ResetStateTransaction
 from unilab.base.scene import SceneCfg, resolve_scene_default_qpos
 from unilab.base.torch_env import TorchEnv, TorchEnvState
 from unilab.base.variants import (
-    _build_fixed_variant_plan,
-    _require_fixed_variant_support,
+    build_fixed_variant_plan,
+    require_fixed_variant_support,
 )
 from unilab.dtype_config import get_global_dtype
 from unilab.envs import mdp
@@ -52,6 +52,7 @@ from unilab.managers import (
     CurriculumTermCfg,
     EventManager,
     EventTermCfg,
+    ManagerRng,
     MetricsManager,
     MetricsTermCfg,
     NullCommandManager,
@@ -70,7 +71,6 @@ from unilab.managers import (
     RewardTermCfg,
     TerminationManager,
     TerminationTermCfg,
-    TorchManagerRng,
 )
 from unilab.managers.scene_entity_config import SceneEntityCfg
 from unilab.rl.contracts.env import EnvAlgoCapabilities
@@ -309,12 +309,11 @@ class ManagerBasedRlEnv(TorchEnv):
     curriculum_manager: CurriculumManager | NullCurriculumManager
     metrics_manager: MetricsManager | NullMetricsManager
     recorder_manager: RecorderManager | NullRecorderManager
-    _tensor_read_plan: SceneTensorReadPlan | None
     _last_reset_manager_timing_ms: dict[str, float]
     _tensor_reset_env_origins_nonzero: bool | None
-    _tensor_reset_pose_bounds: torch.Tensor | None
-    _tensor_reset_velocity_bounds: torch.Tensor | None
-    _tensor_reset_bounds_key: tuple[Any, ...] | None
+    tensor_reset_pose_bounds: torch.Tensor | None
+    tensor_reset_velocity_bounds: torch.Tensor | None
+    tensor_reset_bounds_key: tuple[Any, ...] | None
 
     def __init__(self, cfg: ManagerBasedRlEnvCfg, backend: SimBackend, num_envs: int):
         if not isinstance(cfg, ManagerBasedRlEnvCfg):
@@ -337,16 +336,15 @@ class ManagerBasedRlEnv(TorchEnv):
         super().__init__(cfg, backend, num_envs, device=runtime_device)
         actual_seed = cfg.seed if cfg.seed is not None else secrets.randbits(63)
         cfg.seed = actual_seed
-        self._torch_rng_owner = TorchManagerRng(device=self.device).manual_seed(actual_seed)
-        self.torch_rng = self._torch_rng_owner
-        self._torch_generator = self._torch_rng_owner.generator if self._torch_rng_owner else None
+        self._rng_owner = ManagerRng(device=self.device).manual_seed(actual_seed)
+        self.rng = self._rng_owner
         self._reward_log_names: tuple[str, ...] = ()
         self._reward_log_means = torch.empty(0, dtype=torch.float32, device=self.device)
         self._last_reset_manager_timing_ms = {}
         self._tensor_reset_env_origins_nonzero = None
-        self._tensor_reset_pose_bounds = None
-        self._tensor_reset_velocity_bounds = None
-        self._tensor_reset_bounds_key = None
+        self.tensor_reset_pose_bounds = None
+        self.tensor_reset_velocity_bounds = None
+        self.tensor_reset_bounds_key = None
 
         assert cfg.scene is not None
         default_qpos = resolve_scene_default_qpos(cfg.scene, backend)
@@ -400,7 +398,7 @@ class ManagerBasedRlEnv(TorchEnv):
         ):
             raise NotImplementedError(
                 "backend does not declare the packed_reset capability required "
-                "by the packed reset contract: SimBackend.begin_packed_reset"
+                "by the packed reset contract: SimBackend.bind_packed_reset"
             )
         self._reset_state.declare_packed_reset_device(self.device)
         if "startup" in self.event_manager.available_modes:
@@ -425,7 +423,7 @@ class ManagerBasedRlEnv(TorchEnv):
         specs.extend(self._task_tensor_state_read_specs())
         specs.extend(self._manager_term_tensor_read_specs())
         specs.extend(self._command_tensor_read_specs())
-        self.scene._tensor_read_plan = (
+        self.scene.read_plan = (
             self.scene.compile_tensor_reads(self.device, specs) if specs else None
         )
 
@@ -561,7 +559,7 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def _term_root_body_name(self, entity_name: str) -> str:
         entity = self.scene[entity_name]
-        root_body_name = getattr(entity, "_root_body_name", None)
+        root_body_name = getattr(entity, "root_body_name", None)
         if not isinstance(root_body_name, str) or not root_body_name:
             raise TypeError(
                 "ManagerBasedRlEnv tensor root-state term for entity "
@@ -1146,7 +1144,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 "ManagerBasedRlEnv randomized initial episode counters require "
                 f"max_episode_steps > 1; got {max_steps}"
             )
-        return self.torch_rng.integers(0, max_steps, self.num_envs, dtype=torch.int64).to(
+        return self.rng.integers(0, max_steps, self.num_envs, dtype=torch.int64).to(
             device=self.device, dtype=torch.int64
         )
 
@@ -1184,7 +1182,7 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:
         del state
-        read_plan = self.scene._tensor_read_plan
+        read_plan = self.scene.read_plan
         if read_plan is not None and self.action_manager.uses_tensor_state_packet:
             # State-feedback action terms consume the current packet before
             # physics. Ordinary feed-forward terms match mjlab's ordering:
@@ -1205,7 +1203,7 @@ class ManagerBasedRlEnv(TorchEnv):
         boundary_started = time.perf_counter()
         self.scene._invalidate_state_reads()
         with self.scene._scoped_state_reads():
-            read_plan = self.scene._tensor_read_plan
+            read_plan = self.scene.read_plan
             if read_plan is not None and not read_plan.ready:
                 read_plan.refresh()
             boundary_ms = (time.perf_counter() - boundary_started) * 1000.0
@@ -1443,7 +1441,7 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def _refresh_tensor_reads_after_mutation(self) -> None:
         """Repack scene tensor reads after an in-phase simulation mutation."""
-        read_plan = self.scene._tensor_read_plan
+        read_plan = self.scene.read_plan
         if read_plan is not None:
             read_plan.refresh()
 
@@ -1501,7 +1499,7 @@ class ManagerBasedRlEnv(TorchEnv):
         if self._state is None:
             raise RuntimeError("ManagerBasedRlEnv requires init_state before mask reset")
         reset_timing: dict[str, float] = {}
-        read_plan = self.scene._tensor_read_plan
+        read_plan = self.scene.read_plan
         # An empty explicit reset does not publish a pre-reset recorder boundary.
         if self._has_transition and bool(reset_mask.any()):
             self.recorder_manager.record_pre_reset(reset_mask)
@@ -1517,7 +1515,9 @@ class ManagerBasedRlEnv(TorchEnv):
         log: dict[str, Any] = {}
         with reset_context:
             if "reset" in self.event_manager.available_modes:
-                self.event_manager.apply_reset(reset_mask, global_env_step_count=self.step_counter)
+                self.event_manager.dispatch_reset(
+                    reset_mask, global_env_step_count=self.step_counter
+                )
             reset_owner = self.reset_owner_manager.owner
             owns_command_reset = bool(
                 reset_owner is not None and reset_owner.cfg.owns_command_reset
@@ -1592,10 +1592,10 @@ class ManagerBasedRlEnv(TorchEnv):
             log.update(reset_owner.reset_committed(reset_mask))
 
         with self.scene._scoped_state_reads():
-            read_plan = self.scene._tensor_read_plan
+            read_plan = self.scene.read_plan
             if read_plan is not None:
                 read_plan.refresh()
-            self.command_manager.compute_reset(dt=0.0, reset_mask=reset_mask)
+            self.command_manager.refresh_reset(reset_mask)
             self.command_manager.post_compute_reset()
             reset_timing.update(getattr(self.command_manager, "last_post_compute_timing_ms", {}))
             manager_obs = self.observation_manager.compute(update_history=True)
@@ -1699,8 +1699,8 @@ class ManagerBasedRlEnv(TorchEnv):
             seed = secrets.randbits(63)
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
             raise ValueError(f"ManagerBasedRlEnv seed must be a non-negative integer, got {seed!r}")
-        if self._torch_rng_owner is not None:
-            self._torch_rng_owner.manual_seed(seed)
+        if self._rng_owner is not None:
+            self._rng_owner.manual_seed(seed)
         self._cfg.seed = seed
         return seed
 
@@ -1711,10 +1711,10 @@ class ManagerBasedRlEnv(TorchEnv):
         self._sim_step_counter = self.step_counter * self._cfg.sim_substeps
 
     def close(self) -> None:
-        read_plan = self.scene._tensor_read_plan
+        read_plan = self.scene.read_plan
         if read_plan is not None:
             read_plan.close()
-            self.scene._tensor_read_plan = None
+            self.scene.read_plan = None
         self.recorder_manager.close()
         super().close()
 
@@ -1726,9 +1726,7 @@ def make_manager_based_rl_env(
 ) -> ManagerBasedRlEnv:
     """Construct the generic Registry-owned Manager-Based production runtime."""
     from unilab.base.registry import (
-        _SHELVED_SIM_BACKENDS,
-        _TENSOR_MANAGER_BACKEND_SCOPE_ERROR,
-        _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS,
+        _SUPPORTED_SIM_BACKENDS,
     )
 
     if not isinstance(cfg, ManagerBasedRlEnvCfg):
@@ -1745,21 +1743,19 @@ def make_manager_based_rl_env(
             "make_manager_based_rl_env backend_type must be a non-empty string, "
             f"got {backend_type!r}"
         )
-    if backend_type in _SHELVED_SIM_BACKENDS:
-        raise ValueError(_TENSOR_MANAGER_BACKEND_SCOPE_ERROR.format(backend=backend_type))
-    if backend_type not in _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS:
+    if backend_type not in _SUPPORTED_SIM_BACKENDS:
         raise ValueError(
             "make_manager_based_rl_env supports only the tensor Manager backends "
-            f"{', '.join(_TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS)}; got {backend_type!r}."
+            f"{', '.join(_SUPPORTED_SIM_BACKENDS)}; got {backend_type!r}."
         )
 
     cfg.validate()
     if cfg.fixed_model_variants is not None and cfg.scene is not None:
         # Validate the complete task identity before allocating backend resources.
-        cfg.scene.fixed_variant_plan = _build_fixed_variant_plan(cfg.fixed_model_variants, num_envs)
+        cfg.scene.fixed_variant_plan = build_fixed_variant_plan(cfg.fixed_model_variants, num_envs)
     # Constrain the process before backend materialization so native pools size
     # themselves from the rank-owned CPU block.
-    apply_env_cpu_runtime(cfg.cpu_ids)
+    apply_cpu_confinement(cfg.cpu_ids)
     assert cfg.scene is not None
     base_name, body_state_requested, tracked_body_names = _resolve_backend_entity_contract(cfg)
     backend_kwargs = env_backend_kwargs(cfg)
@@ -1777,7 +1773,7 @@ def make_manager_based_rl_env(
     )
     try:
         if cfg.scene.fixed_variant_plan is not None:
-            _require_fixed_variant_support(
+            require_fixed_variant_support(
                 backend.get_dr_capabilities(), cfg.scene.fixed_variant_plan
             )
         return ManagerBasedRlEnv(cfg, backend, num_envs)

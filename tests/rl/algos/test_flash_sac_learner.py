@@ -11,7 +11,7 @@ import torch
 
 from unilab.rl.algos.flash_sac import learner as flash_sac_module
 from unilab.rl.algos.flash_sac.learner import FlashSACLearner, RewardNormalizer
-from unilab.rl.algos.flash_sac.update import compute_categorical_td_target
+from unilab.rl.algos.flash_sac.objectives import compute_categorical_td_target
 from unilab.rl.logging.metric_schema import normalize_metric_map
 
 
@@ -387,11 +387,11 @@ def test_flashsac_compile_targets_training_hot_paths(monkeypatch) -> None:
             {"dynamic": False, "options": {"triton.cudagraphs": True}},
         ),
         (
-            "FlashSACLearner._critic_loss_tensors",
+            "FlashSACLearner._critic_objective",
             {"dynamic": False, "options": {"triton.cudagraphs": True}},
         ),
         (
-            "FlashSACLearner._actor_loss_tensors",
+            "FlashSACLearner._actor_objective",
             {"dynamic": False, "options": {"triton.cudagraphs": True}},
         ),
     ]
@@ -413,11 +413,11 @@ def test_flashsac_compile_full_objectives_targets_complete_forward_graphs(monkey
 
     assert calls == [
         (
-            "FlashSACLearner._critic_objective_tensors",
+            "FlashSACLearner._full_critic_objective",
             {"dynamic": False, "options": {"triton.cudagraphs": True}},
         ),
         (
-            "FlashSACLearner._actor_objective_tensors",
+            "FlashSACLearner._full_actor_objective",
             {"dynamic": False, "options": {"triton.cudagraphs": True}},
         ),
     ]
@@ -444,11 +444,11 @@ def test_flashsac_whole_cycle_uses_max_autotune_without_nested_graphs(monkeypatc
 
     assert calls == [
         (
-            "FlashSACLearner._critic_objective_tensors",
+            "FlashSACLearner._full_critic_objective",
             {"dynamic": False, "mode": "max-autotune-no-cudagraphs"},
         ),
         (
-            "FlashSACLearner._actor_objective_tensors",
+            "FlashSACLearner._full_actor_objective",
             {"dynamic": False, "mode": "max-autotune-no-cudagraphs"},
         ),
     ]

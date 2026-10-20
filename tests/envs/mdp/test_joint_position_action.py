@@ -39,7 +39,7 @@ from unilab.envs.mdp.actions import (
 from unilab.envs.mdp.actions import (
     JointPositionActionCfg as ExportedJointPositionActionCfg,
 )
-from unilab.managers._types import ManagerBasedRlEnv
+from unilab.managers.types import ManagerBasedRlEnv
 
 
 class _Backend:
@@ -438,10 +438,10 @@ class _SensorTensorBackend(_Backend):
 
     _device_resident = False
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         if self._device_resident:
             return TensorExecution.DEVICE_RESIDENT
-        return super().tensor_execution()
+        return super().get_tensor_execution()
 
     def get_sensor_view(self, name: str, device: str | torch.device = "cpu") -> torch.Tensor:
         self.sensor_requests.append((name, torch.device(device)))

@@ -111,13 +111,13 @@ def test_motrix_backend_import_path_does_not_eagerly_import_mujoco() -> None:
 
         from unilab.base.backend_factory import create_backend
         from unisim.backend.motrix.scene import (
-            materialize_motrix_hfield_attached_scene,
-            materialize_motrix_scene,
+            materialize_hfield_attached_scene,
+            materialize_scene,
         )
 
         assert create_backend is not None
-        assert materialize_motrix_scene is not None
-        assert materialize_motrix_hfield_attached_scene is not None
+        assert materialize_scene is not None
+        assert materialize_hfield_attached_scene is not None
 
         if importlib.util.find_spec("motrixsim") is not None:
             import unisim.backend.motrix.backend

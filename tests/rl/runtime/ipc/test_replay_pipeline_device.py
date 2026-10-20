@@ -1,4 +1,4 @@
-"""Tests for GPUResidentReplayPipeline."""
+"""Tests for DeviceReplayPipeline."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ import torch
 
 from unilab.rl.runtime.ipc.completion import COMPLETION_CONTRACT_VERSION, ImmediateCompletion
 from unilab.rl.runtime.ipc.replay_buffer import ReplayBuffer
-from unilab.rl.runtime.ipc.replay_pipelines.gpu_resident import (
-    GPUResidentReplayPipeline,
+from unilab.rl.runtime.ipc.replay_pipelines.device import (
+    DeviceReplayPipeline,
     _device_memory_budget,
     _ring_spans,
     _validate_device_memory_budget,
@@ -139,7 +139,7 @@ def _expected_pattern(rb: ReplayBuffer, rewards: torch.Tensor) -> dict[str, torc
     return out
 
 
-def _wait_visible(pipeline: GPUResidentReplayPipeline, ptr: int, timeout: float = 15.0) -> None:
+def _wait_visible(pipeline: DeviceReplayPipeline, ptr: int, timeout: float = 15.0) -> None:
     deadline = time.monotonic() + timeout
     while pipeline._visible_ptr < ptr:
         if time.monotonic() > deadline:
@@ -150,7 +150,7 @@ def _wait_visible(pipeline: GPUResidentReplayPipeline, ptr: int, timeout: float 
 
 
 def _wait_batch_ready(
-    pipeline: GPUResidentReplayPipeline,
+    pipeline: DeviceReplayPipeline,
     tick_id: int,
     sample_count: int,
     timeout: float = 15.0,
@@ -182,7 +182,7 @@ class TestRingSpans:
 
 class TestMPSIngressEventLifecycle:
     def test_ring_wrap_span_copy_is_nonblocking_and_event_gated(self, monkeypatch):
-        pipeline = object.__new__(GPUResidentReplayPipeline)
+        pipeline = object.__new__(DeviceReplayPipeline)
         pipeline._device = torch.device("mps")
         pipeline._capacity = 8
         pipeline._gpu_storage = torch.zeros(8, 2)
@@ -231,7 +231,7 @@ class TestMPSIngressEventLifecycle:
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     def test_cuda_ingress_copy_waits_public_completion_before_read(self):
-        pipeline = object.__new__(GPUResidentReplayPipeline)
+        pipeline = object.__new__(DeviceReplayPipeline)
         pipeline._device = torch.device("cuda")
         pipeline._capacity = 4
         pipeline._gpu_storage = torch.zeros(4, 2, device="cuda")
@@ -269,7 +269,7 @@ class TestMPSIngressEventLifecycle:
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     def test_cuda_ingress_copy_rejects_removed_env_update_operation(self):
-        pipeline = object.__new__(GPUResidentReplayPipeline)
+        pipeline = object.__new__(DeviceReplayPipeline)
         pipeline._device = torch.device("cuda")
         pipeline._capacity = 4
         pipeline._gpu_storage = torch.zeros(4, 2, device="cuda")
@@ -306,7 +306,7 @@ class TestMPSIngressEventLifecycle:
             )
 
     def test_multiple_pending_spans_commit_in_order_and_release_slots(self):
-        pipeline = object.__new__(GPUResidentReplayPipeline)
+        pipeline = object.__new__(DeviceReplayPipeline)
         first_event = _FakeMPSEvent()
         second_event = _FakeMPSEvent()
         commits: list[tuple[int, int, int]] = []
@@ -338,7 +338,7 @@ class TestMPSIngressEventLifecycle:
         assert pipeline._visible_ptr == 8
 
     def test_close_drains_pending_span_before_transfer_backend_close(self, monkeypatch):
-        pipeline = object.__new__(GPUResidentReplayPipeline)
+        pipeline = object.__new__(DeviceReplayPipeline)
         event = _FakeMPSEvent()
         close_order: list[str] = []
         commits: list[tuple[int, int, int]] = []
@@ -378,7 +378,7 @@ class TestConstructionGuards:
     def test_non_accelerator_device_rejected(self):
         rb = _make_replay(device="cpu")
         with pytest.raises(ValueError, match="have Torch type 'cuda' or 'mps'"):
-            GPUResidentReplayPipeline(rb, device="cpu", sample_count=8)
+            DeviceReplayPipeline(rb, device="cpu", sample_count=8)
 
     def test_runner_rejects_non_accelerator_before_base_initialization(self):
         from unilab.rl.runtime.offpolicy.double_buffer_runner import (
@@ -397,8 +397,8 @@ class TestConstructionGuards:
         import unilab.rl.algos.sac.double_buffer as sac_builder
 
         builders = (
-            sac_builder.build_sac_double_buffer_runner,
-            flashsac_builder.build_flashsac_double_buffer_runner,
+            sac_builder.build_double_buffer_runner,
+            flashsac_builder.build_double_buffer_runner,
         )
         for builder in builders:
             with pytest.raises(
@@ -434,7 +434,7 @@ class TestConstructionGuards:
 
 
 @cuda_only
-class TestGPUResidentPipeline:
+class TestDevicePipeline:
     @pytest.fixture
     def pipeline_factory(self):
         created = []
@@ -442,7 +442,7 @@ class TestGPUResidentPipeline:
         def _make(rb, **kwargs):
             kwargs.setdefault("device", "cuda")
             kwargs.setdefault("sample_count", 16)
-            pipeline = GPUResidentReplayPipeline(rb, **kwargs)
+            pipeline = DeviceReplayPipeline(rb, **kwargs)
             created.append(pipeline)
             return pipeline
 
@@ -458,9 +458,9 @@ class TestGPUResidentPipeline:
         assert len(pipeline._gpu_packed) == 2
         assert all(slot.is_cuda for slot in pipeline._gpu_packed)
         assert all(slot.is_pinned() for slot in rb._ingress_slots)
-        assert pipeline.h2d_submitter == "gpu_resident_ingress"
+        assert pipeline.h2d_submitter == "device_ingress"
         manifest = pipeline.transfer_manifest
-        assert manifest["pipeline"] == "gpu_resident"
+        assert manifest["pipeline"] == "device"
         assert manifest["storage_rows"] == 64
         assert manifest["host_pinned"] is True
 
@@ -695,7 +695,7 @@ class TestGPUResidentPipeline:
 
 
 @mps_only
-class TestMPSGPUResidentPipeline:
+class TestMPSDevicePipeline:
     @pytest.fixture
     def pipeline_factory(self):
         created = []
@@ -703,7 +703,7 @@ class TestMPSGPUResidentPipeline:
         def _make(rb, **kwargs):
             kwargs.setdefault("device", "mps")
             kwargs.setdefault("sample_count", 16)
-            pipeline = GPUResidentReplayPipeline(rb, **kwargs)
+            pipeline = DeviceReplayPipeline(rb, **kwargs)
             created.append(pipeline)
             return pipeline
 
@@ -720,7 +720,7 @@ class TestMPSGPUResidentPipeline:
 
         assert pipeline._sync_thread is None
         assert pipeline._host_pinned is False
-        assert pipeline.h2d_submitter == "gpu_resident_ingress_main_thread"
+        assert pipeline.h2d_submitter == "device_ingress_main_thread"
         assert pipeline.transfer_manifest["device_submission_thread"] == "learner"
         assert all(value.device.type == "mps" for value in batch.values())
         rewards = batch["rewards"].cpu()
@@ -738,7 +738,7 @@ class TestMPSGPUResidentPipeline:
 
         assert int(rb.ptr[0]) == 16
         assert pipeline.transfer_manifest["storage_owner"] == "device"
-        assert pipeline.h2d_submitter == "gpu_resident_ingress_main_thread"
+        assert pipeline.h2d_submitter == "device_ingress_main_thread"
         rewards = batch["rewards"].cpu()
         expected = _expected_pattern(rb, rewards)
         for key, want in expected.items():
@@ -870,7 +870,7 @@ class TestMPSGPUResidentPipeline:
         pipeline = pipeline_factory(rb, sample_count=8)
 
         def reject_global_sync() -> None:
-            raise AssertionError("gpu_resident MPS path must not globally synchronize")
+            raise AssertionError("device MPS path must not globally synchronize")
 
         monkeypatch.setattr(torch.mps, "synchronize", reject_global_sync)
         batch = pipeline.sample_large_batch(1, 8)

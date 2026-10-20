@@ -68,7 +68,7 @@ def semantic_fingerprint(domain: str, value: Any) -> str:
 
 
 @dataclass(frozen=True)
-class TensorObservationNoise:
+class ObservationNoise:
     """Uniform additive observation noise with owner-declared bounds."""
 
     lower: torch.Tensor
@@ -92,7 +92,7 @@ class TensorObservationNoise:
         terms: tuple[UniformNoiseCfg, ...],
         widths: tuple[int, ...],
         device: torch.device,
-    ) -> TensorObservationNoise:
+    ) -> ObservationNoise:
         if len(terms) != len(widths) or not terms or min(widths) <= 0:
             raise ValueError("observation noise terms and widths must be non-empty and aligned")
         lower_values = tuple(term.n_min for term in terms if isinstance(term.n_min, float))
@@ -130,7 +130,7 @@ class TensorObservationNoise:
 
 
 @dataclass
-class TensorResetPlan:
+class ResetMasks:
     """Device-side fixed-width done union."""
 
     terminated: torch.Tensor
@@ -150,7 +150,7 @@ class TensorResetPlan:
 
 
 @dataclass
-class TensorEpisodeMetrics:
+class EpisodeMetrics:
     """Device-resident current episode accumulators.
 
     ``snapshot`` and ``finished_values`` return tensors; callers decide when a
@@ -161,7 +161,7 @@ class TensorEpisodeMetrics:
     lengths: torch.Tensor
 
     @classmethod
-    def create(cls, num_envs: int, device: torch.device) -> TensorEpisodeMetrics:
+    def create(cls, num_envs: int, device: torch.device) -> EpisodeMetrics:
         if num_envs <= 0:
             raise ValueError("tensor episode metrics require a positive environment count")
         return cls(
@@ -203,9 +203,9 @@ class TensorEpisodeMetrics:
 
 
 __all__ = [
-    "TensorEpisodeMetrics",
-    "TensorObservationNoise",
-    "TensorResetPlan",
+    "EpisodeMetrics",
+    "ObservationNoise",
+    "ResetMasks",
     "semantic_fingerprint",
     "semantic_token",
 ]

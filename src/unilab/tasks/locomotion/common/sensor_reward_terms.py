@@ -17,10 +17,10 @@ import torch
 
 from unilab.managers.manager_base import ManagerTermBaseCfg
 
-from .manager_terms import SensorTermBase, _command, _real
+from .manager_terms import SensorTermBase, require_command, require_real
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 def _torch_values(values: torch.Tensor) -> torch.Tensor:
@@ -50,7 +50,7 @@ class _Vec3SensorTerm(SensorTermBase):
         return (self._sensor_name,)
 
     def _read_sensor_tensor(self, env: ManagerBasedRlEnv) -> torch.Tensor:
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         owner_sensors = set(getattr(read_plan, "sensor_names", {}).get("robot", ()))
         if read_plan is None or not set(self.tensor_sensor_names).issubset(owner_sensors):
             raise NotImplementedError(
@@ -76,7 +76,7 @@ class _CommandTrackingTerm(_Vec3SensorTerm):
 
     def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
-        self._sigma = _real(
+        self._sigma = require_real(
             self.name,
             "tracking_sigma",
             cfg.params.get("tracking_sigma", 0.25),
@@ -84,7 +84,7 @@ class _CommandTrackingTerm(_Vec3SensorTerm):
             strict_minimum=True,
         )
         self._command_name = cfg.params.get("command_name", "twist")
-        _command(env, self.name, self._command_name)  # Fail closed at construction.
+        require_command(env, self.name, self._command_name)  # Fail closed at construction.
 
 
 class track_lin_vel(_CommandTrackingTerm):
@@ -93,7 +93,7 @@ class track_lin_vel(_CommandTrackingTerm):
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
         linvel = self._read_sensor_tensor(env)
-        command = _command(env, self.name, self._command_name)
+        command = require_command(env, self.name, self._command_name)
         linvel_tensor = _torch_values(linvel)
         command_tensor = command.to(device=linvel_tensor.device, dtype=linvel_tensor.dtype)
         error = (command_tensor[:, :2] - linvel_tensor[:, :2]).square().sum(dim=1)
@@ -106,7 +106,7 @@ class track_ang_vel(_CommandTrackingTerm):
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
         gyro = self._read_sensor_tensor(env)
-        command = _command(env, self.name, self._command_name)
+        command = require_command(env, self.name, self._command_name)
         gyro_tensor = _torch_values(gyro)
         command_tensor = command.to(device=gyro_tensor.device, dtype=gyro_tensor.dtype)
         error = (command_tensor[:, 2] - gyro_tensor[:, 2]).square()

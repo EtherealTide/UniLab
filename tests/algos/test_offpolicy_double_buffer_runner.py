@@ -24,7 +24,7 @@ from unilab.rl.runtime.distributed.context import (
     UNILAB_DP_WORLD_SIZE,
 )
 from unilab.rl.runtime.placement import InferencePlacement, InferenceTransport
-from unilab.rl.runtime.settings import TensorRuntimeSettings
+from unilab.rl.runtime.settings import RuntimeSettings
 from unilab.training import cuda_process_sharing
 
 _ROOT = Path(__file__).parent.parent.parent
@@ -117,7 +117,7 @@ class _FakeCudaProcessSharingEvidence:
     control_pipe = "/tmp/unilab-mps/control"
     server_pid = 2768293
 
-    def manifest(self):
+    def to_dict(self):
         return {
             "configured": self.configured,
             "effective": self.effective,
@@ -308,7 +308,7 @@ def test_valid_cuda_process_sharing_evidence_enters_runner_manifest(
 
     runner = module.build_runner("sac", cfg)
 
-    assert runner.runtime_manifest["cuda_process_sharing"] == evidence.manifest()
+    assert runner.runtime_manifest["cuda_process_sharing"] == evidence.to_dict()
 
 
 @pytest.mark.parametrize("mode", ["invalid_mode", "same_tick"])
@@ -391,8 +391,8 @@ def test_sac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPatch):
     assert runner.kwargs["algo_type"] == "sac"
     assert runner.kwargs["device"] == "cuda:0"
     assert runner.kwargs["replay_prefetch_mode"] == "one_tick"
-    settings = runner.kwargs["tensor_runtime_settings"]
-    assert isinstance(settings, TensorRuntimeSettings)
+    settings = runner.kwargs["runtime_settings"]
+    assert isinstance(settings, RuntimeSettings)
     assert settings.inference_slot_capacity == 1
     assert settings.collector_metrics_interval == 1
     assert settings.replay_ingress_depth == 2
@@ -436,7 +436,7 @@ def test_sac_owner_custom_runtime_can_override_base_learner_kwargs(
     monkeypatch: pytest.MonkeyPatch,
 ):
     from unilab.rl.algos.sac import double_buffer as owner_module
-    from unilab.rl.runtime.offpolicy.runtime import OffPolicyRuntime
+    from unilab.rl.runtime.offpolicy.resolution import OffPolicyRuntime
 
     cfg = _offpolicy_cfg([])
     custom_runtime = OffPolicyRuntime(
@@ -451,7 +451,7 @@ def test_sac_owner_custom_runtime_can_override_base_learner_kwargs(
     )
     monkeypatch.setattr(owner_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
 
-    runner = owner_module.build_sac_double_buffer_runner(
+    runner = owner_module.build_double_buffer_runner(
         cfg,
         env_factory=_fake_env_factory,
         env_cfg_override={},
@@ -480,8 +480,8 @@ def test_flashsac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPa
     assert runner.kwargs["algo_type"] == "flashsac"
     assert runner.kwargs["device"] == "cuda:0"
     assert runner.kwargs["replay_prefetch_mode"] == "one_tick"
-    settings = runner.kwargs["tensor_runtime_settings"]
-    assert isinstance(settings, TensorRuntimeSettings)
+    settings = runner.kwargs["runtime_settings"]
+    assert isinstance(settings, RuntimeSettings)
     assert settings.inference_slot_capacity == 1
     assert settings.collector_metrics_interval == 1
     assert settings.replay_ingress_depth == 2

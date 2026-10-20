@@ -40,7 +40,7 @@ class _SyncLearner:
     def set_gradient_sync(self, sync) -> None:
         self.gradient_sync = sync
 
-    def dp_initial_sync_tensors(self) -> dict[str, torch.Tensor]:
+    def dp_initial_sync(self) -> dict[str, torch.Tensor]:
         return self.tensors
 
 
@@ -134,7 +134,7 @@ def test_dp_init_broadcast_is_a_noop_without_dp_sync():
 
 def test_learner_without_initial_sync_tensors_fails_with_type_error():
     runner = _runner_with(_NoSyncLearner(), _FakeDpSync())
-    with pytest.raises(TypeError, match="dp_initial_sync_tensors"):
+    with pytest.raises(TypeError, match="dp_initial_sync"):
         runner._dp_init_broadcast()
 
 
@@ -336,7 +336,7 @@ def test_sac_initial_sync_tensors_return_live_references():
         use_autotune=False,
         max_grad_norm=0.0,
     )
-    tensors = learner.dp_initial_sync_tensors()
+    tensors = learner.dp_initial_sync()
 
     for prefix, module in (
         ("actor", learner.actor),
@@ -488,7 +488,7 @@ def test_flash_sac_initial_sync_tensors_return_live_references():
         critic_num_blocks=1,
         num_atoms=3,
     )
-    tensors = learner.dp_initial_sync_tensors()
+    tensors = learner.dp_initial_sync()
 
     for prefix, module in (
         ("actor", learner.actor),

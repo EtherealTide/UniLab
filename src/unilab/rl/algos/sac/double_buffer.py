@@ -10,26 +10,26 @@ from omegaconf import DictConfig, OmegaConf
 from unilab.rl.algos.sac.learner import SACLearner
 from unilab.rl.contracts.env import EnvFactory
 from unilab.rl.contracts.observations import get_obs_dims
-from unilab.rl.runtime.ipc.replay_pipelines.gpu_resident import (
+from unilab.rl.runtime.ipc.replay_pipelines.device import (
     require_offpolicy_replay_device,
 )
 from unilab.rl.runtime.offpolicy.actor_adapter import import_actor_adapter_modules
 from unilab.rl.runtime.offpolicy.double_buffer_runner import (
     DoubleBufferOffPolicyRunner,
-    reject_removed_inference_request_timeout,
+    validate_no_inference_request_timeout,
 )
-from unilab.rl.runtime.offpolicy.runtime import (
+from unilab.rl.runtime.offpolicy.resolution import (
     resolve_actor_adapter_modules,
     resolve_custom_offpolicy_runtime,
 )
 from unilab.rl.runtime.placement import InferencePlacement
-from unilab.rl.runtime.settings import TensorRuntimeSettings
+from unilab.rl.runtime.settings import RuntimeSettings
 
 if TYPE_CHECKING:
     from unilab.rl.runtime.distributed.sync import DpParameterSync
 
 
-def build_sac_double_buffer_runner(
+def build_double_buffer_runner(
     cfg: DictConfig,
     *,
     env_factory: EnvFactory,
@@ -43,12 +43,12 @@ def build_sac_double_buffer_runner(
     dp_sync: DpParameterSync | None = None,
     backend_device_resolver: Callable[[str, str | None], str | None] | None = None,
     backend_device_configurer: Callable[[str, str | None], str | None] | None = None,
-    tensor_runtime_settings: TensorRuntimeSettings | None = None,
+    runtime_settings: RuntimeSettings | None = None,
     inference_placement: InferencePlacement | None = None,
 ) -> Any:
     """Build SAC from its Hydra owner config without interpreting it in the entrypoint.
 
-    ``tensor_runtime_settings`` and ``inference_placement`` are resolved from
+    ``runtime_settings`` and ``inference_placement`` are resolved from
     the owner config by the training assembly layer
     (:mod:`unilab.training.tensor_runtime`) and injected here; when omitted the
     runner-side defaults apply. Backend process-device resolution/binding is
@@ -63,14 +63,14 @@ def build_sac_double_buffer_runner(
     # forwards the list to the spawn collector.
     actor_adapter_modules = resolve_actor_adapter_modules(rl_cfg, custom_runtime)
     import_actor_adapter_modules(actor_adapter_modules)
-    if tensor_runtime_settings is not None:
-        batch_size = tensor_runtime_settings.batch_size
-        updates_per_step = tensor_runtime_settings.updates_per_step
+    if runtime_settings is not None:
+        batch_size = runtime_settings.batch_size
+        updates_per_step = runtime_settings.updates_per_step
     else:
         batch_size = int(cfg.algo.batch_size)
         updates_per_step = int(cfg.algo.updates_per_step)
 
-    reject_removed_inference_request_timeout(cfg.training)
+    validate_no_inference_request_timeout(cfg.training)
     env = env_factory(1, env_cfg_override)
     try:
         action_shape = env.action_space.shape
@@ -155,6 +155,6 @@ def build_sac_double_buffer_runner(
         backend_device_configurer=backend_device_configurer,
         actor_adapter_modules=actor_adapter_modules,
         inference_placement=inference_placement,
-        tensor_runtime_settings=tensor_runtime_settings,
+        runtime_settings=runtime_settings,
         log_interval=int(cfg.training.log_interval),
     )

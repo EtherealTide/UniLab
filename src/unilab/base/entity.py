@@ -18,16 +18,16 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast
 import numpy as np
 import torch
 from unisim.backend.base import (
-    BackendRootStateLayout,
-    BackendSensorView,
     HostBridgeTransferPlan,
+    RootStateLayout,
+    SensorView,
     SimBackend,
     TensorDataPlane,
     TensorExecution,
     TensorIOSpec,
     TensorLifecycleCapabilities,
     TensorProcessTopology,
-    tensor_device_matches,
+    torch_device_matches,
 )
 from unisim.dr.interval import (
     INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
@@ -789,7 +789,7 @@ class EntityData:
     """Backend host adapter plus Torch cold tables owned by the entity facade.
 
     The remaining host getters and default arrays are explicit adapter internals;
-    Manager runtime reads use packed Torch views or cached Torch tables. Control
+    Manager runtime reads use packed Torch views or cached tensor tables. Control
     writes publish into the same actuator layout without touching backend-private
     state.
     """
@@ -970,11 +970,11 @@ class EntityData:
 
     @property
     def _host_gravity_vec_w(self) -> np.ndarray:
-        """World gravity host source (backend/test-only; Torch table is public)."""
+        """World gravity host source (backend/test-only; tensor table is public)."""
         return self._require(self._gravity_vec_w, "world-frame gravity")
 
-    def gravity_vec_w_torch(self, device: str | torch.device) -> torch.Tensor:
-        """Return the immutable world-frame gravity vector as a cached Torch table."""
+    def gravity_vec_w(self, device: str | torch.device) -> torch.Tensor:
+        """Return the immutable world-frame gravity vector as a cached tensor table."""
         resolved = torch.device(device)
         if self._gravity_vec_w_tensor is None or self._gravity_vec_w_tensor.device != resolved:
             source = self._host_gravity_vec_w
@@ -987,8 +987,8 @@ class EntityData:
             )
         return self._gravity_vec_w_tensor
 
-    def default_root_state_torch(self, device: str | torch.device) -> torch.Tensor:
-        """Return the immutable default root state as a cached Torch table."""
+    def default_root_state(self, device: str | torch.device) -> torch.Tensor:
+        """Return the immutable default root state as a cached tensor table."""
         resolved = torch.device(device)
         if (
             self._default_root_state_tensor is None
@@ -1022,8 +1022,8 @@ class EntityData:
         index = self._require(self._joint_vel_index, "joint velocity")
         return self._state_table("qvel")[:, index]
 
-    def default_joint_pos_torch(self, device: str | torch.device) -> torch.Tensor:
-        """Return the cold-path default joint positions as a cached Torch tensor."""
+    def default_joint_pos(self, device: str | torch.device) -> torch.Tensor:
+        """Return the cold-path default joint positions as a cached tensor."""
         resolved = torch.device(device)
         cached = self._default_joint_pos_tensor
         if cached is None or cached.device != resolved:
@@ -1038,8 +1038,8 @@ class EntityData:
             self._default_joint_pos_tensor = cached
         return cached
 
-    def default_joint_vel_torch(self, device: str | torch.device) -> torch.Tensor:
-        """Return the cold-path default joint velocities as a cached Torch tensor."""
+    def default_joint_vel(self, device: str | torch.device) -> torch.Tensor:
+        """Return the cold-path default joint velocities as a cached tensor."""
         resolved = torch.device(device)
         cached = self._default_joint_vel_tensor
         if cached is None or cached.device != resolved:
@@ -1054,8 +1054,8 @@ class EntityData:
             self._default_joint_vel_tensor = cached
         return cached
 
-    def soft_joint_pos_limits_torch(self, device: str | torch.device) -> torch.Tensor:
-        """Return the cold-path joint position limits as a cached Torch tensor."""
+    def soft_joint_pos_limits(self, device: str | torch.device) -> torch.Tensor:
+        """Return the cold-path joint position limits as a cached tensor."""
         resolved = torch.device(device)
         cached = self._soft_joint_pos_limits_tensor
         if cached is None or cached.device != resolved:
@@ -1433,12 +1433,12 @@ class Entity:
         if not name:
             raise ValueError("Entity name must be a non-empty string")
         self.name = name
-        self._root_body_name = cfg.root_body_name
+        self.root_body_name = cfg.root_body_name
         self._backend_type = backend.backend_type
         self._backend = backend
         self._body_tensor_layouts: dict[tuple[str, ...], np.ndarray] = {}
         self._reset_state = reset_state
-        self._reset_root_layout: BackendRootStateLayout | None = None
+        self._reset_root_layout: RootStateLayout | None = None
         self._reset_root_layout_error: str | None = None
         self._reset_joint_qpos_ids: np.ndarray | None = None
         self._reset_joint_qvel_ids: np.ndarray | None = None
@@ -1713,7 +1713,7 @@ class Entity:
             capabilities.state_fields
         ):
             raise self._capability_error("joint tensor state", "qpos/qvel views are unavailable")
-        if not tensor_device_matches(capabilities.torch_devices, device):
+        if not torch_device_matches(capabilities.torch_devices, device):
             raise ValueError(
                 f"Entity '{self.name}' tensor joint-state device {device} is "
                 f"unsupported on backend '{self._backend_type}'; "
@@ -1781,7 +1781,7 @@ class Entity:
             )
         if not capabilities.sensor_views:
             raise self._capability_error(capability, "named sensor views are unavailable")
-        if not tensor_device_matches(capabilities.torch_devices, resolved_device):
+        if not torch_device_matches(capabilities.torch_devices, resolved_device):
             raise ValueError(
                 f"Entity '{self.name}' tensor {capability} device {resolved_device} is "
                 f"unsupported on backend '{self._backend_type}'; "
@@ -2229,7 +2229,7 @@ class Entity:
         backend: SimBackend,
         root_body_name: str | None,
         default_qpos: np.ndarray | None,
-    ) -> tuple[BackendRootStateLayout | None, np.ndarray | None, str | None]:
+    ) -> tuple[RootStateLayout | None, np.ndarray | None, str | None]:
         if root_body_name is None:
             return None, None, "root_body_name was not declared in EntityCfg"
         if self._entity_defaults is not None:
@@ -2241,10 +2241,10 @@ class Entity:
             layout = backend.get_root_state_layout(root_body_name)
         except (AttributeError, NotImplementedError) as exc:
             return None, None, str(exc)
-        if not isinstance(layout, BackendRootStateLayout):
+        if not isinstance(layout, RootStateLayout):
             raise TypeError(
                 f"Entity '{self.name}' capability 'root-state layout' on backend "
-                f"'{self._backend_type}' must return BackendRootStateLayout, got "
+                f"'{self._backend_type}' must return RootStateLayout, got "
                 f"{type(layout).__name__}"
             )
         try:
@@ -2749,7 +2749,7 @@ class Entity:
             assert self._reset_state is not None
             assert self._reset_state.scene_layout is not None
             owner = self._reset_state.scene_layout.get_entity(self._physical_entity)
-            layout = BackendRootStateLayout(
+            layout = RootStateLayout(
                 qpos_indices=tuple(owner.root_qpos_indices),
                 qvel_indices=tuple(owner.root_qvel_indices),
             )
@@ -3753,7 +3753,7 @@ class Entity:
 
     def _require_root_state_write(
         self,
-    ) -> tuple[ResetStateTransaction, BackendRootStateLayout]:
+    ) -> tuple[ResetStateTransaction, RootStateLayout]:
         if self._reset_state is None:
             raise self._capability_error(
                 "reset root-state write",
@@ -4142,7 +4142,7 @@ class EntityScene(Mapping[str, Entity]):
     ) -> None:
         self._backend = backend
         self._state_read_cache = _EntityStateReadCache()
-        self._tensor_read_plan: SceneTensorReadPlan | None = None
+        self.read_plan: SceneTensorReadPlan | None = None
         materialized: dict[str, Entity] = {}
         for name, cfg in entities.items():
             if not isinstance(name, str) or not name:
@@ -4191,8 +4191,8 @@ class EntityScene(Mapping[str, Entity]):
         """Pinned community-style read-only entity mapping."""
         return self._entities
 
-    def env_origins_torch(self, device: str | torch.device) -> torch.Tensor:
-        """Return immutable per-environment origins as a cached Torch table."""
+    def env_origins(self, device: str | torch.device) -> torch.Tensor:
+        """Return immutable per-environment origins as a cached tensor table."""
         resolved = torch.device(device)
         if self._env_origins_tensor is None or self._env_origins_tensor.device != resolved:
             self._env_origins_tensor = torch.from_numpy(np.array(self._env_origins, copy=True)).to(
@@ -4277,7 +4277,7 @@ class EntityScene(Mapping[str, Entity]):
                 device=resolved_device,
             )
             try:
-                host_plan = self._backend.compile_host_bridge_io(spec)
+                host_plan = self._backend.bind_host_bridge_io(spec)
             except (AttributeError, KeyError, TypeError, ValueError, NotImplementedError) as exc:
                 raise type(exc)(
                     "Manager scene packed tensor read compilation on backend "
@@ -4335,7 +4335,7 @@ class EntityScene(Mapping[str, Entity]):
             raise NotImplementedError(
                 "Manager scene HOST_BRIDGE tensor reads require an in-process packed host bridge"
             )
-        if not tensor_device_matches(capabilities.torch_devices, device):
+        if not torch_device_matches(capabilities.torch_devices, device):
             raise ValueError(
                 f"Manager scene tensor read device {device} is unsupported; "
                 f"accepted={capabilities.torch_devices}"
@@ -4373,8 +4373,8 @@ class EntityScene(Mapping[str, Entity]):
     def _invalidate_state_reads(self) -> None:
         """Discard cached backend state after an in-phase simulation mutation."""
         self._state_read_cache.invalidate()
-        if self._tensor_read_plan is not None:
-            self._tensor_read_plan.invalidate()
+        if self.read_plan is not None:
+            self.read_plan.invalidate()
 
     def reset_to_default(self, reset_mask: torch.Tensor, *, term_name: str) -> None:
         """Stage a full-scene default state in the active mask transaction."""
@@ -4399,16 +4399,16 @@ class EntityScene(Mapping[str, Entity]):
             )
         return self._reset_state.bind_gravity_write(term_name=term_name)
 
-    def bind_gravity_write_torch(
+    def bind_gravity_write_tensor(
         self, *, term_name: str, device: str | torch.device
     ) -> torch.Tensor:
-        """Bind immutable backend gravity as a Torch table for tensor events."""
+        """Bind immutable backend gravity as a tensor table for tensor events."""
         if self._reset_state is None:
             raise NotImplementedError(
                 f"EventManager term '{term_name}' gravity capability is unavailable: "
                 "EntityScene was materialized without an env-owned reset transaction"
             )
-        return self._reset_state.bind_gravity_write_torch(
+        return self._reset_state.bind_gravity_write_tensor(
             term_name=term_name, device=torch.device(device)
         )
 
@@ -4427,11 +4427,11 @@ class EntityScene(Mapping[str, Entity]):
             )
         self._reset_state.write_gravity(env_ids, values, term_name=term_name)
 
-    def bind_sensor_data(self, names: Sequence[str]) -> BackendSensorView:
+    def bind_sensor_data(self, names: Sequence[str]) -> SensorView:
         """Bind existing backend sensors for a manager term on the cold path.
 
         The returned view owns the backend-specific reader.  Terms retain that
-        view and only call :meth:`BackendSensorView.read` while stepping, so the
+        view and only call :meth:`SensorView.read` while stepping, so the
         scene facade never exposes a backend model, data object, or native handle.
         """
         try:

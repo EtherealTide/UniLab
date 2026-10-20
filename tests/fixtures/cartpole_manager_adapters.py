@@ -18,7 +18,7 @@ from unilab.managers.scene_entity_config import SceneEntityCfg
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 def finite_real(value: Real, *, label: str) -> float:
@@ -148,15 +148,15 @@ def reset_joints_by_offset(
     velocity_lower, velocity_upper = numeric_range(velocity_range, label="velocity_range")
     asset = cast("Entity", env.scene[asset_cfg.name])
     joint_ids = asset_cfg.joint_ids
-    default_position = asset.data.default_joint_pos_torch(env.device)[:, joint_ids]
-    default_velocity = asset.data.default_joint_vel_torch(env.device)[:, joint_ids]
-    position = default_position + env.torch_rng.uniform(
+    default_position = asset.data.default_joint_pos(env.device)[:, joint_ids]
+    default_velocity = asset.data.default_joint_vel(env.device)[:, joint_ids]
+    position = default_position + env.rng.uniform(
         position_lower,
         position_upper,
         tuple(default_position.shape),
         dtype=default_position.dtype,
     )
-    velocity = default_velocity + env.torch_rng.uniform(
+    velocity = default_velocity + env.rng.uniform(
         velocity_lower,
         velocity_upper,
         tuple(default_velocity.shape),

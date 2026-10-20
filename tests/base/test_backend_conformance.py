@@ -14,9 +14,9 @@ import numpy as np
 import pytest
 import torch
 from unisim.backend.base import (
-    BackendRootStateLayout,
-    BackendTerrainSpawnData,
+    RootStateLayout,
     SimBackend,
+    TerrainSpawnData,
 )
 
 from unilab.assets import ASSETS_ROOT_PATH
@@ -199,7 +199,7 @@ def test_terrain_spawn_contract_is_read_only_and_defaults_to_unsupported() -> No
     def sample_height(xy: np.ndarray) -> np.ndarray:
         return np.zeros(np.asarray(xy).shape[:-1], dtype=np.float64)
 
-    data = BackendTerrainSpawnData(origins, sample_height=sample_height)
+    data = TerrainSpawnData(origins, sample_height=sample_height)
 
     assert SimBackend.get_terrain_spawn_data(object()) is None  # type: ignore[arg-type]
     assert data.sample_height is sample_height
@@ -209,9 +209,9 @@ def test_terrain_spawn_contract_is_read_only_and_defaults_to_unsupported() -> No
     assert np.all(data.terrain_origins >= 0.0)
 
     with pytest.raises(ValueError, match="terrain_origins must have shape"):
-        BackendTerrainSpawnData(np.zeros((2, 3), dtype=np.float64))
+        TerrainSpawnData(np.zeros((2, 3), dtype=np.float64))
     with pytest.raises(TypeError, match="sample_height must be callable"):
-        BackendTerrainSpawnData(
+        TerrainSpawnData(
             np.zeros((1, 1, 3), dtype=np.float64),
             sample_height=object(),  # type: ignore[arg-type]
         )
@@ -248,7 +248,7 @@ def test_root_state_layout_metadata_fails_closed(
     match: str,
 ) -> None:
     with pytest.raises(error, match=match):
-        BackendRootStateLayout(qpos_indices, qvel_indices)
+        RootStateLayout(qpos_indices, qvel_indices)
 
 
 @pytest.mark.parametrize("backend_type", _BACKEND_PARAMS)
@@ -394,7 +394,7 @@ def test_root_state_layout_contract(backend_type: str) -> None:
         return
 
     layout = backend.get_root_state_layout("pelvis")
-    assert isinstance(layout, BackendRootStateLayout)
+    assert isinstance(layout, RootStateLayout)
     qpos_indices = np.asarray(layout.qpos_indices)
     qvel_indices = np.asarray(layout.qvel_indices)
     assert qpos_indices.shape == (7,)
@@ -626,7 +626,7 @@ def test_isaacgym_native_camera_capture_renders_scene() -> None:
     )
     backend.materialize()
     try:
-        backend.init_renderer(headless=True, capture=True, width=320, height=240)
+        backend.bind_renderer(headless=True, capture=True, width=320, height=240)
         backend.step_tensor(
             torch.zeros((NUM_ENVS, backend.num_actuators), dtype=torch.float32, device="cuda")
         )
@@ -635,7 +635,7 @@ def test_isaacgym_native_camera_capture_renders_scene() -> None:
         assert frame.dtype == np.uint8
         assert np.unique(frame).size > 8, "camera frame looks blank"
         # A second init with the same config is a no-op and keeps capturing.
-        backend.init_renderer(headless=True, capture=True, width=320, height=240)
+        backend.bind_renderer(headless=True, capture=True, width=320, height=240)
         assert backend.capture_video_frame().shape == (240, 320, 3)
     finally:
         backend.close()
@@ -662,12 +662,12 @@ def test_genesis_native_camera_capture_renders_scene() -> None:
         base_name="pelvis",
     )
     backend.materialize()
-    backend.init_renderer(headless=True, capture=True, width=320, height=240)
+    backend.bind_renderer(headless=True, capture=True, width=320, height=240)
     backend.step(np.zeros((NUM_ENVS, backend.num_actuators), dtype=np.float32))
     frame = backend.capture_video_frame()
     assert frame.shape == (240, 320, 3)
     assert frame.dtype == np.uint8
     assert np.unique(frame).size > 8, "camera frame looks blank"
     # A second init with the same config is a no-op and keeps capturing.
-    backend.init_renderer(headless=True, capture=True, width=320, height=240)
+    backend.bind_renderer(headless=True, capture=True, width=320, height=240)
     assert backend.capture_video_frame().shape == (240, 320, 3)

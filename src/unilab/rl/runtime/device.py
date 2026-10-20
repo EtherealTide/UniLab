@@ -26,7 +26,7 @@ __all__ = [
     "SynchronizedDeviceTimer",
     "device_runtime_capabilities",
     "get_default_device",
-    "make_device_timer",
+    "build_device_timer",
     "resolve_torch_device_alias",
     "sync_device",
 ]
@@ -103,7 +103,7 @@ class CudaDeviceTimer:
         return float(self._start_event.elapsed_time(self._end_event) / 1e3)
 
 
-def make_device_timer(device: str | torch.device) -> DeviceTimer:
+def build_device_timer(device: str | torch.device) -> DeviceTimer:
     """Build the validated timing implementation for ``device``."""
     device_type = torch.device(device).type
     if device_type == "cuda":

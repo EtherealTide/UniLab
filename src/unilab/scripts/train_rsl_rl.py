@@ -1,4 +1,3 @@
-import datetime
 import os
 import statistics
 import sys
@@ -13,7 +12,7 @@ from omegaconf import DictConfig, OmegaConf
 from unisim.backend.base import DebugPrimitive, RenderClosedError, log_playback_plan
 from unisim.backend.mujoco.xml import materialize_scene_visual_override
 
-from unilab.base.config_adapter import BackendAdapter, create_env
+from unilab.base.config_adapter import EnvConfigAdapter, create_env
 from unilab.base.process_device import (
     apply_backend_env_device_override,
     apply_sim_carrier_device_override,
@@ -40,13 +39,13 @@ from unilab.rl import (
 from unilab.training import (
     algo_config_dict,
     apply_env_nan_guard,
-    build_run_dir_name,
     ensure_registries,
     format_play_checkpoint_error,
     get_log_root,
     is_viser_play_render_mode,
     nonfatal_play_step,
-    parse_checkpoint_path,
+    resolve_configured_checkpoint_path,
+    resolve_run_log_dir,
     should_run_playback,
 )
 from unilab.training.experiment import (
@@ -58,10 +57,9 @@ from unilab.training.experiment import (
 )
 from unilab.training.seed import apply_configured_training_seed
 from unilab.training.tensor_runtime import select_sim_carrier_device
-from unilab.utils.checkpoint import get_entrypoint_log_root
 from unilab.utils.device import get_default_device
 from unilab.visualization.interactive_playback import (
-    RslRlPlaybackConfig,
+    PlaybackConfig,
     create_rsl_rl_playback_session,
     infer_checkpoint_actor_input_dim,
     make_sim2sim_preflight,
@@ -79,8 +77,8 @@ except ImportError:
     sys.exit(1)
 
 
-def _backend_adapter(cfg: DictConfig) -> BackendAdapter:
-    return BackendAdapter(
+def _backend_adapter(cfg: DictConfig) -> EnvConfigAdapter:
+    return EnvConfigAdapter(
         cfg,
         root_dir=Path.cwd(),
         algo_name="ppo",
@@ -142,55 +140,6 @@ def build_ppo_play_env_cfg_override(cfg: DictConfig) -> dict[str, Any]:
         str(cfg.training.sim_backend),
         sim_carrier_device=select_sim_carrier_device(cfg),
         learner_device=learner_device,
-    )
-
-
-def run_motrix_rsl_play_loop(
-    wrapped_env,
-    policy,
-    *,
-    render_spacing: float,
-    render_offset_mode: str,
-    num_steps: int | None = None,
-) -> None:
-    env = wrapped_env.env
-
-    with torch.inference_mode():
-        env.run_playback(
-            render_spacing=render_spacing,
-            render_offset_mode=render_offset_mode,
-            num_steps=num_steps,
-            initialize=lambda: wrapped_env.reset()[0],
-            step=lambda obs: wrapped_env.step(policy(obs))[0],
-        )
-
-
-def _get_log_root(cfg: DictConfig) -> str:
-    return str(get_log_root(Path.cwd(), cfg))
-
-
-def resolve_ppo_log_dir(
-    cfg: DictConfig,
-    *,
-    world_size: int,
-    timestamp: str | None = None,
-) -> str:
-    """Resolve one canonical run directory shared by all distributed ranks."""
-    distributed_log_dir = os.environ.get(UNILAB_DP_LOG_DIR)
-    if distributed_log_dir:
-        return distributed_log_dir
-    configured_log_dir = OmegaConf.select(cfg, "training.log_dir", default=None)
-    if configured_log_dir:
-        return str(configured_log_dir)
-    timestamp = timestamp or datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    return str(
-        Path(_get_log_root(cfg))
-        / str(cfg.training.task_name)
-        / build_run_dir_name(
-            timestamp,
-            str(cfg.training.sim_backend),
-            world_size=world_size,
-        )
     )
 
 
@@ -285,12 +234,12 @@ def _playback_debug_overlay_getter(env):
     return _ee_goal_debug_overlay_getter(env)
 
 
-def play_rsl_rl(cfg: DictConfig, device: str) -> str | None:
+def play_ppo(cfg: DictConfig, device: str) -> str | None:
     """Play mode for RSL-RL."""
     rl_cfg = algo_config_dict(cfg)
 
     task_log_root = get_log_root(Path.cwd(), cfg) / str(cfg.training.task_name)
-    load_path, load_path_dir = parse_checkpoint_path(cfg, root_dir=Path.cwd())
+    load_path, load_path_dir = resolve_configured_checkpoint_path(cfg, root_dir=Path.cwd())
     if load_path is None or load_path_dir is None or not load_path.exists():
         print(
             format_play_checkpoint_error(
@@ -311,7 +260,7 @@ def play_rsl_rl(cfg: DictConfig, device: str) -> str | None:
         )
         return None
 
-    playback_cfg = RslRlPlaybackConfig(
+    playback_cfg = PlaybackConfig(
         task=str(cfg.training.task_name),
         load_run=str(cfg.algo.load_run),
         checkpoint=normalize_checkpoint_value(
@@ -352,7 +301,7 @@ def play_rsl_rl(cfg: DictConfig, device: str) -> str | None:
         device=device,
         checkpoint_resolver=lambda *_args: str(load_path),
         checkpoint_input_dim_reader=infer_checkpoint_actor_input_dim,
-        entrypoint_log_root=get_entrypoint_log_root,
+        entrypoint_log_root=get_log_root,
         sim2sim_preflight=make_sim2sim_preflight(cfg, algo_name="ppo"),
         guard_algo_name="ppo",
     )
@@ -434,7 +383,7 @@ def main(cfg: DictConfig) -> None:
             world_size=world_size,
             script_path=Path(__file__),
             argv=sys.argv[1:],
-            log_dir=resolve_ppo_log_dir(cfg, world_size=world_size),
+            log_dir=resolve_run_log_dir(cfg, world_size=world_size),
         )
         return
 
@@ -525,7 +474,7 @@ def main(cfg: DictConfig) -> None:
         )
 
     if not cfg.training.play_only:
-        log_dir: str | None = resolve_ppo_log_dir(cfg, world_size=world_size)
+        log_dir: str | None = resolve_run_log_dir(cfg, world_size=world_size)
     else:
         log_dir = None
 
@@ -611,7 +560,9 @@ def main(cfg: DictConfig) -> None:
                     )
 
                     if cfg.algo.load_run != "-1":
-                        resume_path, _ = parse_checkpoint_path(cfg, root_dir=Path.cwd())
+                        resume_path, _ = resolve_configured_checkpoint_path(
+                            cfg, root_dir=Path.cwd()
+                        )
                         if resume_path:
                             print(f"Resuming from {resume_path}")
                             runner.load(str(resume_path), map_location=device)
@@ -704,7 +655,7 @@ def main(cfg: DictConfig) -> None:
             # them while playback constructs a new runner so rank 0 does not
             # initialize a second NCCL group after sibling workers have exited.
             with rsl_rl_single_process_topology():
-                play_video_path = play_rsl_rl(cfg, device)
+                play_video_path = play_ppo(cfg, device)
             if tracker is not None:
                 tracker.log_video(play_video_path)
     finally:

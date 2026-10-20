@@ -21,21 +21,17 @@ from unisim.backend.motrix.playback import run_motrix_playback
 from unisim.backend.mujoco.backend import MuJoCoBackend
 from unisim.backend.mujoco.playback import run_mujoco_playback
 
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.scene import SceneCfg
 from unilab.training import (
     get_log_root,
     nonfatal_play_step,
-    parse_checkpoint_path,
+    resolve_configured_checkpoint_path,
 )
 from unilab.utils.checkpoint import (
-    get_entrypoint_log_root,
     get_latest_checkpoint,
     get_latest_run,
-    resolve_appo_checkpoint_path,
     resolve_checkpoint_path,
-    resolve_offpolicy_checkpoint_path,
-    resolve_task_checkpoint_path,
 )
 from unilab.visualization.playback import render_play_mode
 
@@ -130,34 +126,23 @@ def test_resolve_checkpoint_path_accepts_integer_latest_run(tmp_path: Path):
     assert checkpoint_dir == run_dir
 
 
-def test_resolve_appo_checkpoint_path_returns_string_paths(tmp_path: Path):
-    task_dir = tmp_path / "logs" / "appo" / "MyTask"
-    run_dir = task_dir / "2024-02-01_00-00-00_mujoco"
-    run_dir.mkdir(parents=True)
-    selected_model = run_dir / "model_9.pt"
-    selected_model.write_bytes(b"")
-
-    checkpoint_path, checkpoint_dir = resolve_appo_checkpoint_path(task_dir, "-1")
-
-    assert checkpoint_path == str(selected_model)
-    assert checkpoint_dir == str(run_dir)
-
-
-def test_resolve_offpolicy_checkpoint_path_reads_repo_log_tree(tmp_path: Path):
+def test_resolve_checkpoint_path_reads_repo_log_tree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
     run_dir = tmp_path / "logs" / "sac" / "MyTask" / "2024-02-01_00-00-00_mujoco"
     run_dir.mkdir(parents=True)
     selected_model = run_dir / "model_9.pt"
     selected_model.write_bytes(b"")
 
-    checkpoint_path, checkpoint_dir = resolve_offpolicy_checkpoint_path(
-        tmp_path, "sac", "MyTask", "-1"
-    )
+    task_log_root = get_log_root(tmp_path, algo_log_name="sac") / "MyTask"
+    checkpoint_path, checkpoint_dir = resolve_checkpoint_path(task_log_root, "-1")
 
-    assert checkpoint_path == str(selected_model)
-    assert checkpoint_dir == str(run_dir)
+    assert checkpoint_path == selected_model
+    assert checkpoint_dir == run_dir
 
 
-def test_parse_checkpoint_path_uses_algo_log_name_from_cfg(
+def test_resolve_configured_checkpoint_path_uses_algo_log_name_from_cfg(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
@@ -171,7 +156,7 @@ def test_parse_checkpoint_path_uses_algo_log_name_from_cfg(
     model_path = run_dir / "model_12.pt"
     model_path.write_bytes(b"")
 
-    checkpoint_path, checkpoint_dir = parse_checkpoint_path(cfg, root_dir=tmp_path)
+    checkpoint_path, checkpoint_dir = resolve_configured_checkpoint_path(cfg, root_dir=tmp_path)
 
     assert checkpoint_path == model_path
     assert checkpoint_dir == run_dir
@@ -201,17 +186,17 @@ def test_get_log_root_keeps_configured_log_root_ahead_of_test_env(
     assert log_root == tmp_path / "repo" / "explicit_logs"
 
 
-def test_get_entrypoint_log_root_uses_test_log_root_env_when_unconfigured(
+def test_get_log_root_accepts_explicit_algo_log_name_without_cfg(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     monkeypatch.setenv("UNILAB_TEST_LOG_ROOT", str(tmp_path / "test-logs"))
 
-    log_root = get_entrypoint_log_root(tmp_path / "repo", algo_log_name="custom_ppo")
+    log_root = get_log_root(tmp_path / "repo", algo_log_name="custom_ppo")
 
     assert log_root == tmp_path / "test-logs" / "custom_ppo"
 
 
-def test_parse_checkpoint_path_supports_explicit_checkpoint_from_cfg(
+def test_resolve_configured_checkpoint_path_supports_explicit_checkpoint_from_cfg(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
@@ -227,13 +212,13 @@ def test_parse_checkpoint_path_supports_explicit_checkpoint_from_cfg(
     selected_model = run_dir / "model_12.pt"
     selected_model.write_bytes(b"")
 
-    checkpoint_path, checkpoint_dir = parse_checkpoint_path(cfg, root_dir=tmp_path)
+    checkpoint_path, checkpoint_dir = resolve_configured_checkpoint_path(cfg, root_dir=tmp_path)
 
     assert checkpoint_path == selected_model
     assert checkpoint_dir == run_dir
 
 
-def test_parse_checkpoint_path_returns_run_dir_when_requested_checkpoint_is_missing(
+def test_resolve_configured_checkpoint_path_returns_run_dir_when_requested_checkpoint_is_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
@@ -247,13 +232,13 @@ def test_parse_checkpoint_path_returns_run_dir_when_requested_checkpoint_is_miss
     run_dir.mkdir(parents=True)
     (run_dir / "model_9.pt").write_bytes(b"")
 
-    checkpoint_path, checkpoint_dir = parse_checkpoint_path(cfg, root_dir=tmp_path)
+    checkpoint_path, checkpoint_dir = resolve_configured_checkpoint_path(cfg, root_dir=tmp_path)
 
     assert checkpoint_path is None
     assert checkpoint_dir == run_dir
 
 
-def test_resolve_task_checkpoint_path_supports_explicit_checkpoint(
+def test_resolve_checkpoint_path_supports_explicit_checkpoint(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
@@ -263,11 +248,9 @@ def test_resolve_task_checkpoint_path_supports_explicit_checkpoint(
     selected_model = run_dir / "model_12.pt"
     selected_model.write_bytes(b"")
 
-    checkpoint_path, checkpoint_dir = resolve_task_checkpoint_path(
-        tmp_path,
-        task_name="MyTask",
-        load_run="-1",
-        algo_log_name="custom_ppo",
+    checkpoint_path, checkpoint_dir = resolve_checkpoint_path(
+        tmp_path / "logs" / "custom_ppo" / "MyTask",
+        "-1",
         checkpoint="12",
     )
 
@@ -275,42 +258,20 @@ def test_resolve_task_checkpoint_path_supports_explicit_checkpoint(
     assert checkpoint_dir == run_dir
 
 
-def test_resolve_task_checkpoint_path_returns_run_dir_when_checkpoint_missing(
+def test_resolve_checkpoint_path_returns_run_dir_when_checkpoint_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
     run_dir = tmp_path / "logs" / "custom_ppo" / "MyTask" / "2024-01-01_00-00-00_mujoco"
     run_dir.mkdir(parents=True)
 
-    checkpoint_path, checkpoint_dir = resolve_task_checkpoint_path(
-        tmp_path,
-        task_name="MyTask",
-        load_run="-1",
-        algo_log_name="custom_ppo",
+    checkpoint_path, checkpoint_dir = resolve_checkpoint_path(
+        tmp_path / "logs" / "custom_ppo" / "MyTask",
+        "-1",
         checkpoint="12",
     )
 
     assert checkpoint_path is None
-    assert checkpoint_dir == run_dir
-
-
-def test_resolve_task_checkpoint_path_accepts_integer_latest_run(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
-    monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
-    run_dir = tmp_path / "logs" / "custom_ppo" / "MyTask" / "2024-01-01_00-00-00_mujoco"
-    run_dir.mkdir(parents=True)
-    selected_model = run_dir / "model_12.pt"
-    selected_model.write_bytes(b"")
-
-    checkpoint_path, checkpoint_dir = resolve_task_checkpoint_path(
-        tmp_path,
-        task_name="MyTask",
-        load_run=-1,
-        algo_log_name="custom_ppo",
-    )
-
-    assert checkpoint_path == selected_model
     assert checkpoint_dir == run_dir
 
 
@@ -318,7 +279,7 @@ def test_backend_adapter_env_cfg_override_for_sac_g1_walk_flat():
     """Env cfg override carries reward + env preset fields. Algo is NOT touched."""
     cfg = _offpolicy_cfg(["task=g1_walk_flat/mujoco"])
 
-    adapter = BackendAdapter(cfg, root_dir=_ROOT_DIR, algo_name="sac")
+    adapter = EnvConfigAdapter(cfg, root_dir=_ROOT_DIR, algo_name="sac")
     env_cfg_override = adapter.build_task_env_cfg_override()
 
     assert env_cfg_override["rewards"]["tracking_lin_vel"]["weight"] == pytest.approx(2.0)
@@ -329,16 +290,15 @@ def test_backend_adapter_env_cfg_override_for_sac_g1_walk_flat():
 
 def test_backend_adapter_preserves_mask_reset_owner_yaml():
     cfg = _offpolicy_cfg(["task=g1_walk_flat/mjwarp"])
-    override = BackendAdapter(
+    override = EnvConfigAdapter(
         cfg, root_dir=_ROOT_DIR, algo_name="sac"
     ).build_task_env_cfg_override()
     assert (
-        override["events"]["reset_scene_to_default"]["func"]
-        == "unilab.envs.mdp.reset_scene_to_default_tensor"
+        override["events"]["reset_scene_to_default"]["func"] == "unilab.envs.mdp.skip_scene_reset"
     )
     assert (
         override["events"]["reset_root_state_uniform"]["func"]
-        == "unilab.envs.mdp.reset_root_state_uniform_tensor"
+        == "unilab.envs.mdp.reset_root_state_uniform_fused"
     )
 
 
@@ -346,12 +306,12 @@ def test_backend_adapter_injects_superdex_serial_mode_only_for_interactive_play(
     interactive = _ppo_cfg(
         ["task=go2_joystick_flat/superdex", "training.play_render_mode=interactive"]
     )
-    adapter = BackendAdapter(interactive, root_dir=_ROOT_DIR, algo_name="ppo")
+    adapter = EnvConfigAdapter(interactive, root_dir=_ROOT_DIR, algo_name="ppo")
     assert "superdex_execution_mode" not in adapter.build_task_env_cfg_override()
     assert adapter.build_play_env_cfg_override()["superdex_execution_mode"] == "serial"
 
     record = _ppo_cfg(["task=go2_joystick_flat/superdex", "training.play_render_mode=record"])
-    record_override = BackendAdapter(record, root_dir=_ROOT_DIR, algo_name="ppo")
+    record_override = EnvConfigAdapter(record, root_dir=_ROOT_DIR, algo_name="ppo")
     assert "superdex_execution_mode" not in record_override.build_play_env_cfg_override()
 
 
@@ -364,7 +324,7 @@ def test_backend_adapter_keeps_motion_manager_scene_during_play():
         captured.update(kwargs)
         pytest.fail("manager scene must not be replaced during play")
 
-    env_cfg_override = BackendAdapter(
+    env_cfg_override = EnvConfigAdapter(
         cfg,
         root_dir=_ROOT_DIR,
         algo_name="ppo",
@@ -409,7 +369,7 @@ def test_backend_adapter_play_profile_merges_partial_observation_term() -> None:
         }
     )
 
-    adapter = BackendAdapter(OmegaConf.create({}), root_dir=_ROOT_DIR)
+    adapter = EnvConfigAdapter(OmegaConf.create({}), root_dir=_ROOT_DIR)
     adapter._apply_env_profile(override, profile)
 
     position = override["observations"]["policy"]["terms"]["position"]
@@ -447,7 +407,7 @@ def test_render_play_mode_uses_env_interactive_contract():
             kwargs.pop("on_frame", None)
             return run_motrix_playback(backend=self, env=self, **kwargs)
 
-        def init_renderer(self, **kwargs):
+        def bind_renderer(self, **kwargs):
             self.init_calls.append(kwargs)
 
         def render(self):
@@ -518,7 +478,7 @@ def test_motrix_interactive_run_playback_treats_window_close_as_done(
 
     backend = MotrixBackend.__new__(MotrixBackend)
     backend._portable_mode = False
-    backend.init_renderer = lambda **kwargs: None
+    backend.bind_renderer = lambda **kwargs: None
 
     def _render():
         raise RenderClosedError("closed")
@@ -547,7 +507,7 @@ def test_motrix_record_run_playback_does_not_swallow_render_closed(tmp_path: Pat
 
     backend = MotrixBackend.__new__(MotrixBackend)
     backend._portable_mode = False
-    backend.init_renderer = lambda **kwargs: None
+    backend.bind_renderer = lambda **kwargs: None
 
     def _capture_video_frame():
         raise RenderClosedError("closed")
@@ -588,7 +548,7 @@ def test_render_play_mode_uses_motrix_native_video_capture(
             kwargs.pop("on_frame", None)
             return run_motrix_playback(backend=self, env=self, **kwargs)
 
-        def init_renderer(self, **kwargs):
+        def bind_renderer(self, **kwargs):
             self.init_calls.append(kwargs)
 
         def capture_video_frame(self) -> np.ndarray:
@@ -596,7 +556,7 @@ def test_render_play_mode_uses_motrix_native_video_capture(
             return np.full((2, 3, 3), self.capture_calls, dtype=np.uint8)
 
     monkeypatch.setattr(
-        "unisim.backend.playback_common.imageio.mimsave",
+        "unisim.backend.playback.imageio.mimsave",
         lambda path, frames, fps: captured.update(
             {"video_path": path, "frames": frames, "fps": fps}
         ),
@@ -658,7 +618,7 @@ def test_render_play_mode_rejects_motrix_record_with_interactive_window(
             kwargs.pop("on_frame", None)
             return run_motrix_playback(backend=self, env=self, **kwargs)
 
-        def init_renderer(self, **kwargs):
+        def bind_renderer(self, **kwargs):
             self.init_calls.append(kwargs)
 
         def capture_video_frame(self) -> np.ndarray:
@@ -666,7 +626,7 @@ def test_render_play_mode_rejects_motrix_record_with_interactive_window(
             return np.full((2, 3, 3), self.capture_calls, dtype=np.uint8)
 
     monkeypatch.setattr(
-        "unisim.backend.playback_common.imageio.mimsave",
+        "unisim.backend.playback.imageio.mimsave",
         lambda path, frames, fps: captured.update(
             {"video_path": path, "frames": frames, "fps": fps}
         ),
@@ -720,7 +680,7 @@ def test_render_play_mode_defaults_to_env_physics_snapshot(
         return [np.zeros((2, 2, 3), dtype=np.uint8)]
 
     monkeypatch.setattr(
-        "unisim.backend.playback_common.imageio.mimsave",
+        "unisim.backend.playback.imageio.mimsave",
         lambda path, frames, fps: captured.update(
             {"video_path": path, "frames": frames, "fps": fps}
         ),
@@ -808,7 +768,7 @@ def test_render_play_mode_uses_visual_playback_model_for_video_export(
         return [np.zeros((2, 2, 3), dtype=np.uint8)]
 
     monkeypatch.setattr(
-        "unisim.backend.playback_common.imageio.mimsave",
+        "unisim.backend.playback.imageio.mimsave",
         lambda path, frames, fps: captured.update(
             {"video_path": path, "frames": frames, "fps": fps}
         ),

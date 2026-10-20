@@ -23,6 +23,7 @@ from unilab.rl.contracts.env import EnvFactory
 from unilab.rl.contracts.observations import get_obs_dims
 from unilab.rl.logging import OffPolicyLogger
 from unilab.rl.logging.metrics_drain import RewardComponentWindow, drain_collector_metrics
+from unilab.rl.runtime.device import get_default_device
 from unilab.rl.runtime.ipc import AsyncRunner, SharedWeightSync, TensorRolloutRingBuffer
 from unilab.rl.runtime.seed import apply_worker_seed, derive_worker_seed
 
@@ -92,11 +93,7 @@ class APPORunner(AsyncRunner):
         self._resolve_dims()
 
     def _get_default_device(self) -> str:
-        if torch.cuda.is_available():
-            return "cuda"
-        if torch.backends.mps.is_available():
-            return "mps"
-        return "cpu"
+        return get_default_device()
 
     def _resolve_dims(self):
         self.obs_dim, self.action_dim = self._detect_dims()
@@ -215,9 +212,12 @@ class APPORunner(AsyncRunner):
             _sync_resume_target_actor(learner)
 
         # --- memory budget check ---
-        from unilab.rl.runtime.ipc.memory_budget import estimate_appo_bytes, warn_if_over_budget
+        from unilab.rl.runtime.ipc.memory_budget import (
+            estimate_host_appo_bytes,
+            warn_if_over_budget,
+        )
 
-        mem_est = estimate_appo_bytes(
+        mem_est = estimate_host_appo_bytes(
             num_envs=self.num_envs,
             steps_per_env=self.steps_per_env,
             obs_dim=self.obs_dim,

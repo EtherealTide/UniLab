@@ -16,7 +16,7 @@ from unilab.rl.runtime.settings import (
     MAX_COLLECTOR_METRICS_INTERVAL,
     MAX_INFERENCE_SLOT_CAPACITY,
     MAX_REPLAY_INGRESS_DEPTH,
-    TensorRuntimeSettings,
+    RuntimeSettings,
 )
 
 
@@ -31,7 +31,7 @@ def test_runtime_bounds_constants_match_reviewed_values() -> None:
 
 def test_direct_settings_object_validates_all_spawn_facing_values() -> None:
     with pytest.raises(ValueError, match="training.replay_ingress_slot_rows"):
-        TensorRuntimeSettings(
+        RuntimeSettings(
             inference_slot_capacity=1,
             collector_metrics_interval=1,
             replay_ingress_depth=2,
@@ -44,7 +44,7 @@ def test_direct_settings_object_validates_all_spawn_facing_values() -> None:
 
 def test_direct_settings_object_rejects_inconsistent_configured_evidence() -> None:
     with pytest.raises(ValueError, match="configured replay_ingress_depth must match"):
-        TensorRuntimeSettings(
+        RuntimeSettings(
             inference_slot_capacity=1,
             collector_metrics_interval=1,
             replay_ingress_depth=2,

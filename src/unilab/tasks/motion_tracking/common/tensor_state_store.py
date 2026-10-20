@@ -15,11 +15,11 @@ from unisim.backend.base import (
     SimBackend,
     TensorExecution,
     TensorIOSpec,
-    tensor_device_matches,
+    torch_device_matches,
 )
 
 
-class TensorDeviceStateStore:
+class DeviceStateStore:
     """Read qpos/qvel, scalar sensors, and tracked body state on one device."""
 
     def __init__(
@@ -60,7 +60,7 @@ class TensorDeviceStateStore:
             raise RuntimeError(
                 "Tensor state store requires a DEVICE_RESIDENT or HOST_BRIDGE backend"
             )
-        if not tensor_device_matches(capabilities.torch_devices, self.device):
+        if not torch_device_matches(capabilities.torch_devices, self.device):
             raise RuntimeError(
                 f"backend did not accept Tensor device {str(self.device)!r}; "
                 f"supported devices are {capabilities.torch_devices}"
@@ -99,7 +99,7 @@ class TensorDeviceStateStore:
                     for name in self.body_names
                 ),
             )
-            self._host_bridge_plan = self.backend.compile_host_bridge_io(
+            self._host_bridge_plan = self.backend.bind_host_bridge_io(
                 TensorIOSpec(
                     state_fields=("qpos", "qvel"),
                     sensor_names=sensor_names,
@@ -331,4 +331,4 @@ class TensorDeviceStateStore:
                 raise ValueError("tensor robot state contains NaN or Inf")
 
 
-__all__ = ["TensorDeviceStateStore"]
+__all__ = ["DeviceStateStore"]

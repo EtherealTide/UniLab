@@ -13,7 +13,12 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from unilab.rl.logging.common import BaseTrainingLogger, _fmt_number, _load_wandb
+from unilab.rl.logging.base import (
+    BaseTrainingLogger,
+    _fmt_number,
+    _load_wandb,
+    _set_backend_scalar,
+)
 from unilab.rl.logging.metric_schema import (
     LOGGER_OWNED_METRICS,
     normalize_metric_map,
@@ -204,14 +209,6 @@ class _TerminalSnapshot:
     reward_history: tuple[float, ...]
     buffer_size: int
     batch_size_per_rank: int
-
-
-def _set_backend_scalar(scalars: dict[str, Any], tag: str, value: Any) -> None:
-    """Insert one canonical scalar and fail closed on tag collisions."""
-
-    if tag in scalars:
-        raise ValueError(f"duplicate backend metric tag {tag!r}")
-    scalars[tag] = value
 
 
 class OffPolicyLogger(BaseTrainingLogger):

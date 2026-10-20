@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from unilab.envs.mdp.events import _tensor_root_reset_kernel
+from unilab.envs.mdp.events import _root_reset_kernel
 
 
 def test_root_reset_kernel_applies_pose_velocity_and_origins() -> None:
@@ -21,7 +21,7 @@ def test_root_reset_kernel_applies_pose_velocity_and_origins() -> None:
     velocity[:, 0] = 1.5
     output = torch.empty_like(default)
 
-    _tensor_root_reset_kernel(default, origins, pose, velocity, output)
+    _root_reset_kernel(default, origins, pose, velocity, output)
 
     torch.testing.assert_close(
         default,
@@ -47,7 +47,7 @@ def test_root_reset_kernel_accepts_disabled_origins() -> None:
     velocity = torch.zeros((3, 6), dtype=torch.float32)
     output = torch.empty_like(default)
 
-    _tensor_root_reset_kernel(default, None, pose, velocity, output)
+    _root_reset_kernel(default, None, pose, velocity, output)
 
     torch.testing.assert_close(output[:, 1], torch.full((3,), 0.25))
     torch.testing.assert_close(output[:, 3], torch.ones(3))

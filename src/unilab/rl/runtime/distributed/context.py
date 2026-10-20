@@ -60,16 +60,6 @@ def rank_local_cuda_device(
     return "cuda:0"
 
 
-def resolve_dp_rank_device(rank: int = 0) -> str | None:
-    """Return this rank's CUDA device from its visibility namespace.
-
-    A CUDA rank owns exactly one visible GPU. The returned value is always the
-    rank-local ``cuda:0``; opaque parent UUID/MIG tokens never become in-process
-    CUDA indices.
-    """
-    return rank_local_cuda_device(rank=rank)
-
-
 def current_dp_world_size() -> int:
     """Data-parallel world size of this process (1 when not spawned as a rank)."""
     return int(os.environ.get(UNILAB_DP_WORLD_SIZE, "1"))

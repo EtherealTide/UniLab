@@ -122,20 +122,10 @@ def _play_interactive_command_prefix() -> list[str]:
     if platform.system() != "Darwin":
         return [sys.executable]
 
+    from unilab.cli import _ensure_mujoco_mjpython_app, _mjpython_executable
+
     _ensure_mujoco_mjpython_app()
-    return [_current_env_mjpython()]
-
-
-def _ensure_mujoco_mjpython_app() -> None:
-    from unilab.cli import _ensure_mujoco_mjpython_app as ensure_app
-
-    ensure_app()
-
-
-def _current_env_mjpython() -> str:
-    from unilab.cli import _mjpython_executable as resolve_mjpython
-
-    return resolve_mjpython()
+    return [_mjpython_executable()]
 
 
 def build_demo_command(
@@ -174,7 +164,7 @@ def build_demo_command(
     raise SystemExit(f"Unknown demo entry kind: {spec.entry!r}")
 
 
-def _mxpython_executable() -> str:
+def _motrix_python_executable() -> str:
     if Path(sys.executable).name == "mxpython":
         return sys.executable
 
@@ -196,7 +186,7 @@ def _mxpython_executable() -> str:
 def _run_teaser_demo() -> int:
     if platform.system() == "Darwin" and Path(sys.executable).name != "mxpython":
         command = [
-            _mxpython_executable(),
+            _motrix_python_executable(),
             str(_package_root() / "visualization" / "teaser.py"),
         ]
         env = os.environ.copy()

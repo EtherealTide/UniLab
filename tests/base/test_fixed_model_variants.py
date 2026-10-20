@@ -14,8 +14,8 @@ from unilab.base.scene import SceneCfg
 from unilab.base.variants import (
     FixedModelVariantCatalogCfg,
     FixedModelVariantCfg,
-    _build_fixed_variant_plan,
-    _require_fixed_variant_support,
+    build_fixed_variant_plan,
+    require_fixed_variant_support,
 )
 from unilab.envs import manager_based_rl_env
 from unilab.envs.manager_based_rl_env import ManagerBasedRlEnvCfg, make_manager_based_rl_env
@@ -60,7 +60,7 @@ def test_hydra_materializes_typed_catalog_and_explicit_names() -> None:
 
 
 def test_default_assignment_is_round_robin_and_immutable() -> None:
-    plan = _build_fixed_variant_plan(_catalog(), num_envs=5)
+    plan = build_fixed_variant_plan(_catalog(), num_envs=5)
 
     np.testing.assert_array_equal(plan.assignment, np.array([0, 1, 0, 1, 0], dtype=np.int32))
     assert not plan.assignment.flags.writeable
@@ -69,7 +69,7 @@ def test_default_assignment_is_round_robin_and_immutable() -> None:
 
 
 def test_explicit_assignment_uses_names_not_engine_objects() -> None:
-    plan = _build_fixed_variant_plan(_catalog(("tool_b", "tool_a", "tool_b")), num_envs=3)
+    plan = build_fixed_variant_plan(_catalog(("tool_b", "tool_a", "tool_b")), num_envs=3)
 
     np.testing.assert_array_equal(plan.assignment, np.array([1, 0, 1], dtype=np.int32))
     assert tuple(variant.model_file for variant in plan.variants) == (
@@ -93,20 +93,20 @@ def test_catalog_and_assignment_fail_closed() -> None:
     with pytest.raises(ValueError, match="unknown variants"):
         _catalog(("tool_a", "missing"))
     with pytest.raises(ValueError, match="exactly num_envs"):
-        _build_fixed_variant_plan(_catalog(("tool_a",)), num_envs=2)
+        build_fixed_variant_plan(_catalog(("tool_a",)), num_envs=2)
 
 
 def test_support_negotiation_requires_the_complete_plan_contract() -> None:
-    plan = _build_fixed_variant_plan(_catalog(), num_envs=2)
-    _require_fixed_variant_support(_capabilities(), plan)
+    plan = build_fixed_variant_plan(_catalog(), num_envs=2)
+    require_fixed_variant_support(_capabilities(), plan)
 
     unsupported = DomainRandomizationCapabilities()
     with pytest.raises(NotImplementedError, match="cannot realize"):
-        _require_fixed_variant_support(unsupported, plan)
+        require_fixed_variant_support(unsupported, plan)
 
     partial = DomainRandomizationCapabilities(supports_fixed_variants=True)
     with pytest.raises(NotImplementedError, match="layout 'same_layout' is unsupported"):
-        _require_fixed_variant_support(partial, plan)
+        require_fixed_variant_support(partial, plan)
 
 
 def test_variant_owner_module_does_not_reference_engine_internals() -> None:

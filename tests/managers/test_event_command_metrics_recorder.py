@@ -141,7 +141,7 @@ def test_event_interval_rng_is_reproducible() -> None:
         torch.testing.assert_close(left_time, right_time)
 
 
-def test_event_and_command_scheduling_fail_closed_without_torch_rng() -> None:
+def test_event_and_command_scheduling_fail_closed_without_rng() -> None:
     cfg = {
         "interval": EventTermCfg(
             func=_record,
@@ -150,13 +150,13 @@ def test_event_and_command_scheduling_fail_closed_without_torch_rng() -> None:
             interval_range_s=(0.1, 2.0),
         )
     }
-    without_torch_rng = FakeEnv()
-    without_torch_rng.torch_rng = None
+    without_rng = FakeEnv()
+    without_rng.rng = None
     with pytest.raises(RuntimeError, match="Manager-owned Torch generator"):
-        EventManager(cfg, without_torch_rng)
+        EventManager(cfg, without_rng)
 
     with pytest.raises(RuntimeError, match="Manager-owned Torch generator"):
-        DummyCommandCfg(resampling_time_range=(1.0, 1.0)).build(without_torch_rng)
+        DummyCommandCfg(resampling_time_range=(1.0, 1.0)).build(without_rng)
 
 
 class DummyCommand(CommandTerm):
@@ -184,7 +184,7 @@ class DummyCommand(CommandTerm):
     def _update_command(self) -> None:
         pass
 
-    def _update_command_reset(self, reset_mask: torch.Tensor) -> None:
+    def refresh_reset(self, reset_mask: torch.Tensor) -> None:
         del reset_mask
 
 
@@ -299,7 +299,7 @@ def test_command_reset_refresh_does_not_validate_full_command_or_metrics(
 
     torch.Tensor.__bool__ = counted_bool  # type: ignore[method-assign]
     try:
-        manager.compute_reset(0.0, mask)
+        manager.refresh_reset(mask)
     finally:
         torch.Tensor.__bool__ = original_bool  # type: ignore[method-assign]
 

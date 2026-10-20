@@ -10,7 +10,7 @@ import pytest
 
 from unilab.base import registry
 from unilab.base.base import EnvCfg
-from unilab.rl.runtime.ipc.replay_pipelines.gpu_resident import require_offpolicy_replay_device
+from unilab.rl.runtime.ipc.replay_pipelines.device import require_offpolicy_replay_device
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "unilab"
 
@@ -43,8 +43,8 @@ def test_isaac_backend_symbols_stay_behind_owner_boundaries() -> None:
         assert relative in owner_boundaries or relative.startswith("tasks/")
 
     registry.ensure_registries()
-    assert registry._envs["G1WalkFlat"].support_sim_backend("isaacgym")
-    assert registry._envs["G1WalkFlat"].support_sim_backend("isaacsim")
+    assert registry._envs["G1WalkFlat"].supports_sim_backend("isaacgym")
+    assert registry._envs["G1WalkFlat"].supports_sim_backend("isaacsim")
 
 
 def test_manager_env_has_no_cuda_ipc_warm_branch_for_shelved_backends() -> None:

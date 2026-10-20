@@ -1,6 +1,6 @@
-"""Algorithm-agnostic learner boilerplate shared by the off-policy SAC learners.
+"""Algorithm-agnostic learner base pieces shared by the off-policy SAC learners.
 
-``LearnerBoilerplateMixin`` centralizes the pieces of ``SACLearner`` and
+``LearnerBaseMixin`` centralizes the pieces of ``SACLearner`` and
 ``FlashSACLearner`` that are identical between the two: AMP dtype/scaler
 resolution, autocast context, observation-normalizer updates, gradient-sync
 plumbing, and loss-method compilation. The mixin only declares the attribute
@@ -25,8 +25,8 @@ from unilab.rl.algos.common.normalization import EmpiricalNormalization
 from unilab.rl.runtime.device import sync_device
 from unilab.rl.runtime.offpolicy.warmup import (
     OffPolicyWarmupContext,
+    build_offpolicy_warmup_batch,
     capture_rng_state,
-    make_offpolicy_warmup_batch,
     restore_rng_state,
 )
 
@@ -271,8 +271,8 @@ def resolve_finite_check_flags(device_type: str, device_gated: bool) -> tuple[bo
     return host_finite_checks, host_finite_checks and device_type == "mps"
 
 
-class LearnerBoilerplateMixin:
-    """Shared AMP / gradient-sync / obs-normalizer / compile boilerplate.
+class LearnerBaseMixin:
+    """Shared AMP / gradient-sync / obs-normalizer / compile plumbing.
 
     Attribute contract provided by the consuming learner:
     """
@@ -338,7 +338,7 @@ class LearnerBoilerplateMixin:
             self._gradient_sync(parameters)
 
 
-class WholeCycleLearnerMixin(LearnerBoilerplateMixin):
+class WholeCycleLearnerMixin(LearnerBaseMixin):
     """Shared state-preserving machinery for whole-cycle off-policy learners."""
 
     obs_dim: int
@@ -489,7 +489,7 @@ class WholeCycleLearnerMixin(LearnerBoilerplateMixin):
 
     def prepare_for_collection(self, warmup_context: OffPolicyWarmupContext) -> None:
         """Exercise learner cold paths while preserving all training state."""
-        large_batch = warmup_context.replay_batch or make_offpolicy_warmup_batch(
+        large_batch = warmup_context.replay_batch or build_offpolicy_warmup_batch(
             warmup_context,
             obs_dim=self.obs_dim,
             critic_obs_dim=self.critic_obs_dim,

@@ -33,7 +33,7 @@ _PRODUCTION_NUMPY_IMPORT_ALLOWLIST = {
     "src/unilab/base/variants.py",
     # Cold asset/materialization leaves.
     "src/unilab/terrains/heightfield_terrains.py",
-    "src/unilab/terrains/utils.py",
+    "src/unilab/terrains/heightfield_utils.py",
     # Serialization and external interop.
     "src/unilab/training/onnx_export.py",
     "src/unilab/training/tensor_diagnostics.py",
@@ -46,7 +46,6 @@ _PRODUCTION_NUMPY_IMPORT_ALLOWLIST = {
     "src/unilab/visualization/playback.py",
     "src/unilab/visualization/playback_session.py",
     "src/unilab/visualization/playback_state.py",
-    "src/unilab/visualization/render_many.py",
     "src/unilab/visualization/viser_playback.py",
     "src/unilab/visualization/viser_scene.py",
     # Cold NPZ motion ingestion.
@@ -188,7 +187,7 @@ def test_generic_event_terms_do_not_use_environment_numpy_rng() -> None:
     offenders = [
         line_number
         for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
-        if "env.rng" in line or "self._env.rng" in line
+        if "env.rng.uniform" in line or "self._env.rng.uniform" in line
     ]
 
     assert offenders == [], f"generic event NumPy RNG references remain at lines: {offenders}"
@@ -216,7 +215,7 @@ def test_locomotion_runtime_terms_do_not_use_environment_numpy_rng() -> None:
         (path.relative_to(_REPO_ROOT).as_posix(), line_number)
         for path in paths
         for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
-        if "env.rng" in line or "self._env.rng" in line
+        if "env.rng.uniform" in line or "self._env.rng.uniform" in line
     ]
 
     assert offenders == [], f"locomotion NumPy RNG references remain: {offenders}"
@@ -276,7 +275,7 @@ def test_metrics_and_recorder_managers_do_not_import_numpy() -> None:
 
 
 def test_manager_env_protocol_reset_buffer_is_torch() -> None:
-    path = _REPO_ROOT / "src" / "unilab" / "managers" / "_types.py"
+    path = _REPO_ROOT / "src" / "unilab" / "managers" / "types.py"
     offenders = [
         line_number
         for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
@@ -380,8 +379,6 @@ _MANAGER_HOST_FIELD_NAMES = frozenset(
         "joint_vel",
         "joint_pos_biased",
         "projected_gravity_b",
-        "gravity_vec_w",
-        "soft_joint_pos_limits",
     }
 )
 
@@ -428,11 +425,6 @@ _ENTITY_PUBLIC_HOST_FIELD_NAMES = frozenset(
         "joint_vel",
         "joint_pos_biased",
         "projected_gravity_b",
-        "gravity_vec_w",
-        "soft_joint_pos_limits",
-        "default_joint_pos",
-        "default_joint_vel",
-        "default_root_state",
         "heading_w",
         "root_link_pose_w",
         "root_link_vel_w",

@@ -22,7 +22,7 @@ import torch
 from omegaconf import OmegaConf
 
 from unilab.rl.runtime.placement import InferencePlacement
-from unilab.rl.runtime.settings import TensorRuntimeSettings
+from unilab.rl.runtime.settings import RuntimeSettings
 from unilab.training.tensor_runtime import resolve_inference_transport
 
 
@@ -66,10 +66,10 @@ def _configurer(backend: str, learner_device: str | None) -> str | None:
     return None
 
 
-def _injected_settings() -> TensorRuntimeSettings:
+def _injected_settings() -> RuntimeSettings:
     # batch_size/updates_per_step deliberately differ from _algo_cfg() so the
     # tests prove the builder honors the injected settings over ``cfg.algo``.
-    return TensorRuntimeSettings(
+    return RuntimeSettings(
         inference_slot_capacity=3,
         collector_metrics_interval=7,
         replay_ingress_depth=4,
@@ -203,7 +203,7 @@ def test_sac_builder_forwards_backend_device_injection(
     if with_injection:
         kwargs["backend_device_resolver"] = _resolver
         kwargs["backend_device_configurer"] = _configurer
-    runner = module.build_sac_double_buffer_runner(
+    runner = module.build_double_buffer_runner(
         _sac_cfg(),
         env_factory=_fake_env_factory,
         env_cfg_override=None,
@@ -217,7 +217,7 @@ def test_sac_builder_forwards_backend_device_injection(
     assert runner.kwargs["log_interval"] == 3
     # Without injection the runner-side defaults apply.
     assert runner.kwargs["inference_placement"] is None
-    assert runner.kwargs["tensor_runtime_settings"] is None
+    assert runner.kwargs["runtime_settings"] is None
 
 
 @pytest.mark.parametrize("with_injection", [False, True])
@@ -234,7 +234,7 @@ def test_flashsac_builder_forwards_backend_device_injection(
     if with_injection:
         kwargs["backend_device_resolver"] = _resolver
         kwargs["backend_device_configurer"] = _configurer
-    runner = module.build_flashsac_double_buffer_runner(
+    runner = module.build_double_buffer_runner(
         _flashsac_cfg(),
         env_factory=_fake_env_factory,
         env_cfg_override=None,
@@ -247,7 +247,7 @@ def test_flashsac_builder_forwards_backend_device_injection(
     assert runner.kwargs["backend_device_configurer"] is (_configurer if with_injection else None)
     assert runner.kwargs["log_interval"] == 3
     assert runner.kwargs["inference_placement"] is None
-    assert runner.kwargs["tensor_runtime_settings"] is None
+    assert runner.kwargs["runtime_settings"] is None
     assert _FakeLearner.last_kwargs["compile_full_objectives"] is True
     assert _FakeLearner.last_kwargs["use_whole_cycle_cuda_graph"] is False
     assert _FakeLearner.last_kwargs["actor_normalize_parameters"] is True
@@ -270,7 +270,7 @@ def test_double_buffer_builders_forward_injected_tensor_runtime(
 
         cfg = _sac_cfg()
         learner_name = "SACLearner"
-        build = module.build_sac_double_buffer_runner
+        build = module.build_double_buffer_runner
         monkeypatch.setattr(
             module,
             "require_offpolicy_replay_device",
@@ -282,7 +282,7 @@ def test_double_buffer_builders_forward_injected_tensor_runtime(
 
         cfg = _flashsac_cfg()
         learner_name = "FlashSACLearner"
-        build = module.build_flashsac_double_buffer_runner
+        build = module.build_double_buffer_runner
         _patch_flashsac_host_gates(monkeypatch, module)
 
     monkeypatch.setattr(module, learner_name, _FakeLearner)
@@ -296,11 +296,11 @@ def test_double_buffer_builders_forward_injected_tensor_runtime(
         env_cfg_override=None,
         replay_prefetch_mode="one_tick",
         device="cpu",
-        tensor_runtime_settings=settings,
+        runtime_settings=settings,
         inference_placement=placement,
     )
 
-    assert runner.kwargs["tensor_runtime_settings"] is settings
+    assert runner.kwargs["runtime_settings"] is settings
     assert runner.kwargs["inference_placement"] is placement
     assert isinstance(runner.kwargs["inference_placement"], InferencePlacement)
     assert runner.kwargs["inference_placement"].collector_tensor_native is False
@@ -314,7 +314,7 @@ def test_sac_builder_forwards_custom_runtime_preparation_hook(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import unilab.rl.algos.sac.double_buffer as module
-    from unilab.rl.runtime.offpolicy.runtime import OffPolicyRuntime
+    from unilab.rl.runtime.offpolicy.resolution import OffPolicyRuntime
 
     def prepare_hook(learner, context):
         del learner, context
@@ -331,7 +331,7 @@ def test_sac_builder_forwards_custom_runtime_preparation_hook(
     monkeypatch.setattr(module, "resolve_custom_offpolicy_runtime", lambda rl_cfg: runtime)
 
     cfg = _sac_cfg()
-    runner = module.build_sac_double_buffer_runner(
+    runner = module.build_double_buffer_runner(
         cfg,
         env_factory=_fake_env_factory,
         env_cfg_override=None,
@@ -343,13 +343,13 @@ def test_sac_builder_forwards_custom_runtime_preparation_hook(
 
 
 @pytest.mark.parametrize("algo", ["sac", "flashsac"])
-def test_double_buffer_builders_reject_removed_inference_request_timeout(
+def test_double_buffer_builders_validate_no_inference_request_timeout(
     monkeypatch: pytest.MonkeyPatch, algo: str
 ) -> None:
     if algo == "sac":
         import unilab.rl.algos.sac.double_buffer as module
 
-        build = module.build_sac_double_buffer_runner
+        build = module.build_double_buffer_runner
         cfg = _sac_cfg()
         monkeypatch.setattr(
             module,
@@ -360,7 +360,7 @@ def test_double_buffer_builders_reject_removed_inference_request_timeout(
     else:
         import unilab.rl.algos.flash_sac.double_buffer as module
 
-        build = module.build_flashsac_double_buffer_runner
+        build = module.build_double_buffer_runner
         cfg = _flashsac_cfg()
         _patch_flashsac_host_gates(monkeypatch, module)
 

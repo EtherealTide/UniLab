@@ -16,15 +16,10 @@ def tensor_nan_guard_factory(
     supports_state_playback: bool,
 ) -> Any:
     """Construct UniLab's device-resident tensor finite-state guard."""
-    from unilab.training.tensor_diagnostics import TensorNanGuard
+    from unilab.training.tensor_diagnostics import NanGuard
 
-    return TensorNanGuard(
+    return NanGuard(
         cfg,
         num_envs=num_envs,
         supports_state_playback=supports_state_playback,
     )
-
-
-def build_tensor_nan_guard_factory() -> Any:
-    """Return the pickleable constructor used by spawn collectors."""
-    return tensor_nan_guard_factory

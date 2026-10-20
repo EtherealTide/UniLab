@@ -9,7 +9,7 @@ from typing import Any, cast
 import numpy as np
 import pytest
 import torch
-from unisim.backend.base import BackendSensorView
+from unisim.backend.base import SensorView
 
 from unilab.managers import (
     ObservationGroupCfg,
@@ -18,8 +18,8 @@ from unilab.managers import (
     RewardManager,
     RewardTermCfg,
 )
-from unilab.managers._types import ManagerBasedRlEnv
 from unilab.managers.scene_entity_config import SceneEntityCfg
+from unilab.managers.types import ManagerBasedRlEnv
 from unilab.tasks.locomotion.common import manager_terms, sensor_reward_terms
 
 CONTACTS = ("fl_contact", "fr_contact", "rl_contact", "rr_contact")
@@ -44,7 +44,7 @@ class _Scene:
         }
         self.refresh_tensor_read_plan()
 
-    def bind_sensor_data(self, names) -> BackendSensorView:
+    def bind_sensor_data(self, names) -> SensorView:
         names = tuple(names)
         self.calls["bind"] += 1
         dimensions = tuple(self.values[name].shape[1] for name in names)
@@ -53,7 +53,7 @@ class _Scene:
             self.calls["read"] += 1
             return np.concatenate([self.values[name] for name in names], axis=1)
 
-        view = BackendSensorView("fake", names, dimensions, 2, read)
+        view = SensorView("fake", names, dimensions, 2, read)
         view.read()  # Mirror SimBackend.bind_sensor_data materialization validation.
         return view
 
@@ -67,7 +67,7 @@ class _Scene:
             requests.append((entity, tuple(names)))
             return SimpleNamespace(values={name: values[name] for name in names})
 
-        self._tensor_read_plan = SimpleNamespace(
+        self.read_plan = SimpleNamespace(
             device=device,
             sensor_names={"robot": tuple(self.values)},
             sensor_tensor_views=sensor_tensor_views,
@@ -76,7 +76,7 @@ class _Scene:
 
 class _ParityScene:
     def __init__(self) -> None:
-        self._tensor_read_plan = SimpleNamespace(
+        self.read_plan = SimpleNamespace(
             device=torch.device("cpu"),
             sensor_names={"robot": ("local_linvel", "gyro")},
             sensor_tensor_views=lambda entity, names: SimpleNamespace(
@@ -101,7 +101,7 @@ class _ParityScene:
                 root_link_ang_vel_b=np.array(
                     [[0.1, -0.2, 0.4], [-0.3, 0.2, -0.1]], dtype=np.float32
                 ),
-                default_joint_pos_torch=lambda device: torch.tensor(
+                default_joint_pos=lambda device: torch.tensor(
                     [[0.1, -0.2, 0.5], [-0.1, 0.1, 0.0]], dtype=torch.float32
                 ),
             )
@@ -119,7 +119,7 @@ class _ParityScene:
         def read() -> np.ndarray:
             return np.concatenate([self.values[name] for name in names], axis=1)
 
-        view = BackendSensorView("fake", names, dimensions, 2, read)
+        view = SensorView("fake", names, dimensions, 2, read)
         view.read()
         return view
 
@@ -305,7 +305,7 @@ def test_feet_air_while_standing_fails_closed_without_packed_sensors() -> None:
         params={"sensor_names": CONTACTS, "command_name": "twist"},
     )
     built = manager_terms.feet_air_while_standing(cfg=cfg, env=cast(Any, env))
-    cast(Any, env).scene._tensor_read_plan.sensor_names = {"robot": ()}
+    cast(Any, env).scene.read_plan.sensor_names = {"robot": ()}
 
     with pytest.raises(NotImplementedError, match="packed Torch read plan"):
         built(env)
@@ -346,7 +346,7 @@ def test_foot_rewards_use_compiled_tensor_sensors_without_host_reads(device: str
         requests.append((entity, names))
         return SimpleNamespace(values={name: values[name] for name in names})
 
-    cast(Any, scene)._tensor_read_plan = SimpleNamespace(
+    cast(Any, scene).read_plan = SimpleNamespace(
         device=torch.device(device),
         sensor_names={"robot": CONTACTS + POSITIONS},
         sensor_tensor_views=sensor_tensor_views,
@@ -406,7 +406,7 @@ def test_runtime_nonfinite_sensor_data_reports_term_and_backend() -> None:
             raise ValueError("fl_contact has NaN or Inf")
         return SimpleNamespace(values={name: values[name] for name in names})
 
-    cast(Any, scene)._tensor_read_plan = SimpleNamespace(
+    cast(Any, scene).read_plan = SimpleNamespace(
         device=torch.device("cpu"),
         sensor_names={"robot": tuple(scene.values)},
         sensor_tensor_views=sensor_tensor_views,
@@ -506,7 +506,7 @@ def test_base_reward_terms_fail_closed_at_nearest_boundary() -> None:
         "gyro": cast(Any, env).scene.robot.data.root_link_ang_vel_b.copy(),
     }
     scene.values["local_linvel"][1, 2] = np.inf
-    scene._tensor_read_plan = SimpleNamespace(
+    scene.read_plan = SimpleNamespace(
         device=torch.device("cpu"),
         sensor_names={"robot": ("local_linvel", "gyro")},
         sensor_tensor_views=lambda entity, names: SimpleNamespace(

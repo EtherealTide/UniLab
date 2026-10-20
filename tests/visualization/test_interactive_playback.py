@@ -17,8 +17,8 @@ if str(_SCRIPTS_DIR) not in sys.path:
 from unilab.visualization.interactive_playback import (
     KeyboardCommander,
     OffPolicyPlaybackSession,
+    PlaybackConfig,
     PlaybackControls,
-    RslRlPlaybackConfig,
     RslRlPlaybackSession,
     create_rsl_rl_playback_session,
     create_sac_playback_session,
@@ -138,7 +138,7 @@ def test_create_rsl_rl_playback_session_loads_checkpoint_and_runner_log_dir() ->
             return lambda obs: torch.ones((1, 2))
 
     session, policy_obs_mode, checkpoint = create_rsl_rl_playback_session(
-        playback_cfg=RslRlPlaybackConfig(
+        playback_cfg=PlaybackConfig(
             task="MyTask",
             load_run="-1",
             checkpoint=None,
@@ -174,7 +174,7 @@ def test_create_rsl_rl_playback_session_loads_checkpoint_and_runner_log_dir() ->
 def test_create_rsl_rl_playback_session_rejects_missing_env() -> None:
     with pytest.raises(RuntimeError, match="Playback env factory"):
         create_rsl_rl_playback_session(
-            playback_cfg=RslRlPlaybackConfig(
+            playback_cfg=PlaybackConfig(
                 task="MyTask",
                 load_run="-1",
                 checkpoint=None,
@@ -278,7 +278,7 @@ class _ConstantActor:
 
 def _rsl_rl_session_kwargs(tmp_path: Path) -> dict[str, Any]:
     return dict(
-        playback_cfg=RslRlPlaybackConfig(
+        playback_cfg=PlaybackConfig(
             task="MyTask",
             load_run="-1",
             checkpoint=None,
@@ -443,16 +443,16 @@ def test_sac_playback_session_runs_sim2sim_preflight(
     resolved_checkpoint = (str(checkpoint), str(tmp_path))
     monkeypatch.setattr(
         checkpoint_utils,
-        "resolve_offpolicy_checkpoint_path",
-        lambda root, algo_log_name, task_name, selected_run, checkpoint=None: (
-            resolved_runs.append(selected_run),
+        "resolve_checkpoint_path",
+        lambda task_log_root, load_run, *, checkpoint=None, suffix=".pt": (
+            resolved_runs.append(load_run),
             resolved_checkpoint,
         )[1],
     )
     monkeypatch.setattr(actor_factory, "build_actor", lambda *args, **kwargs: FakeActor())
 
     _session, _mode, resolved = create_sac_playback_session(
-        playback_cfg=RslRlPlaybackConfig(
+        playback_cfg=PlaybackConfig(
             task="Task",
             load_run="run",
             checkpoint=None,
@@ -721,7 +721,7 @@ def test_build_playback_config_maps_play_interactive_args() -> None:
 
     playback_cfg = build_playback_config(args, num_envs=3)
 
-    assert playback_cfg == RslRlPlaybackConfig(
+    assert playback_cfg == PlaybackConfig(
         task="OtherTask",
         load_run="run_1",
         checkpoint="12",
@@ -762,18 +762,18 @@ def test_build_play_backend_adapter_injects_root_dir_and_materializer(
     captured: dict[str, Any] = {}
     sentinel_materializer = object()
 
-    class FakeBackendAdapter:
+    class FakeEnvConfigAdapter:
         def __init__(self, cfg: Any, **kwargs: Any) -> None:
             captured["cfg"] = cfg
             captured.update(kwargs)
 
-    monkeypatch.setattr(config_adapter, "BackendAdapter", FakeBackendAdapter)
+    monkeypatch.setattr(config_adapter, "EnvConfigAdapter", FakeEnvConfigAdapter)
     monkeypatch.setattr(config_adapter, "materialize_scene_visual_override", sentinel_materializer)
 
     cfg = SimpleNamespace(training=SimpleNamespace(task_name="Task"))
     adapter = build_play_backend_adapter(cfg, root_dir="/repo", algo_name="appo")
 
-    assert isinstance(adapter, FakeBackendAdapter)
+    assert isinstance(adapter, FakeEnvConfigAdapter)
     assert captured == {
         "cfg": cfg,
         "root_dir": "/repo",

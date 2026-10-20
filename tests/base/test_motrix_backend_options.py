@@ -245,8 +245,8 @@ def _install_fake_motrix(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         scene_mod,
-        "_materialize_motrix_scene_with_sensor_names",
-        lambda **kwargs: (fake_model, ()),
+        "materialize_scene_with_sensor_inventory",
+        lambda **kwargs: (fake_model, (), ()),
     )
     # These tests exercise override caches and terrain plumbing with a fake
     # native model; unisim-core 1.7.6 validates the whole-MJCF joint order
@@ -592,7 +592,7 @@ def test_motrix_backend_creates_terrain_scanner(monkeypatch, tmp_path) -> None:
     backend._num_envs = 2
     offsets = np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float64)
 
-    scanner = backend.create_hfield_scanner(
+    scanner = backend.bind_height_scanner(
         hfield_geom_id=0,
         offsets=offsets,
         frame_body_id=0,
@@ -624,7 +624,7 @@ def test_motrix_backend_hfield_sampling_can_return_clearance(monkeypatch, tmp_pa
         SceneCfg(model_file="source.xml"), num_envs=1, sim_dt=0.01, base_name="base"
     )
 
-    scanner = backend.create_hfield_scanner(
+    scanner = backend.bind_height_scanner(
         hfield_geom_id=0,
         offsets=np.asarray([[1.0, 0.0]], dtype=np.float64),
         frame_body_id=0,
@@ -649,7 +649,7 @@ def test_motrix_backend_hfield_sampling_uses_terrain_scanner_output_contract(
         dtype=np.float64,
     )
 
-    scanner = backend.create_hfield_scanner(
+    scanner = backend.bind_height_scanner(
         hfield_geom_id=0,
         offsets=np.asarray([[1.0, 0.0]], dtype=np.float64),
         frame_body_id=0,

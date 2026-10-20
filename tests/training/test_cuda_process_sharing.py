@@ -79,7 +79,7 @@ def test_disabled_default_does_not_probe_host(monkeypatch: pytest.MonkeyPatch) -
         run_command=reject,
     )
 
-    assert evidence.manifest() == {
+    assert evidence.to_dict() == {
         "configured": None,
         "effective": None,
         "validated": False,
@@ -122,7 +122,7 @@ def test_valid_single_rank_request_records_server_evidence(linux_mps: Any) -> No
         run_command=_fake_commands(),
     )
 
-    assert evidence.manifest() == {
+    assert evidence.to_dict() == {
         "configured": "mps",
         "effective": "mps",
         "validated": True,

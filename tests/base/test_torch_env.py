@@ -22,7 +22,7 @@ from unisim.backend.base import (
 from unilab.base.base import EnvCfg, EnvPlayCapabilities
 from unilab.base.scene import SceneCfg
 from unilab.base.torch_env import TorchEnv, TorchEnvState
-from unilab.training.tensor_diagnostics import NanGuardCfg, TensorNanGuard
+from unilab.training.tensor_diagnostics import NanGuard, NanGuardCfg
 
 
 @dataclass
@@ -36,7 +36,7 @@ def _backend() -> MagicMock:
     backend = MagicMock(spec=SimBackend)
     backend.backend_type = "mujoco"
     backend.num_actuators = 4
-    backend.tensor_execution.return_value = TensorExecution.HOST_BRIDGE
+    backend.get_tensor_execution.return_value = TensorExecution.HOST_BRIDGE
     backend.get_tensor_capabilities.return_value = TensorLifecycleCapabilities(
         execution=TensorExecution.HOST_BRIDGE,
         state_fields=frozenset({"qpos", "qvel"}),
@@ -56,7 +56,7 @@ def _backend() -> MagicMock:
 
 def _unsupported_backend() -> MagicMock:
     backend = _backend()
-    backend.tensor_execution.return_value = TensorExecution.UNSUPPORTED
+    backend.get_tensor_execution.return_value = TensorExecution.UNSUPPORTED
     backend.get_tensor_capabilities.return_value = TensorLifecycleCapabilities(
         execution=TensorExecution.UNSUPPORTED
     )
@@ -368,7 +368,7 @@ def test_tensor_nan_guard_detects_and_dumps_at_explicit_host_boundary(tmp_path) 
 
     env = _NonfiniteObsEnv()
     env.init_state()
-    guard = TensorNanGuard(
+    guard = NanGuard(
         NanGuardCfg(enabled=True, buffer_size=2, max_envs_to_dump=2, output_dir=str(tmp_path)),
         num_envs=env.num_envs,
         supports_state_playback=False,
@@ -384,7 +384,7 @@ def test_tensor_nan_guard_detects_and_dumps_at_explicit_host_boundary(tmp_path) 
 
     finite_env = _FiniteObsEnv(terminate=False)
     finite_env.init_state()
-    finite_guard = TensorNanGuard(
+    finite_guard = NanGuard(
         NanGuardCfg(enabled=True, buffer_size=2, output_dir=str(tmp_path / "unused")),
         num_envs=finite_env.num_envs,
         supports_state_playback=False,
@@ -421,7 +421,7 @@ def test_tensor_nan_guard_detects_and_dumps_at_explicit_host_boundary(tmp_path) 
 
 
 def test_tensor_nan_guard_keeps_detection_input_strict() -> None:
-    guard = TensorNanGuard(NanGuardCfg(enabled=True), num_envs=3, supports_state_playback=False)
+    guard = NanGuard(NanGuardCfg(enabled=True), num_envs=3, supports_state_playback=False)
 
     with pytest.raises(TypeError, match="observations must be a mapping"):
         guard.check(cast(Any, [torch.zeros((3, 2))]), torch.zeros(3))
@@ -449,7 +449,7 @@ def test_tensor_nan_guard_rejects_non_tensor_guard_and_resolves_model_lazily() -
     env = _StubTorchEnv(cfg=_StubCfg(scene=SceneCfg(model_file="/scene.xml")), backend=backend)
     assert backend.get_scene_model_file.call_count == 0
 
-    with pytest.raises(TypeError, match="TorchEnv nan guard must be TensorNanGuard"):
+    with pytest.raises(TypeError, match="TorchEnv nan guard must be NanGuard"):
         env.set_nan_guard(cast(Any, MagicMock()))
 
     cfg = _StubCfg(scene=SceneCfg(model_file=""))
@@ -458,7 +458,7 @@ def test_tensor_nan_guard_rejects_non_tensor_guard_and_resolves_model_lazily() -
     lazy_env = _StubTorchEnv(cfg=cfg, backend=backend_without_scene)
     assert backend_without_scene.get_scene_model_file.call_count == 0
     backend_without_scene.get_scene_model_file.return_value = "/changed.xml"
-    lazy_guard = TensorNanGuard(NanGuardCfg(enabled=True), 3, False)
+    lazy_guard = NanGuard(NanGuardCfg(enabled=True), 3, False)
     lazy_env.set_nan_guard(lazy_guard)
     lazy_env.init_state()
     assert backend_without_scene.get_scene_model_file.call_count == 0
@@ -472,7 +472,7 @@ def test_backend_capability_mismatch_fails_closed() -> None:
     with pytest.raises(ValueError, match="stepping and mask reset"):
         env.init_state()
 
-    backend.tensor_execution.return_value = TensorExecution.DEVICE_RESIDENT
+    backend.get_tensor_execution.return_value = TensorExecution.DEVICE_RESIDENT
     env = _StubTorchEnv(backend=backend)
     with pytest.raises(ValueError, match="does not match its capabilities"):
         env.init_state()
@@ -500,7 +500,7 @@ def test_invalid_final_observation_fails_closed() -> None:
 
 def test_device_resident_backend_honors_declared_torch_device() -> None:
     backend = _backend()
-    backend.tensor_execution.return_value = TensorExecution.DEVICE_RESIDENT
+    backend.get_tensor_execution.return_value = TensorExecution.DEVICE_RESIDENT
     backend.get_tensor_capabilities.return_value = TensorLifecycleCapabilities(
         execution=TensorExecution.DEVICE_RESIDENT,
         state_fields=frozenset({"qpos", "qvel"}),

@@ -33,8 +33,8 @@ class OffPolicyActorAdapter:
             ``obs_dim``, ``action_dim``, ``actor_hidden_dim``,
             ``use_layer_norm``, ``device``, ``priv_info_dim``,
             ``priv_info_embed_dim``, ``priv_mlp_hidden_dims``.
-        sample_actions: ``(actor, obs_torch, prev_dones_torch,
-            priv_info_torch) -> actions`` exploration sampling hook used by
+        sample_actions: ``(actor, obs, prev_dones,
+            priv_info) -> actions`` exploration sampling hook used by
             learner-side inference.
         resolve_priv_info: ``(obs_np, critic_np, info) -> priv_info_np | None``
             NumPy-based hook that extracts the actor's privileged context from

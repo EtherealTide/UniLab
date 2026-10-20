@@ -9,7 +9,7 @@ from omegaconf import OmegaConf
 
 from unilab.base import registry
 from unilab.base.base import EnvCfg
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.registry import apply_cfg_overrides
 from unilab.envs.manager_based_rl_env import ManagerBasedRlEnvCfg
 from unilab.managers import RewardTermCfg
@@ -65,7 +65,7 @@ def _cfg(task_name: str, *, env: dict[str, object] | None = None):
 def test_backend_adapter_routes_manager_reward_and_preserves_factory_terms(
     env_name: str,
 ) -> None:
-    override = BackendAdapter(
+    override = EnvConfigAdapter(
         _cfg(env_name),
         root_dir=Path("."),
     ).build_task_env_cfg_override()
@@ -99,7 +99,7 @@ def test_backend_adapter_rejects_duplicate_manager_reward_sources() -> None:
     cfg = _cfg(_MANAGER_ENV, env={"rewards": {"tracking": {"weight": 3.0}}})
 
     with pytest.raises(ValueError, match="root 'reward'.*env.rewards"):
-        BackendAdapter(cfg, root_dir=Path(".")).build_task_env_cfg_override()
+        EnvConfigAdapter(cfg, root_dir=Path(".")).build_task_env_cfg_override()
 
 
 @pytest.mark.parametrize(

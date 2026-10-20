@@ -1,6 +1,6 @@
 """Age-biased replay sampling for FlashSAC.
 
-The device ring remains owned by the generic GPU-resident pipeline. This
+The device ring remains owned by the generic device replay pipeline. This
 subclass changes only index selection: zero decay uses uniform sampling,
 while positive and negative decays bias toward recent and older transitions
 respectively. Bucketed sampling preserves that bias approximately for large
@@ -12,7 +12,7 @@ from __future__ import annotations
 import torch
 
 from unilab.rl.runtime.ipc.replay_buffer import ReplayBuffer
-from unilab.rl.runtime.ipc.replay_pipelines.gpu_resident import GPUResidentReplayPipeline
+from unilab.rl.runtime.ipc.replay_pipelines.device import DeviceReplayPipeline
 
 
 def _linear_age_weights(
@@ -32,7 +32,7 @@ def _with_zero_weight_fallback(weights: torch.Tensor) -> torch.Tensor:
     return torch.where(weights.sum() > 0, weights, torch.ones_like(weights))
 
 
-def biased_replay_indices(
+def sample_biased_replay_indices(
     *,
     visible_size: int,
     capacity: int,
@@ -100,8 +100,8 @@ def biased_replay_indices(
     return (ring_start + logical_indices) % capacity
 
 
-class AgeBiasedReplayPipeline(GPUResidentReplayPipeline):
-    """GPU-resident replay with a linear age-bias sampler."""
+class AgeBiasedReplayPipeline(DeviceReplayPipeline):
+    """Device-resident replay with a linear age-bias sampler."""
 
     def __init__(
         self,
@@ -122,7 +122,7 @@ class AgeBiasedReplayPipeline(GPUResidentReplayPipeline):
         super().__init__(replay_buffer, **kwargs)
 
     def _gather_rows(self, *, visible_size: int, slot: int, gen: torch.Generator) -> None:
-        indices = biased_replay_indices(
+        indices = sample_biased_replay_indices(
             visible_size=visible_size,
             capacity=self._capacity,
             current_ptr=int(self._visible_ptr),

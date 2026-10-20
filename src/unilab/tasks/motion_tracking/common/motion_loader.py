@@ -54,7 +54,7 @@ def quat_slerp(q1: np.ndarray, q2: np.ndarray, t: float) -> np.ndarray:
     return w1 * q1 + w2 * q2
 
 
-def _quat_ensure_continuity(q: np.ndarray) -> np.ndarray:
+def ensure_quat_continuity(q: np.ndarray) -> np.ndarray:
     """Flip quaternion signs in a time sequence to keep adjacent dots positive."""
     if q.ndim != 2 or q.shape[1] != 4:
         raise ValueError(f"Expected quaternion sequence with shape (T, 4), got {q.shape}")
@@ -64,11 +64,6 @@ def _quat_ensure_continuity(q: np.ndarray) -> np.ndarray:
         if float(np.dot(result[index - 1], result[index])) < 0.0:
             result[index] *= -1.0
     return result
-
-
-def ensure_quat_continuity(q: np.ndarray) -> np.ndarray:
-    """Public cold-motion continuation helper for conversion scripts."""
-    return _quat_ensure_continuity(q)
 
 
 def _quat_conjugate(q: np.ndarray) -> np.ndarray:
@@ -116,7 +111,7 @@ def _quat_angular_velocity(q: np.ndarray, dt: float) -> np.ndarray:
     if dt <= 0.0:
         raise ValueError(f"dt must be positive, got {dt}")
 
-    rotations = _quat_ensure_continuity(q)
+    rotations = ensure_quat_continuity(q)
     num_frames = rotations.shape[0]
     omega = np.zeros((num_frames, 3), dtype=rotations.dtype)
     if num_frames <= 1:
@@ -208,7 +203,7 @@ def interpolate_motion(
         base_rots[i] = quat_slerp(
             base_rots_input[index_0[i]], base_rots_input[index_1[i]], blend[i]
         )
-    base_rots = _quat_ensure_continuity(base_rots)
+    base_rots = ensure_quat_continuity(base_rots)
 
     # Linear interpolation for joint positions
     dof_poss = (

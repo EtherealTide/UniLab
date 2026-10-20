@@ -226,7 +226,7 @@ class EnsembleUnitRMSNorm(nn.Module):
             self.weight.mul_(norm_factor)
 
 
-class EnsembleFlashSACEmbedder(nn.Module):
+class EnsembleEmbedder(nn.Module):
     def __init__(self, num_ensemble: int, input_dim: int, hidden_dim: int):
         super().__init__()
         self.norm = EnsembleUnitBatchNorm(num_ensemble, input_dim)
@@ -236,7 +236,7 @@ class EnsembleFlashSACEmbedder(nn.Module):
         return cast(torch.Tensor, self.w(self.norm(x, training=training)))
 
 
-class EnsembleFlashSACBlock(nn.Module):
+class EnsembleBlock(nn.Module):
     def __init__(self, num_ensemble: int, hidden_dim: int, expansion: int = 4):
         super().__init__()
         self.w1 = EnsembleUnitLinear(num_ensemble, hidden_dim, hidden_dim * expansion)

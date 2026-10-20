@@ -70,14 +70,14 @@ def _g1_manager_override(
 ) -> dict[str, Any]:
     from hydra import compose, initialize_config_dir
 
-    from unilab.base.config_adapter import BackendAdapter
+    from unilab.base.config_adapter import EnvConfigAdapter
 
     repo_root = Path(__file__).parents[2]
     with initialize_config_dir(
         config_dir=str(repo_root / "src" / "unilab" / "conf" / config_group), version_base="1.3"
     ):
         cfg = compose("config", overrides=[f"task={task}/{backend}"])
-    return BackendAdapter(
+    return EnvConfigAdapter(
         cfg, root_dir=repo_root, algo_name=config_group
     ).build_task_env_cfg_override()
 
@@ -91,7 +91,7 @@ def _motion_manager_override(
     from hydra import compose, initialize_config_dir
     from hydra.core.global_hydra import GlobalHydra
 
-    from unilab.base.config_adapter import BackendAdapter
+    from unilab.base.config_adapter import EnvConfigAdapter
 
     repo_root = Path(__file__).parents[2]
     GlobalHydra.instance().clear()
@@ -100,7 +100,7 @@ def _motion_manager_override(
     ):
         overrides = [f"task={task}/{backend}"]
         cfg = compose("config", overrides=overrides)
-    return str(cfg.training.task_name), BackendAdapter(
+    return str(cfg.training.task_name), EnvConfigAdapter(
         cfg,
         root_dir=repo_root,
         algo_name=config_root,
@@ -474,7 +474,7 @@ def test_flashsac_g1_motion_mujoco_tensor_command_roll_out() -> None:
         from hydra import compose, initialize_config_dir
         from hydra.core.global_hydra import GlobalHydra
         from unilab.base import registry
-        from unilab.base.config_adapter import BackendAdapter
+        from unilab.base.config_adapter import EnvConfigAdapter
         from unilab.envs import ManagerBasedRlEnv
 
         registry.ensure_registries()
@@ -484,7 +484,7 @@ def test_flashsac_g1_motion_mujoco_tensor_command_roll_out() -> None:
             config_dir=str(root / "src/unilab/conf/flashsac"), version_base="1.3"
         ):
             owner = compose("config", overrides=["task=g1_motion_tracking/mujoco"])
-        override = BackendAdapter(
+        override = EnvConfigAdapter(
             owner, root_dir=root, algo_name="flashsac"
         ).build_task_env_cfg_override()
         env = registry.make(
@@ -497,7 +497,7 @@ def test_flashsac_g1_motion_mujoco_tensor_command_roll_out() -> None:
         try:
             command = env.command_manager.get_term("motion")
             assert command.tensor_carrier is True
-            assert env.torch_rng is not None
+            assert env.rng is not None
             state = env.reset(seed=7)[0]
             for _ in range(3):
                 state = env.step(torch.zeros((2, 29), dtype=torch.float32))

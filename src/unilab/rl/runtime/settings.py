@@ -19,7 +19,7 @@ DEFAULT_REPLAY_INGRESS_DEPTH = 2
 MAX_REPLAY_INGRESS_DEPTH = 16
 
 
-def _validated_positive_int(
+def validated_positive_int(
     value: object,
     *,
     label: str,
@@ -34,7 +34,7 @@ def _validated_positive_int(
 
 
 @dataclass(frozen=True)
-class TensorRuntimeSettings:
+class RuntimeSettings:
     """Effective, bounded tensor-runtime values resolved before spawn."""
 
     inference_slot_capacity: int
@@ -52,29 +52,29 @@ class TensorRuntimeSettings:
     configured_replay_ingress_slot_rows: int | None = None
 
     def __post_init__(self) -> None:
-        num_envs = _validated_positive_int(self.num_envs, label="algo.num_envs")
-        inference_capacity = _validated_positive_int(
+        num_envs = validated_positive_int(self.num_envs, label="algo.num_envs")
+        inference_capacity = validated_positive_int(
             self.inference_slot_capacity,
             label="training.inference_slot_capacity",
             maximum=MAX_INFERENCE_SLOT_CAPACITY,
         )
-        metrics_interval = _validated_positive_int(
+        metrics_interval = validated_positive_int(
             self.collector_metrics_interval,
             label="training.collector_metrics_interval",
             maximum=MAX_COLLECTOR_METRICS_INTERVAL,
         )
-        ingress_depth = _validated_positive_int(
+        ingress_depth = validated_positive_int(
             self.replay_ingress_depth,
             label="training.replay_ingress_depth",
             maximum=MAX_REPLAY_INGRESS_DEPTH,
         )
-        ingress_slot_rows = _validated_positive_int(
+        ingress_slot_rows = validated_positive_int(
             self.replay_ingress_slot_rows,
             label="training.replay_ingress_slot_rows",
             maximum=num_envs,
         )
-        batch_size = _validated_positive_int(self.batch_size, label="algo.batch_size")
-        updates_per_step = _validated_positive_int(
+        batch_size = validated_positive_int(self.batch_size, label="algo.batch_size")
+        updates_per_step = validated_positive_int(
             self.updates_per_step,
             label="algo.updates_per_step",
         )
@@ -107,7 +107,7 @@ class TensorRuntimeSettings:
         for name, configured, effective in configured_values:
             if configured is None:
                 continue
-            configured_int = _validated_positive_int(
+            configured_int = validated_positive_int(
                 configured,
                 label=f"configured {name}",
             )

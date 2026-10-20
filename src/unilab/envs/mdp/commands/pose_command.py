@@ -1,9 +1,9 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681),
 # src/mjlab_microduck/tasks/mdp.py command terms.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy and the public ManagerBasedRlEnv contract;
+# Modified by UniLab for the public ManagerBasedRlEnv contract;
 # licensed under Apache-2.0.
-"""Generic pose and posture command terms for Manager-Based tasks."""
+"""Generic pose and posture command terms for the Torch-first Manager runtime."""
 
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ from typing import TYPE_CHECKING
 import torch
 
 from unilab.managers.command_manager import CommandTerm, CommandTermCfg
-from unilab.managers.torch_rng import TorchManagerRng
+from unilab.managers.rng import ManagerRng
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 def _real(value: object, *, label: str, minimum: float | None = None) -> float:
@@ -106,8 +106,8 @@ class UniformPoseCommand(CommandTerm):
             self._command.copy_(torch.where((reset_mask & zero)[:, None], zeros, self._command))
 
     def _host_uniform(self, lower: float, upper: float, count: int) -> torch.Tensor:
-        rng_owner = getattr(self._env, "torch_rng", None)
-        if not isinstance(rng_owner, TorchManagerRng):
+        rng_owner = getattr(self._env, "rng", None)
+        if not isinstance(rng_owner, ManagerRng):
             raise RuntimeError(
                 "UniformPoseCommand sampling requires the Manager-owned Torch generator"
             )

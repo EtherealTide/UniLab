@@ -129,7 +129,7 @@ class SnapshotPlaybackSession:
                 raise unsupported_debug_overlay_error(type(self._env).__name__)
 
         from unisim.backend.mujoco.playback import resolve_render_play_model_files
-        from unisim.backend.playback_common import write_playback_video
+        from unisim.backend.playback import write_playback_video
         from unisim.visualization import render_many
 
         spacing = self._render_spacing

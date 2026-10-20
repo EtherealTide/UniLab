@@ -17,8 +17,8 @@ from unilab.tasks.locomotion.go2 import tensor_parity as tensor_parity_module
 from unilab.tasks.locomotion.go2.tensor_parity import (
     GO2_ACTUATOR_NAMES,
     GO2_JOINT_NAMES,
-    Go2TensorParityConfig,
-    Go2TensorParityRuntime,
+    Go2ParityConfig,
+    Go2ParityRuntime,
 )
 
 _HOME = np.array(
@@ -52,7 +52,7 @@ class FakeGo2DeviceBackend:
         self.cpu_detour_calls = 0
         self._refresh_sensors()
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         return TensorExecution.DEVICE_RESIDENT
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
@@ -147,7 +147,7 @@ class FakeGo2DeviceBackend:
 class UnsupportedBackend:
     backend_type = "fake-unsupported"
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         return TensorExecution.UNSUPPORTED
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
@@ -164,19 +164,19 @@ def _reset_state(num_envs: int) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def _make_runtime(
-    cfg: Go2TensorParityConfig | None = None,
-) -> tuple[FakeGo2DeviceBackend, Go2TensorParityRuntime]:
+    cfg: Go2ParityConfig | None = None,
+) -> tuple[FakeGo2DeviceBackend, Go2ParityRuntime]:
     backend = FakeGo2DeviceBackend()
     qpos, qvel = _reset_state(backend.num_envs)
     command = torch.tensor(
         [[0.4, -0.2, 0.3], [-0.3, 0.1, -0.2], [0.0, 0.0, 0.0]], dtype=torch.float32
     )
-    runtime = Go2TensorParityRuntime(
+    runtime = Go2ParityRuntime(
         backend,  # pyright: ignore[reportArgumentType]
         command=command,
         reset_qpos=qpos,
         reset_qvel=qvel,
-        cfg=cfg or Go2TensorParityConfig(),
+        cfg=cfg or Go2ParityConfig(),
     )
     runtime.reset()
     return backend, runtime
@@ -185,7 +185,7 @@ def _make_runtime(
 def test_go2_tensor_runtime_rejects_unsupported_backend_before_view_negotiation() -> None:
     qpos, qvel = _reset_state(1)
     with pytest.raises(RuntimeError, match="DEVICE_RESIDENT"):
-        Go2TensorParityRuntime(
+        Go2ParityRuntime(
             UnsupportedBackend(),  # pyright: ignore[reportArgumentType]
             command=torch.zeros((1, 3)),
             reset_qpos=qpos,
@@ -326,7 +326,7 @@ def test_go2_all_false_reset_is_noop_and_preserves_every_row() -> None:
 
 
 def test_go2_done_formula_parity_covers_bad_orientation_and_timeout() -> None:
-    backend, runtime = _make_runtime(Go2TensorParityConfig(max_episode_steps=1))
+    backend, runtime = _make_runtime(Go2ParityConfig(max_episode_steps=1))
     tilt = 1.2
     for row in (0, 2):
         backend.qpos[row, 3:7] = torch.tensor(
@@ -376,7 +376,7 @@ def test_go2_tensor_runtime_fails_closed_without_mask_capability() -> None:
     backend = NoMaskBackend(num_envs=1)
     qpos, qvel = _reset_state(1)
     with pytest.raises(RuntimeError, match="mask tensor reset"):
-        Go2TensorParityRuntime(
+        Go2ParityRuntime(
             backend,  # pyright: ignore[reportArgumentType]
             command=torch.zeros((1, 3)),
             reset_qpos=qpos,
@@ -413,7 +413,7 @@ def test_go2_tensor_runtime_fails_closed_when_cuda_is_unavailable(
         RuntimeError,
         match="CUDA Go2 tensor parity requested but CUDA is unavailable",
     ):
-        Go2TensorParityRuntime(
+        Go2ParityRuntime(
             backend,  # pyright: ignore[reportArgumentType]
             command=torch.zeros((1, 3)),
             reset_qpos=qpos,
@@ -430,7 +430,7 @@ def test_go2_tensor_runtime_rejects_wrong_device_input() -> None:
     backend = FakeGo2DeviceBackend(num_envs=1)
     qpos, qvel = _reset_state(1)
     with pytest.raises(RuntimeError, match="did not accept Torch device"):
-        Go2TensorParityRuntime(
+        Go2ParityRuntime(
             backend,  # pyright: ignore[reportArgumentType]
             command=torch.zeros((1, 3)),
             reset_qpos=qpos,
@@ -444,7 +444,7 @@ def test_go2_tensor_runtime_rejects_mismatched_backend_layout() -> None:
     backend.qpos = torch.zeros((2, 18), dtype=torch.float32)
     qpos, qvel = _reset_state(2)
     with pytest.raises(ValueError, match="qpos view shape"):
-        Go2TensorParityRuntime(
+        Go2ParityRuntime(
             backend,  # pyright: ignore[reportArgumentType]
             command=torch.zeros((2, 3)),
             reset_qpos=qpos,
@@ -461,7 +461,7 @@ def test_go2_tensor_runtime_fails_closed_on_capability_mismatch() -> None:
     backend = NoSteppingBackend(num_envs=1)
     qpos, qvel = _reset_state(1)
     with pytest.raises(RuntimeError, match="tensor stepping"):
-        Go2TensorParityRuntime(
+        Go2ParityRuntime(
             backend,  # pyright: ignore[reportArgumentType]
             command=torch.zeros((1, 3)),
             reset_qpos=qpos,

@@ -41,7 +41,7 @@ class EnvFactory(Protocol):
 
 TEnvFactory = TypeVar("TEnvFactory", bound=EnvFactory)
 RewardOverrideField = Literal["rewards"]
-_TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS = (
+_SUPPORTED_SIM_BACKENDS = (
     "mujoco",
     "mjwarp",
     "genesis",
@@ -52,19 +52,17 @@ _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS = (
     "isaacsim",
     "isaacgym",
 )
-_SHELVED_SIM_BACKENDS = ()
-_SUPPORTED_SIM_BACKENDS = _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS + _SHELVED_SIM_BACKENDS
 # Drake and external-worker Isaac backends are explicit owner selections; never
 # use them as implicit fallback backends.
 _DEFAULT_SIM_BACKEND_ORDER: tuple[str, ...] = tuple(
     backend
-    for backend in _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS
+    for backend in _SUPPORTED_SIM_BACKENDS
     if backend not in {"drake", "isaacgym", "isaacsim"}
 )
-_TENSOR_MANAGER_BACKEND_SCOPE_ERROR = (
+_BACKEND_SCOPE_ERROR = (
     "Simulation backend '{backend}' is temporarily out of the tensor-only "
     "Manager runtime scope. Active backends: "
-    f"{', '.join(_TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS)}. Re-enabling it requires "
+    f"{', '.join(_SUPPORTED_SIM_BACKENDS)}. Re-enabling it requires "
     "capability, parity, and support-matrix evidence (issue #1811)."
 )
 _REGISTRY_MODULES_ATTR = "__unilab_registry_modules__"
@@ -95,7 +93,7 @@ class EnvMeta:
                 return backend
         return next(iter(self.env_factory_dict), None)
 
-    def support_sim_backend(self, sim_backend: str) -> bool:
+    def supports_sim_backend(self, sim_backend: str) -> bool:
         """Check if the environment supports a specific simulation backend."""
         return sim_backend in self.env_factory_dict
 
@@ -167,8 +165,6 @@ def materialize_env_config(name: str) -> EnvCfg:
 
 def register_env(name: str, env_factory: TEnvFactory, sim_backend: str) -> TEnvFactory:
     """Register and return an environment class or function factory."""
-    if sim_backend in _SHELVED_SIM_BACKENDS:
-        raise ValueError(_TENSOR_MANAGER_BACKEND_SCOPE_ERROR.format(backend=sim_backend))
     if sim_backend not in _SUPPORTED_SIM_BACKENDS:
         raise ValueError(
             f"Unsupported simulation backend: {sim_backend}. "
@@ -287,7 +283,7 @@ def make(
         if sim_backend is None:
             raise ValueError(f"Environment '{name}' does not support any simulation backend.")
 
-    if not meta.support_sim_backend(sim_backend):
+    if not meta.supports_sim_backend(sim_backend):
         raise ValueError(
             f"Environment '{name}' does not support simulation backend '{sim_backend}'."
         )

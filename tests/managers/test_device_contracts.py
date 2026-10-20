@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 import torch
 from unisim.backend.base import (
-    BackendRootStateLayout,
+    RootStateLayout,
     SimBackend,
     TensorDataPlane,
     TensorExecution,
@@ -338,10 +338,10 @@ class _CudaBackend:
     def get_joint_range(self) -> np.ndarray:
         return np.tile(np.asarray([[-1.0, 1.0]], dtype=np.float32), (3, 1))
 
-    def get_root_state_layout(self, root_body_name: str) -> BackendRootStateLayout:
+    def get_root_state_layout(self, root_body_name: str) -> RootStateLayout:
         if root_body_name != "base":
             raise KeyError(root_body_name)
-        return BackendRootStateLayout(tuple(range(7)), tuple(range(6)))
+        return RootStateLayout(tuple(range(7)), tuple(range(6)))
 
     def get_default_qpos(self) -> np.ndarray:
         return np.asarray([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float32)
@@ -404,11 +404,11 @@ def test_cuda_packed_read_plan_and_default_torch_tables() -> None:
 
     data = scene["robot"].data
     for table in (
-        data.default_joint_pos_torch(device),
-        data.default_joint_vel_torch(device),
-        data.default_root_state_torch(device),
-        data.gravity_vec_w_torch(device),
-        data.soft_joint_pos_limits_torch(device),
+        data.default_joint_pos(device),
+        data.default_joint_vel(device),
+        data.default_root_state(device),
+        data.gravity_vec_w(device),
+        data.soft_joint_pos_limits(device),
     ):
         assert table.dtype == torch.float32
         assert table.device == device

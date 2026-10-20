@@ -23,7 +23,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from unilab.rl.algos.common.compile import get_torch_compile_for_device
-from unilab.rl.algos.common.learner_boilerplate import (
+from unilab.rl.algos.common.learner_base import (
     WholeCycleLearnerMixin,
     fused_adam_supported,
     mps_bf16_autocast_supported,
@@ -375,7 +375,7 @@ class SACCritic(nn.Module):
         ]
         return torch.stack(projections, dim=0)
 
-    def get_value(self, probs: torch.Tensor) -> torch.Tensor:
+    def expected_value(self, probs: torch.Tensor) -> torch.Tensor:
         """Calculate value from probabilities using support."""
         return torch.sum(probs * self.q_support, dim=-1)
 
@@ -397,26 +397,6 @@ class SACLearner(WholeCycleLearnerMixin):
     """
 
     supports_deferred_update_metrics = True
-
-    @staticmethod
-    def _resolve_use_amp(use_amp: bool, amp_dtype: str, device_type: str) -> bool:
-        """Resolve device-specific AMP enablement without runtime probing."""
-        return resolve_amp_selection(
-            device_type=device_type,
-            use_amp=use_amp,
-            amp_dtype=amp_dtype,
-            learner_name="SAC",
-        ).use_amp
-
-    @staticmethod
-    def _validate_performance_paths(device_type: str, use_compile: bool, use_amp: bool) -> None:
-        """Reject initially unsupported MPS compile/AMP combinations."""
-        validate_amp_compile_paths(
-            device_type=device_type,
-            use_compile=use_compile,
-            use_amp=use_amp,
-            learner_name="SAC",
-        )
 
     def __init__(
         self,
@@ -479,7 +459,12 @@ class SACLearner(WholeCycleLearnerMixin):
         # ``use_compile=False`` opt-out applies only on the compatibility tiers
         # (ROCm/HIP, MPS, CPU, XPU).
         self.use_compile = self._nvidia_cuda or (bool(use_compile) and compile_fn is not None)
-        self._validate_performance_paths(self._device_type, self.use_compile, self.use_amp)
+        validate_amp_compile_paths(
+            device_type=self._device_type,
+            use_compile=self.use_compile,
+            use_amp=self.use_amp,
+            learner_name="SAC",
+        )
         self.compile_backend = (
             ("inductor" if self._nvidia_cuda else "torch_compile") if self.use_compile else "eager"
         )
@@ -607,10 +592,10 @@ class SACLearner(WholeCycleLearnerMixin):
         self._pending_cycle_critic_metric_values: torch.Tensor | None = None
         self._pending_cycle_metric_values: torch.Tensor | None = None
         self._pending_update_finite_values: torch.Tensor | None = None
-        self._eager_critic_loss_tensors: Callable[..., Any] | None = None
-        self._eager_actor_loss_tensors: Callable[..., Any] | None = None
-        self._compiled_critic_loss_tensors: Callable[..., Any] | None = None
-        self._compiled_actor_loss_tensors: Callable[..., Any] | None = None
+        self._eager_critic_objective: Callable[..., Any] | None = None
+        self._eager_actor_objective: Callable[..., Any] | None = None
+        self._compiled_critic_objective: Callable[..., Any] | None = None
+        self._compiled_actor_objective: Callable[..., Any] | None = None
         self._mps_selection_batch: Dict[str, torch.Tensor] | None = None
         self._q_update_finite = torch.ones((), device=device)
         self._target_tau = torch.full((), tau, device=device)
@@ -780,8 +765,8 @@ class SACLearner(WholeCycleLearnerMixin):
         if compile_fn is None:
             return
         if self._device_type == "mps":
-            self._eager_critic_loss_tensors = self._critic_loss_tensors
-            self._eager_actor_loss_tensors = self._actor_loss_tensors
+            self._eager_critic_objective = self._critic_objective
+            self._eager_actor_objective = self._actor_objective
         if self._compile_full_update_cycle:
             # The owner-managed CUDA Graph must not nest Inductor Graph Trees.
             # Portable max-autotune lets Triton select kernels for the installed
@@ -801,25 +786,25 @@ class SACLearner(WholeCycleLearnerMixin):
                     "triton.cudagraphs": True,
                 },
             }
-        self.__dict__["_critic_loss_tensors"] = compile_fn(
-            self._critic_loss_tensors,
+        self.__dict__["_critic_objective"] = compile_fn(
+            self._critic_objective,
             **compile_kwargs,
         )
-        self.__dict__["_actor_loss_tensors"] = compile_fn(
-            self._actor_loss_tensors,
+        self.__dict__["_actor_objective"] = compile_fn(
+            self._actor_objective,
             **compile_kwargs,
         )
         if self._device_type == "mps":
-            self._compiled_critic_loss_tensors = self._critic_loss_tensors
-            self._compiled_actor_loss_tensors = self._actor_loss_tensors
+            self._compiled_critic_objective = self._critic_objective
+            self._compiled_actor_objective = self._actor_objective
 
     def _synchronize_compile_selection(self) -> None:
         sync_device(self.device)
 
-    def _benchmark_critic_loss_tensors(self) -> float:
+    def _benchmark_critic_objective(self) -> float:
         assert self._mps_selection_batch is not None
         start = time.perf_counter()
-        qf_loss, _target_q_max, _target_q_min, _next_log_probs = self._critic_loss_tensors(
+        qf_loss, _target_q_max, _target_q_min, _next_log_probs = self._critic_objective(
             self._mps_selection_batch["critic"],
             self._mps_selection_batch["actions"],
             self._mps_selection_batch["rewards"],
@@ -833,10 +818,10 @@ class SACLearner(WholeCycleLearnerMixin):
         self._synchronize_compile_selection()
         return time.perf_counter() - start
 
-    def _benchmark_actor_loss_tensors(self) -> float:
+    def _benchmark_actor_objective(self) -> float:
         assert self._mps_selection_batch is not None
         start = time.perf_counter()
-        actor_loss, _policy_entropy = self._actor_loss_tensors(
+        actor_loss, _policy_entropy = self._actor_objective(
             self._mps_selection_batch["obs"],
             self._mps_selection_batch["critic"],
         )
@@ -854,10 +839,10 @@ class SACLearner(WholeCycleLearnerMixin):
         """Keep MPS compilation only when its representative benchmark wins."""
         if self._device_type != "mps" or not self.use_compile:
             return
-        assert self._eager_critic_loss_tensors is not None
-        assert self._eager_actor_loss_tensors is not None
-        assert self._compiled_critic_loss_tensors is not None
-        assert self._compiled_actor_loss_tensors is not None
+        assert self._eager_critic_objective is not None
+        assert self._eager_actor_objective is not None
+        assert self._compiled_critic_objective is not None
+        assert self._compiled_actor_objective is not None
         self._mps_selection_batch = {key: value[:batch_size] for key, value in large_batch.items()}
         rng_state = capture_rng_state(self.device)
         timings: dict[str, float] = {}
@@ -865,23 +850,23 @@ class SACLearner(WholeCycleLearnerMixin):
         candidates = (
             (
                 "eager",
-                self._eager_critic_loss_tensors,
-                self._eager_actor_loss_tensors,
+                self._eager_critic_objective,
+                self._eager_actor_objective,
             ),
             (
                 "compiled",
-                self._compiled_critic_loss_tensors,
-                self._compiled_actor_loss_tensors,
+                self._compiled_critic_objective,
+                self._compiled_actor_objective,
             ),
         )
         try:
             for label, critic_fn, actor_fn in candidates:
-                self.__dict__["_critic_loss_tensors"] = critic_fn
-                self.__dict__["_actor_loss_tensors"] = actor_fn
-                self._benchmark_critic_loss_tensors()
-                self._benchmark_actor_loss_tensors()
+                self.__dict__["_critic_objective"] = critic_fn
+                self.__dict__["_actor_objective"] = actor_fn
+                self._benchmark_critic_objective()
+                self._benchmark_actor_objective()
                 timings[label] = min(
-                    self._benchmark_critic_loss_tensors() + self._benchmark_actor_loss_tensors()
+                    self._benchmark_critic_objective() + self._benchmark_actor_objective()
                     for _ in range(3)
                 )
         except Exception as exc:
@@ -900,11 +885,11 @@ class SACLearner(WholeCycleLearnerMixin):
             self._zero_optimizer_gradients(self.alpha_optimizer)
             self._mps_selection_batch = None
         if not selection_failed and timings["compiled"] < timings["eager"] * 0.95:
-            self.__dict__["_critic_loss_tensors"] = self._compiled_critic_loss_tensors
-            self.__dict__["_actor_loss_tensors"] = self._compiled_actor_loss_tensors
+            self.__dict__["_critic_objective"] = self._compiled_critic_objective
+            self.__dict__["_actor_objective"] = self._compiled_actor_objective
             return
-        self.__dict__["_critic_loss_tensors"] = self._eager_critic_loss_tensors
-        self.__dict__["_actor_loss_tensors"] = self._eager_actor_loss_tensors
+        self.__dict__["_critic_objective"] = self._eager_critic_objective
+        self.__dict__["_actor_objective"] = self._eager_actor_objective
         self.use_compile = False
         self.compile_backend = "eager"
 
@@ -932,7 +917,7 @@ class SACLearner(WholeCycleLearnerMixin):
         del critic_obs
         return self.actor.get_actions_and_log_probs(actor_obs, eps=eps)
 
-    def _critic_loss_tensors(
+    def _critic_objective(
         self,
         critic_obs: torch.Tensor,
         actions: torch.Tensor,
@@ -964,7 +949,7 @@ class SACLearner(WholeCycleLearnerMixin):
                 target_distributions = self.qnet_target.projection(
                     critic_next_obs, next_actions, adjusted_rewards, bootstrap, discount
                 )
-                target_values = self.qnet_target.get_value(target_distributions)
+                target_values = self.qnet_target.expected_value(target_distributions)
                 target_q_max = target_values.max()
                 target_q_min = target_values.min()
 
@@ -976,11 +961,11 @@ class SACLearner(WholeCycleLearnerMixin):
 
         return qf_loss, target_q_max, target_q_min, next_log_probs.detach()
 
-    def _alpha_loss_tensor(self, next_log_probs: torch.Tensor) -> torch.Tensor:
+    def _alpha_loss(self, next_log_probs: torch.Tensor) -> torch.Tensor:
         entropy_error_mean = (next_log_probs + self.target_entropy).detach().mean()
         return -(self.log_alpha.exp() * entropy_error_mean)
 
-    def _actor_loss_tensors(
+    def _actor_objective(
         self,
         obs: torch.Tensor,
         critic_obs: torch.Tensor,
@@ -999,7 +984,7 @@ class SACLearner(WholeCycleLearnerMixin):
         with self._autocast():
             q_outputs = self.qnet(critic_obs, actions)
             q_probs = F.softmax(q_outputs, dim=-1)
-            q_values = self.qnet.get_value(q_probs)
+            q_values = self.qnet.expected_value(q_probs)
             qf_value = q_values.mean(dim=0)
             actor_loss = (self.log_alpha.exp().detach() * log_probs - qf_value).mean()
 
@@ -1213,7 +1198,7 @@ class SACLearner(WholeCycleLearnerMixin):
         next_obs = self.normalize_obs(next_obs, update=False)
 
         with _cuda_nvtx_range("critic/loss_compiled", self.nvtx_profile_ranges):
-            qf_loss, target_q_max, target_q_min, next_log_probs = self._critic_loss_tensors(
+            qf_loss, target_q_max, target_q_min, next_log_probs = self._critic_objective(
                 critic_obs,
                 actions,
                 rewards,
@@ -1264,7 +1249,7 @@ class SACLearner(WholeCycleLearnerMixin):
             with _cuda_nvtx_range("critic/alpha_update", self.nvtx_profile_ranges):
                 self._zero_optimizer_gradients(self.alpha_optimizer)
             with _cuda_nvtx_range("critic/alpha_loss", self.nvtx_profile_ranges):
-                alpha_loss = self._alpha_loss_tensor(next_log_probs)
+                alpha_loss = self._alpha_loss(next_log_probs)
             if self._finite_check_ok(alpha_loss, read_metrics):
                 with _cuda_nvtx_range("critic/alpha_backward", self.nvtx_profile_ranges):
                     alpha_loss.backward()
@@ -1322,7 +1307,7 @@ class SACLearner(WholeCycleLearnerMixin):
         obs = self.normalize_obs(obs, update=False)
         self._pending_actor_metric_values = None
         with _cuda_nvtx_range("actor/loss_compiled", self.nvtx_profile_ranges):
-            actor_loss, policy_entropy = self._actor_loss_tensors(obs, critic_obs)
+            actor_loss, policy_entropy = self._actor_objective(obs, critic_obs)
 
         # Skip if NaN
         if self._finite_check_ok(actor_loss, read_metrics):
@@ -1393,7 +1378,7 @@ class SACLearner(WholeCycleLearnerMixin):
         self._pending_cycle_metric_values = None
         self._pending_update_finite_values = None
 
-    def dp_initial_sync_tensors(self) -> Dict[str, torch.Tensor]:
+    def dp_initial_sync(self) -> Dict[str, torch.Tensor]:
         """Model state broadcast once from rank 0 before collection starts.
 
         The values alias the parameter/buffer storage of ``actor``, ``qnet``

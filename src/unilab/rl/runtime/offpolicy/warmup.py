@@ -120,7 +120,7 @@ def restore_rng_state(state: _TorchRngState) -> None:
     random.setstate(state.python)  # type: ignore[arg-type]
 
 
-def make_offpolicy_warmup_batch(
+def build_offpolicy_warmup_batch(
     context: OffPolicyWarmupContext,
     *,
     obs_dim: int,
@@ -154,6 +154,6 @@ __all__ = [
     "OffPolicyLearnerPreparation",
     "OffPolicyWarmupContext",
     "capture_rng_state",
-    "make_offpolicy_warmup_batch",
+    "build_offpolicy_warmup_batch",
     "restore_rng_state",
 ]

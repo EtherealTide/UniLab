@@ -84,13 +84,13 @@ def _device_memory_budget(device: torch.device) -> tuple[int, int]:
         driver_allocated_memory = getattr(torch.mps, "driver_allocated_memory", None)
         if not callable(recommended_max_memory) or not callable(driver_allocated_memory):
             raise RuntimeError(
-                "MPS gpu_resident replay requires recommended_max_memory() and "
+                "MPS device replay requires recommended_max_memory() and "
                 "driver_allocated_memory() for its allocation guard"
             )
         total_bytes = int(cast(Any, recommended_max_memory)())
         allocated_bytes = int(cast(Any, driver_allocated_memory)())
         return max(0, total_bytes - allocated_bytes), total_bytes
-    raise ValueError(f"Unsupported gpu_resident replay device type {device.type!r}")
+    raise ValueError(f"Unsupported device replay device type {device.type!r}")
 
 
 def _validate_device_memory_budget(
@@ -115,7 +115,7 @@ def _validate_device_memory_budget(
     )
 
 
-class GPUResidentReplayPipeline:
+class DeviceReplayPipeline:
     """ReplayPipeline backed by an authoritative packed device ring."""
 
     _POLL_INTERVAL_S = 0.0005
@@ -135,13 +135,12 @@ class GPUResidentReplayPipeline:
         self._device = torch.device(require_offpolicy_replay_device(device))
         if self._device.type not in {"cuda", "mps"}:
             raise ValueError(
-                "GPUResidentReplayPipeline requires a CUDA or MPS device; "
-                f"got {self._device.type!r}"
+                f"DeviceReplayPipeline requires a CUDA or MPS device; got {self._device.type!r}"
             )
         if self._device.type == "cuda" and self._device.index is None:
             self._device = torch.device("cuda", index=torch.cuda.current_device())
         if self._device.type == "mps" and not torch.backends.mps.is_available():
-            raise ValueError("GPUResidentReplayPipeline requires an available MPS device")
+            raise ValueError("DeviceReplayPipeline requires an available MPS device")
         self._main_thread_submission = self._device.type == "mps"
         self._learner_thread_id = threading.get_ident()
         self._sample_count = int(sample_count)
@@ -186,7 +185,7 @@ class GPUResidentReplayPipeline:
                 self._host_pinned = bool(self._transfer_backend.host_pinned)
             except RuntimeError as exc:
                 print(
-                    f"[GPUResidentReplay] Host storage registration failed ({exc}); "
+                    f"[DeviceReplay] Host storage registration failed ({exc}); "
                     "falling back to pageable device copies.",
                     flush=True,
                 )
@@ -228,7 +227,7 @@ class GPUResidentReplayPipeline:
         if not self._main_thread_submission:
             self._sync_thread = threading.Thread(
                 target=self._sync_worker,
-                name="replay_gpu_resident_sync",
+                name="replay_device_sync",
                 daemon=True,
             )
             self._sync_thread.start()
@@ -236,8 +235,8 @@ class GPUResidentReplayPipeline:
     @property
     def h2d_submitter(self) -> str:
         if self._main_thread_submission:
-            return "gpu_resident_ingress_main_thread"
-        return "gpu_resident_ingress"
+            return "device_ingress_main_thread"
+        return "device_ingress"
 
     @property
     def transfer_manifest(self) -> dict[str, object]:
@@ -246,7 +245,7 @@ class GPUResidentReplayPipeline:
             "backend": type(self._transfer_backend).__name__,
             "device": str(self._device),
             "device_family": self._device_family,
-            "pipeline": "gpu_resident",
+            "pipeline": "device",
             "storage_owner": "device",
             "host_memory_kind": (
                 self._transfer_backend.host_memory_kind if self._host_pinned else "pageable_shared"
@@ -310,7 +309,7 @@ class GPUResidentReplayPipeline:
     def _assert_mps_learner_thread(self) -> None:
         if self._main_thread_submission and threading.get_ident() != self._learner_thread_id:
             raise RuntimeError(
-                "MPS gpu_resident replay device work must be submitted from the learner thread"
+                "MPS device replay device work must be submitted from the learner thread"
             )
 
     def _drive_mps_learner_thread(self, *, wait: bool = False) -> bool:
@@ -450,7 +449,7 @@ class GPUResidentReplayPipeline:
                     "span_end": end,
                     "ingress_slot": ingress_slot,
                     "pinned_memory": self._host_pinned,
-                    "pipeline": "gpu_resident",
+                    "pipeline": "device",
                     "storage_owner": "device",
                 },
             )
@@ -479,7 +478,7 @@ class GPUResidentReplayPipeline:
                         "ingress_slot": ingress_slot,
                         "committed_ptr": end,
                         "rows": count,
-                        "pipeline": "gpu_resident",
+                        "pipeline": "device",
                     },
                 )
             self._visible_ptr = end
@@ -560,7 +559,7 @@ class GPUResidentReplayPipeline:
                     "snapshot_size": visible_size,
                     "required_ptr": required_ptr,
                     "visible_ptr": int(self._visible_ptr),
-                    "pipeline": "gpu_resident",
+                    "pipeline": "device",
                 },
             )
         if self._trace_recorder is not None and start_event is not None and end_event is not None:
@@ -575,7 +574,7 @@ class GPUResidentReplayPipeline:
                     "batch_gpu_slot": slot,
                     "sample_count": self._sample_count,
                     "gather_bytes": self._sample_count * self._packed_width * 4,
-                    "pipeline": "gpu_resident",
+                    "pipeline": "device",
                 },
             )
         return True
@@ -744,7 +743,7 @@ class GPUResidentReplayPipeline:
                 args={
                     "tick_id": int(tick_id),
                     "required_ptr": self._prepare_required_ptr,
-                    "pipeline": "gpu_resident",
+                    "pipeline": "device",
                 },
             )
         if self._main_thread_submission:
@@ -826,14 +825,14 @@ class GPUResidentReplayPipeline:
                 category="replay_pipeline",
                 start_ns=_t0,
                 end_ns=_wait_end,
-                args={"tick_id": tick_id, "batch_gpu_slot": slot, "pipeline": "gpu_resident"},
+                args={"tick_id": tick_id, "batch_gpu_slot": slot, "pipeline": "device"},
             )
             self._trace_recorder.add_slice(
                 "replay_pipeline/gpu_wait_for_batch",
                 category="replay_pipeline",
                 start_ns=_t0,
                 end_ns=_wait_end,
-                args={"tick_id": tick_id, "batch_gpu_slot": slot, "pipeline": "gpu_resident"},
+                args={"tick_id": tick_id, "batch_gpu_slot": slot, "pipeline": "device"},
             )
         _swap_ns = time.perf_counter_ns()
         with self._prepare_condition:
@@ -859,7 +858,7 @@ class GPUResidentReplayPipeline:
                     "old_cold": old_cold,
                     "new_hot": self._hot,
                     "new_cold": self._cold,
-                    "pipeline": "gpu_resident",
+                    "pipeline": "device",
                 },
             )
         return self._large_batch_view(self._hot)

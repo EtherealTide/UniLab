@@ -14,7 +14,7 @@ reward:
   action_rate_l2:
     weight: -0.05
   undesired_contacts:
-    func: unilab.tasks.motion_tracking.common.manager_terms.undesired_body_contacts
+    func: unilab.tasks.motion_tracking.common.manager_terms.UndesiredBodyContacts
     weight: -0.1
     params:
       command_name: motion

@@ -53,12 +53,10 @@ from unilab.base.process_device import (
 from unilab.training import (
     algo_config_dict,
     ensure_registries,
+    get_log_root,
 )
 from unilab.training.tensor_runtime import select_sim_carrier_device
-from unilab.utils.checkpoint import (
-    get_entrypoint_log_root,
-    resolve_task_checkpoint_path,
-)
+from unilab.utils.checkpoint import resolve_checkpoint_path
 from unilab.visualization.debug_primitives import (
     append_debug_primitives_to_scene,
     segment_arrow,
@@ -74,11 +72,11 @@ from unilab.visualization.interactive_playback import (
     create_appo_playback_session,
     create_rsl_rl_playback_session,
     create_sac_playback_session,
+    default_device,
     infer_checkpoint_actor_input_dim,
     make_sim2sim_preflight,
     normalize_checkpoint_value,
     prepare_motion_overlay_selection,
-    select_torch_device,
 )
 from unilab.visualization.playback_state import (
     PhysicsStateApplier,
@@ -110,12 +108,6 @@ import mujoco
 import mujoco.viewer
 
 SUPPORTED_INTERACTIVE_ALGOS = ("ppo", "appo", "sac", "flashsac")
-_CONFIG_ROOT_BY_ALGO = {
-    "ppo": "ppo",
-    "appo": "appo",
-    "sac": "sac",
-    "flashsac": "flashsac",
-}
 _OFFPOLICY_INTERACTIVE_ALGOS = {"sac", "flashsac"}
 
 
@@ -132,7 +124,7 @@ def _override_key(override: str) -> str:
     return key.lstrip("+~")
 
 
-def _parse_interactive_cli(argv: Sequence[str]) -> InteractiveCliArgs:
+def parse_interactive_cli(argv: Sequence[str]) -> InteractiveCliArgs:
     parser = argparse.ArgumentParser(
         prog="play_interactive.py",
         description="Open a MuJoCo viewer for an interactive policy playback config.",
@@ -176,30 +168,20 @@ def _interactive_overrides_from_cli(
     return normalized
 
 
-def _normalize_interactive_overrides(algo: str, overrides: list[str]) -> list[str]:
-    # All algos now compose uniformly from their own tree with
-    # `task=<task>/<sim>`; no per-algo override rewriting is needed.
-    return list(overrides)
-
-
-def _compose_interactive_config(algo: str, overrides: list[str]) -> DictConfig:
-    config_group = _CONFIG_ROOT_BY_ALGO[algo]
+def compose_interactive_config(algo: str, overrides: list[str]) -> DictConfig:
     GlobalHydra.instance().clear()
     with initialize_config_dir(
-        config_dir=str(_PACKAGE_CONF_ROOT / config_group),
+        config_dir=str(_PACKAGE_CONF_ROOT / algo),
         version_base="1.3",
     ):
-        return compose(
-            config_name="config",
-            overrides=_normalize_interactive_overrides(algo, overrides),
-        )
+        return compose(config_name="config", overrides=overrides)
 
 
 def _select_playback_device(cfg: DictConfig) -> str:
     configured = OmegaConf.select(cfg, "training.device")
     if configured not in (None, ""):
         return str(configured)
-    return select_torch_device()
+    return default_device(torch)
 
 
 # ---------------------------------------------------------------------------
@@ -214,13 +196,11 @@ def resolve_checkpoint(
     algo_log_name: str = "rsl_rl_ppo",
     log_root: str | None = None,
 ) -> str | None:
-    checkpoint_path, checkpoint_dir = resolve_task_checkpoint_path(
-        Path.cwd(),
-        task_name=task,
-        load_run=load_run,
-        algo_log_name=algo_log_name,
+    task_log_root = get_log_root(Path.cwd(), algo_log_name=algo_log_name, log_root=log_root) / task
+    checkpoint_path, checkpoint_dir = resolve_checkpoint_path(
+        task_log_root,
+        load_run,
         checkpoint=checkpoint,
-        log_root=log_root,
     )
     if checkpoint_path is None:
         if checkpoint is not None and checkpoint_dir is not None:
@@ -795,7 +775,7 @@ def create_playback_session(
         raise ValueError(
             "create_playback_session requires a composed Hydra config (DictConfig); "
             "the legacy non-Hydra playback path has been removed. Compose the owner "
-            "config with hydra.compose (see _compose_interactive_config) and pass it "
+            "config with hydra.compose (see compose_interactive_config) and pass it "
             f"to the playback entrypoint; got {type(cfg).__name__}."
         )
     device = _select_playback_device(cfg)
@@ -872,7 +852,7 @@ def create_playback_session(
                 device=device,
                 checkpoint_resolver=resolve_checkpoint,
                 checkpoint_input_dim_reader=infer_checkpoint_actor_input_dim,
-                entrypoint_log_root=get_entrypoint_log_root,
+                entrypoint_log_root=get_log_root,
                 sim2sim_preflight=make_sim2sim_preflight(cfg, algo_name="ppo"),
                 log=log,
             )
@@ -1138,7 +1118,7 @@ def play_interactive(args, cfg: DictConfig, *, algo: str | None = None):
     print("[play_interactive] Done.")
 
 
-def _build_play_args(cfg: DictConfig, *, algo: str = "ppo") -> PlayInteractiveArgs:
+def build_play_args(cfg: DictConfig, *, algo: str = "ppo") -> PlayInteractiveArgs:
     return PlayInteractiveArgs(
         task=str(cfg.training.task_name),
         load_run=str(cfg.algo.load_run),
@@ -1217,9 +1197,9 @@ def _exit_if_mjpython() -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parsed = _parse_interactive_cli(sys.argv[1:] if argv is None else argv)
-    cfg = _compose_interactive_config(parsed.algo, parsed.overrides)
-    play_interactive(_build_play_args(cfg, algo=parsed.algo), cfg)
+    parsed = parse_interactive_cli(sys.argv[1:] if argv is None else argv)
+    cfg = compose_interactive_config(parsed.algo, parsed.overrides)
+    play_interactive(build_play_args(cfg, algo=parsed.algo), cfg)
     _exit_if_mjpython()
 
 

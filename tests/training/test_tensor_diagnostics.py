@@ -9,11 +9,11 @@ import numpy as np
 import pytest
 import torch
 
-from unilab.training.tensor_diagnostics import NanGuardCfg, TensorNanGuard
+from unilab.training.tensor_diagnostics import NanGuard, NanGuardCfg
 
 
-def _guard(tmp_path: Path, **cfg: Any) -> TensorNanGuard:
-    return TensorNanGuard(
+def _guard(tmp_path: Path, **cfg: Any) -> NanGuard:
+    return NanGuard(
         NanGuardCfg(enabled=True, output_dir=str(tmp_path / "dumps"), **cfg),
         num_envs=3,
         supports_state_playback=True,
@@ -21,7 +21,7 @@ def _guard(tmp_path: Path, **cfg: Any) -> TensorNanGuard:
 
 
 def test_detection_rejects_non_tensor_inputs() -> None:
-    guard = TensorNanGuard(NanGuardCfg(enabled=True), 3, False)
+    guard = NanGuard(NanGuardCfg(enabled=True), 3, False)
 
     with pytest.raises(TypeError, match="observations must be a mapping"):
         guard.check(cast(Any, [torch.zeros((3, 2))]), torch.zeros(3))
@@ -38,7 +38,7 @@ def test_detection_rejects_non_tensor_inputs() -> None:
 
 
 def test_detection_unions_bad_rows_across_groups_and_reward() -> None:
-    guard = TensorNanGuard(NanGuardCfg(enabled=True), 3, False)
+    guard = NanGuard(NanGuardCfg(enabled=True), 3, False)
     obs = {
         "obs": torch.tensor([[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]]),
         "critic": torch.tensor([[0.0], [1.0], [float("nan")]]),
@@ -96,11 +96,11 @@ def test_dump_is_the_only_host_and_filesystem_boundary(tmp_path: Path) -> None:
 
 def test_configuration_and_shapes_fail_closed(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="positive environment count"):
-        TensorNanGuard(NanGuardCfg(enabled=True), 0, False)
+        NanGuard(NanGuardCfg(enabled=True), 0, False)
     with pytest.raises(ValueError, match="buffer_size must be positive"):
-        TensorNanGuard(NanGuardCfg(enabled=True, buffer_size=0), 3, False)
+        NanGuard(NanGuardCfg(enabled=True, buffer_size=0), 3, False)
     with pytest.raises(ValueError, match="max_envs_to_dump must be non-negative"):
-        TensorNanGuard(NanGuardCfg(enabled=True, max_envs_to_dump=-1), 3, False)
+        NanGuard(NanGuardCfg(enabled=True, max_envs_to_dump=-1), 3, False)
 
     guard = _guard(tmp_path)
     with pytest.raises(ValueError, match="leading dimension must be 3"):

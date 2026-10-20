@@ -313,8 +313,8 @@ def test_tensor_benchmark_negotiates_after_subprocess_materialization() -> None:
         def materialize(self) -> None:
             calls.append("materialize")
 
-        def tensor_execution(self) -> object:
-            calls.append("tensor_execution")
+        def get_tensor_execution(self) -> object:
+            calls.append("get_tensor_execution")
             return type("Execution", (), {"value": "device_resident"})()
 
         def get_tensor_capabilities(self) -> object:
@@ -325,7 +325,7 @@ def test_tensor_benchmark_negotiates_after_subprocess_materialization() -> None:
 
     assert mode == "device_resident"
     assert capabilities is not None
-    assert calls == ["materialize", "tensor_execution", "capabilities"]
+    assert calls == ["materialize", "get_tensor_execution", "capabilities"]
 
 
 def test_tensor_benchmark_closes_backend_when_lifecycle_setup_fails(

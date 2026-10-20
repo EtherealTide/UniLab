@@ -24,7 +24,7 @@ from unilab.rl.runtime.offpolicy.coordination import (
     LearnerPhase,
     learner_pid_is_alive,
 )
-from unilab.rl.runtime.offpolicy.tensor_metrics import TensorCollectorMetrics, TensorMetricFlush
+from unilab.rl.runtime.offpolicy.metrics import CollectorMetrics, MetricFlush
 from unilab.rl.runtime.offpolicy.thread_budget import apply_torch_thread_runtime
 from unilab.rl.runtime.placement import InferenceTransport
 from unilab.rl.runtime.seed import apply_worker_seed
@@ -86,15 +86,15 @@ def timeout_bootstrap_mask(
 def sample_offpolicy_actions(
     actor,
     algo_type: str,
-    obs_torch: torch.Tensor,
-    prev_dones_torch: torch.Tensor,
-    priv_info_torch: torch.Tensor | None = None,
+    obs: torch.Tensor,
+    prev_dones: torch.Tensor,
+    priv_info: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Sample actions using the algorithm's exploration policy."""
     if algo_type in ("sac", "flashsac"):
         return cast(
             torch.Tensor,
-            actor.explore(obs_torch, dones=prev_dones_torch, deterministic=False),
+            actor.explore(obs, dones=prev_dones, deterministic=False),
         )
     adapter = get_offpolicy_actor_adapter(algo_type)
     if adapter is not None:
@@ -103,7 +103,7 @@ def sample_offpolicy_actions(
                 f"OffPolicyActorAdapter for algo_type={algo_type!r} does not provide "
                 "sample_actions."
             )
-        return adapter.sample_actions(actor, obs_torch, prev_dones_torch, priv_info_torch)
+        return adapter.sample_actions(actor, obs, prev_dones, priv_info)
     raise ValueError(
         f"Unsupported off-policy algo_type for learner action sampling: {algo_type}. "
         "Custom actor types must register an OffPolicyActorAdapter via "
@@ -252,7 +252,7 @@ def _merge_reward_component_means(
     }
 
 
-def off_policy_collector_fn(
+def offpolicy_collector_fn(
     stop_event,
     env_factory: EnvFactory,
     num_envs: int,
@@ -455,7 +455,7 @@ def _run_collector(
             "actor adapters (resolve_priv_info)"
         )
     reward_component_names = get_algo_capabilities(env).reward_component_names or ()
-    tensor_metrics: TensorCollectorMetrics | None = TensorCollectorMetrics(
+    collector_metrics: CollectorMetrics | None = CollectorMetrics(
         num_envs,
         interval=collector_metrics_interval,
         device=actor_observation.device,
@@ -473,8 +473,8 @@ def _run_collector(
     max_action_backlog_since_metric = 0
     max_in_flight_since_metric = 0
     max_publication_lag_since_metric = 0
-    final_tensor_metrics_flushed = False
-    pending_tensor_metric_flush: TensorMetricFlush | None = None
+    final_metrics_flushed = False
+    pending_metric_flush: MetricFlush | None = None
 
     def enqueue_collector_metrics(
         *,
@@ -566,19 +566,19 @@ def _run_collector(
             timing_counts.clear()
         return True
 
-    def flush_final_tensor_metrics() -> None:
+    def flush_final_collector_metrics() -> None:
         """Flush a partial device metric window once during worker shutdown."""
 
-        nonlocal final_tensor_metrics_flushed
+        nonlocal final_metrics_flushed
         nonlocal done_count_window, timeout_count_window, ep_rewards, ep_lengths
-        if final_tensor_metrics_flushed or tensor_metrics is None or metrics_queue is None:
+        if final_metrics_flushed or collector_metrics is None or metrics_queue is None:
             return
-        final_tensor_metrics_flushed = True
+        final_metrics_flushed = True
         try:
-            pending_flush = pending_tensor_metric_flush
-            metric_flush = tensor_metrics.final_flush()
+            pending_flush = pending_metric_flush
+            metric_flush = collector_metrics.final_flush()
             if pending_flush is not None:
-                completed_flush = TensorMetricFlush(
+                completed_flush = MetricFlush(
                     pending_flush.rewards + metric_flush.rewards,
                     pending_flush.lengths + metric_flush.lengths,
                     pending_flush.done_count + metric_flush.done_count,
@@ -619,7 +619,7 @@ def _run_collector(
                 ep_rewards = publication_rewards
                 ep_lengths = publication_lengths
         except Exception as exc:
-            print(f"[OffPolicyWorker] final tensor metric flush error: {exc}", file=sys.stderr)
+            print(f"[OffPolicyWorker] final collector metric flush error: {exc}", file=sys.stderr)
 
     obs_t: torch.Tensor | None = None
     critic_t: torch.Tensor | None = None
@@ -808,12 +808,12 @@ def _run_collector(
             assert timeout_bootstrap_t is not None
             prev_dones_t = combined_dones_t
             done_mask_t = combined_dones_t > 0.5
-            assert tensor_metrics is not None
+            assert collector_metrics is not None
             reward_components_t = state.info.get("reward_components")
             # Metrics keep the raw truncation flags: `timeout_rate` counts raw
             # episode truncations, which is a different statistic from the
             # bootstrap-eligible timeout mask written to replay below.
-            tensor_metrics.update(
+            collector_metrics.update(
                 rewards_t,
                 done_mask_t,
                 truncated_t > 0.5,
@@ -881,12 +881,12 @@ def _run_collector(
 
             # Send metrics every collector cycle so learner-side reward and
             # throughput displays track the current policy without extra lag.
-            if metrics_queue is not None and tensor_metrics.ready:
-                metric_flush = tensor_metrics.flush()
-                pending_flush = pending_tensor_metric_flush
+            if metrics_queue is not None and collector_metrics.ready:
+                metric_flush = collector_metrics.flush()
+                pending_flush = pending_metric_flush
                 completed_flush = metric_flush
                 if pending_flush is not None:
-                    completed_flush = TensorMetricFlush(
+                    completed_flush = MetricFlush(
                         pending_flush.rewards + metric_flush.rewards,
                         pending_flush.lengths + metric_flush.lengths,
                         pending_flush.done_count + metric_flush.done_count,
@@ -916,14 +916,14 @@ def _run_collector(
                 if published:
                     ep_rewards = publication_rewards
                     ep_lengths = publication_lengths
-                    pending_tensor_metric_flush = None
+                    pending_metric_flush = None
                 else:
-                    pending_tensor_metric_flush = completed_flush
+                    pending_metric_flush = completed_flush
             for key, value in cycle_timing_ms.items():
                 _record_timing_ms(timing_accum_ms, timing_counts, key, value)
 
     finally:
-        flush_final_tensor_metrics()
+        flush_final_collector_metrics()
         cleanup = getattr(env, "cleanup", None)
         if callable(cleanup):
             cleanup()
@@ -941,7 +941,7 @@ def _run_collector(
         next_critic_t = None
         terminal_obs_t = None
         terminal_critic_t = None
-        tensor_metrics = None
+        collector_metrics = None
         inference_slot = None
         replay_buffer = None
         env = None

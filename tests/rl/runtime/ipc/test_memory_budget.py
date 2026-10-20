@@ -11,7 +11,7 @@ from unilab.rl.runtime.ipc.memory_budget import (
     CUDA_INFERENCE_TIMING_EVENT_COUNT,
     estimate_cuda_inference_ipc_bytes,
     estimate_cuda_tensor_runtime_bytes,
-    estimate_offpolicy_bytes,
+    estimate_host_offpolicy_bytes,
     raise_if_cuda_memory_over_budget,
     raise_if_shared_memory_over_budget,
 )
@@ -34,7 +34,7 @@ def _tensor_runtime_budget(*, collector_tensor_native: bool) -> dict[str, int | 
 
 
 def test_offpolicy_memory_budget_notes_native_exclusions() -> None:
-    estimate = estimate_offpolicy_bytes(
+    estimate = estimate_host_offpolicy_bytes(
         num_envs=5120,
         replay_buffer_n=1024,
         obs_dim=98,
@@ -50,7 +50,7 @@ def test_offpolicy_memory_budget_notes_native_exclusions() -> None:
 
 def test_device_replay_host_budget_is_independent_of_replay_capacity() -> None:
     estimates = [
-        estimate_offpolicy_bytes(
+        estimate_host_offpolicy_bytes(
             num_envs=10,
             replay_buffer_n=replay_buffer_n,
             obs_dim=2,
@@ -68,7 +68,7 @@ def test_device_replay_host_budget_is_independent_of_replay_capacity() -> None:
 
 
 def test_device_replay_host_budget_excludes_gpu_collector_ingress() -> None:
-    estimate = estimate_offpolicy_bytes(
+    estimate = estimate_host_offpolicy_bytes(
         num_envs=2,
         replay_buffer_n=4,
         obs_dim=4,
@@ -84,7 +84,7 @@ def test_device_replay_host_budget_excludes_gpu_collector_ingress() -> None:
 
 
 def test_host_replay_budget_uses_effective_ingress_slot_rows() -> None:
-    default_rows = estimate_offpolicy_bytes(
+    default_rows = estimate_host_offpolicy_bytes(
         num_envs=4,
         replay_buffer_n=8,
         obs_dim=4,
@@ -92,7 +92,7 @@ def test_host_replay_budget_uses_effective_ingress_slot_rows() -> None:
         critic_dim=5,
         ingress_depth=2,
     )
-    custom_rows = estimate_offpolicy_bytes(
+    custom_rows = estimate_host_offpolicy_bytes(
         num_envs=4,
         replay_buffer_n=8,
         obs_dim=4,
@@ -111,7 +111,7 @@ def test_host_replay_budget_uses_effective_ingress_slot_rows() -> None:
 @pytest.mark.parametrize("value", [0, -1, True, "1", 1.0, 5])
 def test_host_replay_budget_rejects_invalid_ingress_slot_rows(value: object) -> None:
     with pytest.raises(ValueError, match="ingress_slot_rows"):
-        estimate_offpolicy_bytes(
+        estimate_host_offpolicy_bytes(
             num_envs=4,
             replay_buffer_n=8,
             obs_dim=4,
@@ -122,7 +122,7 @@ def test_host_replay_budget_rejects_invalid_ingress_slot_rows(value: object) -> 
 
 
 def test_host_budget_includes_cpu_inference_ring_storage() -> None:
-    estimate = estimate_offpolicy_bytes(
+    estimate = estimate_host_offpolicy_bytes(
         num_envs=2,
         replay_buffer_n=4,
         obs_dim=4,

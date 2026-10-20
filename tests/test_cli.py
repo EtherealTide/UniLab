@@ -803,7 +803,7 @@ def test_demo_play_interactive_linux_does_not_materialize_mjpython_app(
     def fail_materialize() -> None:
         raise AssertionError("Linux demo path must not touch macOS mjpython setup")
 
-    monkeypatch.setattr(demo, "_ensure_mujoco_mjpython_app", fail_materialize)
+    monkeypatch.setattr(cli, "_ensure_mujoco_mjpython_app", fail_materialize)
 
     command = demo.build_demo_command(
         demo_name=demo_name,
@@ -827,7 +827,7 @@ def test_demo_play_interactive_uses_mjpython_on_macos(
     fake_mjpython.write_text("", encoding="utf-8")
     monkeypatch.setattr(demo.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(demo.sys, "executable", str(fake_python))
-    monkeypatch.setattr(demo, "_ensure_mujoco_mjpython_app", lambda: None)
+    monkeypatch.setattr(cli, "_ensure_mujoco_mjpython_app", lambda: None)
 
     command = demo.build_demo_command(
         demo_name=demo_name,
@@ -846,8 +846,8 @@ def test_demo_play_interactive_checks_mujoco_mjpython_app_on_macos(
     demo_name = _register_play_interactive_demo(monkeypatch)
     _make_demo_checkout(tmp_path, demo_name=demo_name)
     monkeypatch.setattr(demo.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(demo, "_ensure_mujoco_mjpython_app", lambda: calls.append("checked"))
-    monkeypatch.setattr(demo, "_current_env_mjpython", lambda: "/tmp/mjpython")
+    monkeypatch.setattr(cli, "_ensure_mujoco_mjpython_app", lambda: calls.append("checked"))
+    monkeypatch.setattr(cli, "_mjpython_executable", lambda: "/tmp/mjpython")
 
     command = demo.build_demo_command(
         demo_name=demo_name,
@@ -1020,7 +1020,7 @@ def test_demo_teaser_uses_mxpython_subprocess_on_macos(
     calls: list[tuple[list[str], dict[str, str]]] = []
     monkeypatch.setattr(demo.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(demo.sys, "executable", "/tmp/unilab/.venv/bin/python")
-    monkeypatch.setattr(demo, "_mxpython_executable", lambda: "/tmp/unilab/.venv/bin/mxpython")
+    monkeypatch.setattr(demo, "_motrix_python_executable", lambda: "/tmp/unilab/.venv/bin/mxpython")
 
     def fake_run(command: list[str], *, check: bool, env: dict[str, str]) -> SimpleNamespace:
         assert check is False

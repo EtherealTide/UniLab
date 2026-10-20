@@ -7,7 +7,6 @@ scripts instead: ``unilab/scripts/train_sac.py``,
 
 from __future__ import annotations
 
-import datetime
 import os
 import sys
 from contextlib import contextmanager, nullcontext
@@ -30,28 +29,27 @@ from unilab.base.process_device import (
 )
 from unilab.rl.runtime.distributed.affinity import resolve_collector_cpu_ids
 from unilab.rl.runtime.distributed.context import (
-    UNILAB_DP_LOG_DIR,
     UNILAB_DP_WORLD_SIZE,
     current_dp_rank,
     current_dp_world_size,
-    resolve_dp_rank_device,
+    rank_local_cuda_device,
     resolve_dp_rendezvous_path,
     selected_visible_entries,
 )
 from unilab.rl.runtime.distributed.launcher import DpRankSupervisor
 from unilab.training import (
     assert_offpolicy_task_choice_matches_algo,
-    build_run_dir_name,
     ensure_registries,
     get_log_root,
     is_viser_play_render_mode,
     nonfatal_play_step,
-    parse_checkpoint_path,
+    resolve_configured_checkpoint_path,
     resolve_nan_guard_cfg,
+    resolve_run_log_dir,
     should_run_playback,
 )
 from unilab.training.cuda_mps_cli import (
-    CudaMpsCliError,
+    CudaMpsError,
     select_environment_for_gpu,
 )
 from unilab.training.cuda_process_sharing import (
@@ -64,15 +62,12 @@ from unilab.training.onnx_export import export_policy_onnx, verify_policy_onnx
 from unilab.training.seed import apply_configured_training_seed
 from unilab.training.tensor_runtime import (
     resolve_inference_transport,
-    resolve_tensor_runtime_settings,
+    resolve_runtime_settings,
     select_sim_carrier_device,
 )
-from unilab.utils.checkpoint import normalize_checkpoint_value
-from unilab.utils.checkpoint import (
-    resolve_offpolicy_checkpoint_path as resolve_checkpoint_path,
-)
+from unilab.utils.checkpoint import normalize_checkpoint_value, resolve_checkpoint_path
 from unilab.visualization.interactive_playback import (
-    RslRlPlaybackConfig,
+    PlaybackConfig,
     create_sac_playback_session,
     default_device,
     resolve_play_obs_dims,
@@ -80,11 +75,13 @@ from unilab.visualization.interactive_playback import (
 
 
 def _rank_local_cuda_device() -> str | None:
-    """Resolve local ``cuda:0`` without requiring a new sibling API export."""
-    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if raw is None:
-        return None
-    entries = tuple(entry.strip() for entry in raw.split(",") if entry.strip())
+    """Resolve the local device exposed by a one-entry CUDA visibility mask."""
+
+    entries = tuple(
+        entry.strip()
+        for entry in (os.environ.get("CUDA_VISIBLE_DEVICES") or "").split(",")
+        if entry.strip()
+    )
     return "cuda:0" if len(entries) == 1 else None
 
 
@@ -92,7 +89,7 @@ def _prepare_rank_zero_dp_visibility(world_size: int) -> None:
     """Give rank 0 its one-entry slice of a multi-entry parent CUDA mask.
 
     ``DpRankSupervisor`` spawns ranks 1..N-1 with one opaque parent entry each.
-    Rank 0 previously retained the whole mask, so ``resolve_dp_rank_device``
+    Rank 0 previously retained the whole mask, so ``rank_local_cuda_device``
     rejected the multi-GPU launch before the supervisor could start. This is a
     pre-CUDA, rank-0-only remap: child environments are derived from the parent
     entries before this function changes the current process namespace.
@@ -209,7 +206,7 @@ def build_offpolicy_env_cfg_override(algo_name: str, cfg: DictConfig) -> dict[st
     rank = current_dp_rank()
     from unilab.utils.device import get_default_device
 
-    rank_device = resolve_dp_rank_device(rank) or get_default_device()
+    rank_device = rank_local_cuda_device(rank=rank) or get_default_device()
     routed = apply_backend_env_device_override(
         base,
         str(cfg.training.sim_backend),
@@ -228,7 +225,7 @@ def build_offpolicy_play_env_cfg_override(algo_name: str, cfg: DictConfig) -> di
     rank = current_dp_rank()
     from unilab.utils.device import get_default_device
 
-    rank_device = resolve_dp_rank_device(rank) or get_default_device()
+    rank_device = rank_local_cuda_device(rank=rank) or get_default_device()
     routed = apply_backend_env_device_override(
         base,
         str(cfg.training.sim_backend),
@@ -254,7 +251,7 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
     dp_rank = current_dp_rank()
     from unilab.utils.device import get_default_device
 
-    rank_device = resolve_dp_rank_device(dp_rank) or get_default_device()
+    rank_device = rank_local_cuda_device(rank=dp_rank) or get_default_device()
     # Bind backend-global device state before algorithm builders materialize
     # their probe envs. The spawned collector repeats this binding in its own
     # process using the same rank-local device.  A non-zero Genesis request
@@ -340,9 +337,9 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
     if _nan_guard_cfg is None:
         nan_guard_factory = None
     else:
-        from unilab.training.tensor_runtime_hooks import build_tensor_nan_guard_factory
+        from unilab.training.tensor_runtime_hooks import tensor_nan_guard_factory
 
-        nan_guard_factory = build_tensor_nan_guard_factory()
+        nan_guard_factory = tensor_nan_guard_factory
 
     replay_prefetch_mode = getattr(cfg.training, "replay_prefetch_mode", "one_tick")
     if replay_prefetch_mode != "one_tick":
@@ -350,7 +347,7 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
             f"Unsupported training.replay_prefetch_mode={replay_prefetch_mode!r}; "
             "expected 'one_tick'"
         )
-    from unilab.rl.runtime.ipc.replay_pipelines.gpu_resident import (
+    from unilab.rl.runtime.ipc.replay_pipelines.device import (
         require_offpolicy_replay_device,
     )
 
@@ -382,7 +379,7 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
     }
     # Resolve the spawn-facing tensor-runtime knobs before the one-env probe so
     # invalid training knobs fail closed without materializing a backend.
-    tensor_runtime_settings = resolve_tensor_runtime_settings(
+    runtime_settings = resolve_runtime_settings(
         cfg,
         algo_name=algo_label,
         num_envs=int(cfg.algo.num_envs),
@@ -405,19 +402,19 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
             algo_name=algo_label,
             env_tensor_native=env_tensor_native,
         )
-        builder_kwargs["tensor_runtime_settings"] = tensor_runtime_settings
+        builder_kwargs["runtime_settings"] = runtime_settings
         if algo_name == "sac":
             from unilab.rl.algos.sac.double_buffer import (
-                build_sac_double_buffer_runner,
+                build_double_buffer_runner,
             )
 
-            runner = build_sac_double_buffer_runner(cfg, **builder_kwargs)
+            runner = build_double_buffer_runner(cfg, **builder_kwargs)
         else:
             from unilab.rl.algos.flash_sac.double_buffer import (
-                build_flashsac_double_buffer_runner,
+                build_double_buffer_runner,
             )
 
-            runner = build_flashsac_double_buffer_runner(cfg, **builder_kwargs)
+            runner = build_double_buffer_runner(cfg, **builder_kwargs)
 
     _attach_cuda_process_sharing_manifest(runner, cuda_process_sharing)
     return runner
@@ -460,7 +457,7 @@ def _select_cuda_mps_daemon_environment(
         return
     try:
         environment = select_environment_for_gpu(uuid)
-    except CudaMpsCliError as exc:
+    except CudaMpsError as exc:
         raise ValueError(str(exc)) from exc
     os.environ.setdefault("CUDA_MPS_PIPE_DIRECTORY", environment["CUDA_MPS_PIPE_DIRECTORY"])
     os.environ.setdefault("CUDA_MPS_LOG_DIRECTORY", environment["CUDA_MPS_LOG_DIRECTORY"])
@@ -474,9 +471,9 @@ def _attach_cuda_process_sharing_manifest(
 
     runtime_manifest = getattr(runner, "runtime_manifest", None)
     if isinstance(runtime_manifest, dict):
-        runtime_manifest["cuda_process_sharing"] = evidence.manifest()
+        runtime_manifest["cuda_process_sharing"] = evidence.to_dict()
         return
-    runner.runtime_manifest = {"cuda_process_sharing": evidence.manifest()}
+    runner.runtime_manifest = {"cuda_process_sharing": evidence.to_dict()}
 
 
 def resolve_train_resume_checkpoint(cfg: DictConfig) -> str | None:
@@ -489,7 +486,7 @@ def resolve_train_resume_checkpoint(cfg: DictConfig) -> str | None:
     """
     if not bool(OmegaConf.select(cfg, "algo.resume", default=False)):
         return None
-    load_path, _ = parse_checkpoint_path(cfg, root_dir=Path.cwd())
+    load_path, _ = resolve_configured_checkpoint_path(cfg, root_dir=Path.cwd())
     if load_path is None or not load_path.is_file():
         raise RuntimeError(
             "algo.resume=true but no checkpoint could be resolved: "
@@ -514,26 +511,34 @@ def play_offpolicy(
     # ``algo.checkpoint`` selector, and fail loudly when none exists.
     selected_load_run = str(cfg.algo.load_run if load_run is None else load_run)
     configured_log_root = OmegaConf.select(cfg, "training.log_root")
+    # Post-training playback deliberately anchors on the repo-rooted
+    # ``logs/<algo>`` tree instead of the test-only ``UNILAB_TEST_LOG_ROOT``
+    # override that cfg-driven resolution honors.
+    repo_task_log_root = (Path.cwd() / "logs" / str(cfg.algo.algo_log_name)).absolute() / str(
+        cfg.training.task_name
+    )
     if load_run is not None:
         selected_checkpoint = None
-        load_path, load_path_dir = resolve_checkpoint_path(
-            Path.cwd(),
-            cfg.algo.algo_log_name,
-            cfg.training.task_name,
-            selected_load_run,
-        )
+        task_log_root = repo_task_log_root
     else:
         selected_checkpoint = normalize_checkpoint_value(
             OmegaConf.select(cfg, "algo.checkpoint", default=None)
         )
-        load_path, load_path_dir = resolve_checkpoint_path(
-            Path.cwd(),
-            cfg.algo.algo_log_name,
-            cfg.training.task_name,
-            selected_load_run,
-            checkpoint=selected_checkpoint,
-            log_root=configured_log_root,
+        task_log_root = (
+            get_log_root(
+                Path.cwd(),
+                algo_log_name=str(cfg.algo.algo_log_name),
+                log_root=configured_log_root,
+            )
+            / str(cfg.training.task_name)
+            if configured_log_root is not None
+            else repo_task_log_root
         )
+    load_path, load_path_dir = resolve_checkpoint_path(
+        task_log_root,
+        selected_load_run,
+        checkpoint=selected_checkpoint,
+    )
     if not load_path or not os.path.exists(load_path):
         if load_run is not None:
             raise RuntimeError(
@@ -546,7 +551,7 @@ def play_offpolicy(
         return None
 
     dp_rank = current_dp_rank()
-    device = default_device(torch, resolve_dp_rank_device(dp_rank))
+    device = default_device(torch, rank_local_cuda_device(rank=dp_rank))
     # Genesis pins CUDA_VISIBLE_DEVICES for a non-zero request; adopt the bound
     # in-process device for the policy and the env override.  CUDA-only
     # backends also reject a CPU/MPS learner here, before playback constructs.
@@ -560,7 +565,7 @@ def play_offpolicy(
     )
     print(f"Using device for play: {device}")
 
-    playback_cfg = RslRlPlaybackConfig(
+    playback_cfg = PlaybackConfig(
         task=str(cfg.training.task_name),
         load_run=selected_load_run,
         checkpoint=selected_checkpoint,
@@ -691,20 +696,10 @@ def main(cfg: DictConfig) -> None:
     task_name = cfg.training.task_name
     assert_offpolicy_task_choice_matches_algo(cfg, algo_name=algo_name)
 
-    if cfg.training.log_dir is None:
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        run_dir_name = build_run_dir_name(
-            timestamp,
-            str(cfg.training.sim_backend),
-            world_size=world_size,
-        )
-        log_dir = str(get_log_root(Path.cwd(), cfg) / task_name / run_dir_name)
-    else:
-        log_dir = cfg.training.log_dir
-    if rank > 0:
-        # Spawned ranks reuse the canonical run directory but never create
-        # logging backends, checkpoints, summaries, or traces there.
-        log_dir = os.environ[UNILAB_DP_LOG_DIR]
+    # ``resolve_run_log_dir`` gives spawned ranks the canonical rank-0 run
+    # directory (UNILAB_DP_LOG_DIR); they never create logging backends,
+    # checkpoints, summaries, or traces there.
+    log_dir = resolve_run_log_dir(cfg, world_size=world_size)
     resolved_sim_carrier = (
         canonicalize_sim_carrier_device(
             (build_offpolicy_env_cfg_override(algo_name, cfg) or {}).get("sim_carrier_device")

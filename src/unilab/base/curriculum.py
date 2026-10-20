@@ -28,7 +28,7 @@ class EpisodeLengthTracker:
         )
         self._average.add_((batch_average - self._average) * weight)
 
-    def update_mask(self, episode_lengths: torch.Tensor, mask: torch.Tensor) -> None:
+    def update_masked(self, episode_lengths: torch.Tensor, mask: torch.Tensor) -> None:
         """Update from a fixed-width episode-length carrier and bool mask.
 
         This boundary avoids materializing reset
@@ -54,8 +54,3 @@ class EpisodeLengthTracker:
     def average(self) -> torch.Tensor:
         """Recursive average as a device-resident scalar tensor."""
         return self._average
-
-    @property
-    def average_length(self) -> float:
-        """Public scalar view; only this boundary synchronizes."""
-        return float(self._average.item())

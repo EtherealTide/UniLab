@@ -18,7 +18,7 @@ from unilab.base.config_overrides import (
 from unilab.managers.scene_entity_config import SceneEntityCfg
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 @dataclass

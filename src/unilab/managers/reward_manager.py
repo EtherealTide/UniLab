@@ -17,7 +17,7 @@ from prettytable import PrettyTable
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
 
 if TYPE_CHECKING:
-    from unilab.managers._types import DebugVisualizer, ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 @dataclass(kw_only=True)
@@ -153,7 +153,7 @@ class RewardManager(ManagerBase):
             if term_timing is not None:
                 term_timing.clear()
             dispatch_started = time.perf_counter()
-            value = self._compute_term(name, term_cfg, validate=False)
+            value = self._compute_term(name, term_cfg)
             dispatch_ms += time.perf_counter() - dispatch_started
             if term_timing is not None:
                 timing.update(term_timing)
@@ -302,9 +302,7 @@ class RewardManager(ManagerBase):
             if hasattr(term_cfg.func, "reset") and callable(term_cfg.func.reset):
                 self._class_term_cfgs.append(term_cfg)
 
-    def _compute_term(
-        self, name: str, term_cfg: RewardTermCfg, *, validate: bool = True
-    ) -> torch.Tensor:
+    def _compute_term(self, name: str, term_cfg: RewardTermCfg) -> torch.Tensor:
         value = term_cfg.func(self._env, **term_cfg.params)
         if not isinstance(value, torch.Tensor):
             raise TypeError(
@@ -328,19 +326,4 @@ class RewardManager(ManagerBase):
                 f"RewardManager term '{name}' returned shape {tuple(result.shape)}; "
                 f"expected ({self.num_envs},)."
             )
-        if validate and not bool(torch.isfinite(result).all()):
-            has_nan = bool(torch.isnan(result).any())
-            has_inf = bool(torch.isinf(result).any())
-            invalid_kind = "NaN/Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
-            invalid_rows = torch.nonzero(~torch.isfinite(result)).flatten()[:10]
-            raise ValueError(
-                f"RewardManager term '{name}' returned {invalid_kind} for "
-                f"environments {invalid_rows.tolist()}."
-            )
         return result
-
-    @staticmethod
-    def _log_mean(values: torch.Tensor) -> float:
-        if values.numel() == 0:
-            return 0.0
-        return float(values.mean().item())

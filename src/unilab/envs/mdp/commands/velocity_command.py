@@ -1,7 +1,7 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681),
 # src/mjlab/tasks/velocity/mdp/velocity_command.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy and the base-owned entity facade; Apache-2.0.
+# Modified by UniLab for Torch and the base-owned entity facade; Apache-2.0.
 """Uniform velocity commands for locomotion tasks."""
 
 from __future__ import annotations
@@ -14,11 +14,11 @@ from typing import TYPE_CHECKING, Any, cast
 import torch
 
 from unilab.managers.command_manager import CommandTerm, CommandTermCfg
-from unilab.managers.torch_rng import TorchManagerRng
+from unilab.managers.rng import ManagerRng
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 def _real(value: Any, *, label: str) -> float:
@@ -131,7 +131,7 @@ class UniformVelocityCommand(CommandTerm):
     }
 
     def _metric_velocities(self) -> tuple[torch.Tensor, torch.Tensor]:
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
         names = self.tensor_sensor_names
         packed = read_plan.sensor_names.get(self.cfg.entity_name, ()) if read_plan else ()
         # The scene pack negotiates backend-local aliases (Go2 ``local_linvel``/
@@ -232,7 +232,7 @@ class UniformVelocityCommand(CommandTerm):
         tensor.copy_(torch.where(expanded, samples, tensor))
         self._world_command.copy_(torch.where(expanded, samples, self._world_command))
 
-    def _update_command_reset(self, reset_mask: torch.Tensor) -> None:
+    def refresh_reset(self, reset_mask: torch.Tensor) -> None:
         tensor = self._tensor_command
         assert tensor is not None
 
@@ -282,16 +282,16 @@ class UniformVelocityCommand(CommandTerm):
         self.post_compute()
 
     def _sample_uniform(self, lower: float, upper: float, count: int) -> torch.Tensor:
-        rng_owner = getattr(self._env, "torch_rng", None)
-        if not isinstance(rng_owner, TorchManagerRng):
+        rng_owner = getattr(self._env, "rng", None)
+        if not isinstance(rng_owner, ManagerRng):
             raise RuntimeError(
                 "UniformVelocityCommand sampling requires the Manager-owned Torch generator"
             )
         return rng_owner.uniform(lower, upper, (count,), dtype=torch.float32)
 
     def _heading(self) -> torch.Tensor:
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
-        root_body_name = getattr(self.robot, "_root_body_name", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
+        root_body_name = getattr(self.robot, "root_body_name", None)
         if read_plan is None or not isinstance(root_body_name, str) or not root_body_name:
             # Command construction/reset does not consume heading; return the
             # cold neutral value until the packed read plan is compiled.

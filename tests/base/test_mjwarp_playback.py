@@ -10,7 +10,7 @@ pytest.importorskip("mujoco", reason="mjwarp playback validation requires mujoco
 
 import mujoco
 from omegaconf import OmegaConf
-from unisim.backend.base import BackendPlayCapabilities
+from unisim.backend.base import PlayCapabilities
 from unisim.backend.mjwarp.backend import MjwarpBackend
 from unisim.backend.mjwarp.playback import (
     run_mjwarp_playback,
@@ -54,7 +54,7 @@ def _stub_backend(model_file: Path = G1_SCENE, *, num_envs: int = 2) -> MjwarpBa
 
 def test_mjwarp_plan_is_explicit_and_finite() -> None:
     backend = _stub_backend(num_envs=1)
-    assert backend.get_play_capabilities() == BackendPlayCapabilities(
+    assert backend.get_play_capabilities() == PlayCapabilities(
         supports_physics_state_playback=True,
         supports_debug_overlay=True,
         supports_interactive_debug_overlay=True,
@@ -156,7 +156,7 @@ def test_g1_visual_model_and_replay_forward_camera_and_spacing(
         ),
     )
     monkeypatch.setattr(
-        "unisim.backend.playback_common.imageio.mimsave",
+        "unisim.backend.playback.imageio.mimsave",
         lambda path, frames, fps: captured.update(video_path=str(path), fps=fps),
     )
 

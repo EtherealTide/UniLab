@@ -1109,7 +1109,7 @@ def _build_and_run_case(
     variant: str = "default",
     profile_numpy_random: bool = False,
 ) -> CollectorResult:
-    from unilab.base.config_adapter import BackendAdapter
+    from unilab.base.config_adapter import EnvConfigAdapter
     from unilab.training import ensure_registries
     from unilab.training.seed import apply_training_seed
 
@@ -1130,7 +1130,7 @@ def _build_and_run_case(
     # Mirror the real collector subprocess CPU budget for env/replay work.
     _configure_collector_cpu_threads()
     apply_training_seed(int(cfg.algo.seed), torch_runtime=True, cuda=True)
-    env_cfg_override = BackendAdapter(
+    env_cfg_override = EnvConfigAdapter(
         cfg,
         root_dir=ROOT_DIR,
         algo_name=algo,

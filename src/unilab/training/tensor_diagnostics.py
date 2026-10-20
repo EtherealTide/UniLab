@@ -2,7 +2,7 @@
 
 The guard's detection path stays in Torch: it never converts observations,
 rewards, controls, or physics snapshots to host arrays.  Host conversion and
-artifact writing happen only in :meth:`TensorNanGuard.dump`, which is an
+artifact writing happen only in :meth:`NanGuard.dump`, which is an
 explicit abnormal-diagnostic boundary.
 """
 
@@ -46,7 +46,7 @@ def _snapshot(value: torch.Tensor) -> torch.Tensor:
     return value.detach().to(device="cpu", copy=True)
 
 
-class TensorNanGuard:
+class NanGuard:
     """Detect bad tensor rows on-device and export dumps at an explicit host boundary."""
 
     def __init__(
@@ -119,7 +119,7 @@ class TensorNanGuard:
             .to(device=reward.device, dtype=torch.int64)
         )
         logger.warning(
-            "TensorNanGuard: NaN/Inf detected in obs/reward at step %d (envs=%d, sample_ids=%s)",
+            "NanGuard: NaN/Inf detected in obs/reward at step %d (envs=%d, sample_ids=%s)",
             step,
             nan_ids.numel(),
             nan_ids[: min(5, nan_ids.numel())].detach().cpu().tolist(),
@@ -140,7 +140,7 @@ class TensorNanGuard:
             .to(device=ctrl.device, dtype=torch.int64)
         )
         logger.warning(
-            "TensorNanGuard: NaN/Inf detected in ctrl at step %d (envs=%d, sample_ids=%s)",
+            "NanGuard: NaN/Inf detected in ctrl at step %d (envs=%d, sample_ids=%s)",
             step,
             nan_ids.numel(),
             nan_ids[: min(5, nan_ids.numel())].detach().cpu().tolist(),
@@ -213,7 +213,7 @@ class TensorNanGuard:
             pass
 
         logger.info(
-            "TensorNanGuard: dump written to %s (step=%d, envs=%d)",
+            "NanGuard: dump written to %s (step=%d, envs=%d)",
             npz_path,
             step,
             host_nan_ids.numel(),

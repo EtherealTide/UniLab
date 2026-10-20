@@ -9,10 +9,10 @@ from typing import Any, cast
 import numpy as np
 import pytest
 import torch
-from unisim.backend.base import BackendSensorView
+from unisim.backend.base import SensorView
 
 from unilab.managers import RewardTermCfg
-from unilab.managers._types import ManagerBasedRlEnv
+from unilab.managers.types import ManagerBasedRlEnv
 from unilab.tasks.locomotion.common import manager_terms, sensor_reward_terms
 
 
@@ -27,7 +27,7 @@ class _Scene:
             raise KeyError(name)
         return SimpleNamespace()
 
-    def bind_sensor_data(self, names) -> BackendSensorView:
+    def bind_sensor_data(self, names) -> SensorView:
         names = tuple(names)
         self.bound_names = names
         dimensions = tuple(self.values[name].shape[1] for name in names)
@@ -35,7 +35,7 @@ class _Scene:
         def read() -> np.ndarray:
             return np.concatenate([self.values[name] for name in names], axis=1)
 
-        view = BackendSensorView("fake", names, dimensions, 2, read)
+        view = SensorView("fake", names, dimensions, 2, read)
         view.read()  # Mirror SimBackend.bind_sensor_data materialization validation.
         return view
 
@@ -47,7 +47,7 @@ class _Scene:
         def sensor_tensor_views(entity, names):
             return SimpleNamespace(values={name: values[name] for name in names})
 
-        self._tensor_read_plan = SimpleNamespace(
+        self.read_plan = SimpleNamespace(
             device=device,
             sensor_names={"robot": tuple(self.values)},
             sensor_tensor_views=sensor_tensor_views,

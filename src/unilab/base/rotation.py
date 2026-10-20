@@ -1,11 +1,9 @@
 """Rotation helpers owned by the base/reset boundary.
 
-The ``np_*`` helpers are intentionally private to ``unilab.base``. They serve
-the explicit reset/entity host boundary; task cold loaders own their
-data-format conversion locally rather than depending on this transition shim.
-``quat_apply_inverse`` is the Torch counterpart used by the packed reset
-transaction's device-side pose/velocity encoding. No compatibility import for
-``unilab.utils.rotation`` is retained.
+The ``np_*`` helpers implement the explicit reset/entity host boundary. Task
+cold loaders own their data-format conversion locally rather than depending on
+these base helpers. ``quat_apply_inverse`` is the Torch counterpart used by the
+packed reset transaction's device-side pose/velocity encoding.
 """
 
 from __future__ import annotations
@@ -182,11 +180,6 @@ def np_yaw_to_quat(yaw: np.ndarray) -> np.ndarray:
     )
 
 
-def np_quat_inv(q: np.ndarray) -> np.ndarray:
-    """Inverse of unit quaternions (N, 4) or (4,), w-first."""
-    return np_quat_conjugate(q)
-
-
 def np_quat_apply(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     """Rotate vector(s) by quaternion(s), supports batched/scalar inputs."""
     q_was_1d = q.ndim == 1
@@ -260,7 +253,7 @@ def np_quat_apply_batched(q: np.ndarray, v: np.ndarray) -> np.ndarray:
 
 def np_quat_apply_inverse(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     """Rotate vector(s) by inverse quaternion(s)."""
-    return np_quat_apply(np_quat_inv(q), v)
+    return np_quat_apply(np_quat_conjugate(q), v)
 
 
 def np_quat_apply_inverse_batched(q: np.ndarray, v: np.ndarray) -> np.ndarray:
@@ -288,7 +281,7 @@ def np_quat_error_magnitude(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
         q2 = np.broadcast_to(q2, q1.shape)
 
     # Relative rotation from q1 to q2.
-    q_rel = np_quat_mul(q2, np_quat_inv(q1))
+    q_rel = np_quat_mul(q2, np_quat_conjugate(q1))
     q_rel = np_quat_canonicalize(q_rel)
 
     # Use atan2-based angle extraction for better numerical behavior.

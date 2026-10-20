@@ -53,7 +53,7 @@ from unilab.rl.runtime.placement import (
     InferenceTransport,
     resolve_inference_placement,
 )
-from unilab.rl.runtime.settings import TensorRuntimeSettings
+from unilab.rl.runtime.settings import RuntimeSettings
 
 
 @pytest.mark.parametrize(
@@ -346,7 +346,7 @@ class _FakeReplayBuffer:
 class _FakePipeline:
     last_kwargs = None
     close_calls = 0
-    h2d_submitter = "gpu_resident_ingress"
+    h2d_submitter = "device_ingress"
     transfer_manifest = {"backend": "fake", "device_family": "cuda"}
 
     def __init__(self, replay_buffer, **kwargs):
@@ -475,7 +475,7 @@ def _make_device_runner(
     inference_slot_capacity: int = 1,
     inference_epoch: int = 0,
     collector_metrics_interval: int = 1,
-    tensor_runtime_settings: TensorRuntimeSettings | None = None,
+    runtime_settings: RuntimeSettings | None = None,
     backend_device_resolver=None,
     num_envs: int = 2,
     batch_size: int = 4,
@@ -521,7 +521,7 @@ def _make_device_runner(
         inference_slot_capacity=inference_slot_capacity,
         inference_epoch=inference_epoch,
         collector_metrics_interval=collector_metrics_interval,
-        tensor_runtime_settings=tensor_runtime_settings,
+        runtime_settings=runtime_settings,
         backend_device_resolver=backend_device_resolver,
     )
 
@@ -550,7 +550,7 @@ def test_mjwarp_collector_start_forwards_learner_device(
     _FakePipeline.close_calls = 0
     _FakeReplayBuffer.diagnostics_calls = 0
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", _FakeReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", _FakePipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", _FakePipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _FakeLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
@@ -661,7 +661,7 @@ def test_normal_completion_quiesces_collector_before_replay_close(
 
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", _ReadyReplayBuffer)
     monkeypatch.setattr(
-        device_runner_module, "GPUResidentReplayPipeline", _CloseAfterCollectorQuiescePipeline
+        device_runner_module, "DeviceReplayPipeline", _CloseAfterCollectorQuiescePipeline
     )
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _FakeLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
@@ -736,7 +736,7 @@ def test_learn_consumes_final_collector_return_metric(
     _FakePipeline.close_calls = 0
     _FakeReplayBuffer.diagnostics_calls = 0
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", _FakeReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", _FakePipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", _FakePipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _RewardSummaryLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(
@@ -807,7 +807,7 @@ def test_learn_failure_before_summary_preserves_original_error(
     _FakePipeline.close_calls = 0
     _FakeReplayBuffer.diagnostics_calls = 0
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", _FakeReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", _FakePipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", _FakePipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _FinishFailureLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
@@ -869,7 +869,7 @@ def test_learn_startup_failure_records_shutdown_and_replaces_stale_state(
     _FakePipeline.close_calls = 0
     _FakeReplayBuffer.diagnostics_calls = 0
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", _FakeReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", _FakePipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", _FakePipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _StartupFailureLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
@@ -1060,7 +1060,7 @@ def test_shutdown_diagnostics_cleanup_does_not_replace_original_error(
     _FakePipeline.close_calls = 0
     _FakeReplayBuffer.diagnostics_calls = 0
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", _FailingDiagnosticsReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", _FakePipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", _FakePipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _FinishFailureLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
@@ -1132,7 +1132,7 @@ def test_collector_failure_cleanup_does_not_replace_original_error(
     _FakePipeline.close_calls = 0
     _FakeReplayBuffer.diagnostics_calls = 0
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", _FakeReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", _CleanupFailurePipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", _CleanupFailurePipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _CleanupFailureLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
@@ -1235,7 +1235,7 @@ def test_collector_died_learn_refreshes_ingress_after_shutdown(
             return diagnostics
 
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", _ShutdownAwareReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", _FakePipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", _FakePipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _FakeLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
@@ -1281,7 +1281,7 @@ def test_runner_constructs_only_bounded_device_replay(
 ):
     _FakePipeline.close_calls = 0
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", _FakeReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", _FakePipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", _FakePipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _FakeLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
@@ -1349,7 +1349,7 @@ def test_runner_relaxes_receipt_gate_for_sync_declared_env(
     """A sync-declared probe must relax the replay ingress receipt gate."""
     _FakePipeline.close_calls = 0
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", _FakeReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", _FakePipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", _FakePipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _FakeLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
@@ -1383,7 +1383,7 @@ def test_mujoco_cuda_carrier_resolves_cuda_tensor_ring_by_default(
     """
     _FakePipeline.close_calls = 0
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", _FakeReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", _FakePipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", _FakePipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _FakeLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
@@ -1452,7 +1452,7 @@ def test_mps_learner_cpu_env_resolves_cpu_ring_with_device_copy_staging(
     """
     _FakePipeline.close_calls = 0
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", _FakeReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", _FakePipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", _FakePipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _FakeLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
@@ -1555,7 +1555,7 @@ def test_mps_learner_serves_cpu_ring_inference_with_device_copy(
     runner.algo_type = "dummy_mps_sac"
     runner.learner = SimpleNamespace(actor=actor)
     runner.inference_epoch = 0
-    runner._inference_forward_timer = device_runner_module.make_device_timer("cpu")
+    runner._inference_forward_timer = device_runner_module.build_device_timer("cpu")
     runner.inference_placement = InferencePlacement(
         mode=InferenceTransport.HOST,
         env_device="cpu",
@@ -1644,7 +1644,7 @@ def test_runner_collector_resources_follow_tensor_runtime_capability(
 ):
     _FakePipeline.close_calls = 0
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", _FakeReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", _FakePipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", _FakePipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _FakeLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
@@ -1652,7 +1652,7 @@ def test_runner_collector_resources_follow_tensor_runtime_capability(
         device_runner_module.torch.cuda, "mem_get_info", lambda device: (1 << 30, 2 << 30)
     )
 
-    settings = TensorRuntimeSettings(
+    settings = RuntimeSettings(
         inference_slot_capacity=1,
         collector_metrics_interval=1,
         replay_ingress_depth=3,
@@ -1668,7 +1668,7 @@ def test_runner_collector_resources_follow_tensor_runtime_capability(
         device="cuda",
         sim_backend="mjwarp",
         collector_tensor_native=collector_tensor_native,
-        tensor_runtime_settings=settings,
+        runtime_settings=settings,
     )
     collector_kwargs = {}
 
@@ -1791,10 +1791,10 @@ def test_runner_rejects_tensor_runtime_intervals_above_maxima(
         _make_device_runner(monkeypatch, **{field: value})
 
 
-def test_runner_rejects_conflicting_tensor_runtime_settings(
+def test_runner_rejects_conflicting_runtime_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = TensorRuntimeSettings(
+    settings = RuntimeSettings(
         inference_slot_capacity=2,
         collector_metrics_interval=3,
         replay_ingress_depth=2,
@@ -1803,12 +1803,12 @@ def test_runner_rejects_conflicting_tensor_runtime_settings(
         updates_per_step=2,
         num_envs=2,
     )
-    with pytest.raises(ValueError, match="conflict with tensor_runtime_settings"):
+    with pytest.raises(ValueError, match="conflict with runtime_settings"):
         _make_device_runner(
             monkeypatch,
             device="cpu",
             inference_slot_capacity=1,
-            tensor_runtime_settings=settings,
+            runtime_settings=settings,
         )
 
 
@@ -1825,7 +1825,7 @@ def test_runner_rejects_non_integer_settings_overlaps(
     field: str,
     value: object,
 ) -> None:
-    settings = TensorRuntimeSettings(
+    settings = RuntimeSettings(
         inference_slot_capacity=1,
         collector_metrics_interval=1,
         replay_ingress_depth=2,
@@ -1838,7 +1838,7 @@ def test_runner_rejects_non_integer_settings_overlaps(
         _make_device_runner(
             monkeypatch,
             device="cpu",
-            tensor_runtime_settings=settings,
+            runtime_settings=settings,
             **{field: value},
         )
 
@@ -1859,7 +1859,7 @@ def test_runner_manifest_and_collector_forward_ring_configuration(
 ) -> None:
     _FakePipeline.close_calls = 0
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", _FakeReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", _FakePipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", _FakePipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _FakeLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
@@ -2026,7 +2026,7 @@ def test_runner_releases_action_before_replay_wait_and_sample(
             events.append("soft_update_target")
 
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", LoopReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", LoopPipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", LoopPipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _FakeLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
@@ -2131,7 +2131,7 @@ def test_runner_reads_deferred_update_metrics_once(
             return None
 
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", ConsolidatedReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", ConsolidatedPipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", ConsolidatedPipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _FakeLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
@@ -2220,7 +2220,7 @@ def test_runner_deferred_finite_failure_precedes_update_count(
             return None
 
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", FiniteReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", FinitePipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", FinitePipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _FakeLogger)
     monkeypatch.setattr(
         device_runner_module.torch, "save", lambda *args, **kwargs: save_calls.append(args)
@@ -2318,7 +2318,7 @@ def test_runner_uses_learner_update_cycle_when_available(
             return {}
 
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", CycleReplayBuffer)
-    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", CyclePipeline)
+    monkeypatch.setattr(device_runner_module, "DeviceReplayPipeline", CyclePipeline)
     monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _FakeLogger)
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
@@ -2588,7 +2588,7 @@ def test_learner_inference_matches_existing_actor_exploration(algo_type: str) ->
     runner.algo_type = algo_type
     runner.learner = SimpleNamespace(actor=actor)
     runner.inference_epoch = 0
-    runner._inference_forward_timer = device_runner_module.make_device_timer("cpu")
+    runner._inference_forward_timer = device_runner_module.build_device_timer("cpu")
     runner.inference_placement = InferencePlacement(
         mode=InferenceTransport.HOST,
         env_device="cpu",
@@ -2662,7 +2662,7 @@ def test_adapter_learner_inference_uses_actor_context(
     runner.algo_type = "dummy_priv_sac"
     runner.learner = SimpleNamespace(actor=actor)
     runner.inference_epoch = 0
-    runner._inference_forward_timer = device_runner_module.make_device_timer("cpu")
+    runner._inference_forward_timer = device_runner_module.build_device_timer("cpu")
     runner.inference_placement = InferencePlacement(
         mode=InferenceTransport.HOST,
         env_device="cpu",

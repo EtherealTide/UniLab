@@ -15,7 +15,7 @@ from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
 
 from unilab.base import registry
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
 from unilab.envs import ManagerBasedRlEnvCfg, mdp
 
@@ -114,7 +114,7 @@ def _materialize(
     config_group: str, overrides: Sequence[str]
 ) -> tuple[DictConfig, ManagerBasedRlEnvCfg, dict[str, Any]]:
     hydra_cfg = _compose(config_group, overrides)
-    env_override = BackendAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
+    env_override = EnvConfigAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
     env_cfg = registry.materialize_env_config("Go2JoystickFlat")
     assert isinstance(env_cfg, ManagerBasedRlEnvCfg)
     apply_cfg_overrides(env_cfg, env_override)
@@ -269,8 +269,8 @@ def test_go2_flat_motrix_owner_uses_tensor_reset_events() -> None:
     registry.ensure_registries()
     _, env_cfg, _ = _materialize("appo", ("task=go2_joystick_flat/motrix",))
 
-    assert env_cfg.events["reset_scene_to_default"].func is mdp.reset_scene_to_default_tensor
-    assert env_cfg.events["reset_root_state_uniform"].func is mdp.reset_root_state_uniform_tensor
+    assert env_cfg.events["reset_scene_to_default"].func is mdp.skip_scene_reset
+    assert env_cfg.events["reset_root_state_uniform"].func is mdp.reset_root_state_uniform_fused
     assert env_cfg.events["pd_gains"] is None
 
 

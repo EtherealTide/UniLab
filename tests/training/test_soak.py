@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from scripts.benchmark.torch_env.g1_flashsac_soak import build_g1_flashsac_mjwarp_command
 
 from unilab.rl.logging.runtime_manifest_schema import RUNTIME_MANIFEST_SCHEMA_VERSION
 from unilab.training.soak import (
     SoakFailureError,
     _tree_snapshot,
-    build_g1_flashsac_mjwarp_command,
     run_soak,
     runtime_snapshot,
 )

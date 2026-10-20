@@ -18,7 +18,7 @@ from unilab.managers.action_manager import ActionTerm, ActionTermCfg
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 def _real(value: Any, *, label: str) -> float:
@@ -78,7 +78,6 @@ class BaseAction(ActionTerm):
 
     cfg: BaseActionCfg
     _entity: Entity
-    uses_tensor_actions: ClassVar[bool] = True
 
     def __init__(self, cfg: BaseActionCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg=cfg, env=env)
@@ -246,7 +245,7 @@ class JointPositionAction(BaseAction):
         super().__init__(cfg=cfg, env=env)
         if cfg.use_default_offset:
             self._offset = self._cold_affine(
-                self._entity.data.default_joint_pos_torch(self._device)[:, self._target_index]
+                self._entity.data.default_joint_pos(self._device)[:, self._target_index]
             )
         self._tensor_target = torch.empty_like(self._processed_actions)
         self._full_width_natural_target = len(
@@ -313,7 +312,7 @@ class RelativeJointPositionAction(BaseAction):
     """Control joints via position targets relative to current positions."""
 
     def _joint_state(self):
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
         if read_plan is not None:
             return read_plan.joint_tensor_view(self._entity)
         return self._entity.joint_tensor_view(self._device)
@@ -347,7 +346,7 @@ class JointVelocityAction(BaseAction):
             raise TypeError("JointVelocityActionCfg use_default_offset must be bool")
         if cfg.use_default_offset:
             self._offset = self._cold_affine(
-                self._entity.data.default_joint_vel_torch(self._device)[:, self._target_index]
+                self._entity.data.default_joint_vel(self._device)[:, self._target_index]
             )
 
     def apply_actions(self) -> None:

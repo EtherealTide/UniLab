@@ -1,6 +1,6 @@
 """Rich-based training loggers shared across algorithm and training layers."""
 
-from unilab.rl.logging.common import BaseTrainingLogger
+from unilab.rl.logging.base import BaseTrainingLogger
 from unilab.rl.logging.metric_schema import (
     LOGGER_OWNED_METRICS,
     METRIC_FAMILIES,

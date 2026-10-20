@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from unilab.managers import ObservationTermCfg, RewardTermCfg
-from unilab.managers.torch_rng import TorchManagerRng
+from unilab.managers.rng import ManagerRng
 from unilab.tasks.locomotion.g1 import manager_terms as g1_terms
 from unilab.tasks.locomotion.g1.manager_terms import (
     G1GaitPhase,
@@ -30,7 +30,7 @@ def _fake_scene(sensor_data: dict[str, np.ndarray]) -> Any:
         def __init__(self) -> None:
             super().__init__()
             self["robot"] = SimpleNamespace()
-            self._tensor_read_plan = None
+            self.read_plan = None
 
         def bind_sensor_data(self, names):
             arrays = [sensor_data[name] for name in names]
@@ -50,7 +50,7 @@ def _fake_scene(sensor_data: dict[str, np.ndarray]) -> Any:
             def sensor_tensor_views(entity, names):
                 return SimpleNamespace(values={name: values[name] for name in names})
 
-            self._tensor_read_plan = SimpleNamespace(
+            self.read_plan = SimpleNamespace(
                 device=device,
                 sensor_names={"robot": tuple(sensor_data)},
                 sensor_tensor_views=sensor_tensor_views,
@@ -79,7 +79,7 @@ class _FakeEnv:
         self.common_step_counter = counter
         self.step_dt = 0.02
         self.device = torch.device("cpu")
-        self.torch_rng = TorchManagerRng.seeded(0)
+        self.rng = ManagerRng.seeded(0)
         self.scene = _fake_scene(sensor_data)
         self.scene.refresh_tensor_read_plan()
         self.command_manager = SimpleNamespace(get_command=lambda name: commands[name])
@@ -134,9 +134,9 @@ def test_gait_phase_independent_mode_samples_feet_independently():
     assert not np.allclose(phase[:, 1] - phase[:, 0], np.pi)
 
 
-def test_gait_phase_reset_fails_closed_without_torch_rng() -> None:
+def test_gait_phase_reset_fails_closed_without_rng() -> None:
     env = _fake_env({}, num_envs=4)
-    env.torch_rng = None
+    env.rng = None
     term = G1GaitPhase(
         ObservationTermCfg(func=G1GaitPhase, params={"frequency": 1.5}),
         cast(Any, env),
@@ -256,7 +256,6 @@ def _curriculum_env(weights: dict[str, float], num_envs: int = 4) -> Any:
         ),
         reset_buf=torch.zeros(num_envs, dtype=torch.bool),
         episode_length_buf=torch.zeros(num_envs, dtype=torch.int64),
-        rng=np.random.default_rng(0),
     )
 
 
@@ -319,7 +318,6 @@ def test_penalty_curriculum_repeated_construction_never_mutates_source_cfg():
             reward_manager=reward_manager,
             reset_buf=torch.zeros(4, dtype=torch.bool),
             episode_length_buf=torch.zeros(4, dtype=torch.int64),
-            rng=np.random.default_rng(0),
         )
         G1PenaltyCurriculum(
             RewardTermCfg(
@@ -384,8 +382,7 @@ def test_penalty_curriculum_shrinks_scale_below_initial_when_min_allows():
 def test_velocity_command_dead_zone_zeroes_small_planar_commands():
     env = SimpleNamespace(
         num_envs=64,
-        rng=np.random.default_rng(0),
-        torch_rng=TorchManagerRng.seeded(0),
+        rng=ManagerRng.seeded(0),
         step_dt=0.02,
         scene={
             "robot": SimpleNamespace(
@@ -418,8 +415,7 @@ def test_velocity_command_dead_zone_zeroes_small_planar_commands():
 def test_velocity_command_mask_reset_preserves_unselected_rows():
     env = SimpleNamespace(
         num_envs=8,
-        rng=np.random.default_rng(0),
-        torch_rng=TorchManagerRng.seeded(0),
+        rng=ManagerRng.seeded(0),
         step_dt=0.02,
         scene={
             "robot": SimpleNamespace(
@@ -476,7 +472,7 @@ def test_velocity_command_fails_closed_on_heading_command():
             heading=(-3.14, 3.14),
         ),
     )
-    env = SimpleNamespace(num_envs=1, rng=np.random.default_rng(0), step_dt=0.02, scene={})
+    env = SimpleNamespace(num_envs=1, rng=ManagerRng.seeded(0), step_dt=0.02, scene={})
     with pytest.raises(NotImplementedError, match="heading command"):
         cfg.build(cast(Any, env))
 

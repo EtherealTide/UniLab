@@ -22,7 +22,7 @@ from unisim.backend.mjwarp.dependencies import load_mjwarp_dependencies
 
 from unilab.base import registry
 from unilab.base.backend_factory import create_backend
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.scene import SceneCfg
 
 pytestmark = pytest.mark.slow
@@ -222,7 +222,7 @@ def test_g1_walk_flat_owner_one_step(
     ):
         cfg = compose("config", overrides=overrides)
 
-    env_cfg_override = BackendAdapter(
+    env_cfg_override = EnvConfigAdapter(
         cfg,
         root_dir=REPO_ROOT,
         algo_name=algo_name,
@@ -255,7 +255,7 @@ def test_g1_walk_flat_owner_eager_capture_warmup_and_replay_share_semantics() ->
         version_base="1.3",
     ):
         cfg = compose("config", overrides=["task=g1_walk_flat/mjwarp"])
-    env_cfg_override = BackendAdapter(
+    env_cfg_override = EnvConfigAdapter(
         cfg,
         root_dir=REPO_ROOT,
         algo_name="ppo",
@@ -316,7 +316,7 @@ def test_g1_walk_flat_owner_eager_capture_warmup_and_replay_share_semantics() ->
                             name: value.clone() for name, value in after_reset.obs.items()
                         },
                         "after_reward": after_reset.reward.clone(),
-                        "rng_state": env.torch_rng.get_state().clone(),
+                        "rng_state": env.rng.get_state().clone(),
                     }
                 )
             references[mode] = trace

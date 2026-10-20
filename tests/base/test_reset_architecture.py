@@ -29,6 +29,8 @@ def test_removed_reset_row_contracts_stay_removed() -> None:
         "uses_tensor_reset_rows",
         "reset_command_state",
         "compute_reset_rows",
+        "compute_reset",
+        "update_command_reset",
         "reset_to_default_mask",
         "write_root_state_tensor_to_sim_mask",
         "write_motion_state_tensor_to_sim_mask",

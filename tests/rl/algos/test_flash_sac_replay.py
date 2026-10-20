@@ -11,9 +11,9 @@ import torch
 from omegaconf import OmegaConf
 
 from unilab.rl.algos.common.actor_factory import build_actor
-from unilab.rl.algos.flash_sac.double_buffer import build_flashsac_double_buffer_runner
+from unilab.rl.algos.flash_sac.double_buffer import build_double_buffer_runner
 from unilab.rl.algos.flash_sac.learner import FlashSACLearner
-from unilab.rl.algos.flash_sac.replay import AgeBiasedReplayPipeline, biased_replay_indices
+from unilab.rl.algos.flash_sac.replay import AgeBiasedReplayPipeline, sample_biased_replay_indices
 from unilab.rl.logging.metric_schema import normalize_metric_map
 from unilab.rl.runtime.offpolicy.worker import sample_offpolicy_actions
 
@@ -31,7 +31,7 @@ def _sample(**kwargs: Any) -> torch.Tensor:
     defaults.update(kwargs)
     generator = torch.Generator(device="cpu")
     generator.manual_seed(7)
-    return biased_replay_indices(generator=generator, **defaults)
+    return sample_biased_replay_indices(generator=generator, **defaults)
 
 
 def test_replay_bias_prefers_recent_data_for_positive_decay() -> None:
@@ -264,7 +264,7 @@ def test_flashsac_builder_can_select_age_biased_replay(
             },
         }
     )
-    runner = build_flashsac_double_buffer_runner(
+    runner = build_double_buffer_runner(
         cfg,
         env_factory=_fake_env_factory,
         env_cfg_override=None,

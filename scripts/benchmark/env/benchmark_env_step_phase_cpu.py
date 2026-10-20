@@ -1,6 +1,6 @@
 """Per-phase wall/CPU attribution for a full task env step (issue #1328).
 
-Builds a real task env through the same Hydra compose and ``BackendAdapter``
+Builds a real task env through the same Hydra compose and ``EnvConfigAdapter``
 override path the off-policy collector uses. The environment owns its phase
 timings; this script only consumes ``state.info["timing"]`` after public
 ``env.step()`` calls, then reports each phase's wall share and the average
@@ -10,7 +10,7 @@ and backend-private methods.
 ``--cpu-ids 0-31`` additionally injects ``EnvCfg.cpu_ids`` into the env
 override (the same key the multi-GPU DP collector path uses), which both pins
 the MuJoCo pool workers and confines the process's host-side compute via
-``apply_env_cpu_runtime`` — the A/B used in the issue.
+``apply_cpu_confinement`` — the A/B used in the issue.
 
 Run:
     uv run scripts/benchmark/env/benchmark_env_step_phase_cpu.py
@@ -89,7 +89,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     import hydra
     from omegaconf import OmegaConf
 
-    from unilab.base.config_adapter import BackendAdapter, create_env
+    from unilab.base.config_adapter import EnvConfigAdapter, create_env
     from unilab.training import ensure_registries
 
     ensure_registries()
@@ -102,7 +102,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             overrides=[f"task={args.task}", f"algo.num_envs={args.num_envs}"],
         )
     OmegaConf.resolve(cfg)
-    env_cfg_override = BackendAdapter(
+    env_cfg_override = EnvConfigAdapter(
         cfg, root_dir=REPO_ROOT, algo_name=str(cfg.algo.algo)
     ).build_task_env_cfg_override()
     if args.cpu_ids is not None:

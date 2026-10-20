@@ -39,6 +39,14 @@ def _fmt_number(v: float) -> str:
     return f"{v:.2e}"
 
 
+def _set_backend_scalar(scalars: dict[str, Any], tag: str, value: Any) -> None:
+    """Insert one canonical scalar and fail closed on tag collisions."""
+
+    if tag in scalars:
+        raise ValueError(f"duplicate backend metric tag {tag!r}")
+    scalars[tag] = value
+
+
 def _console_supports_unicode() -> bool:
     encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
     try:

@@ -207,7 +207,7 @@ class DpRankSupervisor:
                 unfinished = self._wait_for_children(_NORMAL_EXIT_GRACE_S)
                 for rank, child in unfinished:
                     print(
-                        f"[dp_launcher] rank {rank} subprocess pid={child.pid} did not "
+                        f"[launcher] rank {rank} subprocess pid={child.pid} did not "
                         f"exit within {_NORMAL_EXIT_GRACE_S}s of rank 0 completion",
                         file=sys.stderr,
                     )
@@ -236,7 +236,7 @@ class DpRankSupervisor:
             )
             if exc_type is None:
                 raise RuntimeError(message)
-            print(f"[dp_launcher] {message}", file=sys.stderr)
+            print(f"[launcher] {message}", file=sys.stderr)
         return False
 
     def _install_signal_handlers(self) -> None:
@@ -341,7 +341,7 @@ class DpRankSupervisor:
                     # in playback) is not a failure; keep watching the rest.
                     continue
                 print(
-                    f"[dp_launcher] rank {rank} subprocess pid={child.pid} exited "
+                    f"[launcher] rank {rank} subprocess pid={child.pid} exited "
                     f"unexpectedly with code {exit_code}; shutting down rank 0",
                     file=sys.stderr,
                 )

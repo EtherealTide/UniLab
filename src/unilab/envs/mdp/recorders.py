@@ -9,7 +9,7 @@ import torch
 from unilab.managers.recorder_manager import RecorderTerm, RecorderTermCfg
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 class LifecycleCounterRecorder(RecorderTerm):

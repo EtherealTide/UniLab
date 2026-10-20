@@ -33,14 +33,14 @@ from unilab.envs.mdp.commands.velocity_command import (
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
 from unilab.managers.reset_owner import ResetOwner, ResetOwnerCfg
 from unilab.managers.reward_manager import RewardTermCfg
+from unilab.managers.rng import ManagerRng
 from unilab.managers.scene_entity_config import SceneEntityCfg
 from unilab.managers.termination_manager import TerminationTermCfg
-from unilab.managers.torch_rng import TorchManagerRng
 from unilab.tasks.locomotion.common.manager_terms import SensorTermBase
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
     class _RewardTermCfgView(Protocol):
         weight: float
@@ -153,7 +153,7 @@ class _SensorTerm(SensorTermBase):
         shape: tuple[int, ...],
     ) -> torch.Tensor:
         view, sensor_names = binding
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         owner_sensors = set(getattr(read_plan, "sensor_names", {}).get("robot", ()))
         if read_plan is None or not set(sensor_names).issubset(owner_sensors):
             raise NotImplementedError(
@@ -297,8 +297,8 @@ def _resample_gait(env: _G1Env, context: _G1GaitContext, env_ids: torch.Tensor) 
     if count == 0:
         return
 
-    rng_owner = getattr(env, "torch_rng", None)
-    if not isinstance(rng_owner, TorchManagerRng):
+    rng_owner = getattr(env, "rng", None)
+    if not isinstance(rng_owner, ManagerRng):
         raise RuntimeError("G1 gait phase reset requires the Manager-owned Torch generator")
     left = rng_owner.uniform(0.0, 2.0 * math.pi, (count,), dtype=torch.float32)
     if context.init_mode == "independent":
@@ -310,8 +310,8 @@ def _resample_gait(env: _G1Env, context: _G1GaitContext, env_ids: torch.Tensor) 
 
 
 def _resample_gait_mask(env: _G1Env, context: _G1GaitContext, reset_mask: torch.Tensor) -> None:
-    rng_owner = getattr(env, "torch_rng", None)
-    if not isinstance(rng_owner, TorchManagerRng):
+    rng_owner = getattr(env, "rng", None)
+    if not isinstance(rng_owner, ManagerRng):
         raise RuntimeError("G1 gait phase reset requires the Manager-owned Torch generator")
     count = context.phase.shape[0]
     left = rng_owner.uniform(0.0, 2.0 * math.pi, (count,), dtype=torch.float32)
@@ -703,7 +703,7 @@ class g1_base_height_below_minimum(ManagerTermBase):
 
     def __call__(self, env: _G1Env, **params: Any) -> torch.Tensor:
         del params
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         if read_plan is None:
             raise NotImplementedError(
                 f"Manager term '{self.name}' requires the packed root-body read plan"
@@ -811,13 +811,13 @@ class weighted_pose(ManagerTermBase):
         asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     ) -> torch.Tensor:
         del pose_weights, asset_cfg
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         if read_plan is None:
             raise NotImplementedError(
                 f"{self.name} requires the Manager packed joint-state read plan"
             )
         position = read_plan.joint_tensor_view(self._entity_name).joint_pos[:, self._joint_ids]
-        default = env.scene[self._entity_name].data.default_joint_pos_torch(env.device)[
+        default = env.scene[self._entity_name].data.default_joint_pos(env.device)[
             :, self._joint_ids
         ]
         if self._weights.numel() != position.shape[1]:
@@ -1016,7 +1016,7 @@ class G1PenaltyCurriculum(ManagerTermBase):
         """Mask boundary for the global curriculum state."""
         del reset_mask
 
-    def __call_reset__(
+    def reset_scoped(
         self,
         env: _G1Env,
         reset_mask: torch.Tensor,
@@ -1032,7 +1032,7 @@ class G1PenaltyCurriculum(ManagerTermBase):
         if not isinstance(episode_lengths, torch.Tensor):
             raise TypeError(f"{self.name} requires episode_length_buf to be a Torch tensor")
         done_count = done_mask.sum()
-        self._tracker.update_mask(episode_lengths, done_mask)
+        self._tracker.update_masked(episode_lengths, done_mask)
 
         average = self._tracker.average
         average_value = float(average.item())
@@ -1089,8 +1089,8 @@ class G1WalkResetOwner(ResetOwner):
             ) from exc
         if not isinstance(command, UniformVelocityCommand):
             raise TypeError("G1WalkResetOwner requires a UniformVelocityCommand term")
-        if getattr(env, "torch_rng", None) is None:
-            raise NotImplementedError("G1WalkResetOwner requires the Manager Torch RNG")
+        if getattr(env, "rng", None) is None:
+            raise NotImplementedError("G1WalkResetOwner requires the Manager RNG")
 
     def reset_transaction(self, reset_mask: torch.Tensor) -> dict[str, float]:
         env = cast("_G1Env", self._env)
@@ -1189,7 +1189,7 @@ class G1WalkRewardPack(ManagerTermBase):
         )
 
     def _read_sensors(self, env: _G1Env) -> dict[str, torch.Tensor]:
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         if read_plan is None or read_plan.device.type != self._device.type:
             raise NotImplementedError(
                 "G1WalkRewardPack requires the declared tensor sensor read plan"
@@ -1218,11 +1218,11 @@ class G1WalkRewardPack(ManagerTermBase):
         for name in _FOOT_POS_SENSORS[1:]:
             foot_pos = torch.cat((foot_pos, values[name]), dim=1)
         action_manager = cast(Any, self._env.action_manager)
-        joint_state = getattr(env.scene, "_tensor_read_plan", None)
+        joint_state = getattr(env.scene, "read_plan", None)
         if joint_state is None:
             raise NotImplementedError("G1WalkRewardPack requires the tensor joint read plan")
         joint_pos = joint_state.joint_tensor_view(self._entity).joint_pos
-        default = self._entity.data.default_joint_pos_torch(self._device)
+        default = self._entity.data.default_joint_pos(self._device)
         phase = _cached_gait_phase(env, self._gait_context)
         targets = compute_feet_phase_height_targets(phase, self.cfg.swing_height)
         left_target = cast(torch.Tensor, targets[0])
@@ -1331,7 +1331,7 @@ class G1WalkTerminationPack(ManagerTermBase):
         del reset_mask
 
     def __call__(self, env: _G1Env) -> torch.Tensor:
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         if read_plan is None or read_plan.device.type != self._device.type:
             raise NotImplementedError(
                 "G1WalkTerminationPack requires the declared tensor sensor/body read plan"

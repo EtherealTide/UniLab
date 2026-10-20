@@ -14,7 +14,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import unisim
-from unisim.backend.base import SimBackend, TensorExecution, validate_tensor_device
+from unisim.backend.base import SimBackend, TensorExecution, validate_torch_device
 from unisim.support import get_tensor_platform_profiles
 
 from unilab.assets.hub import ensure_robot_assets_for_paths, resolve_superdex_robot_asset
@@ -134,7 +134,7 @@ def _validate_cuda_only_backend_platform(backend_type: str, kwargs: dict[str, An
 
     runtime_state, current_device = _torch_cuda_runtime_state()
     try:
-        validate_tensor_device(
+        validate_torch_device(
             profile.torch_devices,
             requested_device,
             current_device=current_device,
