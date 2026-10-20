@@ -35,6 +35,9 @@ PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完
   版本并触发 `DeprecationWarning`，将于 v1.6 移除。关键字形式**不在**
   兼容窗口内——`reset(reset_mask=...)` 现在直接抛 `TypeError`；请将参数名
   改为 `env_ids` 并传行索引（#2460）。
+  迁移步骤与逐类 term 的 before/after 示例见迁移指南
+  {doc}`/en/1-getting_started/6-migration_1_4_to_1_5` /
+  {doc}`/zh_CN/1-getting_started/6-migration_1_4_to_1_5`。
 
 ## 1.4.0 (2026-10-20)
 
