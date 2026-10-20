@@ -19,7 +19,7 @@ import torch
 
 from unilab.base.backend_factory import create_backend, env_backend_kwargs
 from unilab.base.curriculum import EpisodeLengthTracker
-from unilab.base.reset_selectors import reset_env_ids_mask
+from unilab.base.reset_selectors import ResetMaskBuffer
 from unilab.envs.manager_based_rl_env import (
     ManagerBasedRlEnv as _ConcreteManagerBasedRlEnv,
 )
@@ -341,6 +341,7 @@ class G1GaitPhase(ManagerTermBase):
         if init_mode not in _GAIT_INIT_MODES:
             raise ValueError(f"{self.name} init_mode must be one of {_GAIT_INIT_MODES}")
         self._context = _gait_context(env, self.name, frequency, init_mode)
+        self._reset_mask_buffer = ResetMaskBuffer(env.num_envs, torch.device(env.device))
 
     def __call__(self, env: _G1Env, **params: Any) -> torch.Tensor:
         del params
@@ -351,10 +352,7 @@ class G1GaitPhase(ManagerTermBase):
 
     def reset(self, env_ids: torch.Tensor) -> None:
         env = cast("_G1Env", self._env)
-        reset_mask = reset_env_ids_mask(
-            env_ids, num_envs=env.num_envs, device=torch.device(env.device)
-        )
-        _resample_gait_mask(env, self._context, reset_mask)
+        _resample_gait_mask(env, self._context, self._reset_mask_buffer.scatter(env_ids))
 
 
 class _GaitRewardTerm(_SensorTerm):
@@ -955,6 +953,7 @@ class G1PenaltyCurriculum(ManagerTermBase):
         )
         self._degree = _real(self.name, "degree", cfg.params.get("degree", 0.001), minimum=0.0)
         self._tracker = EpisodeLengthTracker(env.num_envs, device=env.device)
+        self._reset_mask_buffer = ResetMaskBuffer(env.num_envs, torch.device(env.device))
         self._original_weights: dict[str, float] = {}
         for name in env.reward_manager.active_terms:
             weight = float(env.reward_manager.get_term_cfg(name).weight)
@@ -1029,9 +1028,7 @@ class G1PenaltyCurriculum(ManagerTermBase):
     ) -> dict[str, float]:
         """Selected-row curriculum update at reset."""
         del params
-        reset_mask = reset_env_ids_mask(
-            env_ids, num_envs=env.num_envs, device=torch.device(env.device)
-        )
+        reset_mask = self._reset_mask_buffer.scatter(env_ids)
         reset_buf = env.reset_buf
         if not isinstance(reset_buf, torch.Tensor):
             raise TypeError(f"{self.name} requires reset_buf to be a Torch tensor")

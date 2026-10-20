@@ -36,6 +36,26 @@ PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完
   兼容窗口内——`reset(reset_mask=...)` 现在直接抛 `TypeError`；请将参数名
   改为 `env_ids` 并传行索引（#2460）。
 
+### Changed / 变更
+
+- The internal `env_ids` → bool mask adaptation layer now scatters into
+  owner-held reusable buffers (`unilab.base.reset_selectors.ResetMaskBuffer`)
+  instead of allocating a fresh `num_envs` bool tensor on every reset/event
+  term call: the RL env reset entry, the event/observation/command managers,
+  and per-term reset owners each hold their own scratch buffer, so the hot
+  reset path no longer pays a per-call allocation. Public contracts and
+  deprecated bool-mask semantics (positional-only `DeprecationWarning`
+  passthrough, never touching a buffer) are unchanged; `reset_env_ids_mask`
+  keeps its allocating form for fixtures and external callers
+  ([#2461](https://github.com/Motphys/UniLab/issues/2461)).
+  内部 `env_ids` → bool mask 适配层改为 scatter 进 owner 持有的可复用
+  buffer（`unilab.base.reset_selectors.ResetMaskBuffer`），不再在每次
+  reset/event term 调用时新分配 `num_envs` 大小的 bool 张量：RL env reset
+  入口、event/observation/command manager 及各 term 的 reset owner 分别持有
+  各自的 scratch buffer，热路径上消除了逐次分配。公开契约与 deprecated
+  bool-mask 语义（仅位置传参、`DeprecationWarning` 透传、不经 buffer）不变；
+  `reset_env_ids_mask` 保留逐次分配形态供 fixture 与外部调用方使用（#2461）。
+
 ## 1.4.0 (2026-10-20)
 
 ### Breaking changes / 破坏性变更

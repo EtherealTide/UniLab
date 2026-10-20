@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Callable, Literal, cast
 
 import torch
 
-from unilab.base.reset_selectors import resolve_reset_mask
 from unilab.envs.mdp.actions import JointPositionAction, JointPositionActionCfg
 from unilab.managers import (
     CommandTerm,
@@ -901,9 +900,7 @@ class MotionCommand(CommandTerm):
     ) -> dict[str, float]:
         """Selected-row motion command reset."""
         del publish_metrics
-        reset_mask = resolve_reset_mask(
-            env_ids, num_envs=self.num_envs, device=self._device, owner="MotionCommand.reset"
-        )
+        reset_mask = self._reset_mask_buffer.resolve(env_ids, owner="MotionCommand.reset")
         if self._env.rng is None:
             raise NotImplementedError(
                 "MotionCommand reset requires the Manager-owned Torch generator"

@@ -38,6 +38,7 @@ from unisim.dr.types import (
 )
 
 from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadSpec
+from unilab.base.reset_selectors import ResetMaskBuffer
 from unilab.base.reset_state import ResetStateTransaction
 from unilab.envs import mdp
 from unilab.managers import EventManager, EventTermCfg, SceneEntityCfg
@@ -114,6 +115,7 @@ def _capture_env(
             device=torch.device("cpu"),
             rng=ManagerRng.seeded(seed),
             scene=_CaptureScene(entity, env_origins),
+            event_term_mask_buffer=ResetMaskBuffer(3, torch.device("cpu")),
         ),
     )
     return env, entity
@@ -560,6 +562,7 @@ def _transaction_env(
             scene=scene,
             step_dt=step_dt,
             backend=backend,
+            event_term_mask_buffer=ResetMaskBuffer(backend.num_envs, torch.device("cpu")),
         ),
     )
     return env, backend, transaction

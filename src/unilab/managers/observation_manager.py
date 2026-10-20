@@ -18,7 +18,7 @@ from unilab.base.config_overrides import (
     CONFIG_MAPPING_POLICY_KEY,
     MANAGER_TERM_MAPPING_POLICY,
 )
-from unilab.base.reset_selectors import reset_env_ids_mask, resolve_reset_env_ids
+from unilab.base.reset_selectors import ResetMaskBuffer, resolve_reset_env_ids
 from unilab.managers._buffers import CircularBuffer, DelayBuffer
 from unilab.managers._noise import noise_cfg, noise_model
 from unilab.managers._noise.noise_cfg import NoiseCfg, NoiseModelCfg
@@ -171,6 +171,7 @@ class ObservationManager(ManagerBase):
                 f"does not match observations on {self._device}."
             )
         self._generator = self._rng.generator if self._rng is not None else None
+        self._reset_mask_buffer = ResetMaskBuffer(env.num_envs, torch.device(self._device))
         super().__init__(env=env)
 
         self._group_obs_dim: dict[str, tuple[int, ...] | list[tuple[int, ...]]] = dict()
@@ -327,7 +328,7 @@ class ObservationManager(ManagerBase):
             device=self._device,
             owner="ObservationManager.reset",
         )
-        reset_mask = reset_env_ids_mask(ids, num_envs=self.num_envs, device=self._device)
+        reset_mask = self._reset_mask_buffer.scatter(ids)
         self._obs_buffer = None
         for group_cfg in self._group_obs_class_term_cfgs.values():
             for term_cfg in group_cfg:

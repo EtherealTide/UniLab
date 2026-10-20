@@ -3,8 +3,13 @@
 The task/manager reset contract speaks IsaacLab/mjlab-style ``env_ids`` row
 indices. Backend transactions keep consuming fixed-width bool masks
 (``SimBackend.apply_reset``/packed reset). These helpers are the single,
-deliberately simple conversion point between the two forms; the optimized
-adaptation layer is tracked separately (roadmap #2461).
+deliberately simple conversion point between the two forms.
+
+Hot reset paths must not allocate a fresh mask per conversion
+(roadmap #2461): each conversion site owns a ``ResetMaskBuffer`` whose storage
+is allocated once on the env/manager/term and rewritten in place per call. The
+module-level helpers keep allocating and remain the owned-copy form for
+callers without a stable owner (tests, fixtures, deprecated shims).
 """
 
 from __future__ import annotations
@@ -18,6 +23,57 @@ _MASK_DEPRECATION = (
     "takes env_ids (row indices) again. Mask selectors are deprecated since "
     "v1.5 and will be removed in v1.6."
 )
+
+
+class ResetMaskBuffer:
+    """Reusable fixed-width bool reset mask owned by one conversion site.
+
+    ``scatter``/``resolve`` rewrite the internal storage in place and return
+    it; the returned tensor aliases that storage and stays valid only until
+    the next call on the same buffer. Every site whose masks may be live at
+    the same time owns a separate instance: the env reset-transaction entry,
+    the env-owned event-term scratch, each manager, and each class-based term.
+    Buffer lifetime follows its owner (the env or manager instance), so
+    separate env instances never share storage.
+    """
+
+    def __init__(self, num_envs: int, device: torch.device) -> None:
+        self._mask = torch.zeros(num_envs, dtype=torch.bool, device=device)
+
+    @property
+    def num_envs(self) -> int:
+        return int(self._mask.shape[0])
+
+    @property
+    def device(self) -> torch.device:
+        return self._mask.device
+
+    def scatter(self, env_ids: torch.Tensor) -> torch.Tensor:
+        """Rewrite the buffer from row indices and return the aliased mask."""
+        self._mask.zero_()
+        if env_ids.numel():
+            self._mask[env_ids.to(device=self._mask.device, dtype=torch.int64)] = True
+        return self._mask
+
+    def resolve(self, selector: torch.Tensor | slice | None, *, owner: str) -> torch.Tensor:
+        """Resolve a public reset selector like ``resolve_reset_mask``.
+
+        The deprecated fixed-width bool form passes the caller's tensor through
+        with a ``DeprecationWarning`` (it never aliases this buffer, preserving
+        the identity semantics of the shim path). Every other selector is
+        normalized to ``env_ids`` and scattered into this buffer.
+        """
+        if (
+            isinstance(selector, torch.Tensor)
+            and selector.dtype == torch.bool
+            and selector.shape == (self.num_envs,)
+        ):
+            warnings.warn(_MASK_DEPRECATION.format(owner=owner), DeprecationWarning, stacklevel=2)
+            return selector.to(device=self.device)
+        env_ids = resolve_reset_env_ids(
+            selector, num_envs=self.num_envs, device=self.device, owner=owner
+        )
+        return self.scatter(env_ids)
 
 
 def resolve_reset_env_ids(
@@ -66,11 +122,8 @@ def reset_env_ids_mask(
     num_envs: int,
     device: torch.device,
 ) -> torch.Tensor:
-    """Scatter row indices into the fixed-width bool backend transaction mask."""
-    mask = torch.zeros(num_envs, dtype=torch.bool, device=device)
-    if env_ids.numel():
-        mask[env_ids.to(device=device, dtype=torch.int64)] = True
-    return mask
+    """Scatter row indices into a freshly allocated fixed-width bool mask."""
+    return ResetMaskBuffer(num_envs, device).scatter(env_ids)
 
 
 def resolve_reset_mask(
@@ -98,6 +151,7 @@ def resolve_reset_mask(
 
 
 __all__ = [
+    "ResetMaskBuffer",
     "reset_env_ids_mask",
     "resolve_reset_env_ids",
     "resolve_reset_mask",

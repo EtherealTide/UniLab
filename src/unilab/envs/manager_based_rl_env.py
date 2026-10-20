@@ -34,7 +34,7 @@ from unilab.base.config_overrides import (
 )
 from unilab.base.cpu_runtime import apply_cpu_confinement
 from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadPlan, SceneTensorReadSpec
-from unilab.base.reset_selectors import reset_env_ids_mask, resolve_reset_env_ids
+from unilab.base.reset_selectors import ResetMaskBuffer, resolve_reset_env_ids
 from unilab.base.reset_state import ResetStateTransaction
 from unilab.base.scene import SceneCfg, resolve_scene_default_qpos
 from unilab.base.torch_env import TorchEnv, TorchEnvState
@@ -315,6 +315,7 @@ class ManagerBasedRlEnv(TorchEnv):
     tensor_reset_pose_bounds: torch.Tensor | None
     tensor_reset_velocity_bounds: torch.Tensor | None
     tensor_reset_bounds_key: tuple[Any, ...] | None
+    event_term_mask_buffer: ResetMaskBuffer
 
     def __init__(self, cfg: ManagerBasedRlEnvCfg, backend: SimBackend, num_envs: int):
         if not isinstance(cfg, ManagerBasedRlEnvCfg):
@@ -383,6 +384,14 @@ class ManagerBasedRlEnv(TorchEnv):
         self._manual_reset_pending = torch.zeros_like(self.reset_buf)
         self._all_env_rows = torch.arange(num_envs, dtype=torch.int64, device=self.device)
         self._all_env_reset_mask = torch.ones_like(self.reset_buf)
+        # Reusable ids→mask adapters (roadmap #2461): ``_reset_mask_buffer``
+        # backs the reset-transaction entry mask, which stays live across the
+        # whole reset; ``event_term_mask_buffer`` is the short-lived scratch
+        # for tensor-mask event terms dispatched inside the transaction. The
+        # two never alias each other, so term masks cannot clobber the live
+        # transaction mask.
+        self._reset_mask_buffer = ResetMaskBuffer(num_envs, self.device)
+        self.event_term_mask_buffer = ResetMaskBuffer(num_envs, self.device)
         self._has_transition = False
 
         self._load_managers()
@@ -1496,7 +1505,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 device=self.device,
                 owner="ManagerBasedRlEnv.reset",
             )
-            reset_mask = reset_env_ids_mask(env_ids, num_envs=self.num_envs, device=self.device)
+            reset_mask = self._reset_mask_buffer.scatter(env_ids)
         reset_timing: dict[str, float] = {}
         read_plan = self.scene.read_plan
         # An empty explicit reset does not publish a pre-reset recorder boundary.

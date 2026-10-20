@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 import torch
 
-from unilab.base.reset_selectors import reset_env_ids_mask
+from unilab.base.reset_selectors import ResetMaskBuffer
 from unilab.managers.event_manager import EventTermCfg
 from unilab.managers.manager_base import ManagerTermBase
 from unilab.managers.rng import ManagerRng
@@ -1792,6 +1792,7 @@ class RandomizeEncoderBias(ManagerTermBase):
                 f"EventManager term '{term_name}' asset_cfg must select at least one joint"
             )
         self._joint_ids = joint_ids
+        self._reset_mask_buffer = ResetMaskBuffer(self.num_envs, torch.device(env.device))
 
     def __call__(
         self,
@@ -1815,7 +1816,7 @@ class RandomizeEncoderBias(ManagerTermBase):
                 (self.num_envs, columns.numel()),
                 dtype=torch.float32,
             )
-            reset_mask = reset_env_ids_mask(ids, num_envs=self.num_envs, device=sampled.device)
+            reset_mask = self._reset_mask_buffer.scatter(ids)
             self._entity.data.update_encoder_bias_tensor_mask(reset_mask, columns, sampled)
             return
         raise NotImplementedError(
@@ -1830,7 +1831,7 @@ def reset_scene_to_default(env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> Non
     """Reset all materialized scene entities to backend default qpos/qvel."""
     if not env.scene.entities:
         return
-    reset_mask = reset_env_ids_mask(env_ids, num_envs=env.num_envs, device=torch.device(env.device))
+    reset_mask = env.event_term_mask_buffer.scatter(env_ids)
     env.scene.reset_to_default(reset_mask, term_name="reset_scene_to_default")
 
 
@@ -1848,7 +1849,7 @@ def reset_root_state_uniform(
     the entity's cached floating-root capability instead of falling back.
     """
     asset = cast("Entity", env.scene[asset_cfg.name])
-    reset_mask = reset_env_ids_mask(env_ids, num_envs=env.num_envs, device=torch.device(env.device))
+    reset_mask = env.event_term_mask_buffer.scatter(env_ids)
     try:
         default_root_state = asset.data.default_root_state(torch.device(env.device))
         root_states = default_root_state.clone()
@@ -1987,7 +1988,7 @@ def reset_root_state_uniform_fused(
             "reset_root_state_uniform_fused requires env.rng on a CUDA Manager tensor runtime"
         )
     device = torch.device(env.device)
-    reset_mask = reset_env_ids_mask(env_ids, num_envs=env.num_envs, device=device)
+    reset_mask = env.event_term_mask_buffer.scatter(env_ids)
     asset = cast("Entity", env.scene[asset_cfg.name])
     asset.data.default_root_state(device)
     num_envs = env.num_envs

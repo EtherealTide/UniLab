@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Sequence, cast
 import torch
 from prettytable import PrettyTable
 
-from unilab.base.reset_selectors import resolve_reset_env_ids, resolve_reset_mask
+from unilab.base.reset_selectors import ResetMaskBuffer, resolve_reset_env_ids
 from unilab.managers.manager_base import ManagerBase, ManagerTermBase
 from unilab.managers.rng import ManagerRng
 
@@ -70,6 +70,10 @@ class CommandTerm(ManagerTermBase):
         self._resampling_time_range = (lower, upper)
         self._device = torch.device(getattr(self._env, "device", torch.device("cpu")))
         self._rng = self._require_rng()
+        # Per-term reusable ids→mask adapter (roadmap #2461). Each term owns
+        # its instance, so terms dispatched in sequence never clobber a mask
+        # another term still holds.
+        self._reset_mask_buffer = ResetMaskBuffer(self.num_envs, self._device)
         self.metrics: dict[str, torch.Tensor] = {}
         self.time_left = torch.zeros(self.num_envs, dtype=torch.float32, device=self._device)
         self.command_counter = torch.zeros(self.num_envs, dtype=torch.int64, device=self._device)
@@ -88,10 +92,8 @@ class CommandTerm(ManagerTermBase):
         *,
         publish_metrics: bool = True,
     ) -> dict[str, float]:
-        reset_mask = resolve_reset_mask(
+        reset_mask = self._reset_mask_buffer.resolve(
             env_ids,
-            num_envs=self.num_envs,
-            device=self._device,
             owner=f"CommandTerm '{self.name}' reset",
         )
         extras: dict[str, float] = {}
