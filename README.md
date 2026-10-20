@@ -84,15 +84,13 @@ and [quick demo guide](https://unilabsim.github.io/UniLab-doc/en/1-getting_start
 ## Train and evaluate
 
 ```bash
-# Train and replay one task with Motrix.
-uv run train --algo ppo --task go2_joystick_flat --sim motrix
-uv run eval --algo ppo --task go2_joystick_flat --sim motrix --load-run -1
-
-# Use the same task-facing command with another configured backend.
-uv run train --algo ppo --task go2_joystick_flat --sim mujoco
-
-# Replay-based off-policy path.
+# Train the g1 flat-walking task with MuJoCo and replay it with Motrix.
 uv run train --algo sac --task g1_walk_flat --sim mujoco
+uv run --extra motrix eval --algo sac --task g1_walk_flat --sim motrix --render-mode interactive --load-run -1
+
+# Train the g1 motion-tracking task with mjwarp and replay it with Genesis physics.
+uv run --extra mjwarp train --algo flashsac --task g1_motion_tracking --sim mjwarp
+uv run --extra genesis eval --algo flashsac --task g1_motion_tracking --sim genesis --load-run -1
 ```
 
 The flags keep algorithm, task, and simulator choices visible. Resume, W&B,

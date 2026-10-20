@@ -77,15 +77,13 @@ Windows、macOS、CUDA、ROCm、XPU、可选后端和无头渲染的说明，请
 ## 训练与评估
 
 ```bash
-# 使用 Motrix 训练并回放一个任务。
-uv run train --algo ppo --task go2_joystick_flat --sim motrix
-uv run eval --algo ppo --task go2_joystick_flat --sim motrix --load-run -1
-
-# 使用另一个已有配置的后端，保持同样的任务入口。
-uv run train --algo ppo --task go2_joystick_flat --sim mujoco
-
-# Replay-based off-policy 路径。
+# 使用 MuJoCo 训练并用 Motrix 回放 g1平地行走 任务
 uv run train --algo sac --task g1_walk_flat --sim mujoco
+uv run --extra motrix eval --algo sac --task g1_walk_flat --sim motrix --render-mode interactive --load-run -1
+
+# 使用 mjwarp 训练并用 genesis 物理 回放 g1动作跟踪 任务
+uv run --extra mjwarp train --algo flashsac --task g1_motion_tracking --sim mjwarp
+uv run --extra genesis eval --algo flashsac --task g1_motion_tracking --sim genesis --load-run -1
 ```
 
 这些 flag 会让 algorithm、task 和 simulator 选择保持可见。续训、W&B、Hydra override、
