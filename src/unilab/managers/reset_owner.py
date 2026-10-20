@@ -29,6 +29,14 @@ class ResetOwnerCfg(ManagerTermBaseCfg):
     owns_command_reset: bool = True
     owns_action_reset: bool = True
     owns_observation_reset: bool = True
+    """If True, the owner replaces ``ObservationManager.reset`` for the selected
+    rows. The bypass does not cover manager-owned temporal state: delay/history
+    buffers are not cleared, so reset rows keep their previous episode's delay
+    lag, step counter, and phase schedule (nothing is resampled), and the
+    observation cache is not invalidated — a ``compute(update_history=False)``
+    caller between the reset and the next step reads pre-reset values. Owners
+    enabling this bypass must reset that temporal state themselves (see the
+    publicly exported ``CircularBuffer``/``DelayBuffer``)."""
     owns_metric_reset: bool = True
 
 
