@@ -13,6 +13,29 @@ UniLab 遵循[语义化版本](https://semver.org/)。本共享页面以中英�
 PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完整提交历史请参阅
 [UniLab 仓库](https://github.com/unilabsim/UniLab)。
 
+## Unreleased / 未发布
+
+### Breaking changes / 破坏性变更
+
+- The public reset contract speaks IsaacLab/mjlab-style `env_ids` row indices
+  again: `TorchEnv.reset`, `ManagerBase.reset` and all manager/term reset
+  boundaries, `EventManager.apply(mode="reset", env_ids=...)`, reset owners,
+  and the recorder pre/post-reset hooks take a one-dimensional integer tensor
+  (or `None` for every row). The v1.4 fixed-width bool mask form is deprecated:
+  a bool tensor passed **positionally** still works for one release with a
+  `DeprecationWarning` and will be removed in v1.6. The keyword form is **not**
+  covered by the deprecation window — `reset(reset_mask=...)` now raises
+  `TypeError`; rename the argument to `env_ids` and pass row indices
+  ([#2460](https://github.com/Motphys/UniLab/issues/2460)).
+  公共 reset 契约恢复 IsaacLab/mjlab 风格的 `env_ids` 行索引形态：
+  `TorchEnv.reset`、`ManagerBase.reset` 及所有 manager/term reset 边界、
+  `EventManager.apply(mode="reset", env_ids=...)`、reset owner 与 recorder
+  的 pre/post-reset 钩子均接收一维整数张量（`None` 表示全部行）。v1.4 的
+  定宽 bool mask 形态已 deprecated：**位置传参**的 bool 张量仍可使用一个
+  版本并触发 `DeprecationWarning`，将于 v1.6 移除。关键字形式**不在**
+  兼容窗口内——`reset(reset_mask=...)` 现在直接抛 `TypeError`；请将参数名
+  改为 `env_ids` 并传行索引（#2460）。
+
 ## 1.4.0 (2026-10-20)
 
 ### Breaking changes / 破坏性变更

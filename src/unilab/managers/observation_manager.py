@@ -18,6 +18,7 @@ from unilab.base.config_overrides import (
     CONFIG_MAPPING_POLICY_KEY,
     MANAGER_TERM_MAPPING_POLICY,
 )
+from unilab.base.reset_selectors import reset_env_ids_mask, resolve_reset_env_ids
 from unilab.managers._buffers import CircularBuffer, DelayBuffer
 from unilab.managers._noise import noise_cfg, noise_model
 from unilab.managers._noise.noise_cfg import NoiseCfg, NoiseModelCfg
@@ -318,18 +319,24 @@ class ObservationManager(ManagerBase):
         index = self._group_obs_term_names[group_name].index(term_name)
         return self._group_obs_term_cfgs[group_name][index]
 
-    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        """Fixed-shape observation state reset."""
-        self._validate_reset_mask(reset_mask)
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
+        """Reset observation state for the selected environment rows."""
+        ids = resolve_reset_env_ids(
+            env_ids,
+            num_envs=self.num_envs,
+            device=self._device,
+            owner="ObservationManager.reset",
+        )
+        reset_mask = reset_env_ids_mask(ids, num_envs=self.num_envs, device=self._device)
         self._obs_buffer = None
         for group_cfg in self._group_obs_class_term_cfgs.values():
             for term_cfg in group_cfg:
                 if not callable(getattr(term_cfg.func, "reset", None)):
                     raise NotImplementedError(
                         f"ObservationManager term '{term_cfg.func}' does not define "
-                        "the mask-preserving reset boundary"
+                        "the reset boundary"
                     )
-                term_cfg.func.reset(reset_mask)
+                term_cfg.func.reset(ids)
         for group_name in self._group_obs_term_names:
             for term_name in self._group_obs_term_names[group_name]:
                 delay = self._group_obs_term_delay_buffer[group_name].get(term_name)
@@ -343,22 +350,10 @@ class ObservationManager(ManagerBase):
                 if not callable(getattr(mod, "reset", None)):
                     raise NotImplementedError(
                         f"ObservationManager term '{type(mod).__name__}' does not define "
-                        "the mask-preserving reset boundary"
+                        "the reset boundary"
                     )
                 mod.reset(reset_mask)
         return {}
-
-    def _validate_reset_mask(self, reset_mask: torch.Tensor) -> None:
-        if (
-            reset_mask.ndim != 1
-            or reset_mask.shape[0] != self.num_envs
-            or reset_mask.dtype != torch.bool
-            or reset_mask.device != self._device
-        ):
-            raise ValueError(
-                f"ObservationManager reset mask must have shape {(self.num_envs,)}, "
-                f"bool dtype, and device {self._device}"
-            )
 
     def _check_and_handle_nans(
         self,

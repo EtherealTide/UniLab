@@ -42,15 +42,13 @@ def test_uniform_pose_command_reads_curriculum_updates_without_changing_width() 
         ranges=[[0.0, 0.0], [1.0, 1.0]],
     )
     term = cfg.build(env)
-    reset_mask = torch.ones(2, dtype=torch.bool)
-
     cfg.ranges[0] = [2.0, 2.0]
-    term.reset(reset_mask)
+    term.reset(None)
     np.testing.assert_array_equal(term.command, [[2.0, 1.0], [2.0, 1.0]])
 
     cfg.ranges.append([3.0, 3.0])
     with pytest.raises(ValueError, match="ranges width changed"):
-        term.reset(reset_mask)
+        term.reset(None)
 
 
 def test_uniform_pose_command_fails_closed_without_rng() -> None:

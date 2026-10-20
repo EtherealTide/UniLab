@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Sequence
 import torch
 from prettytable import PrettyTable
 
+from unilab.base.reset_selectors import resolve_reset_env_ids
 from unilab.managers.manager_base import ManagerBase, ManagerTermBase
 
 if TYPE_CHECKING:
@@ -89,7 +90,7 @@ class ActionTerm(ManagerTermBase):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def reset(self, reset_mask: torch.Tensor) -> None:
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
         raise NotImplementedError
 
     @property
@@ -187,50 +188,28 @@ class ActionManager(ManagerBase):
     def get_term(self, name: str) -> ActionTerm:
         return self._terms[name]
 
-    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        self.clear_action_state(reset_mask)
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
+        self.clear_action_state(env_ids)
         return {}
 
-    def clear_action_state(self, reset_mask: torch.Tensor) -> None:
-        """Clear fixed-width manager and term action state without logging.
+    def clear_action_state(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        """Clear manager and term action state for the selected envs without logging.
 
         Reset owners consume this boundary when they own the action reset pass.
-        Manager-owned histories are mask-cleared. Each action term must provide
-        its own mask-preserving boundary; there is no selected-row fallback.
+        Manager-owned histories are cleared for the selected rows. Each action
+        term receives the resolved ``env_ids``.
         """
-        self._validate_reset_mask(reset_mask)
-        expanded = reset_mask[:, None]
-        self._prev_action.copy_(
-            torch.where(expanded, torch.zeros_like(self._prev_action), self._prev_action)
+        env_ids = resolve_reset_env_ids(
+            env_ids,
+            num_envs=self.num_envs,
+            device=self._device,
+            owner="ActionManager.clear_action_state",
         )
-        self._prev_prev_action.copy_(
-            torch.where(
-                expanded,
-                torch.zeros_like(self._prev_prev_action),
-                self._prev_prev_action,
-            )
-        )
-        self._action.copy_(torch.where(expanded, torch.zeros_like(self._action), self._action))
-        for name, term in self._terms.items():
-            if not callable(getattr(term, "reset", None)):
-                raise NotImplementedError(
-                    f"ActionManager term '{name}' does not define the "
-                    "mask-preserving reset boundary"
-                )
-            term.reset(reset_mask)
-
-    def _validate_reset_mask(self, reset_mask: torch.Tensor) -> None:
-        if (
-            not isinstance(reset_mask, torch.Tensor)
-            or reset_mask.ndim != 1
-            or reset_mask.shape[0] != self.num_envs
-            or reset_mask.dtype != torch.bool
-            or reset_mask.device != self._device
-        ):
-            raise ValueError(
-                f"ActionManager reset mask must have shape {(self.num_envs,)}, "
-                f"bool dtype, and device {self._device}"
-            )
+        self._prev_action[env_ids] = 0.0
+        self._prev_prev_action[env_ids] = 0.0
+        self._action[env_ids] = 0.0
+        for term in self._terms.values():
+            term.reset(env_ids)
 
     def process_action(self, action: torch.Tensor, *, reuse_recorded_verdict: bool = False) -> None:
         """Store the raw policy output and route slices to each action term.

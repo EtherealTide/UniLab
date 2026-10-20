@@ -1084,7 +1084,7 @@ class ResetStateTransaction:
                     "the active mask"
                 )
             self._record_tensor_write_mask(reset_mask)
-        elif active_mask is not reset_mask:
+        elif not torch.equal(active_mask, reset_mask):
             raise ValueError(
                 f"EventManager term '{term_name}' attempted default reset outside the active mask"
             )
@@ -1184,7 +1184,7 @@ class ResetStateTransaction:
                     f"EventManager term '{term_name}' attempted joint-state mutation outside "
                     "the active mask"
                 )
-        elif active_mask is not reset_mask:
+        elif not torch.equal(active_mask, reset_mask):
             raise ValueError(
                 f"EventManager term '{term_name}' attempted joint-state mutation outside "
                 "the active mask"
@@ -1357,7 +1357,7 @@ class ResetStateTransaction:
                     f"ManagerBased tensor mask {capability} attempted a write outside "
                     "the active mask"
                 )
-        elif reset_mask is not self._tensor_active_mask:
+        elif not torch.equal(reset_mask, self._tensor_active_mask):
             raise ValueError(f"ManagerBased tensor mask {capability} must use the transaction mask")
         self._requesting_terms.add(capability)
         return self._tensor_active_mask

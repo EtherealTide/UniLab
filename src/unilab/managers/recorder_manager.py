@@ -44,11 +44,11 @@ class RecorderTerm(ManagerTermBase):
           self._file = open(cfg.params["path"], "w", newline="")
           self._writer = csv.writer(self._file)
 
-        def record_pre_reset(self, reset_mask: torch.Tensor):
+        def record_pre_reset(self, env_ids: torch.Tensor):
           # Terminal transition: action is still intact here.
           # It will be zeroed by _reset_idx immediately after this returns.
-          obs = self._env.obs_buf["actor"][reset_mask]
-          act = self._env.action_manager.action[reset_mask]
+          obs = self._env.obs_buf["actor"][env_ids]
+          act = self._env.action_manager.action[env_ids]
           for o, a in zip(obs, act):
             self._writer.writerow(o.tolist() + a.tolist())
 
@@ -69,7 +69,7 @@ class RecorderTerm(ManagerTermBase):
         super().__init__(env)  # ManagerTermBase only accepts env
         self.cfg = cfg
 
-    def record_pre_reset(self, reset_mask: torch.Tensor) -> None:
+    def record_pre_reset(self, env_ids: torch.Tensor) -> None:
         """Called in ``env.step()`` before terminated environments are reset.
 
         **What is available:**
@@ -90,28 +90,28 @@ class RecorderTerm(ManagerTermBase):
         ``(obs_t, action_t, reward_t, done=True)`` for each resetting environment.
 
         Args:
-          reset_mask: Boolean mask of environments that are about to be reset.
+          env_ids: Indices of environments that are about to be reset.
         """
-        del reset_mask  # Unused in base implementation.
+        del env_ids  # Unused in base implementation.
 
-    def record_post_reset(self, reset_mask: torch.Tensor) -> None:
+    def record_post_reset(self, env_ids: torch.Tensor) -> None:
         """Called after a reset completes with fresh observations computed.
 
         Fires at the end of ``env.reset()`` (covering all environments on the initial call)
         and within ``env.step()`` for each batch of environments that terminates, after
         state has been overwritten and new observations computed.
 
-        At this point ``obs_buf[reset_mask]`` holds the initial observation of the new episode
-        and ``action_manager.action[reset_mask]`` is zero (no action has been taken in the new
+        At this point ``obs_buf[env_ids]`` holds the initial observation of the new episode
+        and ``action_manager.action[env_ids]`` is zero (no action has been taken in the new
         episode yet).
 
         Use this hook to initialize per-episode state or record the first observation of a
         new episode.
 
         Args:
-          reset_mask: Boolean mask of environments that were reset.
+          env_ids: Indices of environments that were reset.
         """
-        del reset_mask  # Unused in base implementation.
+        del env_ids  # Unused in base implementation.
 
     def record_post_step(self) -> None:
         """Called at the end of every ``env.step()`` with fresh observations.
@@ -191,15 +191,15 @@ class RecorderManager(ManagerBase):
             msg = f"No recorder term named '{name}'. Active terms: {self.active_terms}"
             raise KeyError(msg) from None
 
-    def record_pre_reset(self, reset_mask: torch.Tensor) -> None:
-        """Forward to each term's pre-reset mask boundary."""
+    def record_pre_reset(self, env_ids: torch.Tensor) -> None:
+        """Forward to each term's pre-reset boundary."""
         for term in self._terms.values():
-            term.record_pre_reset(reset_mask)
+            term.record_pre_reset(env_ids)
 
-    def record_post_reset(self, reset_mask: torch.Tensor) -> None:
-        """Forward to each term's post-reset mask boundary."""
+    def record_post_reset(self, env_ids: torch.Tensor) -> None:
+        """Forward to each term's post-reset boundary."""
         for term in self._terms.values():
-            term.record_post_reset(reset_mask)
+            term.record_post_reset(env_ids)
 
     def record_post_step(self) -> None:
         """Forward to each term's :meth:`RecorderTerm.record_post_step`."""
@@ -254,11 +254,11 @@ class NullRecorderManager:
         msg = "NullRecorderManager has no terms."
         raise KeyError(msg)
 
-    def record_pre_reset(self, reset_mask: torch.Tensor) -> None:
-        del reset_mask
+    def record_pre_reset(self, env_ids: torch.Tensor) -> None:
+        del env_ids
 
-    def record_post_reset(self, reset_mask: torch.Tensor) -> None:
-        del reset_mask
+    def record_post_reset(self, env_ids: torch.Tensor) -> None:
+        del env_ids
 
     def record_post_step(self) -> None:
         pass

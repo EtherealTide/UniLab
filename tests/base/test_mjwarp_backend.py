@@ -297,8 +297,11 @@ def test_g1_walk_flat_owner_eager_capture_warmup_and_replay_share_semantics() ->
             for control_value, reset_mask in zip(controls, masks, strict=True):
                 action.fill_(control_value)
                 state = env.step(action)
-                reset_mask = reset_mask.to(device=env.device)
-                reset_obs, _reset_info = env.reset(reset_mask=reset_mask)
+                reset_obs, _reset_info = env.reset(
+                    env_ids=torch.nonzero(
+                        reset_mask.to(device=env.device), as_tuple=False
+                    ).flatten()
+                )
                 after_reset = env.step(torch.zeros_like(action))
                 completion = after_reset.info.get("completion")
                 assert completion is not None

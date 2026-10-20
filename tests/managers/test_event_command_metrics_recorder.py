@@ -38,7 +38,7 @@ class DummyAction(ActionTerm):
     def __init__(self, cfg: DummyActionCfg, env: FakeEnv):
         super().__init__(cfg, env)
         self._raw = torch.zeros((env.num_envs, cfg.dim), dtype=torch.float32)
-        self.reset_masks: list[torch.Tensor] = []
+        self.reset_ids: list[torch.Tensor] = []
 
     @property
     def action_dim(self) -> int:
@@ -54,9 +54,13 @@ class DummyAction(ActionTerm):
     def apply_actions(self) -> None:
         return None
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        self.reset_masks.append(reset_mask.clone())
-        self._raw.copy_(torch.where(reset_mask[:, None], torch.zeros_like(self._raw), self._raw))
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if env_ids is None:
+            self.reset_ids.append(torch.arange(self.num_envs, dtype=torch.int64))
+            self._raw.zero_()
+            return
+        self.reset_ids.append(env_ids.clone())
+        self._raw[env_ids] = 0.0
 
 
 @dataclass(kw_only=True)
@@ -89,20 +93,31 @@ def test_event_modes_interval_reset_throttle_and_order(fake_env: FakeEnv) -> Non
         ),
         "step": EventTermCfg(func=_record, params={"label": "step"}, mode="step"),
     }
-    with pytest.raises(
-        NotImplementedError,
-        match="min_step_count_between_reset.*fixed-width mask reset contract",
-    ):
-        EventManager(cfg, fake_env)
-
-    del cfg["reset"]
     manager = EventManager(cfg, fake_env)
-    assert list(manager.active_terms) == ["startup", "interval", "step"]
+    assert list(manager.active_terms) == ["startup", "reset", "interval", "step"]
     manager.apply("startup", env_ids=torch.tensor([0, 2], dtype=torch.int64))
     manager.apply("step", dt=0.01)
     manager.apply("interval", dt=0.1)
     assert [label for label, _ in fake_env.calls] == ["startup", "step", "interval"]
     np.testing.assert_array_equal(fake_env.calls[2][1], np.arange(fake_env.num_envs))
+
+    # First reset triggers every selected env (none has triggered before).
+    fake_env.calls.clear()
+    all_ids = torch.arange(fake_env.num_envs, dtype=torch.int64)
+    manager.apply("reset", env_ids=all_ids, global_env_step_count=0)
+    assert [label for label, _ in fake_env.calls] == ["reset"]
+    np.testing.assert_array_equal(fake_env.calls[0][1], np.arange(fake_env.num_envs))
+
+    # A reset inside the min-step window is filtered out per env row.
+    fake_env.calls.clear()
+    manager.apply("reset", env_ids=all_ids, global_env_step_count=1)
+    assert fake_env.calls == []
+
+    # Once enough steps elapsed, the reset term fires again.
+    fake_env.calls.clear()
+    manager.apply("reset", env_ids=all_ids, global_env_step_count=3)
+    assert [label for label, _ in fake_env.calls] == ["reset"]
+    np.testing.assert_array_equal(fake_env.calls[0][1], np.arange(fake_env.num_envs))
 
 
 def test_event_validation_and_model_mutation_failure(fake_env: FakeEnv) -> None:
@@ -196,7 +211,7 @@ class DummyCommandCfg(CommandTermCfg):
 
 def test_command_resample_metrics_validation_and_null(fake_env: FakeEnv) -> None:
     manager = CommandManager({"goal": DummyCommandCfg(resampling_time_range=(0.5, 0.5))}, fake_env)
-    extras = manager.reset(torch.tensor([False, True, True, False], dtype=torch.bool))
+    extras = manager.reset(torch.tensor([1, 2], dtype=torch.int64))
     assert extras == {"Metrics/goal/error": 1.5}
     np.testing.assert_array_equal(manager.get_command("goal")[[1, 2]], 0.0)
     manager.compute(0.5)
@@ -204,36 +219,33 @@ def test_command_resample_metrics_validation_and_null(fake_env: FakeEnv) -> None
     assert manager.get_term("goal").command_counter.tolist() == [1, 2, 2, 1]
 
 
-def test_command_reset_rejects_non_fixed_width_mask(fake_env: FakeEnv) -> None:
+def test_command_reset_rejects_out_of_range_env_ids(fake_env: FakeEnv) -> None:
     manager = CommandManager({"goal": DummyCommandCfg(resampling_time_range=(1.0, 1.0))}, fake_env)
-    with pytest.raises(ValueError, match="CommandManager reset mask"):
-        manager.reset(torch.tensor([False, True, False, True, False], dtype=torch.bool))
+    with pytest.raises(ValueError, match="CommandManager.reset"):
+        manager.reset(torch.tensor([0, fake_env.num_envs], dtype=torch.int64))
 
 
-def test_command_reset_uses_owner_mask_boundary(fake_env: FakeEnv) -> None:
-    class MaskCommand(DummyCommand):
-        def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
-            self._command.copy_(
-                torch.where(
-                    reset_mask.reshape(-1, 1),
-                    torch.full_like(self._command, 7.0),
-                    self._command,
-                )
-            )
-            self.command_counter.masked_fill_(reset_mask, 0)
+def test_command_reset_uses_owner_env_ids_boundary(fake_env: FakeEnv) -> None:
+    class IdsCommand(DummyCommand):
+        def reset(
+            self, env_ids: torch.Tensor | None = None, *, publish_metrics: bool = True
+        ) -> dict[str, float]:
+            del publish_metrics
+            assert env_ids is not None
+            self._command[env_ids] = 7.0
+            self.command_counter[env_ids] = 0
             return {}
 
     @dataclass(kw_only=True)
-    class MaskCfg(DummyCommandCfg):
-        def build(self, env: FakeEnv) -> MaskCommand:
-            return MaskCommand(self, env)
+    class IdsCfg(DummyCommandCfg):
+        def build(self, env: FakeEnv) -> IdsCommand:
+            return IdsCommand(self, env)
 
-    manager = CommandManager({"goal": MaskCfg(resampling_time_range=(1.0, 1.0))}, fake_env)
+    manager = CommandManager({"goal": IdsCfg(resampling_time_range=(1.0, 1.0))}, fake_env)
     manager.get_term("goal")._command[:] = torch.arange(4, dtype=torch.float32).reshape(-1, 1)
     manager.get_term("goal").command_counter[:] = torch.arange(4, dtype=torch.int64)
-    mask = torch.tensor([False, True, False, True])
 
-    extras = manager.reset(mask)
+    extras = manager.reset(torch.tensor([1, 3], dtype=torch.int64))
 
     assert extras == {}
     torch.testing.assert_close(
@@ -244,8 +256,6 @@ def test_command_reset_uses_owner_mask_boundary(fake_env: FakeEnv) -> None:
         manager.get_term("goal").command_counter,
         torch.tensor([0, 0, 2, 0], dtype=torch.int64),
     )
-    with pytest.raises(ValueError, match="CommandManager reset mask"):
-        manager.reset(torch.zeros((fake_env.num_envs + 1,), dtype=torch.bool))
 
 
 def test_tensor_metric_clearing_does_not_mirror_reset_rows_on_host(
@@ -329,7 +339,7 @@ def test_metrics_reductions_substeps_reset_and_finite_failure(fake_env: FakeEnv)
     assert isinstance(manager._step_values, torch.Tensor)
     assert manager._step_values.device.type == "cpu"
     assert all(isinstance(values, torch.Tensor) for values in manager._episode_sums.values())
-    extras = manager.reset(torch.tensor([False, True, True, False], dtype=torch.bool))
+    extras = manager.reset(torch.tensor([1, 2], dtype=torch.int64))
     assert extras["Episode_Metrics/mean"] == pytest.approx(3.5)
     assert extras["Episode_Metrics/max"] == pytest.approx(3.5)
     assert extras["Episode_Metrics/sum"] == pytest.approx(3.5)
@@ -358,21 +368,18 @@ def test_metrics_reductions_substeps_reset_and_finite_failure(fake_env: FakeEnv)
     )
     with pytest.raises(TypeError, match="expected torch.Tensor"):
         numpy_carrier.compute()
-    assert NullMetricsManager().reset(torch.empty(0, dtype=torch.bool)) == {}
+    assert NullMetricsManager().reset(torch.empty(0, dtype=torch.int64)) == {}
 
 
-def test_metrics_mask_reset_publishes_and_clears_only_selected_rows(fake_env: FakeEnv) -> None:
-    class MaskMetric:
+def test_metrics_reset_publishes_and_clears_only_selected_rows(fake_env: FakeEnv) -> None:
+    class SelectedRowsMetric:
         def __init__(self) -> None:
             self.cleared: torch.Tensor | None = None
 
         def __call__(self, env: FakeEnv) -> torch.Tensor:
             return torch.as_tensor(env.value)
 
-        def reset_mask(self, reset_mask: torch.Tensor) -> None:
-            self.cleared = reset_mask.clone()
-
-    term = MaskMetric()
+    term = SelectedRowsMetric()
     term_configs = [
         MetricsTermCfg(func=term, reduce=reduce) for reduce in ("mean", "max", "sum", "last")
     ]
@@ -387,7 +394,7 @@ def test_metrics_mask_reset_publishes_and_clears_only_selected_rows(fake_env: Fa
     before = {key: value.clone() for key, value in manager._episode_sums.items()}
     mask = torch.tensor([False, True, False, True])
 
-    extras = manager.reset(mask)
+    extras = manager.reset(torch.tensor([1, 3], dtype=torch.int64))
 
     assert extras["Episode_Metrics/mean"] == pytest.approx(4.0)
     assert extras["Episode_Metrics/max"] == pytest.approx(4.0)
@@ -407,11 +414,11 @@ class TraceRecorder(RecorderTerm):
         super().__init__(cfg, env)
         self.events: list[tuple[str, list[int] | None]] = []
 
-    def record_pre_reset(self, reset_mask: torch.Tensor) -> None:
-        self.events.append(("pre", reset_mask.tolist()))
+    def record_pre_reset(self, env_ids: torch.Tensor) -> None:
+        self.events.append(("pre", env_ids.tolist()))
 
-    def record_post_reset(self, reset_mask: torch.Tensor) -> None:
-        self.events.append(("post_reset", reset_mask.tolist()))
+    def record_post_reset(self, env_ids: torch.Tensor) -> None:
+        self.events.append(("post_reset", env_ids.tolist()))
 
     def record_post_step(self) -> None:
         self.events.append(("step", None))
@@ -423,14 +430,14 @@ class TraceRecorder(RecorderTerm):
 def test_recorder_lifecycle_and_null(fake_env: FakeEnv) -> None:
     cfg = {"trace": RecorderTermCfg(func=TraceRecorder)}
     manager = RecorderManager(cfg, fake_env)
-    mask = torch.tensor([True, False, False, True], dtype=torch.bool)
-    manager.record_pre_reset(mask)
-    manager.record_post_reset(mask)
+    env_ids = torch.tensor([0, 3], dtype=torch.int64)
+    manager.record_pre_reset(env_ids)
+    manager.record_post_reset(env_ids)
     manager.record_post_step()
     manager.close()
     assert manager.get_term("trace").events == [
-        ("pre", [True, False, False, True]),
-        ("post_reset", [True, False, False, True]),
+        ("pre", [0, 3]),
+        ("post_reset", [0, 3]),
         ("step", None),
         ("close", None),
     ]
@@ -446,12 +453,12 @@ def test_lifecycle_counter_recorder_is_task_independent(fake_env: FakeEnv) -> No
         fake_env,
     )
     recorder = manager.get_term("counter")
-    mask = torch.tensor([True, False, False, True], dtype=torch.bool)
+    env_ids = torch.tensor([0, 3], dtype=torch.int64)
 
-    manager.record_pre_reset(mask)
-    empty = torch.zeros(fake_env.num_envs, dtype=torch.bool)
+    manager.record_pre_reset(env_ids)
+    empty = torch.empty(0, dtype=torch.int64)
     manager.record_pre_reset(empty)
-    manager.record_post_reset(mask)
+    manager.record_post_reset(env_ids)
     manager.record_post_step()
 
     assert isinstance(recorder, LifecycleCounterRecorder)
@@ -504,9 +511,9 @@ def test_command_reset_can_skip_metric_publication(fake_env: FakeEnv) -> None:
     manager = CommandManager({"goal": DummyCommandCfg(resampling_time_range=(1.0, 1.0))}, fake_env)
     term = manager.get_term("goal")
     term.metrics["error"].fill_(2.0)
-    mask = torch.tensor([False, True, False, True], dtype=torch.bool)
+    env_ids = torch.tensor([1, 3], dtype=torch.int64)
 
-    assert term.reset(mask, publish_metrics=False) == {}
+    assert term.reset(env_ids, publish_metrics=False) == {}
     np.testing.assert_array_equal(term.metrics["error"], [2.0, 0.0, 2.0, 0.0])
     assert "reset_done_reset_validation_ms" not in manager.last_reset_timing_ms
 
@@ -516,7 +523,7 @@ def test_action_and_metric_state_clear_boundaries_match_selected_rows(fake_env: 
     action.prev_action.fill_(1.0)
     action.prev_prev_action.fill_(2.0)
     action.action.fill_(3.0)
-    action.clear_action_state(torch.tensor([True, False, True, False], dtype=torch.bool))
+    action.clear_action_state(torch.tensor([0, 2], dtype=torch.int64))
 
     torch.testing.assert_close(action.action, torch.tensor([[0.0], [3.0], [0.0], [3.0]]))
     torch.testing.assert_close(action.prev_action, torch.tensor([[0.0], [1.0], [0.0], [1.0]]))
@@ -532,7 +539,7 @@ def test_action_and_metric_state_clear_boundaries_match_selected_rows(fake_env: 
     metrics._episode_sums["sum"].fill_(4.0)
     metrics._episode_max["max"].fill_(5.0)
     metrics._step_count.fill_(2)
-    metrics.clear_episode_state(torch.tensor([False, True, False, True], dtype=torch.bool))
+    metrics.clear_episode_state(torch.tensor([1, 3], dtype=torch.int64))
 
     torch.testing.assert_close(metrics._episode_sums["sum"], torch.tensor([4.0, 0.0, 4.0, 0.0]))
     torch.testing.assert_close(

@@ -242,8 +242,10 @@ class feet_air_time(_FootContactTerm):
             (env.num_envs, self.num_feet), dtype=torch.float32, device=env.device
         )
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        self._air_time.masked_fill_(reset_mask.reshape(-1, 1), 0.0)
+    def reset(self, env_ids: torch.Tensor) -> None:
+        if not isinstance(env_ids, torch.Tensor):
+            raise TypeError(f"{self.name} reset env_ids must be a torch.Tensor")
+        self._air_time[env_ids] = 0.0
 
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
@@ -314,10 +316,11 @@ class feet_swing_height(_FootContactTerm):
             (env.num_envs, self.num_feet), dtype=torch.bool, device=env.device
         )
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        expanded = reset_mask.reshape(-1, 1)
-        self._peak_heights.masked_fill_(expanded, 0.0)
-        self._was_in_air.masked_fill_(expanded, False)
+    def reset(self, env_ids: torch.Tensor) -> None:
+        if not isinstance(env_ids, torch.Tensor):
+            raise TypeError(f"{self.name} reset env_ids must be a torch.Tensor")
+        self._peak_heights[env_ids] = 0.0
+        self._was_in_air[env_ids] = False
 
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
@@ -566,8 +569,10 @@ class foot_air_time(_FootContactTerm):
             (env.num_envs, self.num_feet), dtype=torch.float32, device=env.device
         )
 
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        self._air_time.masked_fill_(reset_mask.reshape(-1, 1), 0.0)
+    def reset(self, env_ids: torch.Tensor) -> None:
+        if not isinstance(env_ids, torch.Tensor):
+            raise TypeError(f"{self.name} reset env_ids must be a torch.Tensor")
+        self._air_time[env_ids] = 0.0
 
     def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params

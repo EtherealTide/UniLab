@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Sequence
 import torch
 from prettytable import PrettyTable
 
+from unilab.base.reset_selectors import resolve_reset_env_ids
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
 
 if TYPE_CHECKING:
@@ -94,8 +95,14 @@ class CurriculumManager(ManagerBase):
                 terms.append((term_name, data))
         return terms
 
-    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        """Publish curriculum state and reset mask-aware term state."""
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
+        """Publish curriculum state and reset term state for the selected envs."""
+        env_ids = resolve_reset_env_ids(
+            env_ids,
+            num_envs=self._env.num_envs,
+            device=torch.device(getattr(self._env, "device", "cpu")),
+            owner="CurriculumManager.reset",
+        )
         extras: dict[str, float] = {}
         for term_name, term_state in self._curriculum_state.items():
             if term_state is None:
@@ -110,19 +117,21 @@ class CurriculumManager(ManagerBase):
                     term_state = term_state.detach().cpu().item()
                 extras[f"Curriculum/{term_name}"] = term_state
         for term_cfg in self._class_term_cfgs:
-            term_cfg.func.reset(reset_mask)
+            term_cfg.func.reset(env_ids)
         return extras
 
-    def compute(self, reset_mask: torch.Tensor | None = None) -> None:
-        """Compute global and, when declared, mask-scoped curriculum terms."""
+    def compute(self, env_ids: torch.Tensor | None = None) -> None:
+        """Compute global and, when declared, env_ids-scoped curriculum terms."""
         for name, term_cfg in zip(self._term_names, self._term_cfgs, strict=False):
-            callable_mask = getattr(term_cfg.func, "reset_scoped", None)
-            if callable(callable_mask):
-                if reset_mask is None:
-                    raise ValueError(f"CurriculumManager term '{name}' requires a reset mask")
-                state = callable_mask(self._env, reset_mask, **term_cfg.params)
+            reset_scoped = getattr(term_cfg.func, "reset_scoped", None)
+            if callable(reset_scoped):
+                if env_ids is None:
+                    raise ValueError(f"CurriculumManager term '{name}' requires env_ids")
+                state = reset_scoped(self._env, env_ids, **term_cfg.params)
             else:
-                state = term_cfg.func(self._env, slice(None), **term_cfg.params)
+                state = term_cfg.func(
+                    self._env, env_ids if env_ids is not None else slice(None), **term_cfg.params
+                )
             self._validate_state(name, state)
             self._curriculum_state[name] = state
 
@@ -167,9 +176,9 @@ class NullCurriculumManager:
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:
         return []
 
-    def reset(self, reset_mask: torch.Tensor) -> dict[str, float]:
-        del reset_mask
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
+        del env_ids
         return {}
 
-    def compute(self, reset_mask: torch.Tensor | None = None) -> None:
-        del reset_mask
+    def compute(self, env_ids: torch.Tensor | None = None) -> None:
+        del env_ids
