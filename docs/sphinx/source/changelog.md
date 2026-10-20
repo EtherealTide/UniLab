@@ -39,6 +39,24 @@ PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完
   {doc}`/en/1-getting_started/6-migration_1_4_to_1_5` /
   {doc}`/zh_CN/1-getting_started/6-migration_1_4_to_1_5`。
 
+### Added / 新增
+
+- Manager-owned observation history and delay are restored:
+  `ObservationTermCfg.history_length > 0` and `delay_*` construct and reset
+  again, with the v1.3.4 semantics (oldest-to-newest flattening, first-frame
+  and post-reset backfill, noise/clip/scale before history). Partial resets
+  backfill the reset rows and peek without advancing other rows' history,
+  delay schedule, or lag RNG. `CircularBuffer` and `DelayBuffer` are now
+  exported publicly from `unilab.managers` so downstream temporal owners no
+  longer import the private `unilab.managers._buffers` package
+  ([#2462](https://github.com/Motphys/UniLab/issues/2462)).
+  恢复 Manager 持有的观测 history/delay：`ObservationTermCfg.history_length > 0`
+  与 `delay_*` 重新可构造、可 reset，语义与 v1.3.4 一致（oldest→newest 展开、
+  首帧与 reset 后 backfill、noise/clip/scale 先于 history）。部分 reset 只对
+  reset 行做 backfill 并 peek，不推进其他行的 history、delay 日程或 lag RNG。
+  `CircularBuffer` 与 `DelayBuffer` 现从 `unilab.managers` 公开导出，下游
+  temporal owner 不再需要 import 私有包 `unilab.managers._buffers`（#2462）。
+
 ## 1.4.0 (2026-10-20)
 
 ### Breaking changes / 破坏性变更

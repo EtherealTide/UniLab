@@ -1597,7 +1597,11 @@ class ManagerBasedRlEnv(TorchEnv):
             self.command_manager.refresh_reset(reset_mask)
             self.command_manager.post_compute_reset()
             reset_timing.update(getattr(self.command_manager, "last_post_compute_timing_ms", {}))
-            manager_obs = self.observation_manager.compute(update_history=True)
+            # env_ids scopes the temporal reset boundary: delay/history terms
+            # backfill the reset rows and peek, so non-reset rows keep their
+            # history, lag schedule, and lag RNG untouched. The publication
+            # stays full-width and merges through the reset mask below.
+            manager_obs = self.observation_manager.compute(update_history=True, env_ids=env_ids)
 
         mapped_obs = self._map_observations(manager_obs)
         reset_obs = {
