@@ -148,6 +148,7 @@ class ResetStateTransaction:
         self._packed_reset_transaction: PackedResetTransaction | None = None
         self._packed_state_default_installed = False
         self._owner_tensor_write_mask: torch.Tensor | None = None
+        self._requested_rows_mask: torch.Tensor | None = None
         self._tensor_write_mask: torch.Tensor | None = None
         self._tensor_root_columns: (
             tuple[tuple[int, ...], tuple[int, ...], torch.Tensor, torch.Tensor] | None
@@ -220,6 +221,9 @@ class ResetStateTransaction:
         self._owner_tensor_write_mask = torch.zeros(
             self._num_envs, dtype=torch.bool, device=resolved
         )
+        # Reusable ids→mask scratch for outside-row validation inside an
+        # active tensor transaction (roadmap #2461); consumed immediately.
+        self._requested_rows_mask = torch.zeros_like(self._owner_tensor_write_mask)
         self._packed_reset_transaction = cast(
             "PackedResetTransaction", bind_packed_reset(device=resolved)
         )
@@ -1598,7 +1602,9 @@ class ResetStateTransaction:
         if self._tensor_active:
             active_mask = self._tensor_active_mask
             assert active_mask is not None
-            requested_mask = torch.zeros_like(active_mask)
+            requested_mask = self._requested_rows_mask
+            assert requested_mask is not None
+            requested_mask.zero_()
             requested_mask[ids] = True
             outside = self._tensor_mask_has_outside_rows(requested_mask, active_mask)
         else:
@@ -2159,7 +2165,9 @@ class ResetStateTransaction:
         ids = self._validate_ids(env_ids, capability=f"write_{capability}")
         active_mask = self._tensor_active_mask
         assert active_mask is not None
-        requested_mask = torch.zeros_like(active_mask)
+        requested_mask = self._requested_rows_mask
+        assert requested_mask is not None
+        requested_mask.zero_()
         requested_mask[ids] = True
         if self._tensor_mask_has_outside_rows(requested_mask, active_mask):
             raise ValueError(

@@ -13,6 +13,7 @@ from typing import Any, Protocol
 import torch
 from unisim.backend.base import SimBackend
 
+from unilab.base.reset_selectors import ResetMaskBuffer
 from unilab.managers.rng import ManagerRng
 
 
@@ -272,6 +273,9 @@ class ManagerBasedRlEnv(Protocol):
     tensor_reset_pose_bounds: torch.Tensor | None
     tensor_reset_velocity_bounds: torch.Tensor | None
     tensor_reset_bounds_key: tuple[Any, ...] | None
+    # Short-lived ids→mask scratch shared by event terms within one reset
+    # dispatch; the returned mask is valid only until the next scatter.
+    event_term_mask_buffer: ResetMaskBuffer
 
     @property
     def physics_dt(self) -> float: ...

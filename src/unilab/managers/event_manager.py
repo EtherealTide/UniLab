@@ -16,7 +16,7 @@ import torch
 from prettytable import PrettyTable
 
 from unilab.base.reset_selectors import (
-    reset_env_ids_mask,
+    ResetMaskBuffer,
     resolve_reset_env_ids,
 )
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
@@ -91,6 +91,7 @@ class EventManager(ManagerBase):
                 "EventManager interval sampling requires the Manager-owned Torch generator"
             )
         self._rng = rng
+        self._reset_mask_buffer = ResetMaskBuffer(env.num_envs, self._device)
         self._mode_term_names: dict[EventMode, list[str]] = dict()
         self._mode_term_cfgs: dict[EventMode, list[EventTermCfg]] = dict()
         self._mode_class_term_cfgs: dict[EventMode, list[EventTermCfg]] = dict()
@@ -266,7 +267,7 @@ class EventManager(ManagerBase):
             assert callable(term_reset)
             term_reset(
                 self._env,
-                reset_env_ids_mask(env_ids, num_envs=self.num_envs, device=self._device),
+                self._reset_mask_buffer.scatter(env_ids),
                 **term_cfg.params,
             )
             return
