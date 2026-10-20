@@ -15,7 +15,7 @@ import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
-from unisim.backend.base import TensorExecution, validate_tensor_device
+from unisim.backend.base import TensorExecution, validate_torch_device
 from unisim.support import TensorPlatformProfile, get_tensor_platform_profiles
 
 from unilab.process_context import visible_cuda_entries
@@ -213,7 +213,7 @@ def apply_sim_carrier_device_override(
         if device == "auto":
             return _apply_sim_carrier_device_auto(result, learner_device, profile=profile)
         try:
-            validate_tensor_device(
+            validate_torch_device(
                 profile.torch_devices, device, label="training.sim_carrier_device"
             )
         except ValueError as exc:
@@ -255,7 +255,7 @@ def _apply_sim_carrier_device_auto(
         result["sim_carrier_device"] = "cpu"
         return result
     try:
-        validate_tensor_device(profile.torch_devices, device, label="training.sim_carrier_device")
+        validate_torch_device(profile.torch_devices, device, label="training.sim_carrier_device")
     except ValueError as exc:
         raise ValueError(
             "training.sim_carrier_device=auto resolved to "

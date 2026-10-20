@@ -9,9 +9,9 @@ import numpy as np
 import pytest
 import torch
 from unisim.backend.base import (
-    BackendMocapPoseBinding,
-    BackendRootStateLayout,
+    MocapPoseBinding,
     PublicStateWidths,
+    RootStateLayout,
     SelectedResetPublication,
     SimBackend,
     TensorDataPlane,
@@ -111,7 +111,7 @@ class _TensorResetBackend(_Backend):
         self.default_body_mass = np.array([2.0, 4.0])
         self.tensor_reset_calls: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
 
-    def tensor_execution(self):
+    def get_tensor_execution(self):
         return TensorExecution.DEVICE_RESIDENT
 
     def get_dr_capabilities(self) -> DomainRandomizationCapabilities:
@@ -147,10 +147,10 @@ class _TensorResetBackend(_Backend):
             ),
         )
 
-    def begin_packed_reset(self, *, device=None):
-        from unisim.backend.packed_reset import TorchPackedResetComposer
+    def bind_packed_reset(self, *, device=None):
+        from unisim.backend.packed_reset import PackedResetTransaction
 
-        return TorchPackedResetComposer(self, device=device)
+        return PackedResetTransaction(self, device=device)
 
     def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> dict:
         rows = torch.as_tensor(env_indices, dtype=torch.int64)
@@ -195,7 +195,7 @@ class _PackedTensorResetBackend(_TensorResetBackend):
         )
 
     def bind_mocap_pose(self, body_name: str):
-        return BackendMocapPoseBinding(
+        return MocapPoseBinding(
             self.backend_type,
             body_name,
             self.num_envs,
@@ -217,8 +217,8 @@ class _RecordingPackedTensorResetBackend(_PackedTensorResetBackend):
         super().__init__()
         self.state_write_payloads: list[tuple[torch.Tensor, torch.Tensor]] = []
 
-    def begin_packed_reset(self, *, device=None):
-        composer = super().begin_packed_reset(device=device)
+    def bind_packed_reset(self, *, device=None):
+        composer = super().bind_packed_reset(device=device)
         write_state = composer.write_state
         write_state_mask = composer.write_state_mask
 
@@ -292,7 +292,7 @@ class _ManipulationBackend(_Backend):
             self.events.append("mocap")
             self.poses[ids] = poses
 
-        return BackendMocapPoseBinding(
+        return MocapPoseBinding(
             self.backend_type,
             body_name,
             self.num_envs,
@@ -334,10 +334,10 @@ class _PerWorldBodyMassBackend(_Backend):
     def get_public_state_widths(self):
         return PublicStateWidths(len(self.qpos), len(self.qvel))
 
-    def begin_packed_reset(self, *, device=None):
-        from unisim.backend.packed_reset import TorchPackedResetComposer
+    def bind_packed_reset(self, *, device=None):
+        from unisim.backend.packed_reset import PackedResetTransaction
 
-        return TorchPackedResetComposer(self, device=device)
+        return PackedResetTransaction(self, device=device)
 
     def get_reset_term_default(self, term: str) -> np.ndarray:
         if term != RESET_TERM_BODY_MASS:
@@ -457,7 +457,7 @@ def test_packed_reset_commits_selected_rows_with_default_fill() -> None:
     transaction = _transaction(backend)
     transaction.declare_packed_reset_device(torch.device("cpu"))
     reset_mask = torch.tensor([True, False, True, False])
-    layout = BackendRootStateLayout(tuple(range(7)), tuple(range(6)))
+    layout = RootStateLayout(tuple(range(7)), tuple(range(6)))
     root_state = torch.zeros((4, 13), dtype=torch.float32)
     root_state[:, 3] = 1.0
     root_state[:, 0] = torch.tensor([0.1, 0.2, 0.3, 0.4])
@@ -595,7 +595,7 @@ def test_owner_tensor_subset_empty_motion_write_does_not_commit() -> None:
     with transaction.scoped_device_owner_tensor(torch.ones(4, dtype=torch.bool)):
         transaction.write_motion_state_tensor(
             torch.zeros(4, dtype=torch.bool),
-            BackendRootStateLayout(tuple(range(7)), tuple(range(6))),
+            RootStateLayout(tuple(range(7)), tuple(range(6))),
             np.array([7], dtype=np.int32),
             np.array([6], dtype=np.int32),
             torch.tensor((0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)).repeat(
@@ -750,7 +750,7 @@ def test_packed_root_state_payloads_remain_contiguous() -> None:
     reset_mask = torch.tensor([False, True, False, True])
     original_qpos = backend.qpos.copy()
     original_qvel = backend.qvel.copy()
-    layout = BackendRootStateLayout(tuple(range(7)), tuple(range(6)))
+    layout = RootStateLayout(tuple(range(7)), tuple(range(6)))
     root_state = torch.zeros((4, 13), dtype=torch.float32)
     root_state[:, 3] = 1.0
     root_state[1, :3] = torch.tensor([0.1, 0.2, 0.3])
@@ -790,7 +790,7 @@ def test_packed_root_state_rejects_invalid_payloads(root_state, error, match: st
     transaction = _transaction(backend)
     transaction.declare_packed_reset_device(torch.device("cpu"))
     reset_mask = torch.tensor([False, True, False, True])
-    layout = BackendRootStateLayout(tuple(range(7)), tuple(range(6)))
+    layout = RootStateLayout(tuple(range(7)), tuple(range(6)))
 
     with transaction.scoped_device_event_tensor(reset_mask):
         with pytest.raises(error, match=match):
@@ -859,7 +859,7 @@ def test_packed_motion_root_state_payloads_remain_contiguous() -> None:
     reset_mask = torch.tensor([False, True, False, True])
     original_qpos = backend.qpos.copy()
     original_qvel = backend.qvel.copy()
-    layout = BackendRootStateLayout(tuple(range(7)), tuple(range(6)))
+    layout = RootStateLayout(tuple(range(7)), tuple(range(6)))
     root_state = torch.zeros((4, 13), dtype=torch.float32)
     root_state[:, 3] = 1.0
     root_state[1, 2] = 0.3

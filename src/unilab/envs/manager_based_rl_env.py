@@ -398,7 +398,7 @@ class ManagerBasedRlEnv(TorchEnv):
         ):
             raise NotImplementedError(
                 "backend does not declare the packed_reset capability required "
-                "by the packed reset contract: SimBackend.begin_packed_reset"
+                "by the packed reset contract: SimBackend.bind_packed_reset"
             )
         self._reset_state.declare_packed_reset_device(self.device)
         if "startup" in self.event_manager.available_modes:

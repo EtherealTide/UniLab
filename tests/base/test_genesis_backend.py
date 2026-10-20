@@ -618,7 +618,7 @@ def test_unsupported_contract_surface_fails_closed(fake_genesis, tiny_model_file
         (lambda: backend.get_site_ids(["imu_site"]), "get_site_ids"),
         (lambda: backend.get_site_jacobian_w(0, np.array([6])), "get_site_jacobian_w"),
         (
-            lambda: backend.create_hfield_scanner(
+            lambda: backend.bind_height_scanner(
                 hfield_geom_id=0, offsets=np.zeros((1, 2)), frame_body_id=1
             ),
             "height-field",
@@ -684,9 +684,9 @@ def test_renderer_init_pinning_and_frame_capture(
     assert frame.shape == (720, 1280, 3) and frame.dtype == np.uint8
     camera = backend._render_camera
     assert camera is not None and camera.is_built and camera.render_count == 1
-    backend.init_renderer(headless=True, capture=True)  # same config is a no-op
+    backend.bind_renderer(headless=True, capture=True)  # same config is a no-op
     with pytest.raises(RuntimeError, match="already initialized"):
-        backend.init_renderer(headless=False)
+        backend.bind_renderer(headless=False)
     with pytest.raises(RuntimeError, match="already initialized"):
         backend.render()
 
@@ -743,12 +743,12 @@ def test_interactive_viewer_requires_display(
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     backend = _backend(tiny_model_file)
     with pytest.raises(RuntimeError, match="requires a reachable display"):
-        backend.init_renderer(headless=False)
+        backend.bind_renderer(headless=False)
 
 
 def test_camera_tracking_follows_root(fake_genesis, tiny_model_file: str) -> None:
     backend = _backend(tiny_model_file, num_envs=2)
-    backend.init_renderer(
+    backend.bind_renderer(
         headless=True,
         capture=True,
         camera_kwargs={"cam_tracking": True, "cam_tracking_env_idx": 1},

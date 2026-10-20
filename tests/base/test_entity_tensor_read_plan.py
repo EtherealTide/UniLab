@@ -77,7 +77,7 @@ class _SceneTensorBackend:
             torch_devices=("cpu",),
         )
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         return (
             TensorExecution.DEVICE_RESIDENT if self.device_resident else TensorExecution.HOST_BRIDGE
         )
@@ -181,7 +181,7 @@ class _SceneTensorBackend:
 
         return np.zeros(len(names), dtype=np.int32)
 
-    def compile_host_bridge_io(self, spec: TensorIOSpec):
+    def bind_host_bridge_io(self, spec: TensorIOSpec):
         backend = self
 
         class _Plan(HostBridgeTransferPlan):

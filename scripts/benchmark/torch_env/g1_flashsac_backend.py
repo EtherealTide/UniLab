@@ -612,7 +612,7 @@ def _backend_timing_stats(results: list[dict[str, Any] | None]) -> dict[str, dic
 def _materialize_and_negotiate(backend_name: str, sim_backend: Any) -> tuple[str, Any]:
     """Materialize before lifecycle negotiation for subprocess model metadata."""
     sim_backend.materialize()
-    mode = sim_backend.tensor_execution().value
+    mode = sim_backend.get_tensor_execution().value
     if mode not in {"device_resident", "host_bridge"}:
         raise RuntimeError(f"backend {backend_name} did not negotiate a tensor lifecycle: {mode}")
     return mode, sim_backend.get_tensor_capabilities()
@@ -729,7 +729,7 @@ def _run_with_backend(
     if mode == "host_bridge":
         if not capabilities.packed_host_bridge:
             raise RuntimeError("host-bridge benchmark backend does not support packed I/O")
-        host_bridge_plan = sim_backend.compile_host_bridge_io(
+        host_bridge_plan = sim_backend.bind_host_bridge_io(
             TensorIOSpec(
                 state_fields=("qpos", "qvel"),
                 sensor_names=_host_bridge_sensor_names(tuple(robot_body_names)),

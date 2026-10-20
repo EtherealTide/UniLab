@@ -71,12 +71,12 @@ def _patch_render_pipeline(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     if visualization_pkg is not None:
         monkeypatch.setattr(visualization_pkg, "render_many", render_many_mod, raising=False)
 
-    from unisim.backend import playback_common
+    from unisim.backend import playback
 
     def _write_playback_video(path: str, frames: list[np.ndarray], *, fps: int) -> None:
         log["write_playback_video"] = {"path": path, "frames": list(frames), "fps": fps}
 
-    monkeypatch.setattr(playback_common, "write_playback_video", _write_playback_video)
+    monkeypatch.setattr(playback, "write_playback_video", _write_playback_video)
     return log
 
 

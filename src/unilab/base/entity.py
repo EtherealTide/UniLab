@@ -18,16 +18,16 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast
 import numpy as np
 import torch
 from unisim.backend.base import (
-    BackendRootStateLayout,
-    BackendSensorView,
     HostBridgeTransferPlan,
+    RootStateLayout,
+    SensorView,
     SimBackend,
     TensorDataPlane,
     TensorExecution,
     TensorIOSpec,
     TensorLifecycleCapabilities,
     TensorProcessTopology,
-    tensor_device_matches,
+    torch_device_matches,
 )
 from unisim.dr.interval import (
     INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
@@ -1438,7 +1438,7 @@ class Entity:
         self._backend = backend
         self._body_tensor_layouts: dict[tuple[str, ...], np.ndarray] = {}
         self._reset_state = reset_state
-        self._reset_root_layout: BackendRootStateLayout | None = None
+        self._reset_root_layout: RootStateLayout | None = None
         self._reset_root_layout_error: str | None = None
         self._reset_joint_qpos_ids: np.ndarray | None = None
         self._reset_joint_qvel_ids: np.ndarray | None = None
@@ -1713,7 +1713,7 @@ class Entity:
             capabilities.state_fields
         ):
             raise self._capability_error("joint tensor state", "qpos/qvel views are unavailable")
-        if not tensor_device_matches(capabilities.torch_devices, device):
+        if not torch_device_matches(capabilities.torch_devices, device):
             raise ValueError(
                 f"Entity '{self.name}' tensor joint-state device {device} is "
                 f"unsupported on backend '{self._backend_type}'; "
@@ -1781,7 +1781,7 @@ class Entity:
             )
         if not capabilities.sensor_views:
             raise self._capability_error(capability, "named sensor views are unavailable")
-        if not tensor_device_matches(capabilities.torch_devices, resolved_device):
+        if not torch_device_matches(capabilities.torch_devices, resolved_device):
             raise ValueError(
                 f"Entity '{self.name}' tensor {capability} device {resolved_device} is "
                 f"unsupported on backend '{self._backend_type}'; "
@@ -2229,7 +2229,7 @@ class Entity:
         backend: SimBackend,
         root_body_name: str | None,
         default_qpos: np.ndarray | None,
-    ) -> tuple[BackendRootStateLayout | None, np.ndarray | None, str | None]:
+    ) -> tuple[RootStateLayout | None, np.ndarray | None, str | None]:
         if root_body_name is None:
             return None, None, "root_body_name was not declared in EntityCfg"
         if self._entity_defaults is not None:
@@ -2241,10 +2241,10 @@ class Entity:
             layout = backend.get_root_state_layout(root_body_name)
         except (AttributeError, NotImplementedError) as exc:
             return None, None, str(exc)
-        if not isinstance(layout, BackendRootStateLayout):
+        if not isinstance(layout, RootStateLayout):
             raise TypeError(
                 f"Entity '{self.name}' capability 'root-state layout' on backend "
-                f"'{self._backend_type}' must return BackendRootStateLayout, got "
+                f"'{self._backend_type}' must return RootStateLayout, got "
                 f"{type(layout).__name__}"
             )
         try:
@@ -2749,7 +2749,7 @@ class Entity:
             assert self._reset_state is not None
             assert self._reset_state.scene_layout is not None
             owner = self._reset_state.scene_layout.get_entity(self._physical_entity)
-            layout = BackendRootStateLayout(
+            layout = RootStateLayout(
                 qpos_indices=tuple(owner.root_qpos_indices),
                 qvel_indices=tuple(owner.root_qvel_indices),
             )
@@ -3753,7 +3753,7 @@ class Entity:
 
     def _require_root_state_write(
         self,
-    ) -> tuple[ResetStateTransaction, BackendRootStateLayout]:
+    ) -> tuple[ResetStateTransaction, RootStateLayout]:
         if self._reset_state is None:
             raise self._capability_error(
                 "reset root-state write",
@@ -4277,7 +4277,7 @@ class EntityScene(Mapping[str, Entity]):
                 device=resolved_device,
             )
             try:
-                host_plan = self._backend.compile_host_bridge_io(spec)
+                host_plan = self._backend.bind_host_bridge_io(spec)
             except (AttributeError, KeyError, TypeError, ValueError, NotImplementedError) as exc:
                 raise type(exc)(
                     "Manager scene packed tensor read compilation on backend "
@@ -4335,7 +4335,7 @@ class EntityScene(Mapping[str, Entity]):
             raise NotImplementedError(
                 "Manager scene HOST_BRIDGE tensor reads require an in-process packed host bridge"
             )
-        if not tensor_device_matches(capabilities.torch_devices, device):
+        if not torch_device_matches(capabilities.torch_devices, device):
             raise ValueError(
                 f"Manager scene tensor read device {device} is unsupported; "
                 f"accepted={capabilities.torch_devices}"
@@ -4427,11 +4427,11 @@ class EntityScene(Mapping[str, Entity]):
             )
         self._reset_state.write_gravity(env_ids, values, term_name=term_name)
 
-    def bind_sensor_data(self, names: Sequence[str]) -> BackendSensorView:
+    def bind_sensor_data(self, names: Sequence[str]) -> SensorView:
         """Bind existing backend sensors for a manager term on the cold path.
 
         The returned view owns the backend-specific reader.  Terms retain that
-        view and only call :meth:`BackendSensorView.read` while stepping, so the
+        view and only call :meth:`SensorView.read` while stepping, so the
         scene facade never exposes a backend model, data object, or native handle.
         """
         try:

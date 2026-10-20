@@ -407,7 +407,7 @@ def test_render_play_mode_uses_env_interactive_contract():
             kwargs.pop("on_frame", None)
             return run_motrix_playback(backend=self, env=self, **kwargs)
 
-        def init_renderer(self, **kwargs):
+        def bind_renderer(self, **kwargs):
             self.init_calls.append(kwargs)
 
         def render(self):
@@ -478,7 +478,7 @@ def test_motrix_interactive_run_playback_treats_window_close_as_done(
 
     backend = MotrixBackend.__new__(MotrixBackend)
     backend._portable_mode = False
-    backend.init_renderer = lambda **kwargs: None
+    backend.bind_renderer = lambda **kwargs: None
 
     def _render():
         raise RenderClosedError("closed")
@@ -507,7 +507,7 @@ def test_motrix_record_run_playback_does_not_swallow_render_closed(tmp_path: Pat
 
     backend = MotrixBackend.__new__(MotrixBackend)
     backend._portable_mode = False
-    backend.init_renderer = lambda **kwargs: None
+    backend.bind_renderer = lambda **kwargs: None
 
     def _capture_video_frame():
         raise RenderClosedError("closed")
@@ -548,7 +548,7 @@ def test_render_play_mode_uses_motrix_native_video_capture(
             kwargs.pop("on_frame", None)
             return run_motrix_playback(backend=self, env=self, **kwargs)
 
-        def init_renderer(self, **kwargs):
+        def bind_renderer(self, **kwargs):
             self.init_calls.append(kwargs)
 
         def capture_video_frame(self) -> np.ndarray:
@@ -556,7 +556,7 @@ def test_render_play_mode_uses_motrix_native_video_capture(
             return np.full((2, 3, 3), self.capture_calls, dtype=np.uint8)
 
     monkeypatch.setattr(
-        "unisim.backend.playback_common.imageio.mimsave",
+        "unisim.backend.playback.imageio.mimsave",
         lambda path, frames, fps: captured.update(
             {"video_path": path, "frames": frames, "fps": fps}
         ),
@@ -618,7 +618,7 @@ def test_render_play_mode_rejects_motrix_record_with_interactive_window(
             kwargs.pop("on_frame", None)
             return run_motrix_playback(backend=self, env=self, **kwargs)
 
-        def init_renderer(self, **kwargs):
+        def bind_renderer(self, **kwargs):
             self.init_calls.append(kwargs)
 
         def capture_video_frame(self) -> np.ndarray:
@@ -626,7 +626,7 @@ def test_render_play_mode_rejects_motrix_record_with_interactive_window(
             return np.full((2, 3, 3), self.capture_calls, dtype=np.uint8)
 
     monkeypatch.setattr(
-        "unisim.backend.playback_common.imageio.mimsave",
+        "unisim.backend.playback.imageio.mimsave",
         lambda path, frames, fps: captured.update(
             {"video_path": path, "frames": frames, "fps": fps}
         ),
@@ -680,7 +680,7 @@ def test_render_play_mode_defaults_to_env_physics_snapshot(
         return [np.zeros((2, 2, 3), dtype=np.uint8)]
 
     monkeypatch.setattr(
-        "unisim.backend.playback_common.imageio.mimsave",
+        "unisim.backend.playback.imageio.mimsave",
         lambda path, frames, fps: captured.update(
             {"video_path": path, "frames": frames, "fps": fps}
         ),
@@ -768,7 +768,7 @@ def test_render_play_mode_uses_visual_playback_model_for_video_export(
         return [np.zeros((2, 2, 3), dtype=np.uint8)]
 
     monkeypatch.setattr(
-        "unisim.backend.playback_common.imageio.mimsave",
+        "unisim.backend.playback.imageio.mimsave",
         lambda path, frames, fps: captured.update(
             {"video_path": path, "frames": frames, "fps": fps}
         ),

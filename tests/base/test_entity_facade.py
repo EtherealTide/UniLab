@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 import torch
 from unisim.backend.base import (
-    BackendMocapPoseBinding,
-    BackendRootStateLayout,
+    MocapPoseBinding,
+    RootStateLayout,
     SimBackend,
     TrackedBodyStateViews,
 )
@@ -80,11 +80,11 @@ class _StrictBackendProfile:
         self._check("body names")
         return np.asarray([self.body_ids[name] for name in names], dtype=np.int32)
 
-    def get_root_state_layout(self, root_body_name: str) -> BackendRootStateLayout:
+    def get_root_state_layout(self, root_body_name: str) -> RootStateLayout:
         self._check("root-state layout")
         if root_body_name != "base":
             raise ValueError(f"unknown root body {root_body_name}")
-        return BackendRootStateLayout(tuple(range(1, 8)), tuple(range(2, 8)))
+        return RootStateLayout(tuple(range(1, 8)), tuple(range(2, 8)))
 
     def get_default_qpos(self) -> np.ndarray:
         self._check("default qpos")
@@ -203,7 +203,7 @@ def test_manipulation_entity_maps_local_columns_and_binds_mocap_without_floating
                 supported_reset_terms=frozenset(("geom_size", "dof_damping"))
             )
 
-        def get_geom_sizes(self):
+        def get_default_geom_sizes(self):
             self._check("geom size defaults")
             return np.ones((3, 3))
 
@@ -229,7 +229,7 @@ def test_manipulation_entity_maps_local_columns_and_binds_mocap_without_floating
             def write(ids, poses):
                 self.poses[ids] = poses
 
-            return BackendMocapPoseBinding(
+            return MocapPoseBinding(
                 "mjwarp", name, self.num_envs, self.poses[0], lambda: self.poses, write
             )
 

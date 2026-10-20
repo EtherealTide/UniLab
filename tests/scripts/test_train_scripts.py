@@ -884,7 +884,7 @@ def test_run_native_viewer_play_loop_uses_render_spacing_and_offset_mode():
             self.init_renderer_calls = []
             self.render_calls = 0
 
-        def init_renderer(self, spacing=1.0, offset_mode="grid"):
+        def bind_renderer(self, spacing=1.0, offset_mode="grid"):
             self.init_renderer_calls.append((spacing, offset_mode))
 
         def render(self):
@@ -898,9 +898,9 @@ def test_run_native_viewer_play_loop_uses_render_spacing_and_offset_mode():
         def init_play_renderer(self, render_spacing=None, render_offset_mode=None):
             offset_mode = "grid" if render_offset_mode is None else render_offset_mode
             if render_spacing is None:
-                self._renderer.init_renderer(offset_mode=offset_mode)
+                self._renderer.bind_renderer(offset_mode=offset_mode)
             else:
-                self._renderer.init_renderer(render_spacing, offset_mode=offset_mode)
+                self._renderer.bind_renderer(render_spacing, offset_mode=offset_mode)
 
         def run_playback(self, **kwargs):
             kwargs.pop("frame_state_getter", None)
@@ -1053,7 +1053,7 @@ def test_run_native_viewer_play_loop_runs_without_physics_state():
             self.init_renderer_calls = 0
             self.render_calls = 0
 
-        def init_renderer(self, spacing=1.0, offset_mode="grid", **kwargs):
+        def bind_renderer(self, spacing=1.0, offset_mode="grid", **kwargs):
             del spacing, offset_mode, kwargs
             self.init_renderer_calls += 1
 
@@ -1094,7 +1094,7 @@ def test_run_native_viewer_play_loop_runs_without_physics_state():
 
         def init_play_renderer(self, render_spacing=None, render_offset_mode=None):
             del render_spacing, render_offset_mode
-            self._renderer.init_renderer()
+            self._renderer.bind_renderer()
 
         def run_playback(self, **kwargs):
             kwargs.pop("frame_state_getter", None)

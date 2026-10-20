@@ -6,15 +6,8 @@ import os
 import xml.etree.ElementTree as ET
 
 import pytest
-from unisim.backend.motrix.scene import (
-    materialize_motrix_hfield_attached_scene,
-    materialize_motrix_scene,
-)
-from unisim.backend.mujoco.xml import (
-    inject_mujoco_tracking_sensors,
-    materialize_mujoco_hfield_attached_scene,
-    materialize_scene_fragments,
-)
+from unisim.backend.motrix import scene as motrix_scene
+from unisim.backend.mujoco import xml as mujoco_xml
 
 from unilab.assets import ASSETS_ROOT_PATH
 
@@ -60,10 +53,10 @@ def _assert_geom_contact_params(
     assert model.geom_solref[geom_id][1] == pytest.approx(1.0)
 
 
-def test_inject_mujoco_tracking_sensors_uses_mjspec_and_preserves_contract() -> None:
+def test_bind_mujoco_tracking_sensors_uses_mjspec_and_preserves_contract() -> None:
     mujoco = pytest.importorskip("mujoco")
 
-    tmp_xml, tracked_body_ids, valid_bnames = inject_mujoco_tracking_sensors(
+    tmp_xml, tracked_body_ids, valid_bnames = mujoco_xml.bind_tracking_sensors(
         _g1_scene(),
         baselink_name="pelvis",
     )
@@ -85,10 +78,10 @@ def test_inject_mujoco_tracking_sensors_uses_mjspec_and_preserves_contract() -> 
         os.remove(tmp_xml)
 
 
-def test_materialize_motrix_scene_adds_tracking_frame_sensors() -> None:
+def test_motrix_materialize_scene_adds_tracking_frame_sensors() -> None:
     motrixsim = pytest.importorskip("motrixsim")
 
-    model = materialize_motrix_scene(
+    model = motrix_scene.materialize_scene(
         model_file=_g1_scene(),
         add_body_sensors=True,
         base_name="pelvis",
@@ -132,7 +125,7 @@ def test_materialize_scene_fragments_merges_static_scene_fragment(tmp_path) -> N
         encoding="utf-8",
     )
 
-    tmp_xml = materialize_scene_fragments(str(scene), fragment_files=[str(fragment)])
+    tmp_xml = mujoco_xml.materialize_scene_fragments(str(scene), fragment_files=[str(fragment)])
     try:
         model = mujoco.MjModel.from_xml_path(tmp_xml)
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "foot_contact") >= 0
@@ -140,7 +133,7 @@ def test_materialize_scene_fragments_merges_static_scene_fragment(tmp_path) -> N
         os.remove(tmp_xml)
 
 
-def test_materialize_mujoco_hfield_attached_scene_composes_robot_and_task_fragment(
+def test_mujoco_materialize_hfield_attached_scene_composes_robot_and_task_fragment(
     tmp_path,
 ) -> None:
     mujoco = pytest.importorskip("mujoco")
@@ -156,7 +149,7 @@ def test_materialize_mujoco_hfield_attached_scene_composes_robot_and_task_fragme
     cfg.add_lights = False
     cfg.seed = 0
 
-    model, terrain_origins = materialize_mujoco_hfield_attached_scene(
+    model, terrain_origins = mujoco_xml.materialize_hfield_attached_scene(
         model_file=_go2_mujoco_robot(),
         terrain_cfg=cfg,
         output_dir=tmp_path,
@@ -210,7 +203,7 @@ def test_materialize_mujoco_hfield_attached_scene_composes_robot_and_task_fragme
     assert mujoco.mj_name2id(reloaded_model, mujoco.mjtObj.mjOBJ_GEOM, "floor") >= 0
 
 
-def test_materialize_mujoco_hfield_attached_scene_accepts_repo_relative_fragments(
+def test_mujoco_materialize_hfield_attached_scene_accepts_repo_relative_fragments(
     tmp_path,
 ) -> None:
     mujoco = pytest.importorskip("mujoco")
@@ -226,7 +219,7 @@ def test_materialize_mujoco_hfield_attached_scene_accepts_repo_relative_fragment
     cfg.add_lights = False
     cfg.seed = 0
 
-    model, _ = materialize_mujoco_hfield_attached_scene(
+    model, _ = mujoco_xml.materialize_hfield_attached_scene(
         model_file=str(ASSETS_ROOT_PATH / "robots" / "go2" / "go2.xml"),
         terrain_cfg=cfg,
         output_dir=tmp_path,
@@ -236,7 +229,7 @@ def test_materialize_mujoco_hfield_attached_scene_accepts_repo_relative_fragment
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "FL_foot_contact") >= 0
 
 
-def test_materialize_motrix_hfield_attached_scene_composes_robot_and_task_fragment() -> None:
+def test_motrix_materialize_hfield_attached_scene_composes_robot_and_task_fragment() -> None:
     pytest.importorskip("motrixsim")
 
     import copy
@@ -250,7 +243,7 @@ def test_materialize_motrix_hfield_attached_scene_composes_robot_and_task_fragme
     cfg.add_lights = False
     cfg.seed = 0
 
-    model, terrain_origins = materialize_motrix_hfield_attached_scene(
+    model, terrain_origins = motrix_scene.materialize_hfield_attached_scene(
         model_file=_go2_robot(),
         terrain_cfg=cfg,
         fragment_files=[_go2_locomotion_task()],
@@ -266,7 +259,7 @@ def test_materialize_motrix_hfield_attached_scene_composes_robot_and_task_fragme
     assert model.get_link("base") is not None
 
 
-def test_materialize_motrix_hfield_row_direction_uses_compiled_order() -> None:
+def test_motrix_materialize_hfield_row_direction_uses_compiled_order() -> None:
     pytest.importorskip("motrixsim")
 
     import copy
@@ -283,7 +276,7 @@ def test_materialize_motrix_hfield_row_direction_uses_compiled_order() -> None:
     cfg.seed = 123
 
     generated = TerrainGenerator(cfg).generate()
-    motrix_model, _, motrix_sampler = materialize_motrix_hfield_attached_scene(
+    motrix_model, _, motrix_sampler = motrix_scene.materialize_hfield_attached_scene(
         model_file=_go2_robot(),
         terrain_cfg=cfg,
         fragment_files=[_go2_locomotion_task()],

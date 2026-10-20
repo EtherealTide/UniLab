@@ -179,12 +179,12 @@ class _FakeBackend:
             raise NotImplementedError("host callback disabled")
         self.pre_step_control = fn
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         return TensorExecution.DEVICE_RESIDENT if self.packed_reset else TensorExecution.HOST_BRIDGE
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
         return TensorLifecycleCapabilities(
-            execution=self.tensor_execution(),
+            execution=self.get_tensor_execution(),
             state_views=self.packed_reset,
             state_fields=frozenset({"qpos", "qvel"}),
             stepping=True,
@@ -208,10 +208,10 @@ class _FakeBackend:
             reset_randomization=True,
         )
 
-    def begin_packed_reset(self, *, device=None):
-        from unisim.backend.packed_reset import TorchPackedResetComposer
+    def bind_packed_reset(self, *, device=None):
+        from unisim.backend.packed_reset import PackedResetTransaction
 
-        return TorchPackedResetComposer(self, device=device)
+        return PackedResetTransaction(self, device=device)
 
     def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> None:
         self.set_state_calls.append(
@@ -447,7 +447,7 @@ class _DeferredTensorBackend(_FakeBackend):
             )
         )
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         capabilities = self.get_tensor_capabilities()
         return (
             TensorExecution.HOST_BRIDGE
@@ -494,7 +494,7 @@ class _ScenePlanBackend(_StateBackend):
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
         return TensorLifecycleCapabilities(
-            execution=self.tensor_execution(),
+            execution=self.get_tensor_execution(),
             state_views=True,
             state_fields=frozenset({"qpos", "qvel"}),
             sensor_views=True,
@@ -525,11 +525,11 @@ class _ScenePlanBackend(_StateBackend):
         return super().get_state_views(fields, device=target)
 
     def bind_sensor_data(self, names):
-        from unisim.backend.base import BackendSensorView
+        from unisim.backend.base import SensorView
 
         sensor_names = tuple(names)
         values = [self.sensors[name] for name in sensor_names]
-        return BackendSensorView(
+        return SensorView(
             self.backend_type,
             sensor_names,
             tuple(value.shape[1] for value in values),
@@ -561,7 +561,7 @@ class _ScenePlanBackend(_StateBackend):
             ang_vel_w=field("track_angvel_w_", 3),
         )
 
-    def compile_host_bridge_io(self, spec: TensorIOSpec):
+    def bind_host_bridge_io(self, spec: TensorIOSpec):
         backend = self
 
         class _Plan(HostBridgeTransferPlan):
@@ -669,10 +669,10 @@ class _DeviceResidentScenePlanBackend(_ScenePlanBackend):
             torch_devices=("cuda",),
         )
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         return TensorExecution.DEVICE_RESIDENT
 
-    def compile_host_bridge_io(self, spec: TensorIOSpec):
+    def bind_host_bridge_io(self, spec: TensorIOSpec):
         raise AssertionError("DEVICE_RESIDENT reset must not compile a host bridge plan")
 
     def set_state_tensor(self, env_indices, qpos, qvel, randomization=None) -> None:
@@ -3165,10 +3165,10 @@ def test_device_resident_tensor_root_event_commits_selected_rows_once() -> None:
             return np.zeros(9, dtype=np.float32)
 
         def get_root_state_layout(self, root_body_name: str) -> Any:
-            from unisim.backend.base import BackendRootStateLayout
+            from unisim.backend.base import RootStateLayout
 
             assert root_body_name == "base"
-            return BackendRootStateLayout(
+            return RootStateLayout(
                 qpos_indices=(0, 1, 2, 3, 4, 5, 6), qvel_indices=(0, 1, 2, 3, 4, 5)
             )
 

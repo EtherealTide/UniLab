@@ -117,7 +117,7 @@ class _HostBridgeBackend:
             torch_devices=("cpu", "cuda"),
         )
 
-    def compile_host_bridge_io(self, spec):
+    def bind_host_bridge_io(self, spec):
         backend = self
 
         class _Plan(HostBridgeTransferPlan):

@@ -36,7 +36,7 @@ def _backend() -> MagicMock:
     backend = MagicMock(spec=SimBackend)
     backend.backend_type = "mujoco"
     backend.num_actuators = 4
-    backend.tensor_execution.return_value = TensorExecution.HOST_BRIDGE
+    backend.get_tensor_execution.return_value = TensorExecution.HOST_BRIDGE
     backend.get_tensor_capabilities.return_value = TensorLifecycleCapabilities(
         execution=TensorExecution.HOST_BRIDGE,
         state_fields=frozenset({"qpos", "qvel"}),
@@ -56,7 +56,7 @@ def _backend() -> MagicMock:
 
 def _unsupported_backend() -> MagicMock:
     backend = _backend()
-    backend.tensor_execution.return_value = TensorExecution.UNSUPPORTED
+    backend.get_tensor_execution.return_value = TensorExecution.UNSUPPORTED
     backend.get_tensor_capabilities.return_value = TensorLifecycleCapabilities(
         execution=TensorExecution.UNSUPPORTED
     )
@@ -472,7 +472,7 @@ def test_backend_capability_mismatch_fails_closed() -> None:
     with pytest.raises(ValueError, match="stepping and mask reset"):
         env.init_state()
 
-    backend.tensor_execution.return_value = TensorExecution.DEVICE_RESIDENT
+    backend.get_tensor_execution.return_value = TensorExecution.DEVICE_RESIDENT
     env = _StubTorchEnv(backend=backend)
     with pytest.raises(ValueError, match="does not match its capabilities"):
         env.init_state()
@@ -500,7 +500,7 @@ def test_invalid_final_observation_fails_closed() -> None:
 
 def test_device_resident_backend_honors_declared_torch_device() -> None:
     backend = _backend()
-    backend.tensor_execution.return_value = TensorExecution.DEVICE_RESIDENT
+    backend.get_tensor_execution.return_value = TensorExecution.DEVICE_RESIDENT
     backend.get_tensor_capabilities.return_value = TensorLifecycleCapabilities(
         execution=TensorExecution.DEVICE_RESIDENT,
         state_fields=frozenset({"qpos", "qvel"}),

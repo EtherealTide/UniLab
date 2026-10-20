@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
-from unisim.backend.base import SimBackend, TensorExecution, tensor_device_matches
+from unisim.backend.base import SimBackend, TensorExecution, torch_device_matches
 
 GO2_JOINT_NAMES: tuple[str, ...] = (
     "FL_hip_joint",
@@ -226,7 +226,7 @@ class Go2ParityRuntime:
                 "Go2 tensor parity runtime requires a DEVICE_RESIDENT backend; "
                 f"received {execution!r}"
             )
-        if self.backend.tensor_execution() is not execution:
+        if self.backend.get_tensor_execution() is not execution:
             raise RuntimeError("backend tensor execution does not match its capabilities")
         missing_fields = {"qpos", "qvel"} - set(capabilities.state_fields)
         if missing_fields:
@@ -241,7 +241,7 @@ class Go2ParityRuntime:
             raise RuntimeError("backend did not negotiate selected tensor reset")
         if not capabilities.mask_selected_reset:
             raise RuntimeError("backend did not negotiate mask tensor reset")
-        if not tensor_device_matches(
+        if not torch_device_matches(
             capabilities.torch_devices,
             self.device,
             current_device=self.device.index,

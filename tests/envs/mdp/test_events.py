@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 import torch
 from unisim.backend.base import (
-    BackendRootStateLayout,
     PublicStateWidths,
+    RootStateLayout,
     SelectedResetPublication,
     SimBackend,
     TensorDataPlane,
@@ -313,12 +313,12 @@ class _Backend:
             raise KeyError(names)
         return np.asarray([0], dtype=np.int32)
 
-    def get_root_state_layout(self, root_body_name: str) -> BackendRootStateLayout:
+    def get_root_state_layout(self, root_body_name: str) -> RootStateLayout:
         if not self.root_layout_supported:
             raise NotImplementedError("fake fixed-base entity has no free-root layout")
         if root_body_name != "base":
             raise ValueError(root_body_name)
-        return BackendRootStateLayout(tuple(range(7)), tuple(range(6)))
+        return RootStateLayout(tuple(range(7)), tuple(range(6)))
 
     def get_default_qpos(self) -> np.ndarray:
         return self.default_qpos.copy()
@@ -442,10 +442,10 @@ class _Backend:
             packed_reset_fields=packed_fields,
         )
 
-    def begin_packed_reset(self, *, device=None):
-        from unisim.backend.packed_reset import TorchPackedResetComposer
+    def bind_packed_reset(self, *, device=None):
+        from unisim.backend.packed_reset import PackedResetTransaction
 
-        return TorchPackedResetComposer(self, device=device)
+        return PackedResetTransaction(self, device=device)
 
     def get_reset_term_default(self, term: str) -> np.ndarray:
         if not self.get_dr_capabilities().supports_reset_term(term):

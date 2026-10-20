@@ -9,7 +9,7 @@ from typing import Any, cast
 import numpy as np
 import pytest
 import torch
-from unisim.backend.base import BackendSensorView
+from unisim.backend.base import SensorView
 
 from unilab.managers import RewardManager, RewardTermCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
@@ -63,7 +63,7 @@ class _Scene:
             raise KeyError(name)
         return self.robot
 
-    def bind_sensor_data(self, names) -> BackendSensorView:
+    def bind_sensor_data(self, names) -> SensorView:
         names = tuple(names)
         self.calls["bind"] += 1
         dimensions = tuple(self.contacts[name].shape[1] for name in names)
@@ -72,7 +72,7 @@ class _Scene:
             self.calls["read"] += 1
             return np.concatenate([self.contacts[name] for name in names], axis=1)
 
-        view = BackendSensorView("fake", names, dimensions, 2, read)
+        view = SensorView("fake", names, dimensions, 2, read)
         view.read()  # Mirror SimBackend.bind_sensor_data materialization validation.
         return view
 

@@ -44,7 +44,7 @@ class _TestEnvA(TorchEnv):
         from unittest.mock import MagicMock
 
         backend = MagicMock(spec=SimBackend)
-        backend.tensor_execution.return_value = TensorExecution.HOST_BRIDGE
+        backend.get_tensor_execution.return_value = TensorExecution.HOST_BRIDGE
         backend.get_tensor_capabilities.return_value = TensorLifecycleCapabilities(
             execution=TensorExecution.HOST_BRIDGE,
             state_fields=frozenset({"qpos", "qvel"}),

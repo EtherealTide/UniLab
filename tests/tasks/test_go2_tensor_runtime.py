@@ -52,7 +52,7 @@ class FakeGo2DeviceBackend:
         self.cpu_detour_calls = 0
         self._refresh_sensors()
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         return TensorExecution.DEVICE_RESIDENT
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
@@ -147,7 +147,7 @@ class FakeGo2DeviceBackend:
 class UnsupportedBackend:
     backend_type = "fake-unsupported"
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         return TensorExecution.UNSUPPORTED
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:

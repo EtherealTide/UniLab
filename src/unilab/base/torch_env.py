@@ -20,14 +20,14 @@ import gymnasium as gym
 import numpy as np
 import torch
 from unisim.backend.base import (
-    BackendPlayRenderPlan,
     CameraCfg,
     CompletionToken,
     DebugOverlayGetter,
     DebugPrimitive,
+    PlayRenderPlan,
     SimBackend,
     TensorExecution,
-    tensor_device_matches,
+    torch_device_matches,
 )
 
 from unilab.base.backend_timing import (
@@ -132,13 +132,13 @@ class TorchEnv(ABEnv):
                 f"{type(self._backend).__name__} does not declare a tensor lifecycle; "
                 f"TorchEnv got {execution!r}"
             )
-        if self._backend.tensor_execution() is not execution:
+        if self._backend.get_tensor_execution() is not execution:
             raise ValueError("backend tensor execution does not match its capabilities")
         if not capabilities.stepping or not capabilities.selected_reset:
             raise ValueError("TorchEnv backend must support tensor stepping and mask reset")
         if execution is TensorExecution.HOST_BRIDGE and not capabilities.packed_host_bridge:
             raise ValueError("HOST_BRIDGE TorchEnv requires a packed host-bridge plan")
-        if not tensor_device_matches(capabilities.torch_devices, self._device):
+        if not torch_device_matches(capabilities.torch_devices, self._device):
             raise ValueError(
                 f"backend did not accept Torch device {str(self._device)!r}; "
                 f"supported devices are {capabilities.torch_devices}"
@@ -652,7 +652,7 @@ class TorchEnv(ABEnv):
             if render_offset_mode is not None
             else str(getattr(self._cfg, "render_offset_mode", "grid"))
         )
-        self._backend.init_renderer(
+        self._backend.bind_renderer(
             spacing=spacing,
             offset_mode=offset_mode,
             headless=bool(headless),
@@ -668,7 +668,7 @@ class TorchEnv(ABEnv):
         play_render_mode: str | None,
         play_steps: int | None,
         output_video: str | PathLike[str] | None,
-    ) -> BackendPlayRenderPlan:
+    ) -> PlayRenderPlan:
         """Resolve high-level playback mode through the concrete backend."""
         if self._backend.backend_type == "drake" and (
             play_render_mode is None or str(play_render_mode).strip().lower() == "auto"

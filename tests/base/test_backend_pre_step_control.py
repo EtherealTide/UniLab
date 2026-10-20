@@ -353,7 +353,7 @@ def test_motrix_native_video_capture_uses_headless_system_camera(monkeypatch) ->
     backend._render_headless = None
     backend._render_capture_enabled = False
 
-    backend.init_renderer(
+    backend.bind_renderer(
         spacing=1.5,
         headless=True,
         capture=True,
@@ -438,7 +438,7 @@ def test_motrix_native_video_capture_defaults_camera_lookat_to_grid_center(monke
     backend._render_headless = None
     backend._render_capture_enabled = False
 
-    backend.init_renderer(
+    backend.bind_renderer(
         spacing=2.0,
         headless=True,
         capture=True,
@@ -534,7 +534,7 @@ def test_motrix_native_video_capture_tracks_primary_env_base(monkeypatch) -> Non
     backend._render_capture_enabled = False
     backend._host_get_base_pos = lambda: base_positions
 
-    backend.init_renderer(
+    backend.bind_renderer(
         spacing=1.5,
         headless=True,
         capture=True,
@@ -624,7 +624,7 @@ def test_motrix_interactive_renderer_applies_camera_kwargs(monkeypatch) -> None:
     backend._render_headless = None
     backend._render_capture_enabled = False
 
-    backend.init_renderer(
+    backend.bind_renderer(
         spacing=1.0,
         camera_kwargs={
             "cam_lookat": [10.0, 20.0, 0.5],
@@ -680,7 +680,7 @@ def test_motrix_renderer_zero_offset_mode(monkeypatch) -> None:
     backend._render_headless = None
     backend._render_capture_enabled = False
 
-    backend.init_renderer(spacing=2.0, offset_mode="zero")
+    backend.bind_renderer(spacing=2.0, offset_mode="zero")
 
     assert captured["render_offset"] == [
         [0.0, 0.0, 0.0],

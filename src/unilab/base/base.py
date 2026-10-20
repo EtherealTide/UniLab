@@ -8,10 +8,10 @@ from typing import Any, Optional
 import gymnasium as gym
 import numpy as np
 from unisim.backend.base import (
-    BackendPlayRenderPlan,
     CameraCfg,
     DebugOverlayGetter,
     DebugPrimitive,
+    PlayRenderPlan,
 )
 
 from .scene import SceneCfg
@@ -324,7 +324,7 @@ class ABEnv(abc.ABC):
         play_render_mode: str | None,
         play_steps: int | None,
         output_video: str | PathLike[str] | None,
-    ) -> BackendPlayRenderPlan:
+    ) -> PlayRenderPlan:
         """Resolve high-level playback mode through the backend contract."""
         raise NotImplementedError(
             f"{self.__class__.__name__} does not define playback render mode semantics"
@@ -370,7 +370,7 @@ class ABEnv(abc.ABC):
         camera_kwargs: CameraCfg | Mapping[str, Any] | None = None,
         debug_overlay_getter: DebugOverlayGetter | None = None,
         on_frame: PlaybackFrameCallback | None = None,
-        on_plan: Callable[[BackendPlayRenderPlan], None] | None = None,
+        on_plan: Callable[[PlayRenderPlan], None] | None = None,
     ) -> str | None:
         """Resolve configured playback mode and execute it through the backend contract.
 

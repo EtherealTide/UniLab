@@ -15,7 +15,7 @@ from unisim.backend.base import (
     SimBackend,
     TensorExecution,
     TensorIOSpec,
-    tensor_device_matches,
+    torch_device_matches,
 )
 
 
@@ -60,7 +60,7 @@ class DeviceStateStore:
             raise RuntimeError(
                 "Tensor state store requires a DEVICE_RESIDENT or HOST_BRIDGE backend"
             )
-        if not tensor_device_matches(capabilities.torch_devices, self.device):
+        if not torch_device_matches(capabilities.torch_devices, self.device):
             raise RuntimeError(
                 f"backend did not accept Tensor device {str(self.device)!r}; "
                 f"supported devices are {capabilities.torch_devices}"
@@ -99,7 +99,7 @@ class DeviceStateStore:
                     for name in self.body_names
                 ),
             )
-            self._host_bridge_plan = self.backend.compile_host_bridge_io(
+            self._host_bridge_plan = self.backend.bind_host_bridge_io(
                 TensorIOSpec(
                     state_fields=("qpos", "qvel"),
                     sensor_names=sensor_names,

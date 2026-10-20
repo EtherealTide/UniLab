@@ -1,8 +1,8 @@
 """Base-owned reset-state transaction for Manager-Based event terms.
 
 The transaction composes every reset-mode state and model-field write inside
-the backend-owned packed transaction (``SimBackend.begin_packed_reset`` →
-``unisim.backend.packed_reset.TorchPackedResetComposer``) and commits through
+the backend-owned packed transaction (``SimBackend.bind_packed_reset`` →
+``unisim.backend.packed_reset.PackedResetTransaction``) and commits through
 that composer exactly once per lifecycle. It deliberately knows nothing about
 task configuration, IPC, runners, or backend-private state.
 """
@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 import torch
 from unisim.backend.base import (
-    BackendMocapPoseBinding,
-    BackendRootStateLayout,
+    MocapPoseBinding,
+    RootStateLayout,
     SimBackend,
 )
 from unisim.dr.types import (
@@ -45,7 +45,7 @@ from unisim.scene_layout import CompiledSceneLayout
 from unilab.base.rotation import quat_apply_inverse
 
 if TYPE_CHECKING:
-    from unisim.backend.packed_reset import TorchPackedResetComposer
+    from unisim.backend.packed_reset import PackedResetTransaction
 
 # Concrete trailing widths for the two-dimensional canonical model tables.
 # ``RESET_TERM_SPECS`` is the single source for term names, canonical table
@@ -142,10 +142,10 @@ class ResetStateTransaction:
         self._requesting_terms: set[str] = set()
         self._last_commit_had_writes = False
         self._last_set_state_timing_ms: dict[str, float] = {}
-        self._mocap_bindings: dict[str, BackendMocapPoseBinding] = {}
+        self._mocap_bindings: dict[str, MocapPoseBinding] = {}
         self._mocap_pending: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
         self._packed_reset_device: torch.device | None = None
-        self._packed_reset_transaction: TorchPackedResetComposer | None = None
+        self._packed_reset_transaction: PackedResetTransaction | None = None
         self._packed_state_default_installed = False
         self._owner_tensor_write_mask: torch.Tensor | None = None
         self._tensor_write_mask: torch.Tensor | None = None
@@ -209,19 +209,19 @@ class ResetStateTransaction:
         if not getattr(capabilities, "packed_reset", False):
             raise NotImplementedError(
                 "backend does not declare the packed_reset capability required by the "
-                "packed reset contract: SimBackend.begin_packed_reset"
+                "packed reset contract: SimBackend.bind_packed_reset"
             )
-        begin_packed_reset: Any = getattr(self._backend, "begin_packed_reset", None)
-        if not callable(begin_packed_reset):
+        bind_packed_reset: Any = getattr(self._backend, "bind_packed_reset", None)
+        if not callable(bind_packed_reset):
             raise NotImplementedError(
-                "backend declares packed_reset without SimBackend.begin_packed_reset"
+                "backend declares packed_reset without SimBackend.bind_packed_reset"
             )
         self._packed_reset_device = resolved
         self._owner_tensor_write_mask = torch.zeros(
             self._num_envs, dtype=torch.bool, device=resolved
         )
         self._packed_reset_transaction = cast(
-            "TorchPackedResetComposer", begin_packed_reset(device=resolved)
+            "PackedResetTransaction", bind_packed_reset(device=resolved)
         )
         self._packed_state_default_installed = False
 
@@ -1240,7 +1240,7 @@ class ResetStateTransaction:
     def write_root_state(
         self,
         env_ids: torch.Tensor,
-        layout: BackendRootStateLayout,
+        layout: RootStateLayout,
         root_state: torch.Tensor,
         *,
         term_name: str,
@@ -1306,7 +1306,7 @@ class ResetStateTransaction:
     def write_root_state_tensor(
         self,
         reset_mask: torch.Tensor,
-        layout: BackendRootStateLayout,
+        layout: RootStateLayout,
         root_state: torch.Tensor,
         *,
         term_name: str,
@@ -1396,7 +1396,7 @@ class ResetStateTransaction:
     def write_motion_state_tensor(
         self,
         reset_mask: torch.Tensor,
-        layout: BackendRootStateLayout,
+        layout: RootStateLayout,
         qpos_indices: np.ndarray,
         qvel_indices: np.ndarray,
         root_state: torch.Tensor,
@@ -1475,7 +1475,7 @@ class ResetStateTransaction:
     def write_root_pose(
         self,
         env_ids: torch.Tensor,
-        layout: BackendRootStateLayout,
+        layout: RootStateLayout,
         pose: torch.Tensor,
         *,
         term_name: str,
@@ -1500,7 +1500,7 @@ class ResetStateTransaction:
     def write_root_velocity(
         self,
         env_ids: torch.Tensor,
-        layout: BackendRootStateLayout,
+        layout: RootStateLayout,
         velocity_w: torch.Tensor,
         *,
         term_name: str,
@@ -1545,7 +1545,7 @@ class ResetStateTransaction:
     def read_root_pose(
         self,
         env_ids: torch.Tensor,
-        layout: BackendRootStateLayout,
+        layout: RootStateLayout,
         *,
         term_name: str,
     ) -> np.ndarray:
@@ -1567,7 +1567,7 @@ class ResetStateTransaction:
         staged = qpos.index_select(0, rows).index_select(1, columns)
         return np.array(staged.detach().cpu().numpy(), copy=True)
 
-    def bind_mocap_pose(self, body_name: str) -> BackendMocapPoseBinding:
+    def bind_mocap_pose(self, body_name: str) -> MocapPoseBinding:
         """Resolve a mocap body once, without exposing a native backend handle."""
         if body_name not in self._mocap_bindings:
             if self._active:
@@ -1681,7 +1681,7 @@ class ResetStateTransaction:
                 terms = ", ".join(sorted(self._requesting_terms))
                 raise NotImplementedError(
                     "EventManager reset-state capability "
-                    "'SimBackend.begin_packed_reset' is unavailable for term(s) "
+                    "'SimBackend.bind_packed_reset' is unavailable for term(s) "
                     f"[{terms}] on backend '{self._backend.backend_type}': {exc}"
                 ) from exc
         finally:
@@ -1734,7 +1734,7 @@ class ResetStateTransaction:
                 terms = ", ".join(sorted(self._requesting_terms))
                 raise NotImplementedError(
                     "EventManager reset-state capability "
-                    "'SimBackend.begin_packed_reset' is unavailable for term(s) "
+                    "'SimBackend.bind_packed_reset' is unavailable for term(s) "
                     f"[{terms}] on backend '{self._backend.backend_type}': {exc}"
                 ) from exc
         finally:
@@ -1752,13 +1752,13 @@ class ResetStateTransaction:
             if isinstance(backend_timing, dict):
                 self._last_set_state_timing_ms.update(backend_timing)
 
-    def _require_packed_transaction(self) -> TorchPackedResetComposer:
+    def _require_packed_transaction(self) -> PackedResetTransaction:
         """Return the declared packed composer or fail closed."""
         transaction = self._packed_reset_transaction
         if transaction is None:
             raise NotImplementedError(
                 "backend does not declare the packed_reset capability required by the "
-                "packed reset contract: SimBackend.begin_packed_reset"
+                "packed reset contract: SimBackend.bind_packed_reset"
             )
         return transaction
 
@@ -2171,14 +2171,14 @@ class ResetStateTransaction:
 
     def _validate_root_layout(
         self,
-        layout: BackendRootStateLayout,
+        layout: RootStateLayout,
         *,
         term_name: str,
     ) -> tuple[np.ndarray, np.ndarray]:
-        if not isinstance(layout, BackendRootStateLayout):
+        if not isinstance(layout, RootStateLayout):
             raise TypeError(
                 f"EventManager term '{term_name}' root-state layout must be "
-                f"BackendRootStateLayout, got {type(layout).__name__}"
+                f"RootStateLayout, got {type(layout).__name__}"
             )
         assert self._default_qpos is not None
         assert self._default_qvel is not None
@@ -2197,7 +2197,7 @@ class ResetStateTransaction:
         return qpos_columns, qvel_columns
 
     def _tensor_root_columns_for_layout(
-        self, layout: BackendRootStateLayout, *, term_name: str
+        self, layout: RootStateLayout, *, term_name: str
     ) -> tuple[torch.Tensor, torch.Tensor]:
         qpos_columns, qvel_columns = self._validate_root_layout(layout, term_name=term_name)
         key = (tuple(int(i) for i in qpos_columns), tuple(int(i) for i in qvel_columns))

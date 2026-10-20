@@ -66,6 +66,19 @@ architecture changes.
 - Do not add new owner logic to `src/unilab/utils/`; those modules are transition
   shims. Keep cross-cutting changes in the owning package.
 
+## API naming rules
+
+Approved in roadmap #2434; enforce in review.
+
+- Type/device qualifiers (`_tensor`, `_numpy`, `cpu_`, `torch_`) only when two
+  real implementations coexist in one scope; when needed, use `_tensor`.
+- Module names carry the qualifier; class/function names do not repeat it.
+- Package-internal functions do not carry an engine/package-name prefix.
+- Names consumed across modules never use a leading underscore; promote or
+  document them as protected protocols instead.
+- One public name per meaning; no aliases or deprecation fallbacks.
+- No time-based names (`legacy`, `old`, `new`, `v2`, `tmp`) on live APIs.
+
 ## Sim2Sim contract
 
 `src/unilab/utils/sim2sim.py` is the runtime source of truth. DENYLIST fields
