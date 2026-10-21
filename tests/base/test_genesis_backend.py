@@ -566,12 +566,14 @@ def test_dr_capabilities_and_tensor_reset_randomization_boundary(
 def test_interval_randomization_and_body_force(fake_genesis, tiny_model_file: str) -> None:
     backend = _backend(tiny_model_file)
     solver = backend._scene.sim.rigid_solver
-    force = np.ones((4, 2, 3), dtype=np.float32)
+    force = torch.ones((4, 2, 3), dtype=torch.float32)
     backend.apply_interval_randomization(
         IntervalRandomizationPlan(
             ops=(
                 IntervalTermOp(
-                    INTERVAL_TERM_BODY_FORCE, force, body_ids=np.array([1, 3], dtype=np.int32)
+                    INTERVAL_TERM_BODY_FORCE,
+                    force,
+                    body_ids=torch.as_tensor([1, 3], dtype=torch.int32),
                 ),
             )
         )
@@ -583,7 +585,7 @@ def test_interval_randomization_and_body_force(fake_genesis, tiny_model_file: st
 
     with pytest.raises(NotImplementedError, match="does not support interval term 'push'"):
         backend.apply_interval_randomization(
-            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, np.ones((1, 3))),))
+            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, torch.ones((1, 3))),))
         )
     with pytest.raises(
         NotImplementedError, match="does not support interval term 'body_linear_velocity_delta'"
@@ -593,8 +595,8 @@ def test_interval_randomization_and_body_force(fake_genesis, tiny_model_file: st
                 ops=(
                     IntervalTermOp(
                         INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
-                        np.zeros((4, 1, 3), dtype=np.float32),
-                        body_ids=np.array([1], dtype=np.int32),
+                        torch.zeros((4, 1, 3), dtype=torch.float32),
+                        body_ids=torch.as_tensor([1], dtype=torch.int32),
                     ),
                 )
             )
@@ -603,7 +605,9 @@ def test_interval_randomization_and_body_force(fake_genesis, tiny_model_file: st
         backend.apply_interval_randomization(
             IntervalRandomizationPlan(
                 ops=(
-                    IntervalTermOp(INTERVAL_TERM_BODY_FORCE, np.zeros((4, 1, 3), dtype=np.float32)),
+                    IntervalTermOp(
+                        INTERVAL_TERM_BODY_FORCE, torch.zeros((4, 1, 3), dtype=torch.float32)
+                    ),
                 )
             )
         )

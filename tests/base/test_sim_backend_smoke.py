@@ -176,13 +176,17 @@ def test_mujoco_interval_root_velocity_kick_is_row_selective_and_refreshes_senso
     body_ids = bkd.get_body_ids(("base",))
     state_before = bkd.get_physics_state().copy()
     body_velocity_before = _sensor(bkd, "track_linvel_w_base").copy()
-    delta = np.zeros((NUM_ENVS, 1, 3), dtype=np.float64)
-    delta[1, 0] = (0.25, -0.4, 0.15)
+    delta = torch.zeros((NUM_ENVS, 1, 3), dtype=torch.float64)
+    delta[1, 0] = torch.tensor([0.25, -0.4, 0.15], dtype=torch.float64)
 
     bkd.apply_interval_randomization(
         IntervalRandomizationPlan(
             ops=(
-                IntervalTermOp(INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA, delta, body_ids=body_ids),
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                    delta,
+                    body_ids=torch.as_tensor(body_ids),
+                ),
             )
         )
     )
@@ -203,12 +207,12 @@ def test_mujoco_interval_root_velocity_kick_is_row_selective_and_refreshes_senso
     )
     np.testing.assert_allclose(
         state_after[1, idx_qvel : idx_qvel + 3],
-        state_before[1, idx_qvel : idx_qvel + 3] + delta[1, 0],
+        state_before[1, idx_qvel : idx_qvel + 3] + delta[1, 0].numpy(),
         atol=1e-7,
     )
     np.testing.assert_allclose(
         body_velocity_after[1],
-        body_velocity_before[1] + delta[1, 0],
+        body_velocity_before[1] + delta[1, 0].numpy(),
         atol=1e-6,
     )
 
@@ -223,14 +227,16 @@ def test_mujoco_interval_root_velocity_kick_rejects_invalid_contracts():
         base_name="base",
     )
     body_ids = bkd.get_body_ids(("base",))
-    delta = np.zeros((NUM_ENVS, 1, 3), dtype=np.float64)
+    delta = torch.zeros((NUM_ENVS, 1, 3), dtype=torch.float64)
 
     with pytest.raises(RuntimeError, match="requires a materialized backend"):
         bkd.apply_interval_randomization(
             IntervalRandomizationPlan(
                 ops=(
                     IntervalTermOp(
-                        INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA, delta, body_ids=body_ids
+                        INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                        delta,
+                        body_ids=torch.as_tensor(body_ids),
                     ),
                 )
             )
@@ -244,7 +250,7 @@ def test_mujoco_interval_root_velocity_kick_rejects_invalid_contracts():
                     IntervalTermOp(
                         INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
                         delta,
-                        body_ids=body_ids.astype(np.float64),
+                        body_ids=torch.as_tensor(body_ids.astype(np.float64)),
                     ),
                 )
             )
@@ -256,7 +262,7 @@ def test_mujoco_interval_root_velocity_kick_rejects_invalid_contracts():
                     IntervalTermOp(
                         INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
                         delta,
-                        body_ids=np.asarray([body_ids[0] + 1], dtype=np.int32),
+                        body_ids=torch.as_tensor([int(body_ids[0]) + 1], dtype=torch.int32),
                     ),
                 )
             )
@@ -267,8 +273,8 @@ def test_mujoco_interval_root_velocity_kick_rejects_invalid_contracts():
                 ops=(
                     IntervalTermOp(
                         INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
-                        np.zeros((NUM_ENVS + 1, 1, 3), dtype=np.float64),
-                        body_ids=body_ids,
+                        torch.zeros((NUM_ENVS + 1, 1, 3), dtype=torch.float64),
+                        body_ids=torch.as_tensor(body_ids),
                     ),
                 )
             )
@@ -279,14 +285,14 @@ def test_mujoco_interval_root_velocity_kick_rejects_invalid_contracts():
                 ops=(
                     IntervalTermOp(
                         INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
-                        np.zeros((NUM_ENVS, 3), dtype=np.float64),
-                        body_ids=body_ids,
+                        torch.zeros((NUM_ENVS, 3), dtype=torch.float64),
+                        body_ids=torch.as_tensor(body_ids),
                     ),
                 )
             )
         )
-    invalid = delta.copy()
-    invalid[0, 0, 0] = np.nan
+    invalid = delta.clone()
+    invalid[0, 0, 0] = torch.nan
     with pytest.raises(ValueError, match="contains NaN or Inf"):
         bkd.apply_interval_randomization(
             IntervalRandomizationPlan(
@@ -294,7 +300,7 @@ def test_mujoco_interval_root_velocity_kick_rejects_invalid_contracts():
                     IntervalTermOp(
                         INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
                         invalid,
-                        body_ids=body_ids,
+                        body_ids=torch.as_tensor(body_ids),
                     ),
                 )
             )
@@ -322,13 +328,17 @@ def test_mujoco_interval_root_angular_velocity_kick_converts_to_body_frame():
     _set_state(bkd, np.arange(NUM_ENVS, dtype=np.int32), qpos, qvel)
 
     body_ids = bkd.get_body_ids(("base",))
-    delta = np.zeros((NUM_ENVS, 1, 3), dtype=np.float64)
-    delta[1, 0] = (0.5, 0.0, 0.0)  # world-frame +x angular rate
+    delta = torch.zeros((NUM_ENVS, 1, 3), dtype=torch.float64)
+    delta[1, 0] = torch.tensor([0.5, 0.0, 0.0], dtype=torch.float64)  # world-frame +x angular rate
 
     bkd.apply_interval_randomization(
         IntervalRandomizationPlan(
             ops=(
-                IntervalTermOp(INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA, delta, body_ids=body_ids),
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
+                    delta,
+                    body_ids=torch.as_tensor(body_ids),
+                ),
             )
         )
     )
@@ -396,17 +406,19 @@ def test_mujoco_interval_body_force_and_torque_have_observable_effect(tmp_path):
     idx_qvel = 1 + bkd.nq
     baseline = bkd.get_physics_state()[:, idx_qvel : idx_qvel + 6].copy()
 
-    force = np.zeros((NUM_ENVS, 1, 3), dtype=np.float64)
+    force = torch.zeros((NUM_ENVS, 1, 3), dtype=torch.float64)
     force[:, 0, 2] = 10.0  # N, world +z
-    torque = np.zeros((NUM_ENVS, 1, 3), dtype=np.float64)
+    torque = torch.zeros((NUM_ENVS, 1, 3), dtype=torch.float64)
     torque[:, 0, 2] = 1.0  # Nm, world z
 
     _set_state(bkd, ids, qpos, qvel0)
     bkd.apply_interval_randomization(
         IntervalRandomizationPlan(
             ops=(
-                IntervalTermOp(INTERVAL_TERM_BODY_FORCE, force, body_ids=body_ids),
-                IntervalTermOp(INTERVAL_TERM_BODY_TORQUE, torque, body_ids=body_ids),
+                IntervalTermOp(INTERVAL_TERM_BODY_FORCE, force, body_ids=torch.as_tensor(body_ids)),
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_TORQUE, torque, body_ids=torch.as_tensor(body_ids)
+                ),
             )
         )
     )
