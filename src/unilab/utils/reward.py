@@ -19,9 +19,7 @@ def _to_reward_dict(value: object, *, error_message: str) -> RewardDict:
     return cast(RewardDict, resolved)
 
 
-def resolve_reward_dict(
-    cfg: DictConfig, *, target_field: str = "reward_config"
-) -> dict[str, RewardDict]:
+def resolve_reward_dict(cfg: DictConfig, *, target_field: str = "rewards") -> dict[str, RewardDict]:
     """Extract and validate the reward config from a composed Hydra config.
 
     Args:
@@ -33,12 +31,10 @@ def resolve_reward_dict(
 
     Raises:
         ValueError: If the reward config is missing or empty, or the
-            ``target_field`` is not a supported override key.
+            ``target_field`` is not the supported ``"rewards"`` override key.
     """
-    if target_field not in {"reward_config", "rewards"}:
-        raise ValueError(
-            f"Reward config target_field must be 'reward_config' or 'rewards', got {target_field!r}"
-        )
+    if target_field != "rewards":
+        raise ValueError(f"Reward config target_field must be 'rewards', got {target_field!r}")
     reward_cfg = OmegaConf.select(cfg, "reward")
     if not reward_cfg:
         raise ValueError(
