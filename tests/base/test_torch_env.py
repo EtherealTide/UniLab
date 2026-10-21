@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import itertools
+import types
 from dataclasses import dataclass
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -19,6 +21,7 @@ from unisim.backend.base import (
     TensorRuntimeDiagnostic,
 )
 
+import unilab.base.torch_env as torch_env_module
 from unilab.base.base import EnvCfg, EnvPlayCapabilities
 from unilab.base.scene import SceneCfg
 from unilab.base.torch_env import TorchEnv, TorchEnvState
@@ -218,6 +221,31 @@ def test_step_without_done_preserves_eager_autoreset_gate() -> None:
     assert env.reset_ids == []
     assert state.final_observation is None
     assert state.info["timing"]["reset_done_count"] == 0.0
+
+
+def test_step_done_gate_host_read_is_attributed_to_step_core(monkeypatch) -> None:
+    wall = itertools.count(start=0.0, step=0.001)
+    cpu = itertools.count(start=0.0, step=0.001)
+    monkeypatch.setattr(
+        torch_env_module,
+        "time",
+        types.SimpleNamespace(perf_counter=lambda: next(wall)),
+    )
+    monkeypatch.setattr(torch_env_module, "_cpu_time", lambda: next(cpu))
+
+    env = _StubTorchEnv(terminate=False)
+    env.init_state()
+    state = env.step(_actions(env))
+
+    timing = state.info["timing"]
+    # The fake clocks advance 1 ms per call, so each measured window spans
+    # exactly 1 ms. The backend call window and the done-gate host read both
+    # belong to step_core; reset bookkeeping keeps only its own empty window.
+    assert timing["step_core_ms"] == pytest.approx(2.0)
+    assert timing["step_core_cpu_ms"] == pytest.approx(2.0)
+    assert timing["reset_done_ms"] == pytest.approx(1.0)
+    assert timing["reset_done_cpu_ms"] == pytest.approx(1.0)
+    assert timing["env_step_other_cpu_ms"] >= 0.0
 
 
 def test_reset_done_count_remains_device_resident_before_timing_publication() -> None:
