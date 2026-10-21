@@ -192,14 +192,6 @@ def test_collector_tensor_device_override_is_explicit_and_rank_local() -> None:
     routed = apply_collector_tensor_device_override(
         owner_override,
         "mujoco",
-        collector_tensor_device="cpu",
-        learner_device="cuda:3",
-    )
-    assert routed["collector_tensor_device"] == "cpu"
-
-    routed = apply_collector_tensor_device_override(
-        owner_override,
-        "mujoco",
         collector_tensor_device="cuda",
         learner_device="cuda:3",
     )
@@ -226,6 +218,57 @@ def test_collector_tensor_device_override_is_explicit_and_rank_local() -> None:
         apply_collector_tensor_device_override(
             owner_override, "mjwarp", collector_tensor_device="cuda"
         )
+
+
+def test_explicit_cpu_carrier_with_cuda_learner_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #2483: a CUDA learner may not pin the CPU carrier by default."""
+    monkeypatch.delenv("UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER", raising=False)
+    with pytest.raises(ValueError, match="collector_tensor_device=cpu with CUDA learner"):
+        apply_collector_tensor_device_override(
+            {},
+            "mujoco",
+            collector_tensor_device="cpu",
+            learner_device="cuda:3",
+        )
+
+
+def test_explicit_cpu_carrier_with_cuda_learner_honors_opt_in_and_rocm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_override = {"nested": {"keep": True}}
+
+    monkeypatch.setenv("UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER", "1")
+    routed = apply_collector_tensor_device_override(
+        owner_override,
+        "mujoco",
+        collector_tensor_device="cpu",
+        learner_device="cuda:3",
+    )
+    assert routed["collector_tensor_device"] == "cpu"
+
+    # ROCm/HIP builds keep the CPU carrier as their only sharing mitigation.
+    monkeypatch.delenv("UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER")
+    monkeypatch.setattr(torch.version, "hip", "6.2")
+    routed = apply_collector_tensor_device_override(
+        owner_override,
+        "mujoco",
+        collector_tensor_device="cpu",
+        learner_device="cuda:3",
+    )
+    assert routed["collector_tensor_device"] == "cpu"
+
+
+def test_explicit_cpu_carrier_stays_allowed_for_non_cuda_or_unknown_learners() -> None:
+    for learner_device in (None, "cpu", "mps"):
+        routed = apply_collector_tensor_device_override(
+            {},
+            "mujoco",
+            collector_tensor_device="cpu",
+            learner_device=learner_device,
+        )
+        assert routed["collector_tensor_device"] == "cpu"
 
 
 def test_collector_tensor_device_auto_follows_the_learner_device() -> None:

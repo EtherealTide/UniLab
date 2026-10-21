@@ -18,7 +18,11 @@ from typing import Any, cast
 from unisim.backend.base import TensorExecution, validate_torch_device
 from unisim.support import TensorPlatformProfile, get_tensor_platform_profiles
 
-from unilab.process_context import visible_cuda_entries
+from unilab.process_context import (
+    CUDA_LEARNER_CPU_CARRIER_OPT_IN,
+    cuda_learner_cpu_carrier_opted_in,
+    visible_cuda_entries,
+)
 
 # These backends consume an explicit integer device id while materializing
 # their simulator.  MuJoCo/Motrix/Drake run CPU-authoritative physics; their
@@ -177,6 +181,27 @@ def apply_backend_env_device_override(
     return result
 
 
+def _cuda_learner_cpu_carrier_forbidden(learner_device: str | None) -> bool:
+    """Whether the CUDA-learner CPU-carrier prohibition (issue #2483) applies.
+
+    The rule fires only for the ``cuda`` device family on a non-ROCm Torch
+    build: CPU/torch.mps learners never match the family check, and ROCm/HIP
+    builds keep the CPU carrier as their only process-sharing mitigation.
+    Callers that do not know the learner device yet (``None``) cannot prove a
+    violation and are left to the placement-layer guard.
+    """
+
+    if learner_device is None:
+        return False
+    if str(learner_device).strip().split(":", 1)[0].lower() != "cuda":
+        return False
+    import torch
+
+    if getattr(torch.version, "hip", None):
+        return False
+    return not cuda_learner_cpu_carrier_opted_in()
+
+
 def apply_collector_tensor_device_override(
     env_cfg_override: Mapping[str, Any] | None,
     backend_type: str,
@@ -197,6 +222,10 @@ def apply_collector_tensor_device_override(
     no-op for backends outside that scope and when no learner device is known. The
     ``learner_device`` argument is the fallback for callers that do not compose a
     training configuration.
+
+    An explicit ``cpu`` request with a known CUDA learner fails closed (issue
+    #2483) unless the build is ROCm/HIP or the run carries the
+    ``UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER`` attribution-baseline/debug opt-in.
     """
 
     result = dict(env_cfg_override) if env_cfg_override is not None else {}
@@ -228,6 +257,16 @@ def apply_collector_tensor_device_override(
             return result
         if device == "auto":
             return _apply_collector_tensor_device_auto(result, learner_device, profile=profile)
+        if device == "cpu" and _cuda_learner_cpu_carrier_forbidden(learner_device):
+            raise ValueError(
+                f"training.collector_tensor_device=cpu with CUDA learner "
+                f"{learner_device!r} is not supported: with a CUDA learner the CPU "
+                "carrier is retained only for ROCm/HIP builds and non-CUDA "
+                "accelerator learners (issue #2483). Use "
+                "training.collector_tensor_device=auto/cuda, or export "
+                f"{CUDA_LEARNER_CPU_CARRIER_OPT_IN}=1 for attribution-baseline/debug "
+                "runs."
+            )
         try:
             validate_torch_device(
                 profile.torch_devices, device, label="training.collector_tensor_device"

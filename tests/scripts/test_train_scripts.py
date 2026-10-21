@@ -281,10 +281,15 @@ def test_removed_training_device_key_hydra_override_fails_closed(removed_overrid
         _offpolicy().build_offpolicy_env_cfg_override("sac", cfg)
 
 
-def test_collector_tensor_device_hydra_override_routes_to_env_cfg_override() -> None:
+def test_collector_tensor_device_hydra_override_routes_to_env_cfg_override(monkeypatch) -> None:
     cfg = _offpolicy_cfg(["task=g1_walk_flat/mujoco", "training.collector_tensor_device=cpu"])
+    offpolicy_mod = _offpolicy()
+    # Pin a CPU learner so the routing assertion is machine-independent: with a
+    # CUDA learner the same request fails closed per issue #2483.
+    monkeypatch.setattr(offpolicy_mod, "rank_local_cuda_device", lambda rank: None)
+    monkeypatch.setattr("unilab.utils.device.get_default_device", lambda: "cpu", raising=False)
 
-    override = _offpolicy().build_offpolicy_env_cfg_override("sac", cfg)
+    override = offpolicy_mod.build_offpolicy_env_cfg_override("sac", cfg)
 
     assert override is not None
     assert override["collector_tensor_device"] == "cpu"
@@ -358,7 +363,10 @@ def test_host_bridge_env_overrides_auto_follow_automatic_learner_cuda(monkeypatc
     assert ppo_override["collector_tensor_device"] == "cuda:2"
 
 
-def test_host_bridge_env_overrides_explicit_collector_tensor_cpu_still_wins(monkeypatch):
+def test_host_bridge_env_overrides_explicit_cpu_carrier_with_cuda_learner_fails_closed(
+    monkeypatch,
+):
+    """Issue #2483: explicit CPU carrier + CUDA learner fails closed by default."""
     offpolicy_cfg = _offpolicy_cfg(
         ["task=g1_walk_flat/mujoco", "training.collector_tensor_device=cpu"]
     )
@@ -374,6 +382,32 @@ def test_host_bridge_env_overrides_explicit_collector_tensor_cpu_still_wins(monk
 
     monkeypatch.setattr(offpolicy_mod, "rank_local_cuda_device", lambda rank: "cuda:2")
     monkeypatch.setattr("unilab.utils.device.get_default_device", lambda: "cuda:2", raising=False)
+    monkeypatch.delenv("UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER", raising=False)
+
+    with pytest.raises(ValueError, match="collector_tensor_device=cpu with CUDA learner"):
+        offpolicy_mod.build_offpolicy_env_cfg_override("sac", offpolicy_cfg)
+    with pytest.raises(ValueError, match="collector_tensor_device=cpu with CUDA learner"):
+        ppo_mod.build_ppo_env_cfg_override(ppo_cfg)
+
+
+def test_host_bridge_env_overrides_explicit_cpu_carrier_opt_in_still_wins(monkeypatch):
+    """The #2483 attribution-baseline opt-in retains explicit CPU carriers."""
+    offpolicy_cfg = _offpolicy_cfg(
+        ["task=g1_walk_flat/mujoco", "training.collector_tensor_device=cpu"]
+    )
+    ppo_cfg = _ppo_cfg(
+        [
+            "task=g1_walk_flat/mujoco",
+            "training.device=cuda:2",
+            "training.collector_tensor_device=cpu",
+        ]
+    )
+    ppo_mod = _train_rsl_rl(monkeypatch)
+    offpolicy_mod = _offpolicy()
+
+    monkeypatch.setattr(offpolicy_mod, "rank_local_cuda_device", lambda rank: "cuda:2")
+    monkeypatch.setattr("unilab.utils.device.get_default_device", lambda: "cuda:2", raising=False)
+    monkeypatch.setenv("UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER", "1")
 
     offpolicy_override = offpolicy_mod.build_offpolicy_env_cfg_override("sac", offpolicy_cfg)
     ppo_override = ppo_mod.build_ppo_env_cfg_override(ppo_cfg)

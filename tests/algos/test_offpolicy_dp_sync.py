@@ -15,6 +15,7 @@ from tests.algos.test_offpolicy_double_buffer_runner import (
     _offpolicy,
     _offpolicy_cfg,
 )
+from unilab.process_context import CUDA_LEARNER_CPU_CARRIER_OPT_IN
 from unilab.rl.runtime.distributed.context import (
     UNILAB_DP_LOG_DIR,
     UNILAB_DP_RANK,
@@ -407,6 +408,8 @@ def _build_sac_runner_with_dp_fakes(monkeypatch: pytest.MonkeyPatch, overrides: 
     """build_runner("sac", ...) with learner/env/runner fakes; returns runner kwargs."""
     module = _offpolicy()
     cfg = _offpolicy_cfg([*overrides, "training.collector_tensor_device=cpu"])
+    # CPU carrier + rank-GPU learner: #2483 attribution-baseline opt-in.
+    monkeypatch.setenv(CUDA_LEARNER_CPU_CARRIER_OPT_IN, "1")
     monkeypatch.setattr(module.os, "cpu_count", lambda: 128)
     monkeypatch.setattr(affinity.os, "sched_getaffinity", lambda _: set(range(128)), raising=False)
 
@@ -569,6 +572,8 @@ def _build_flashsac_runner_with_dp_fakes(monkeypatch: pytest.MonkeyPatch, overri
     """build_runner("flashsac", ...) with learner/env/runner fakes; returns runner kwargs."""
     module = _offpolicy()
     cfg = _offpolicy_cfg([*overrides, "training.collector_tensor_device=cpu"], algo="flashsac")
+    # CPU carrier + rank-GPU learner: #2483 attribution-baseline opt-in.
+    monkeypatch.setenv(CUDA_LEARNER_CPU_CARRIER_OPT_IN, "1")
     monkeypatch.setattr(module.os, "cpu_count", lambda: 128)
     monkeypatch.setattr(affinity.os, "sched_getaffinity", lambda _: set(range(128)), raising=False)
 

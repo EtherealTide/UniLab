@@ -84,7 +84,9 @@ training:
   # off-policy algos, the derived inference ring). 'auto' follows the learner
   # device (CUDA learner -> CUDA; CPU learner -> CPU; torch.mps learner keeps
   # the owner CPU placement). Explicit 'cpu'/'cuda' wins over 'auto' and fails
-  # closed when the backend does not declare the device.
+  # closed when the backend does not declare the device. Explicit 'cpu' with a
+  # CUDA learner also fails closed (issue #2483) except on ROCm/HIP builds;
+  # attribution baselines opt in via UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER=1.
   collector_tensor_device: auto
   # null preserves independent CUDA contexts; 'mps' explicitly requests CUDA
   # process sharing and fails closed if the host daemon is not already valid.

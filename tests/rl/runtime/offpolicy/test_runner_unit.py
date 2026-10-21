@@ -502,6 +502,10 @@ def _make_device_runner(
             learner_device=device,
             collector_tensor_device="cuda" if collector_tensor_native else "cpu",
             algo_name="TestRunner",
+            # Runner unit tests deliberately exercise the host-ring topology
+            # with a (fake) CUDA learner — the #2483 attribution-baseline
+            # pairing, gated here by the explicit opt-in flag.
+            allow_cpu_carrier_with_cuda_learner=True,
         )
     return device_runner_module.DoubleBufferOffPolicyRunner(
         learner=learner or _Learner(),

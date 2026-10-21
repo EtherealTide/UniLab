@@ -18,6 +18,7 @@ import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
+from unilab.process_context import CUDA_LEARNER_CPU_CARRIER_OPT_IN
 from unilab.rl.runtime.distributed.context import (
     UNILAB_DP_LOG_DIR,
     UNILAB_DP_RANK,
@@ -231,6 +232,9 @@ def test_cuda_process_sharing_selects_sole_recorded_daemon_before_probe(
             "training.collector_tensor_device=cpu",
         ]
     )
+    # The pinned CPU carrier + fake CUDA learner pairing is the #2483
+    # attribution-baseline topology and needs the explicit opt-in.
+    monkeypatch.setenv(CUDA_LEARNER_CPU_CARRIER_OPT_IN, "1")
     monkeypatch.delenv("CUDA_MPS_PIPE_DIRECTORY", raising=False)
     monkeypatch.delenv("CUDA_MPS_LOG_DIRECTORY", raising=False)
     selected: dict[str, str] = {}
@@ -296,6 +300,8 @@ def test_valid_cuda_process_sharing_evidence_enters_runner_manifest(
             "training.collector_tensor_device=cpu",
         ]
     )
+    # CPU carrier + fake CUDA learner: #2483 attribution-baseline opt-in.
+    monkeypatch.setenv(CUDA_LEARNER_CPU_CARRIER_OPT_IN, "1")
     evidence = _FakeCudaProcessSharingEvidence()
     monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
     monkeypatch.setattr(
@@ -392,6 +398,8 @@ def test_replay_ingress_rows_fail_before_env_materialization_when_above_num_envs
 def test_sac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPatch):
     module = _offpolicy()
     cfg = _offpolicy_cfg(["training.collector_tensor_device=cpu"])
+    # CPU carrier + rank-GPU learner: #2483 attribution-baseline opt-in.
+    monkeypatch.setenv(CUDA_LEARNER_CPU_CARRIER_OPT_IN, "1")
 
     import unilab.rl.algos.sac.double_buffer as owner_module
 
@@ -481,6 +489,8 @@ def test_sac_owner_custom_runtime_can_override_base_learner_kwargs(
 def test_flashsac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPatch):
     module = _offpolicy()
     cfg = _offpolicy_cfg(["training.collector_tensor_device=cpu"], algo="flashsac")
+    # CPU carrier + rank-GPU learner: #2483 attribution-baseline opt-in.
+    monkeypatch.setenv(CUDA_LEARNER_CPU_CARRIER_OPT_IN, "1")
 
     import unilab.rl.algos.flash_sac.double_buffer as flash_module
 
@@ -553,8 +563,10 @@ def _build_sac_runner_with_fakes(
     module = _offpolicy()
     # The fake probe env always reports CPU observations, so pin the collector
     # tensor device to cpu to match the host placement these dispatch tests
-    # exercise (the learner device itself still resolves to the rank GPU).
+    # exercise (the learner device itself still resolves to the rank GPU; the
+    # pairing is the #2483 attribution-baseline topology, hence the opt-in).
     cfg = _offpolicy_cfg([*overrides, "training.collector_tensor_device=cpu"])
+    monkeypatch.setenv(CUDA_LEARNER_CPU_CARRIER_OPT_IN, "1")
     probe_env_calls: list[dict] = []
 
     def fake_probe_env_factory(num_envs, env_cfg_override):

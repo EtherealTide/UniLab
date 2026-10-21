@@ -7,7 +7,9 @@ config-level resolution lives in :mod:`unilab.training.tensor_runtime`.
 Placement is one-dimensional: ``training.collector_tensor_device``
 (auto/cpu/cuda) decides where collector-facing tensors reside, and the
 inference transport (host ring vs CUDA ring) is a derived fact of that
-decision — there is no independent transport configuration.
+decision — there is no independent transport configuration. An explicit
+``cpu`` request with a CUDA learner fails closed unless the run carries the
+attribution-baseline/debug opt-in (issue #2483).
 """
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ from dataclasses import dataclass
 from enum import Enum
 
 import torch
+
+from unilab.process_context import CUDA_LEARNER_CPU_CARRIER_OPT_IN
 
 
 class InferenceTransport(str, Enum):
@@ -122,6 +126,11 @@ def _device_requires_cuda(device: str) -> bool:
     return str(torch.device(device).type) == "cuda"
 
 
+def _torch_reports_hip_build() -> bool:
+    """Whether this Torch build presents a ROCm/HIP CUDA runtime."""
+    return bool(getattr(torch.version, "hip", None))
+
+
 def cpu_ring_staging_policy(learner_device: str) -> str:
     """Return the CPU-ring staging policy for one canonical learner device."""
     device_type = torch.device(learner_device).type
@@ -141,6 +150,7 @@ def resolve_inference_placement(
     learner_device: str,
     collector_tensor_device: str | None = None,
     algo_name: str,
+    allow_cpu_carrier_with_cuda_learner: bool = False,
 ) -> InferencePlacement:
     """Resolve one explicit topology and reject mixed placement before spawn.
 
@@ -151,6 +161,14 @@ def resolve_inference_placement(
     inference transport is derived from that request; it has no independent
     configuration. Host-ring staging policies are selected by
     ``cpu_ring_staging_policy`` from the learner device type.
+
+    An explicit ``cpu`` request with a CUDA learner fails closed (issue
+    #2483): the CPU carrier survives only for CPU/torch.mps learners and
+    ROCm/HIP builds, where it remains the platform fallback. Attribution
+    baselines and debug runs opt in by passing
+    ``allow_cpu_carrier_with_cuda_learner=True`` (the training config layer
+    binds that flag to the ``UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER``
+    environment variable).
     """
     learner = _canonical_device(learner_device, label="learner device", algo_name=algo_name)
     if collector_tensor_device is None:
@@ -182,6 +200,19 @@ def resolve_inference_placement(
             learner_device=learner,
             collector_tensor_native=True,
             staging_policy="cuda_no_host_boundary",
+        )
+
+    if (
+        _device_requires_cuda(learner)
+        and not _torch_reports_hip_build()
+        and not allow_cpu_carrier_with_cuda_learner
+    ):
+        raise ValueError(
+            f"{algo_name} collector_tensor_device=cpu with CUDA learner {learner!r} "
+            "is not supported: with a CUDA learner the CPU carrier is retained only "
+            "for ROCm/HIP builds and non-CUDA accelerator learners (issue #2483). "
+            "Use collector_tensor_device=auto/cuda, or export "
+            f"{CUDA_LEARNER_CPU_CARRIER_OPT_IN}=1 for attribution-baseline/debug runs."
         )
 
     return InferencePlacement(

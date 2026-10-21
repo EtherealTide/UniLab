@@ -18,6 +18,7 @@ from unilab.base.process_device import (
     canonicalize_collector_tensor_device,
     is_host_bridge_backend,
 )
+from unilab.process_context import cuda_learner_cpu_carrier_opted_in
 from unilab.rl.runtime.placement import (
     InferencePlacement,
     resolve_inference_placement,
@@ -94,6 +95,7 @@ def resolve_collector_tensor_placement(
         learner_device=device,
         collector_tensor_device=select_collector_tensor_device(cfg),
         algo_name=algo_name,
+        allow_cpu_carrier_with_cuda_learner=cuda_learner_cpu_carrier_opted_in(),
     )
 
 
