@@ -235,13 +235,13 @@ class ActionManager(ManagerBase):
             raise ValueError(
                 f"ActionManager action device must be {self._device}, received {action.device}"
             )
-        if reuse_recorded_verdict:
-            valid = self._action_finite_valid
-        else:
-            valid = torch.isfinite(action).all()
-            self._action_finite_valid.copy_(valid)
-        if not bool(valid):
-            raise ValueError("ActionManager received an action containing NaN or Inf.")
+        if not reuse_recorded_verdict:
+            self._action_finite_valid.copy_(torch.isfinite(action).all())
+            if not bool(self._action_finite_valid):
+                raise ValueError("ActionManager received an action containing NaN or Inf.")
+        # ``step`` records the device verdict once and publishes it at the
+        # control-validation boundary, so the reuse path stays free of
+        # blocking scalar host reads.
         # Shift history: prev_prev ← prev ← current ← new.
         self._prev_prev_action[:] = self._prev_action
         self._prev_action[:] = self._action

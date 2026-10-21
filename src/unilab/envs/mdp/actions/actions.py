@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import torch
 
+from unilab.base.torch_env import TorchEnv
 from unilab.managers.action_manager import ActionTerm, ActionTermCfg
 
 if TYPE_CHECKING:
@@ -92,6 +93,7 @@ class BaseAction(ActionTerm):
         )
         self._processed_actions = torch.zeros_like(self._raw_actions)
         self._affine_shape = (self.num_envs, self.action_dim)
+        self._processed_actions_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
         self._scale = self._cold_affine(self._resolve_affine(cfg.scale, default=1.0, label="scale"))
         self._offset = self._cold_affine(
             self._resolve_affine(cfg.offset, default=0.0, label="offset")
@@ -214,6 +216,7 @@ class BaseAction(ActionTerm):
                 min=self._clip[..., 0],
                 max=self._clip[..., 1],
             )
+        self._processed_actions_finite_valid.copy_(torch.isfinite(destination).all())
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         """Zero the raw actions of the selected envs."""
@@ -278,6 +281,10 @@ class JointPositionAction(BaseAction):
                 self._entity.set_joint_position_target(
                     self._tensor_target, joint_ids=self._target_ids
                 )
+            if isinstance(self._env, TorchEnv):
+                # Publish the affine-target device verdict for the owner
+                # boundary; the control-validation consumer owns the read.
+                self._env._pending_control_finite_check = bool(self._processed_actions_finite_valid)
             return
         processed = self._entity_values(self._processed_actions)
         encoder_bias = self._entity.data.encoder_bias_tensor.to(

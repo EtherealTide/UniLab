@@ -106,6 +106,7 @@ class TorchEnv(ABEnv):
         self._final_observation_scratch: dict[str, torch.Tensor] | None = None
         self._action_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
         self._state_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
+        self._pending_control_finite_check: bool | None = None
         self._reset_obs_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
         self._reset_done_count = torch.zeros((), dtype=torch.int64, device=self._device)
         self._tensor_runtime_bound = False
@@ -249,6 +250,9 @@ class TorchEnv(ABEnv):
 
         phase = time.perf_counter()
         phase_cpu = _cpu_time()
+        # Manager action owners publish one device-resident control verdict
+        # during this phase; it must not leak into the next step.
+        self._pending_control_finite_check = None
         ctrl = self.apply_action(actions, self._state)
         if self._nan_guard is not None:
             bad_ctrl_ids = self._nan_guard.check_ctrl(ctrl, step=self.step_counter)
@@ -388,6 +392,14 @@ class TorchEnv(ABEnv):
             raise ValueError("TorchEnv control must be contiguous")
         if ctrl.device != self.device:
             raise ValueError(f"TorchEnv control device must be {self.device}, got {ctrl.device}")
+        verdict = self._publish_control_finite_verdict()
+        if verdict is not None:
+            # The action owner records one device-resident control verdict per
+            # step. Publishing it here keeps the fail-closed contract while
+            # removing the per-step scalar host read from the CUDA hot path.
+            if not verdict:
+                raise ValueError("TorchEnv control contains NaN or Inf")
+            return
         valid = torch.isfinite(ctrl).all()
         if not bool(valid):
             raise ValueError("TorchEnv control contains NaN or Inf")
@@ -441,6 +453,12 @@ class TorchEnv(ABEnv):
     def _record_action_finite(self, actions: torch.Tensor) -> None:
         """Record the public action finite verdict on its persistent carrier."""
         self._action_finite_valid.copy_(torch.isfinite(actions).all())
+
+    def _publish_control_finite_verdict(self) -> bool | None:
+        """Publish and consume the manager control verdict, if recorded."""
+        verdict = self._pending_control_finite_check
+        self._pending_control_finite_check = None
+        return verdict
 
     def _require_floating_float(self, value: torch.Tensor) -> None:
         if not value.is_floating_point():

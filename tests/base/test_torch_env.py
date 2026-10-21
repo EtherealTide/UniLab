@@ -358,6 +358,38 @@ def test_nonfinite_backend_control_fails_closed() -> None:
         env.step(_actions(env))
 
 
+def test_nonfinite_manager_control_verdict_fails_closed_without_host_read() -> None:
+    class _ManagerControlEnv(_StubTorchEnv):
+        def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:
+            control = actions * torch.nan
+            self._pending_control_finite_check = False
+            return control
+
+    env = _ManagerControlEnv()
+    env.init_state()
+    with pytest.raises(ValueError, match="control contains NaN or Inf"):
+        env.step(_actions(env))
+
+
+def test_manager_control_verdict_does_not_leak_between_steps() -> None:
+    class _SpuriousVerdictEnv(_StubTorchEnv):
+        first = True
+
+        def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:
+            if self.first:
+                self.first = False
+                self._pending_control_finite_check = False
+                return actions * torch.nan
+            return actions
+
+    env = _SpuriousVerdictEnv()
+    env.init_state()
+    with pytest.raises(ValueError, match="control contains NaN or Inf"):
+        env.step(_actions(env))
+    state = env.step(_actions(env))
+    assert state.obs["obs"].shape == (env.num_envs, 3)
+
+
 def test_tensor_nan_guard_detects_and_dumps_at_explicit_host_boundary(tmp_path) -> None:
     class _NonfiniteObsEnv(_StubTorchEnv):
         def update_state(self, state: TorchEnvState) -> TorchEnvState:
