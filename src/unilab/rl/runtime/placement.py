@@ -1,8 +1,13 @@
-"""Pure placement resolution for the explicit off-policy inference transport.
+"""Pure collector-tensor placement resolution for the off-policy runtime.
 
 Merged from unilab_rl @ 3654e4b (unilab-rl 1.4.15), Apache-2.0; previously
 ``uni_rl.utils.tensor_runtime``. These functions never read a Hydra config;
 config-level resolution lives in :mod:`unilab.training.tensor_runtime`.
+
+Placement is one-dimensional: ``training.collector_tensor_device``
+(auto/cpu/cuda) decides where collector-facing tensors reside, and the
+inference transport (host ring vs CUDA ring) is a derived fact of that
+decision — there is no independent transport configuration.
 """
 
 from __future__ import annotations
@@ -134,72 +139,54 @@ def cpu_ring_staging_policy(learner_device: str) -> str:
 def resolve_inference_placement(
     *,
     learner_device: str,
-    transport: str | None = None,
-    env_tensor_native: bool | None = None,
+    collector_tensor_device: str | None = None,
     algo_name: str,
 ) -> InferencePlacement:
     """Resolve one explicit topology and reject mixed placement before spawn.
 
-    ``transport`` is authoritative when supplied. ``env_tensor_native`` is the
-    owner's probe-derived carrier fact; combining tensor-native observations
-    with host transport is incoherent and fails closed. Host-transport staging
-    policies are selected by ``cpu_ring_staging_policy`` from the learner device
-    type.
+    ``collector_tensor_device`` is the sole placement request: ``cpu`` keeps
+    collector-facing tensors on the host (CPU ring), ``cuda`` places them on
+    the learner's CUDA device (CUDA ring), and ``auto``/``None`` follows the
+    learner device (CUDA learner → CUDA, any other learner → CPU). The
+    inference transport is derived from that request; it has no independent
+    configuration. Host-ring staging policies are selected by
+    ``cpu_ring_staging_policy`` from the learner device type.
     """
     learner = _canonical_device(learner_device, label="learner device", algo_name=algo_name)
-    if env_tensor_native is None and transport == InferenceTransport.CUDA.value:
-        env_tensor_native = True
-    if env_tensor_native is None:
-        env_tensor_native = False
-    requested_env_device = learner if env_tensor_native else "cpu"
-    env_resolved = _canonical_device(requested_env_device, label="env device", algo_name=algo_name)
-
-    if env_tensor_native and transport is None:
-        transport = InferenceTransport.CUDA.value
-    elif transport is None:
-        transport = InferenceTransport.HOST.value
-    if not isinstance(transport, str):
-        raise TypeError(f"{algo_name} inference transport must be a string, got {transport!r}")
-    transport = transport.strip().lower()
-    if transport not in {item.value for item in InferenceTransport}:
-        raise ValueError(
-            f"{algo_name} inference transport must be one of {{'cuda', 'host'}} "
-            f"(null=auto); use 'host' for the CPU inference ring, got {transport!r}"
+    if collector_tensor_device is None:
+        collector_tensor_device = "auto"
+    if not isinstance(collector_tensor_device, str):
+        raise TypeError(
+            f"{algo_name} collector tensor device must be a string or omitted, "
+            f"got {collector_tensor_device!r}"
         )
-
-    if env_tensor_native and transport == InferenceTransport.HOST.value:
+    requested = collector_tensor_device.strip().lower()
+    if requested not in {"auto", "cpu", "cuda"}:
         raise ValueError(
-            f"{algo_name} requests CUDA tensor-native env observations with host inference transport"
+            f"{algo_name} collector tensor device must be one of {{'auto', 'cpu', 'cuda'}} "
+            f"(null=auto), got {collector_tensor_device!r}"
         )
+    if requested == "auto":
+        requested = "cuda" if _device_requires_cuda(learner) else "cpu"
 
-    if transport == InferenceTransport.CUDA.value:
-        if not _device_requires_cuda(learner) or not _device_requires_cuda(env_resolved):
+    if requested == "cuda":
+        if not _device_requires_cuda(learner):
             raise ValueError(
-                f"{algo_name} CUDA inference transport requires CUDA env and learner "
-                f"devices; got env={env_resolved!r}, learner={learner!r}"
-            )
-        if learner != env_resolved:
-            raise ValueError(
-                f"{algo_name} CUDA inference transport requires rank-local devices to "
-                f"match; got env={env_resolved!r}, learner={learner!r}"
+                f"{algo_name} collector_tensor_device=cuda requires a CUDA learner "
+                f"device; got learner={learner!r}"
             )
         return InferencePlacement(
             mode=InferenceTransport.CUDA,
-            env_device=env_resolved,
+            env_device=learner,
             ring_device=learner,
             learner_device=learner,
             collector_tensor_native=True,
             staging_policy="cuda_no_host_boundary",
         )
 
-    if _device_requires_cuda(env_resolved):
-        raise ValueError(
-            f"{algo_name} host inference transport requires a CPU env device, "
-            f"got env={env_resolved!r}"
-        )
     return InferencePlacement(
         mode=InferenceTransport.HOST,
-        env_device=env_resolved,
+        env_device="cpu",
         ring_device="cpu",
         learner_device=learner,
         collector_tensor_native=False,

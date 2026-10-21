@@ -1021,8 +1021,8 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         if removed_tensor_runtime_fields:
             raise ValueError(
                 "Collector env override must not set removed tensor_runtime fields; "
-                "inference transport is an explicit worker argument and carrier "
-                "placement is owned by training.sim_carrier_device"
+                "inference transport is an explicit worker argument and collector "
+                "tensor placement is owned by training.collector_tensor_device"
             )
         # Inference transport is process-local metadata, not an EnvCfg field.
         # The resolved placement reaches the worker only through the explicit

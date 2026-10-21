@@ -47,7 +47,7 @@ _PACKAGE_CONF_ROOT = Path(__file__).resolve().parents[1] / "conf"
 
 from unilab.base.process_device import (
     apply_backend_env_device_override,
-    apply_sim_carrier_device_override,
+    apply_collector_tensor_device_override,
     configure_backend_process_device,
 )
 from unilab.training import (
@@ -55,7 +55,7 @@ from unilab.training import (
     ensure_registries,
     get_log_root,
 )
-from unilab.training.tensor_runtime import select_sim_carrier_device
+from unilab.training.tensor_runtime import select_collector_tensor_device
 from unilab.utils.checkpoint import resolve_checkpoint_path
 from unilab.visualization.debug_primitives import (
     append_debug_primitives_to_scene,
@@ -817,10 +817,10 @@ def create_playback_session(
             sim_backend,
             learner_device=device,
         )
-        env_cfg_override = apply_sim_carrier_device_override(
+        env_cfg_override = apply_collector_tensor_device_override(
             env_cfg_override,
             sim_backend,
-            sim_carrier_device=select_sim_carrier_device(cfg),
+            collector_tensor_device=select_collector_tensor_device(cfg),
             learner_device=device,
         )
         try:
