@@ -15,7 +15,7 @@ from unisim.backend.mujoco.xml import materialize_scene_visual_override
 from unilab.base.config_adapter import EnvConfigAdapter, create_env
 from unilab.base.process_device import (
     apply_backend_env_device_override,
-    apply_sim_carrier_device_override,
+    apply_collector_tensor_device_override,
     configure_backend_process_device,
     pin_genesis_device_before_cuda_init,
     resolve_backend_env_device_id,
@@ -57,8 +57,8 @@ from unilab.training.experiment import (
 )
 from unilab.training.seed import apply_configured_training_seed
 from unilab.training.tensor_runtime import (
-    resolve_recorded_sim_carrier,
-    select_sim_carrier_device,
+    resolve_recorded_collector_tensor_device,
+    select_collector_tensor_device,
 )
 from unilab.utils.device import get_default_device
 from unilab.visualization.interactive_playback import (
@@ -105,10 +105,10 @@ def build_ppo_env_cfg_override(cfg: DictConfig) -> dict[str, Any]:
         str(cfg.training.sim_backend),
         learner_device=learner_device,
     )
-    result = apply_sim_carrier_device_override(
+    result = apply_collector_tensor_device_override(
         result,
         str(cfg.training.sim_backend),
-        sim_carrier_device=select_sim_carrier_device(cfg),
+        collector_tensor_device=select_collector_tensor_device(cfg),
         learner_device=learner_device,
     )
     if world_size > 1:
@@ -138,10 +138,10 @@ def build_ppo_play_env_cfg_override(cfg: DictConfig) -> dict[str, Any]:
         str(cfg.training.sim_backend),
         learner_device=learner_device,
     )
-    return apply_sim_carrier_device_override(
+    return apply_collector_tensor_device_override(
         result,
         str(cfg.training.sim_backend),
-        sim_carrier_device=select_sim_carrier_device(cfg),
+        collector_tensor_device=select_collector_tensor_device(cfg),
         learner_device=learner_device,
     )
 
@@ -286,10 +286,10 @@ def play_ppo(cfg: DictConfig, device: str) -> str | None:
         str(cfg.training.sim_backend),
         learner_device=device,
     )
-    play_env_cfg_override = apply_sim_carrier_device_override(
+    play_env_cfg_override = apply_collector_tensor_device_override(
         play_env_cfg_override,
         str(cfg.training.sim_backend),
-        sim_carrier_device=select_sim_carrier_device(cfg),
+        collector_tensor_device=select_collector_tensor_device(cfg),
         learner_device=device,
     )
     session, _policy_obs_mode, _checkpoint_path = create_rsl_rl_playback_session(
@@ -449,15 +449,15 @@ def main(cfg: DictConfig) -> None:
         str(cfg.training.sim_backend),
         learner_device=device,
     )
-    env_cfg_override = apply_sim_carrier_device_override(
+    env_cfg_override = apply_collector_tensor_device_override(
         env_cfg_override,
         str(cfg.training.sim_backend),
-        sim_carrier_device=select_sim_carrier_device(cfg),
+        collector_tensor_device=select_collector_tensor_device(cfg),
         learner_device=device,
     )
     seed_info = apply_configured_training_seed(cfg, torch_runtime=True, cuda=True)
     tf32_matmul_policy = apply_tf32_matmul_from_cfg(cfg, device=device)
-    resolved_sim_carrier = resolve_recorded_sim_carrier(
+    resolved_collector_tensor_device = resolve_recorded_collector_tensor_device(
         str(cfg.training.sim_backend),
         env_cfg_override,
     )
@@ -500,12 +500,12 @@ def main(cfg: DictConfig) -> None:
                 },
                 **(
                     {
-                        "sim_carrier": {
-                            "configured": select_sim_carrier_device(cfg),
-                            "resolved": resolved_sim_carrier,
+                        "collector_tensor": {
+                            "configured": select_collector_tensor_device(cfg),
+                            "resolved": resolved_collector_tensor_device,
                         }
                     }
-                    if resolved_sim_carrier is not None
+                    if resolved_collector_tensor_device is not None
                     else {}
                 ),
             },

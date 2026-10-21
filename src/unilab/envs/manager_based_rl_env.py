@@ -112,7 +112,7 @@ class ManagerBasedRlEnvCfg(EnvCfg):
     # a training process may request accelerator Torch carriers shared with its
     # learner. This selects public-manager carrier placement only; it is neither a
     # physics-device claim nor a tensor/NumPy runtime compatibility switch.
-    sim_carrier_device: str | None = None
+    collector_tensor_device: str | None = None
     seed: int | None = None
     is_finite_horizon: bool = False
     auto_reset: bool = True
@@ -121,23 +121,26 @@ class ManagerBasedRlEnvCfg(EnvCfg):
     critic_observation_group: str | None = None
 
     def validate(self) -> None:
-        if self.sim_carrier_device is not None:
-            if not isinstance(self.sim_carrier_device, str) or not self.sim_carrier_device.strip():
+        if self.collector_tensor_device is not None:
+            if (
+                not isinstance(self.collector_tensor_device, str)
+                or not self.collector_tensor_device.strip()
+            ):
                 raise TypeError(
-                    "ManagerBasedRlEnvCfg sim_carrier_device must be 'cpu', "
-                    f"'cuda', or 'cuda:<index>', or None; got {self.sim_carrier_device!r}"
+                    "ManagerBasedRlEnvCfg collector_tensor_device must be 'cpu', "
+                    f"'cuda', or 'cuda:<index>', or None; got {self.collector_tensor_device!r}"
                 )
             try:
-                requested_device = torch.device(self.sim_carrier_device)
+                requested_device = torch.device(self.collector_tensor_device)
             except (RuntimeError, TypeError, ValueError) as exc:
                 raise ValueError(
-                    "ManagerBasedRlEnvCfg sim_carrier_device is not a valid Torch "
-                    f"device: {self.sim_carrier_device!r}"
+                    "ManagerBasedRlEnvCfg collector_tensor_device is not a valid Torch "
+                    f"device: {self.collector_tensor_device!r}"
                 ) from exc
             if requested_device.type not in {"cpu", "cuda"}:
                 raise ValueError(
-                    "ManagerBasedRlEnvCfg sim_carrier_device must be cpu, cuda, or "
-                    f"None; got {self.sim_carrier_device!r}"
+                    "ManagerBasedRlEnvCfg collector_tensor_device must be cpu, cuda, or "
+                    f"None; got {self.collector_tensor_device!r}"
                 )
         for name, value in (("sim_dt", self.sim_dt), ("ctrl_dt", self.ctrl_dt)):
             if not _finite_real(value):
@@ -334,7 +337,9 @@ class ManagerBasedRlEnv(TorchEnv):
             )
 
         initial_capabilities = backend.get_tensor_capabilities()
-        runtime_device = self._resolve_runtime_device(initial_capabilities, cfg.sim_carrier_device)
+        runtime_device = self._resolve_runtime_device(
+            initial_capabilities, cfg.collector_tensor_device
+        )
         super().__init__(cfg, backend, num_envs, device=runtime_device)
         actual_seed = cfg.seed if cfg.seed is not None else secrets.randbits(63)
         cfg.seed = actual_seed

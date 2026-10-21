@@ -23,7 +23,7 @@ from unilab.process_context import visible_cuda_entries
 # These backends consume an explicit integer device id while materializing
 # their simulator.  MuJoCo/Motrix/Drake run CPU-authoritative physics; their
 # optional accelerator Manager buffers are selected separately through
-# ``env.sim_carrier_device``.
+# ``env.collector_tensor_device``.
 BACKEND_ENV_DEVICE_FIELDS: dict[str, str] = {
     "isaacgym": "isaacgym_device_id",
     "isaacsim": "isaacsim_device_id",
@@ -73,9 +73,9 @@ def _host_bridge_profile(backend_type: str) -> TensorPlatformProfile | None:
 def is_host_bridge_backend(backend_type: str) -> bool:
     """Return whether the backend executes through the packed HOST_BRIDGE plane.
 
-    Only HOST_BRIDGE backends route ``training.sim_carrier_device``; callers
-    that record or display the resolved carrier use this predicate instead of
-    naming individual backends.
+    Only HOST_BRIDGE backends route ``training.collector_tensor_device``;
+    callers that record or display the resolved device use this predicate
+    instead of naming individual backends.
     """
 
     return _host_bridge_profile(backend_type) is not None
@@ -177,18 +177,18 @@ def apply_backend_env_device_override(
     return result
 
 
-def apply_sim_carrier_device_override(
+def apply_collector_tensor_device_override(
     env_cfg_override: Mapping[str, Any] | None,
     backend_type: str,
     *,
-    sim_carrier_device: str | None = None,
+    collector_tensor_device: str | None = None,
     learner_device: str | None = None,
 ) -> dict[str, Any]:
     """Return an env override selecting optional HOST_BRIDGE Torch carriers.
 
-    The input mapping is never mutated. ``training.sim_carrier_device`` is the
-    explicit training contract: ``cpu`` remains on CPU and unindexed ``cuda`` is
-    resolved to the current device by the environment. ``auto`` follows the learner
+    The input mapping is never mutated. ``training.collector_tensor_device`` is
+    the explicit training contract: ``cpu`` remains on CPU and unindexed ``cuda``
+    is resolved to the current device by the environment. ``auto`` follows the learner
     device: a CUDA learner routes the rank-local (indexed) learner device string,
     while a CPU learner routes CPU and a torch.mps learner retains the owner/default
     CPU placement. Eligibility comes from the public SDK-free backend capability
@@ -202,51 +202,56 @@ def apply_sim_carrier_device_override(
     result = dict(env_cfg_override) if env_cfg_override is not None else {}
     if "manager_torch_device" in result:
         raise ValueError(
-            "env.manager_torch_device was removed; use env.sim_carrier_device "
+            "env.manager_torch_device was removed; use env.collector_tensor_device "
+            "(accepted values: cpu, cuda, or cuda:<index>)"
+        )
+    if "sim_carrier_device" in result:
+        raise ValueError(
+            "env.sim_carrier_device was removed; use env.collector_tensor_device "
             "(accepted values: cpu, cuda, or cuda:<index>)"
         )
     profile = _host_bridge_profile(backend_type)
-    if sim_carrier_device is not None:
-        device = str(sim_carrier_device).strip().lower()
+    if collector_tensor_device is not None:
+        device = str(collector_tensor_device).strip().lower()
         if device not in {"auto", "cpu", "cuda"}:
             raise ValueError(
-                "training.sim_carrier_device must be 'auto', 'cpu', or 'cuda'; "
-                f"got {sim_carrier_device!r}"
+                "training.collector_tensor_device must be 'auto', 'cpu', or 'cuda'; "
+                f"got {collector_tensor_device!r}"
             )
         if profile is None:
             if device == "cuda":
                 raise ValueError(
-                    "training.sim_carrier_device=cuda requires a HOST_BRIDGE "
+                    "training.collector_tensor_device=cuda requires a HOST_BRIDGE "
                     "backend that declares CUDA Torch carriers; got "
                     f"{backend_type!r}"
                 )
             return result
         if device == "auto":
-            return _apply_sim_carrier_device_auto(result, learner_device, profile=profile)
+            return _apply_collector_tensor_device_auto(result, learner_device, profile=profile)
         try:
             validate_torch_device(
-                profile.torch_devices, device, label="training.sim_carrier_device"
+                profile.torch_devices, device, label="training.collector_tensor_device"
             )
         except ValueError as exc:
             raise ValueError(
-                f"training.sim_carrier_device={device!r} is not supported by "
+                f"training.collector_tensor_device={device!r} is not supported by "
                 f"backend {backend_type!r}: {exc}"
             ) from exc
-        result["sim_carrier_device"] = device
+        result["collector_tensor_device"] = device
         return result
 
     if profile is None:
         return result
-    return _apply_sim_carrier_device_auto(result, learner_device, profile=profile)
+    return _apply_collector_tensor_device_auto(result, learner_device, profile=profile)
 
 
-def _apply_sim_carrier_device_auto(
+def _apply_collector_tensor_device_auto(
     result: dict[str, Any],
     learner_device: str | None,
     *,
     profile: TensorPlatformProfile,
 ) -> dict[str, Any]:
-    """Resolve the ``auto`` carrier request from the learner device.
+    """Resolve the ``auto`` collector-tensor request from the learner device.
 
     A CUDA learner routes its rank-local (indexed) device string verbatim, a CPU
     learner routes CPU, and a torch.mps learner retains the existing CPU mapping.
@@ -260,25 +265,27 @@ def _apply_sim_carrier_device_auto(
     if device.lower() == "mps":
         return result
     if device.lower() == "cpu":
-        result["sim_carrier_device"] = "cpu"
+        result["collector_tensor_device"] = "cpu"
         return result
     if not device or device.split(":", 1)[0].lower() != "cuda":
-        result["sim_carrier_device"] = "cpu"
+        result["collector_tensor_device"] = "cpu"
         return result
     try:
-        validate_torch_device(profile.torch_devices, device, label="training.sim_carrier_device")
+        validate_torch_device(
+            profile.torch_devices, device, label="training.collector_tensor_device"
+        )
     except ValueError as exc:
         raise ValueError(
-            "training.sim_carrier_device=auto resolved to "
+            "training.collector_tensor_device=auto resolved to "
             f"{device!r}, which is not supported by the backend capability "
             f"declaration {tuple(profile.torch_devices)!r}"
         ) from exc
-    result["sim_carrier_device"] = device
+    result["collector_tensor_device"] = device
     return result
 
 
-def canonicalize_sim_carrier_device(requested_device: str | None) -> str:
-    """Return the concrete public-manager carrier device for a request."""
+def canonicalize_collector_tensor_device(requested_device: str | None) -> str:
+    """Return the concrete public-manager collector tensor device for a request."""
     import torch
 
     if requested_device is None:
@@ -287,20 +294,22 @@ def canonicalize_sim_carrier_device(requested_device: str | None) -> str:
         device = torch.device(str(requested_device).strip())
     except (RuntimeError, TypeError, ValueError) as exc:
         raise ValueError(
-            f"sim_carrier_device is not a valid Torch device: {requested_device!r}"
+            f"collector_tensor_device is not a valid Torch device: {requested_device!r}"
         ) from exc
     if device.type != "cuda":
         if device.type != "cpu":
-            raise ValueError(f"sim_carrier_device must be cpu or cuda; got {requested_device!r}")
+            raise ValueError(
+                f"collector_tensor_device must be cpu or cuda; got {requested_device!r}"
+            )
         return "cpu"
     if not torch.cuda.is_available():
         raise ValueError(
-            f"sim_carrier_device {requested_device!r} requires CUDA, but CUDA is unavailable"
+            f"collector_tensor_device {requested_device!r} requires CUDA, but CUDA is unavailable"
         )
     index = device.index if device.index is not None else int(torch.cuda.current_device())
     if index >= int(torch.cuda.device_count()):
         raise ValueError(
-            f"sim_carrier_device index {index} is out of range; "
+            f"collector_tensor_device index {index} is out of range; "
             f"torch.cuda.device_count()={torch.cuda.device_count()}"
         )
     return f"cuda:{index}"
@@ -524,9 +533,9 @@ def _reset_genesis_device_pin_for_tests() -> None:
 
 __all__ = [
     "BACKEND_ENV_DEVICE_FIELDS",
-    "canonicalize_sim_carrier_device",
+    "canonicalize_collector_tensor_device",
     "apply_backend_env_device_override",
-    "apply_sim_carrier_device_override",
+    "apply_collector_tensor_device_override",
     "bind_backend_process_device",
     "bind_genesis_process_device",
     "configure_backend_process_device",

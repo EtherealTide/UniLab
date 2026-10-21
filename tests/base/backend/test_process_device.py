@@ -13,7 +13,7 @@ from unisim.backend.mjwarp import runtime as mjwarp_runtime
 import unilab.base.process_device as process_device
 from unilab.base.process_device import (
     apply_backend_env_device_override,
-    apply_sim_carrier_device_override,
+    apply_collector_tensor_device_override,
     bind_genesis_process_device,
     configure_backend_process_device,
     resolve_backend_env_device_id,
@@ -186,95 +186,99 @@ def test_backend_env_device_override_routes_rank_local_zero(
     assert routed["nested"] is owner_override["nested"]
 
 
-def test_sim_carrier_device_override_is_explicit_and_rank_local() -> None:
-    owner_override = {"sim_carrier_device": "owner-cpu", "nested": {"keep": True}}
+def test_collector_tensor_device_override_is_explicit_and_rank_local() -> None:
+    owner_override = {"collector_tensor_device": "owner-cpu", "nested": {"keep": True}}
 
-    routed = apply_sim_carrier_device_override(
+    routed = apply_collector_tensor_device_override(
         owner_override,
         "mujoco",
-        sim_carrier_device="cpu",
+        collector_tensor_device="cpu",
         learner_device="cuda:3",
     )
-    assert routed["sim_carrier_device"] == "cpu"
+    assert routed["collector_tensor_device"] == "cpu"
 
-    routed = apply_sim_carrier_device_override(
+    routed = apply_collector_tensor_device_override(
         owner_override,
         "mujoco",
-        sim_carrier_device="cuda",
+        collector_tensor_device="cuda",
         learner_device="cuda:3",
     )
-    assert routed["sim_carrier_device"] == "cuda"
+    assert routed["collector_tensor_device"] == "cuda"
     assert routed["nested"] is owner_override["nested"]
-    assert owner_override["sim_carrier_device"] == "owner-cpu"
+    assert owner_override["collector_tensor_device"] == "owner-cpu"
 
-    with pytest.raises(ValueError, match="training.sim_carrier_device"):
-        apply_sim_carrier_device_override(owner_override, "mujoco", sim_carrier_device="cuda:3")
+    with pytest.raises(ValueError, match="training.collector_tensor_device"):
+        apply_collector_tensor_device_override(
+            owner_override, "mujoco", collector_tensor_device="cuda:3"
+        )
 
     for backend_type in ("motrix", "drake", "superdex"):
-        routed = apply_sim_carrier_device_override(
+        routed = apply_collector_tensor_device_override(
             owner_override,
             backend_type,
-            sim_carrier_device="cuda",
+            collector_tensor_device="cuda",
             learner_device="cuda:3",
         )
-        assert routed["sim_carrier_device"] == "cuda"
-        assert owner_override["sim_carrier_device"] == "owner-cpu"
+        assert routed["collector_tensor_device"] == "cuda"
+        assert owner_override["collector_tensor_device"] == "owner-cpu"
 
     with pytest.raises(ValueError, match="requires a HOST_BRIDGE"):
-        apply_sim_carrier_device_override(owner_override, "mjwarp", sim_carrier_device="cuda")
+        apply_collector_tensor_device_override(
+            owner_override, "mjwarp", collector_tensor_device="cuda"
+        )
 
 
-def test_sim_carrier_device_auto_follows_the_learner_device() -> None:
-    owner_override = {"sim_carrier_device": "owner-cpu", "nested": {"keep": True}}
+def test_collector_tensor_device_auto_follows_the_learner_device() -> None:
+    owner_override = {"collector_tensor_device": "owner-cpu", "nested": {"keep": True}}
 
-    routed = apply_sim_carrier_device_override(
+    routed = apply_collector_tensor_device_override(
         owner_override,
         "mujoco",
-        sim_carrier_device="auto",
+        collector_tensor_device="auto",
         learner_device="cuda:3",
     )
-    assert routed["sim_carrier_device"] == "cuda:3"
+    assert routed["collector_tensor_device"] == "cuda:3"
     assert routed["nested"] is owner_override["nested"]
-    assert owner_override["sim_carrier_device"] == "owner-cpu"
+    assert owner_override["collector_tensor_device"] == "owner-cpu"
 
     for learner_device in ("cpu", "mps"):
-        routed = apply_sim_carrier_device_override(
+        routed = apply_collector_tensor_device_override(
             owner_override,
             "mujoco",
-            sim_carrier_device="auto",
+            collector_tensor_device="auto",
             learner_device=learner_device,
         )
-        expected = "cpu" if learner_device == "cpu" else owner_override["sim_carrier_device"]
-        assert routed["sim_carrier_device"] == expected
+        expected = "cpu" if learner_device == "cpu" else owner_override["collector_tensor_device"]
+        assert routed["collector_tensor_device"] == expected
 
-    routed = apply_sim_carrier_device_override(
+    routed = apply_collector_tensor_device_override(
         owner_override,
         "mujoco",
-        sim_carrier_device="auto",
+        collector_tensor_device="auto",
         learner_device=None,
     )
     assert routed == owner_override
 
     for backend_type in ("motrix", "drake", "superdex"):
-        routed = apply_sim_carrier_device_override(
+        routed = apply_collector_tensor_device_override(
             owner_override,
             backend_type,
-            sim_carrier_device="auto",
+            collector_tensor_device="auto",
             learner_device="cuda:3",
         )
-        assert routed["sim_carrier_device"] == "cuda:3"
+        assert routed["collector_tensor_device"] == "cuda:3"
 
     # Backends outside the HOST_BRIDGE scope ignore the auto request.
-    routed = apply_sim_carrier_device_override(
+    routed = apply_collector_tensor_device_override(
         owner_override,
         "mjwarp",
-        sim_carrier_device="auto",
+        collector_tensor_device="auto",
         learner_device="cuda:3",
     )
     assert routed == owner_override
 
 
-def test_sim_carrier_device_fails_closed_on_capability_inventory(
+def test_collector_tensor_device_fails_closed_on_capability_inventory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     profile = process_device._host_bridge_profile("motrix")
@@ -287,59 +291,67 @@ def test_sim_carrier_device_fails_closed_on_capability_inventory(
     )
 
     with pytest.raises(ValueError, match="accepted Torch devices are 'cpu'"):
-        apply_sim_carrier_device_override({}, "motrix", sim_carrier_device="cuda")
+        apply_collector_tensor_device_override({}, "motrix", collector_tensor_device="cuda")
 
     with pytest.raises(ValueError, match="backend capability declaration"):
-        apply_sim_carrier_device_override(
-            {}, "motrix", sim_carrier_device="auto", learner_device="cuda:3"
+        apply_collector_tensor_device_override(
+            {}, "motrix", collector_tensor_device="auto", learner_device="cuda:3"
         )
 
     assert (
-        apply_sim_carrier_device_override({}, "motrix", sim_carrier_device="cpu")[
-            "sim_carrier_device"
+        apply_collector_tensor_device_override({}, "motrix", collector_tensor_device="cpu")[
+            "collector_tensor_device"
         ]
         == "cpu"
     )
 
 
-def test_playback_device_uses_sim_carrier_device_without_training_request() -> None:
-    owner_override = {"sim_carrier_device": "owner-cpu", "nested": {"keep": True}}
+def test_playback_device_uses_collector_tensor_device_without_training_request() -> None:
+    owner_override = {"collector_tensor_device": "owner-cpu", "nested": {"keep": True}}
 
-    routed = apply_sim_carrier_device_override(owner_override, "mujoco", learner_device=None)
+    routed = apply_collector_tensor_device_override(owner_override, "mujoco", learner_device=None)
     assert routed is not owner_override
     assert routed == owner_override
 
-    routed = apply_sim_carrier_device_override(owner_override, "mujoco", learner_device="cpu")
-    assert routed["sim_carrier_device"] == "cpu"
+    routed = apply_collector_tensor_device_override(owner_override, "mujoco", learner_device="cpu")
+    assert routed["collector_tensor_device"] == "cpu"
 
-    routed = apply_sim_carrier_device_override(owner_override, "mujoco", learner_device="cuda:3")
-    assert routed["sim_carrier_device"] == "cuda:3"
+    routed = apply_collector_tensor_device_override(
+        owner_override, "mujoco", learner_device="cuda:3"
+    )
+    assert routed["collector_tensor_device"] == "cuda:3"
 
-    routed = apply_sim_carrier_device_override(owner_override, "mujoco", learner_device="mps")
-    assert routed["sim_carrier_device"] == "owner-cpu"
+    routed = apply_collector_tensor_device_override(owner_override, "mujoco", learner_device="mps")
+    assert routed["collector_tensor_device"] == "owner-cpu"
 
-    routed = apply_sim_carrier_device_override(owner_override, "mjwarp", learner_device="cuda:3")
-    assert routed["sim_carrier_device"] == "owner-cpu"
+    routed = apply_collector_tensor_device_override(
+        owner_override, "mjwarp", learner_device="cuda:3"
+    )
+    assert routed["collector_tensor_device"] == "owner-cpu"
 
 
 def test_removed_device_keys_fail_closed_with_migration_hint() -> None:
-    with pytest.raises(ValueError, match="env.sim_carrier_device"):
-        apply_sim_carrier_device_override(
-            {"manager_torch_device": "cpu"}, "mujoco", sim_carrier_device="auto"
+    with pytest.raises(ValueError, match="env.manager_torch_device was removed"):
+        apply_collector_tensor_device_override(
+            {"manager_torch_device": "cpu"}, "mujoco", collector_tensor_device="auto"
+        )
+    with pytest.raises(ValueError, match="env.sim_carrier_device was removed"):
+        apply_collector_tensor_device_override(
+            {"sim_carrier_device": "cpu"}, "mujoco", collector_tensor_device="auto"
         )
 
 
-def test_sim_carrier_device_is_canonicalized_for_manifests(
+def test_collector_tensor_device_is_canonicalized_for_manifests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert process_device.canonicalize_sim_carrier_device(None) == "cpu"
-    assert process_device.canonicalize_sim_carrier_device("cpu") == "cpu"
+    assert process_device.canonicalize_collector_tensor_device(None) == "cpu"
+    assert process_device.canonicalize_collector_tensor_device("cpu") == "cpu"
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 1)
-    assert process_device.canonicalize_sim_carrier_device("cuda") == "cuda:1"
-    assert process_device.canonicalize_sim_carrier_device("cuda:0") == "cuda:0"
+    assert process_device.canonicalize_collector_tensor_device("cuda") == "cuda:1"
+    assert process_device.canonicalize_collector_tensor_device("cuda:0") == "cuda:0"
 
 
 def test_non_gpu_backend_is_left_untouched() -> None:

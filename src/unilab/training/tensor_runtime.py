@@ -15,7 +15,7 @@ from typing import Any
 from omegaconf import DictConfig, OmegaConf
 
 from unilab.base.process_device import (
-    canonicalize_sim_carrier_device,
+    canonicalize_collector_tensor_device,
     is_host_bridge_backend,
 )
 from unilab.rl.runtime.placement import (
@@ -34,62 +34,65 @@ from unilab.rl.runtime.settings import (
 )
 
 
-def select_sim_carrier_device(cfg: DictConfig) -> str:
-    """Select the HOST_BRIDGE Manager carrier request and reject the removed key."""
+def select_collector_tensor_device(cfg: DictConfig) -> str:
+    """Select the collector-tensor device request and reject removed keys."""
     training = OmegaConf.select(cfg, "training", default=None)
-    if training is not None and "collector_tensor_device" in training:
-        raise ValueError(
-            "training.collector_tensor_device was removed; use "
-            "training.sim_carrier_device (accepted values: auto, cpu, or cuda)"
-        )
-    value = OmegaConf.select(cfg, "training.sim_carrier_device", default="auto")
+    if training is not None:
+        if "sim_carrier_device" in training:
+            raise ValueError(
+                "training.sim_carrier_device was removed; use "
+                "training.collector_tensor_device (accepted values: auto, cpu, or cuda)"
+            )
+        if "inference_transport" in training:
+            raise ValueError(
+                "training.inference_transport was removed; the inference transport is "
+                "derived from training.collector_tensor_device "
+                "(accepted values: auto, cpu, or cuda)"
+            )
+    value = OmegaConf.select(cfg, "training.collector_tensor_device", default="auto")
     if value is None:
         return "auto"
     if not isinstance(value, str):
-        raise TypeError(f"training.sim_carrier_device must be a string or omitted, got {value!r}")
+        raise TypeError(
+            f"training.collector_tensor_device must be a string or omitted, got {value!r}"
+        )
     return value
 
 
-def resolve_recorded_sim_carrier(
+def resolve_recorded_collector_tensor_device(
     sim_backend: str,
     env_cfg_override: Mapping[str, Any] | None,
 ) -> str | None:
-    """Resolve the sim carrier recorded in ``run_config.json``.
+    """Resolve the collector-tensor device recorded in ``run_config.json``.
 
-    Every HOST_BRIDGE backend routes ``training.sim_carrier_device``; gating
-    the record on one backend name drops the resolved carrier from the other
-    HOST_BRIDGE backends' run configs.
+    Every HOST_BRIDGE backend routes ``training.collector_tensor_device``;
+    gating the record on one backend name drops the resolved device from the
+    other HOST_BRIDGE backends' run configs.
     """
 
     if not is_host_bridge_backend(sim_backend):
         return None
-    return canonicalize_sim_carrier_device((env_cfg_override or {}).get("sim_carrier_device"))
+    return canonicalize_collector_tensor_device(
+        (env_cfg_override or {}).get("collector_tensor_device")
+    )
 
 
-def resolve_inference_transport(
+def resolve_collector_tensor_placement(
     cfg: DictConfig,
     *,
     device: str,
     algo_name: str,
-    env_tensor_native: bool | None = None,
 ) -> InferencePlacement:
     """Resolve placement from the owner config's single config-source tree."""
-    requested_transport = OmegaConf.select(cfg, "training.inference_transport", default=None)
     env_cfg = OmegaConf.select(cfg, "env", default=None)
     if env_cfg is not None and ("tensor_runtime" in env_cfg or "tensor_runtime_device" in env_cfg):
         raise ValueError(
             "env.tensor_runtime and env.tensor_runtime_device were removed; "
-            "tensor-native inference follows the resolved learner device"
-        )
-    if requested_transport is not None and not isinstance(requested_transport, str):
-        raise TypeError(
-            f"{algo_name} training.inference_transport must be a string or omitted, "
-            f"got {requested_transport!r}"
+            "tensor-native inference follows training.collector_tensor_device"
         )
     return resolve_inference_placement(
         learner_device=device,
-        transport=requested_transport,
-        env_tensor_native=env_tensor_native,
+        collector_tensor_device=select_collector_tensor_device(cfg),
         algo_name=algo_name,
     )
 

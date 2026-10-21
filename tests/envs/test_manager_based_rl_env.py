@@ -1479,18 +1479,18 @@ def test_manager_public_inputs_and_episode_counters_are_tensor_first() -> None:
 
 
 @pytest.mark.parametrize(
-    ("sim_carrier_device", "expected_device"),
+    ("collector_tensor_device", "expected_device"),
     [
         (None, torch.device("cpu")),
         ("cpu", torch.device("cpu")),
     ],
 )
 def test_backend_capability_defaults_host_bridge_manager_carriers_to_cpu(
-    sim_carrier_device: str | None,
+    collector_tensor_device: str | None,
     expected_device: torch.device,
 ) -> None:
     cfg = _make_cfg()
-    cfg.sim_carrier_device = sim_carrier_device
+    cfg.collector_tensor_device = collector_tensor_device
 
     env, backend = _make_env(cfg)
 
@@ -1519,10 +1519,10 @@ def test_host_bridge_ignores_accelerator_availability_without_explicit_request(
     assert env.device == torch.device("cpu")
 
 
-def test_sim_carrier_device_rejects_non_tensor_device_and_invalid_syntax() -> None:
+def test_collector_tensor_device_rejects_non_tensor_device_and_invalid_syntax() -> None:
     for value, error in (("mps", ValueError), (12, TypeError), ("", TypeError)):
         cfg = _make_cfg()
-        cfg.sim_carrier_device = value
+        cfg.collector_tensor_device = value
         with pytest.raises(error):
             cfg.validate()
 
@@ -1570,7 +1570,7 @@ def test_mujoco_host_bridge_packed_reset_lifecycle(
         policy_observation_group="actor",
     )
     if device == "cuda":
-        cfg.sim_carrier_device = device
+        cfg.collector_tensor_device = device
     backend = create_backend(
         "mujoco", scene, 2, cfg.sim_dt, base_name="base", add_body_sensors=True
     )
