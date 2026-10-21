@@ -105,11 +105,10 @@ def observations(env):
     )
 
 
-def reset_defaults(env, reset_mask):
-    env.scene.reset_to_default(reset_mask, term_name="fixture.defaults")
-
-
-setattr(reset_defaults, "reset", reset_defaults)
+def reset_defaults(env, env_ids):
+    env.scene.reset_to_default(
+        env.event_term_mask_buffer.scatter(env_ids), term_name="fixture.defaults"
+    )
 
 
 def make_fixture_cfg():

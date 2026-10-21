@@ -1153,12 +1153,12 @@ def test_run_native_viewer_play_loop_runs_without_physics_state():
             self.init_state_calls += 1
             self.state = object()
 
-        def reset(self, env_indices):
+        def reset(self, env_ids):
             self.reset_calls += 1
-            assert env_indices.shape == (2,)
-            assert env_indices.dtype == torch.bool
-            assert env_indices.device == self.device
-            assert bool(env_indices.all())
+            assert env_ids.shape == (2,)
+            assert env_ids.dtype == torch.int64
+            assert env_ids.device == self.device
+            assert env_ids.tolist() == [0, 1]
             return {"obs": torch.ones((2, 5), dtype=torch.float32, device=self.device)}, {}
 
         def step(self, actions):
@@ -1194,7 +1194,7 @@ def test_run_native_viewer_play_loop_runs_without_physics_state():
     actor = FakeActor()
 
     def _reset_obs() -> torch.Tensor:
-        obs = env.reset(torch.ones(2, dtype=torch.bool, device=env.device))[0]["obs"]
+        obs = env.reset(torch.arange(2, dtype=torch.int64, device=env.device))[0]["obs"]
         assert isinstance(obs, torch.Tensor)
         return obs
 

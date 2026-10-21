@@ -163,7 +163,7 @@ def test_public_exports_and_cfg_build_are_canonical() -> None:
 def test_manager_boundary_publishes_torch_commands() -> None:
     env, _ = _env()
     manager = _manager(env)
-    manager.reset(torch.ones(env.num_envs, dtype=torch.bool, device=env.device))
+    manager.reset(torch.arange(env.num_envs, dtype=torch.int64, device=env.device))
 
     command = manager.get_command("twist")
     term = manager.get_term("twist")
@@ -179,10 +179,10 @@ def test_resampling_is_seeded_and_partial_reset_is_local() -> None:
     right_env, _ = _env(seed=19)
     left = _manager(left_env, resampling_time_range=(0.5, 1.5))
     right = _manager(right_env, resampling_time_range=(0.5, 1.5))
-    all_mask = torch.ones(left_env.num_envs, dtype=torch.bool, device=left_env.device)
+    all_ids = torch.arange(left_env.num_envs, dtype=torch.int64, device=left_env.device)
 
-    left.reset(all_mask)
-    right.reset(all_mask)
+    left.reset(all_ids)
+    right.reset(all_ids)
     np.testing.assert_array_equal(left.get_command("twist"), right.get_command("twist"))
     np.testing.assert_array_equal(
         left.get_term("twist").time_left,
@@ -220,7 +220,7 @@ def test_metrics_and_fixed_interval_resampling_follow_manager_schedule() -> None
             ang_vel_z=(0.2, 0.2),
         ),
     )
-    manager.reset(torch.ones(env.num_envs, dtype=torch.bool, device=env.device))
+    manager.reset(torch.arange(env.num_envs, dtype=torch.int64, device=env.device))
     term = manager.get_term("twist")
 
     manager.compute(0.1)
@@ -242,7 +242,7 @@ def test_metrics_fail_closed_before_read_plan_compilation() -> None:
 
 
 def test_heading_world_forward_and_standing_modes() -> None:
-    all_mask = torch.ones(4, dtype=torch.bool)
+    all_ids = torch.arange(4, dtype=torch.int64)
 
     heading_env, _ = _env()
     heading = _manager(
@@ -257,7 +257,7 @@ def test_heading_world_forward_and_standing_modes() -> None:
             heading=(np.pi / 2, np.pi / 2),
         ),
     )
-    heading.reset(all_mask)
+    heading.reset(all_ids)
     heading.compute(0.0)
     np.testing.assert_allclose(heading.get_command("twist")[:, 2], 0.5)
 
@@ -272,7 +272,7 @@ def test_heading_world_forward_and_standing_modes() -> None:
             ang_vel_z=(0.0, 0.0),
         ),
     )
-    world.reset(all_mask)
+    world.reset(all_ids)
     world.compute(0.0)
     np.testing.assert_allclose(world.get_command("twist")[:, :2], [[0.0, -1.0]] * 4, atol=1e-6)
 
@@ -286,12 +286,12 @@ def test_heading_world_forward_and_standing_modes() -> None:
             ang_vel_z=(0.2, 0.2),
         ),
     )
-    forward.reset(all_mask)
+    forward.reset(all_ids)
     np.testing.assert_allclose(forward.get_command("twist"), [[0.3, 0.0, 0.0]] * 4)
 
     standing_env, _ = _env()
     standing = _manager(standing_env, rel_standing_envs=1.0)
-    standing.reset(all_mask)
+    standing.reset(all_ids)
     standing.compute(0.0)
     np.testing.assert_array_equal(standing.get_command("twist"), 0.0)
 
