@@ -389,6 +389,25 @@ def test_host_bridge_env_overrides_route_explicit_sim_carrier_device(monkeypatch
 
 
 @pytest.mark.parametrize(
+    ("backend", "expected"),
+    [
+        ("mujoco", "cpu"),
+        ("motrix", "cpu"),
+        ("drake", "cpu"),
+        ("superdex", "cpu"),
+        ("mjwarp", None),
+        ("genesis", None),
+    ],
+)
+def test_recorded_sim_carrier_covers_every_host_bridge_backend(backend, expected):
+    """run_config.json records the resolved carrier for every HOST_BRIDGE backend."""
+    from unilab.training.tensor_runtime import resolve_recorded_sim_carrier
+
+    assert resolve_recorded_sim_carrier(backend, {"sim_carrier_device": "cpu"}) == expected
+    assert resolve_recorded_sim_carrier(backend, None) == expected
+
+
+@pytest.mark.parametrize(
     ("backend", "field"),
     [
         ("genesis", "genesis_device_id"),

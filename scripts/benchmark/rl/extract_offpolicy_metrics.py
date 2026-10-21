@@ -30,6 +30,8 @@ from tensorboard.backend.event_processing import event_accumulator
 TAGS: dict[str, tuple[tuple[str, float], ...]] = {
     "iter_ms": (("Perf/iteration_time", 1000.0), ("perf/iter_ms", 1.0)),
     "steps_per_sec": (("Perf/total_fps", 1.0), ("perf/steps_per_sec", 1.0)),
+    "env_step_ms": (("Perf/collector_env_step_ms", 1.0),),
+    "apply_action_ms": (("Perf/collector_env_step_apply_action_ms", 1.0),),
     "collector_active_steps_per_sec": (("perf/collector_active_steps_per_sec", 1.0),),
     "collector_cycle_ms": (("perf/collector_cycle_ms", 1.0),),
     "collector_learner_action_wait_ms": (

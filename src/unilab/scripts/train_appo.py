@@ -22,7 +22,6 @@ from unilab.base.env_factory import registry_env_factory
 from unilab.base.process_device import (
     apply_backend_env_device_override,
     apply_sim_carrier_device_override,
-    canonicalize_sim_carrier_device,
     configure_backend_process_device,
     pin_genesis_device_before_cuda_init,
 )
@@ -42,7 +41,10 @@ from unilab.training import (
 from unilab.training.experiment import ExperimentTracker
 from unilab.training.onnx_export import export_policy_onnx, verify_policy_onnx
 from unilab.training.seed import apply_configured_training_seed
-from unilab.training.tensor_runtime import select_sim_carrier_device
+from unilab.training.tensor_runtime import (
+    resolve_recorded_sim_carrier,
+    select_sim_carrier_device,
+)
 from unilab.visualization.interactive_playback import (
     PlaybackConfig,
     create_appo_playback_session,
@@ -379,10 +381,9 @@ def main(cfg: DictConfig) -> None:
     )
     seed_info = apply_configured_training_seed(cfg, torch_runtime=True, cuda=True)
     tf32_matmul_policy = apply_tf32_matmul_from_cfg(cfg, device=learner_device)
-    resolved_sim_carrier = (
-        canonicalize_sim_carrier_device(env_cfg_override.get("sim_carrier_device"))
-        if str(cfg.training.sim_backend) == "mujoco"
-        else None
+    resolved_sim_carrier = resolve_recorded_sim_carrier(
+        str(cfg.training.sim_backend),
+        env_cfg_override,
     )
 
     tracker = None

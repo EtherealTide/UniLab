@@ -21,7 +21,6 @@ from unilab.base.env_factory import registry_env_factory
 from unilab.base.process_device import (
     apply_backend_env_device_override,
     apply_sim_carrier_device_override,
-    canonicalize_sim_carrier_device,
     configure_backend_process_device,
     pin_genesis_device_before_cuda_init,
     resolve_backend_env_device_id,
@@ -62,6 +61,7 @@ from unilab.training.onnx_export import export_policy_onnx, verify_policy_onnx
 from unilab.training.seed import apply_configured_training_seed
 from unilab.training.tensor_runtime import (
     resolve_inference_transport,
+    resolve_recorded_sim_carrier,
     resolve_runtime_settings,
     select_sim_carrier_device,
 )
@@ -700,12 +700,9 @@ def main(cfg: DictConfig) -> None:
     # directory (UNILAB_DP_LOG_DIR); they never create logging backends,
     # checkpoints, summaries, or traces there.
     log_dir = resolve_run_log_dir(cfg, world_size=world_size)
-    resolved_sim_carrier = (
-        canonicalize_sim_carrier_device(
-            (build_offpolicy_env_cfg_override(algo_name, cfg) or {}).get("sim_carrier_device")
-        )
-        if str(cfg.training.sim_backend) == "mujoco"
-        else None
+    resolved_sim_carrier = resolve_recorded_sim_carrier(
+        str(cfg.training.sim_backend),
+        build_offpolicy_env_cfg_override(algo_name, cfg),
     )
 
     supervisor: DpRankSupervisor | None = None
