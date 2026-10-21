@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.mjwarp.dependencies import load_mjwarp_dependencies
 from unisim.dr.types import (
     INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
@@ -73,7 +74,7 @@ def test_interval_push_and_velocity_require_named_bodies() -> None:
     with pytest.raises(NotImplementedError, match="push target body"):
         backend.apply_interval_randomization(
             IntervalRandomizationPlan(
-                ops=(IntervalTermOp(INTERVAL_TERM_PUSH, np.ones((3,), dtype=np.float32)),)
+                ops=(IntervalTermOp(INTERVAL_TERM_PUSH, torch.ones((3,), dtype=torch.float32)),)
             )
         )
     with pytest.raises(NotImplementedError, match="exactly one free joint"):
@@ -82,8 +83,8 @@ def test_interval_push_and_velocity_require_named_bodies() -> None:
                 ops=(
                     IntervalTermOp(
                         INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
-                        np.zeros((1, 1, 3), dtype=np.float32),
-                        body_ids=np.asarray([1], dtype=np.int32),
+                        torch.zeros((1, 1, 3), dtype=torch.float32),
+                        body_ids=torch.as_tensor([1], dtype=torch.int32),
                     ),
                 )
             )

@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from unisim.dr.types import (
     INTERVAL_TERM_BODY_FORCE,
     RESET_TERM_BODY_IPOS,
@@ -517,8 +518,8 @@ def test_motrix_backend_interval_body_force_uses_link_external_force_delta() -> 
             ops=(
                 IntervalTermOp(
                     INTERVAL_TERM_BODY_FORCE,
-                    np.asarray([[[1.0, 2.0, 3.0]], [[4.0, 5.0, 6.0]]], dtype=np.float64),
-                    body_ids=np.asarray([0], dtype=np.int32),
+                    torch.as_tensor([[[1.0, 2.0, 3.0]], [[4.0, 5.0, 6.0]]], dtype=torch.float64),
+                    body_ids=torch.as_tensor([0], dtype=torch.int32),
                 ),
             )
         )
