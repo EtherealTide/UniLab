@@ -45,7 +45,7 @@ class CudaProcessSharingEvidence:
     control_pipe: str | None = None
     server_pid: int | None = None
 
-    def manifest(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Return the JSON-shaped diagnostics stored in a runtime manifest."""
         return {
             "configured": self.configured,
@@ -127,14 +127,21 @@ def _torch_device_uuid(
             "training.cuda_process_sharing='mps' could not resolve the "
             f"{device_kind} CUDA device UUID; required mode={requested!r}."
         )
-    return _canonical_gpu_uuid(uuid)
+    return canonicalize_gpu_uuid(uuid)
 
 
 def _parse_csv_row(row: str) -> list[str]:
     return [field.strip() for field in row.split(",")]
 
 
-def _canonical_gpu_uuid(value: str) -> str:
+def canonicalize_gpu_uuid(value: str) -> str:
+    """Return the case- and dash-insensitive NVIDIA GPU UUID comparison token.
+
+    Torch, ``nvidia-smi``, and ``CUDA_VISIBLE_DEVICES`` expose the same UUID
+    with different cases, dashes, and an optional ``GPU-`` prefix; equality
+    checks must compare this token rather than the raw strings.  The
+    persisted/display form stays ``GPU-<id>`` (see ``cuda_mps_cli``).
+    """
     return value.strip().upper().removeprefix("GPU-").replace("-", "")
 
 
@@ -160,9 +167,9 @@ def _nvidia_uuid(
     rows = [_parse_csv_row(row) for row in str(stdout).splitlines() if row.strip()]
     if not rows or any(len(row) != 2 for row in rows):
         return None
-    by_host_index = {row[0]: _canonical_gpu_uuid(row[1]) for row in rows if row[0].isdigit()}
+    by_host_index = {row[0]: canonicalize_gpu_uuid(row[1]) for row in rows if row[0].isdigit()}
     if index < len(visible_entries):
-        token = _canonical_gpu_uuid(visible_entries[index])
+        token = canonicalize_gpu_uuid(visible_entries[index])
         if token.isdigit():
             return by_host_index.get(token)
         if token in by_host_index.values():
@@ -394,12 +401,13 @@ def apply_cuda_process_sharing_manifest(
 ) -> None:
     """Record process-sharing evidence in a producer-owned manifest mapping."""
 
-    runtime_manifest["cuda_process_sharing"] = evidence.manifest()
+    runtime_manifest["cuda_process_sharing"] = evidence.to_dict()
 
 
 __all__ = [
     "CudaProcessSharingEvidence",
     "SUPPORTED_CUDA_PROCESS_SHARING_BACKENDS",
     "apply_cuda_process_sharing_manifest",
+    "canonicalize_gpu_uuid",
     "probe_cuda_process_sharing",
 ]

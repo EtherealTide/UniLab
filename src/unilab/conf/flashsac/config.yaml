@@ -6,6 +6,10 @@ algo:
   algo: flashsac
   algo_log_name: flash_sac
   load_run: "-1"
+  # Opt-in training resume: resolve the algo.load_run/algo.checkpoint
+  # selection and continue from that learner checkpoint. Replay is not
+  # checkpointed, so a resumed run re-warms from an empty buffer.
+  resume: false
   seed: 1
   num_envs: 1024
   batch_size: 2048
@@ -13,6 +17,9 @@ algo:
   updates_per_step: 2
   learning_starts: 98
   policy_frequency: 2
+  # true updates actor(+temperature) before the critic in each update, matching
+  # the WarpSAC builder order; false preserves the critic-first default.
+  policy_before_critic: false
   max_iterations: 5000
   save_interval: 1000
   gamma: 0.97
@@ -32,6 +39,13 @@ algo:
     actor_bc_alpha: 0.0
     actor_noise_zeta_mu: 2.0
     actor_noise_zeta_max: 16
+    # Learner-side custom actor injection (null = built-in FlashSACActor).
+    # Mapping form: {builder: "pkg.module:callable", kwargs: {...}}. The builder
+    # receives obs_dim/action_dim/device plus kwargs and returns an nn.Module
+    # implementing the FlashSAC custom actor contract documented in
+    # unilab.rl.algos.flash_sac.actor_spec. Custom actors do not support the
+    # whole-cycle CUDA graph: set use_whole_cycle_cuda_graph=false.
+    actor_config: null
     critic_min_v: -5.0
     critic_max_v: 5.0
     temp_initial_value: 0.01
@@ -66,9 +80,12 @@ training:
   wandb_notes: null
   wandb_mode: null
   sim_backend: mujoco
-  # Explicit MuJoCo HOST_BRIDGE Manager carrier family. CPU remains the default
-  # even when automatic learner selection resolves to CUDA.
-  collector_tensor_device: cpu
+  # HOST_BRIDGE Manager carrier family follows backend capability
+  # declarations. 'auto' follows the learner device (CUDA learner -> CUDA
+  # carrier; CPU learner -> CPU; torch.mps learner keeps the owner CPU
+  # placement). Explicit 'cpu'/'cuda' wins over 'auto' and fails closed
+  # when the backend does not declare the device.
+  sim_carrier_device: auto
   # null preserves independent CUDA contexts; 'mps' explicitly requests CUDA
   # process sharing and fails closed if the host daemon is not already valid.
   # Manage an explicit user-owned daemon with `uni-cumps`.
@@ -92,8 +109,13 @@ training:
   log_root: null
   log_dir: null
   env_steps_per_sync: 1
-  # Fixed in-flight learner-inference requests; 1 preserves legacy ordering.
+  # Fixed in-flight learner-inference requests; 1 keeps inference strictly
+  # serialized (one request in flight per collector).
   inference_slot_capacity: 1
+  # Off-policy inference boundary: 'host' keeps the ring on CPU and supports
+  # CPU tests plus macOS MPS learners; 'cuda' follows Torch's CUDA-family type
+  # (NVIDIA or ROCm). null lets the resolved placement choose automatically.
+  inference_transport: null
   # Tensor-collector steps between metric compaction and one host flush.
   collector_metrics_interval: 1
   # Fixed replay-ingress chunks that may be published before learner commit.

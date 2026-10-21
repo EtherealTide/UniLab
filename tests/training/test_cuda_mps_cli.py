@@ -93,7 +93,7 @@ def daemon_record(root: Path, **overrides: Any) -> mps.DaemonRecord:
 def write_record(root: Path, record: mps.DaemonRecord) -> Path:
     path = root / record.name / "daemon.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record.manifest()), encoding="utf-8")
+    path.write_text(json.dumps(record.to_dict()), encoding="utf-8")
     return path
 
 
@@ -108,12 +108,12 @@ def test_bare_torch_gpu_uuid_is_canonicalized() -> None:
 
 
 def test_mig_selectors_are_explicitly_rejected() -> None:
-    with pytest.raises(mps.CudaMpsCliError, match="MIG device"):
+    with pytest.raises(mps.CudaMpsError, match="MIG device"):
         mps.resolve_topology("MIG-abc", run_command=fake_run())
 
 
 def test_multi_gpu_selector_parses_future_dp_shape_but_fails_closed() -> None:
-    with pytest.raises(mps.CudaMpsCliError, match="single-task multi-GPU"):
+    with pytest.raises(mps.CudaMpsError, match="single-task multi-GPU"):
         mps.resolve_topology(f"{GPU_A},{GPU_B}", run_command=fake_run())
 
 
@@ -133,12 +133,12 @@ def test_single_gpu_defaults_need_no_selector_or_name() -> None:
 
 
 def test_missing_selector_rejects_ambiguous_multi_gpu_host() -> None:
-    with pytest.raises(mps.CudaMpsCliError, match="Specify --gpus"):
+    with pytest.raises(mps.CudaMpsError, match="Specify --gpus"):
         mps.resolve_topology(None, run_command=fake_run())
 
 
 def test_start_rejects_task_per_gpu_until_lease_contract_lands() -> None:
-    with pytest.raises(mps.CudaMpsCliError, match="current support is single_gpu"):
+    with pytest.raises(mps.CudaMpsError, match="current support is single_gpu"):
         mps.start_daemon("all", root=Path("/unused"), run_command=fake_run())
 
 
@@ -193,7 +193,7 @@ def test_status_remains_useful_without_nvidia_smi(monkeypatch: pytest.MonkeyPatc
 def test_record_identity_rejects_other_user_or_host() -> None:
     record = daemon_record(Path("/unused"), uid=os.getuid() + 1)
 
-    with pytest.raises(mps.CudaMpsCliError, match="belongs to UID"):
+    with pytest.raises(mps.CudaMpsError, match="belongs to UID"):
         mps._validate_record_identity(record, uid=os.getuid(), host="here")
 
 
@@ -341,7 +341,7 @@ def test_start_daemon_cleans_up_unrecorded_control_after_readiness_failure(
         lambda pipe_directory: pipe_directory.mkdir(parents=True, exist_ok=True),
     )
 
-    with pytest.raises(mps.CudaMpsCliError, match="did not answer a readiness query"):
+    with pytest.raises(mps.CudaMpsError, match="did not answer a readiness query"):
         mps.start_daemon(
             GPU_A,
             name="failed",
@@ -364,7 +364,7 @@ def test_default_daemon_name_uses_complete_uuid() -> None:
 def test_start_daemon_rejects_long_unix_socket_path(linux_host: Path) -> None:
     long_dir = linux_host / ("x" * 96)
 
-    with pytest.raises(mps.CudaMpsCliError, match="MPS control socket path is too long"):
+    with pytest.raises(mps.CudaMpsError, match="MPS control socket path is too long"):
         mps.start_daemon(
             GPU_A,
             name="prod",
@@ -390,7 +390,7 @@ def test_start_daemon_recovers_only_inert_failed_control_artifacts(
     preserved.touch()
     (pipe_dir / "control").touch()
 
-    with pytest.raises(mps.CudaMpsCliError, match="Refusing to attach"):
+    with pytest.raises(mps.CudaMpsError, match="Refusing to attach"):
         mps.start_daemon(
             GPU_A,
             name="prod",
@@ -425,7 +425,7 @@ def test_start_daemon_failure_reports_control_log_and_cleans_artifacts(
             return Completed(returncode=1)
         raise AssertionError(f"unexpected command {command}")
 
-    with pytest.raises(mps.CudaMpsCliError, match="control failed"):
+    with pytest.raises(mps.CudaMpsError, match="control failed"):
         mps.start_daemon(
             GPU_A,
             name="prod",
@@ -499,7 +499,7 @@ def test_start_daemon_refuses_existing_unmanaged_control_path(
     pipe_dir.mkdir(parents=True)
     (pipe_dir / "control").touch()
 
-    with pytest.raises(mps.CudaMpsCliError, match="Refusing to attach"):
+    with pytest.raises(mps.CudaMpsError, match="Refusing to attach"):
         mps.start_daemon(
             GPU_A,
             name="prod",
@@ -522,7 +522,7 @@ def test_start_daemon_rejects_live_duplicate_record(
             return Completed(f"0, {GPU_A}, Default\n")
         raise AssertionError("start must fail before invoking the control daemon")
 
-    with pytest.raises(mps.CudaMpsCliError, match="already live"):
+    with pytest.raises(mps.CudaMpsError, match="already live"):
         mps.start_daemon(
             GPU_A,
             name="prod",
@@ -575,7 +575,7 @@ def test_select_environment_for_gpu_requires_sole_live_matching_record(
     record = daemon_record(linux_host, name="prod")
     write_record(linux_host, record)
 
-    with pytest.raises(mps.CudaMpsCliError, match="No live UniLab-recorded CUDA MPS daemon"):
+    with pytest.raises(mps.CudaMpsError, match="No live UniLab-recorded CUDA MPS daemon"):
         mps.select_environment_for_gpu(GPU_A, root=linux_host, proc_stat=lambda _pid: None)
 
     values = mps.select_environment_for_gpu(
@@ -592,7 +592,7 @@ def test_select_environment_for_gpu_requires_sole_live_matching_record(
         gpu_uuids=(GPU_A,),
     )
     write_record(linux_host, other)
-    with pytest.raises(mps.CudaMpsCliError, match="Multiple live UniLab-recorded daemons"):
+    with pytest.raises(mps.CudaMpsError, match="Multiple live UniLab-recorded daemons"):
         mps.select_environment_for_gpu(
             GPU_A,
             root=linux_host,
@@ -636,7 +636,7 @@ def test_stop_daemon_sends_quit_only_through_owned_record(
 
 
 def test_stop_without_record_cannot_quit_unmanaged_daemon(linux_host: Path) -> None:
-    with pytest.raises(mps.CudaMpsCliError, match="UniLab can stop only recorded daemons"):
+    with pytest.raises(mps.CudaMpsError, match="UniLab can stop only recorded daemons"):
         mps.stop_daemon("unknown", root=linux_host, run_command=fake_run())
 
 
@@ -645,7 +645,7 @@ def test_stop_stale_record_removes_record_without_contacting_daemon(
 ) -> None:
     path = write_record(linux_host, daemon_record(linux_host))
 
-    with pytest.raises(mps.CudaMpsCliError, match="stale"):
+    with pytest.raises(mps.CudaMpsError, match="stale"):
         mps.stop_daemon("test-daemon", root=linux_host, run_command=fake_run())
 
     assert not path.exists()
@@ -752,14 +752,14 @@ def test_default_daemon_record_selects_sole_live_record(
 def test_default_daemon_record_rejects_zero_or_multiple_live_records(
     linux_host: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with pytest.raises(mps.CudaMpsCliError, match="no live UniLab-recorded daemon"):
+    with pytest.raises(mps.CudaMpsError, match="no live UniLab-recorded daemon"):
         mps.read_daemon_record(linux_host, None)
 
     write_record(linux_host, daemon_record(linux_host, name="a"))
     write_record(linux_host, daemon_record(linux_host, name="b"))
     monkeypatch.setattr(mps, "daemon_process_is_live", lambda _daemon, **_kwargs: True)
 
-    with pytest.raises(mps.CudaMpsCliError, match="multiple live daemons"):
+    with pytest.raises(mps.CudaMpsError, match="multiple live daemons"):
         mps.read_daemon_record(linux_host, None)
 
 
@@ -781,7 +781,7 @@ def test_cli_status_json_is_machine_readable(
     def unavailable_visibility(
         _cuda_visible_devices: str | None, _run_command: Any
     ) -> tuple[mps.GpuIdentity, ...]:
-        raise mps.CudaMpsCliError("nvidia-smi unavailable")
+        raise mps.CudaMpsError("nvidia-smi unavailable")
 
     monkeypatch.setattr(mps, "visible_gpus", unavailable_visibility)
 

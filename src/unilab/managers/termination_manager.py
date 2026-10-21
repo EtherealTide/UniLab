@@ -10,14 +10,14 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
-import numpy as np
 import torch
 from prettytable import PrettyTable
 
+from unilab.base.reset_selectors import resolve_reset_env_ids
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 @dataclass
@@ -52,8 +52,12 @@ class TerminationManager(ManagerBase):
             self._term_dones[term_name] = torch.zeros(
                 self.num_envs, dtype=torch.bool, device=self._device
             )
-        self._truncated_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
+        output = getattr(env, "time_out_scratch", None)
+        if output is None:
+            output = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
+        self._truncated_buf = output
         self._terminated_buf = torch.zeros_like(self._truncated_buf)
+        self._dones_buf = torch.zeros_like(self._truncated_buf)
 
     def __str__(self) -> str:
         msg = f"<TerminationManager> contains {len(self._term_names)} active terms.\n"
@@ -77,7 +81,8 @@ class TerminationManager(ManagerBase):
 
     @property
     def dones(self) -> torch.Tensor:
-        return self._truncated_buf | self._terminated_buf
+        torch.logical_or(self._truncated_buf, self._terminated_buf, out=self._dones_buf)
+        return self._dones_buf
 
     @property
     def time_outs(self) -> torch.Tensor:
@@ -90,19 +95,22 @@ class TerminationManager(ManagerBase):
     # Methods.
 
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, int]:
-        if env_ids is None:
-            env_ids = slice(None)
-        extras = {}
-        mask = self._reset_mask(env_ids)
+        """Publish episodic counts and clear terms for the selected rows."""
+        ids = resolve_reset_env_ids(
+            env_ids, num_envs=self.num_envs, device=self._device, owner="TerminationManager.reset"
+        )
+        extras: dict[str, int] = {}
         keys = list(self._term_dones)
-        counts = [self._term_dones[key][mask].sum() for key in keys]
-        # Publish every episodic count through one device boundary instead of
-        # synchronizing once per termination term.
+        counts = [self._term_dones[key][ids].sum() for key in keys]
         host_counts = torch.stack(counts).detach().cpu().tolist() if counts else []
         for key, count in zip(keys, host_counts, strict=True):
             extras["Episode_Termination/" + key] = int(count)
         for term_cfg in self._class_term_cfgs:
-            term_cfg.func.reset(env_ids=env_ids)
+            if not callable(getattr(term_cfg.func, "reset", None)):
+                raise NotImplementedError(
+                    "TerminationManager stateful term does not define the reset boundary"
+                )
+            term_cfg.func.reset(ids)
         return extras
 
     def compute(self) -> torch.Tensor:
@@ -128,7 +136,8 @@ class TerminationManager(ManagerBase):
             aggregation_ms += time.perf_counter() - aggregation_started
         timing["update_state_termination_term_dispatch_ms"] = dispatch_ms * 1000.0
         timing["update_state_termination_aggregation_ms"] = aggregation_ms * 1000.0
-        return self._truncated_buf | self._terminated_buf
+        torch.logical_or(self._truncated_buf, self._terminated_buf, out=self._dones_buf)
+        return self._dones_buf
 
     def get_term(self, name: str) -> torch.Tensor:
         return self._term_dones[name]
@@ -157,55 +166,24 @@ class TerminationManager(ManagerBase):
 
     def _compute_term(self, name: str, term_cfg: TerminationTermCfg) -> torch.Tensor:
         value = term_cfg.func(self._env, **term_cfg.params)
-        if isinstance(value, torch.Tensor):
-            if value.dtype != torch.bool:
-                raise TypeError(
-                    f"TerminationManager term '{name}' returned dtype {value.dtype}, expected bool."
-                )
-            if value.device != self._device:
-                raise ValueError(
-                    f"TerminationManager term '{name}' returned device {value.device}, "
-                    f"expected {self._device}."
-                )
-            if getattr(term_cfg.func, "returns_transient_tensor", False):
-                result = value
-            else:
-                result = value.clone()
-        else:
-            host = np.asarray(value)
-            if host.dtype != np.bool_:
-                raise TypeError(
-                    f"TerminationManager term '{name}' returned dtype {host.dtype}, expected bool."
-                )
-            result = torch.from_numpy(np.array(host, order="C", copy=True)).to(self._device)
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(
+                f"TerminationManager term '{name}' must return torch.Tensor, "
+                f"got {type(value).__name__}."
+            )
+        if value.dtype != torch.bool:
+            raise TypeError(
+                f"TerminationManager term '{name}' returned dtype {value.dtype}, expected bool."
+            )
+        if value.device != self._device:
+            raise ValueError(
+                f"TerminationManager term '{name}' returned device {value.device}, "
+                f"expected {self._device}."
+            )
+        result = value
         if result.shape != (self.num_envs,):
             raise ValueError(
                 f"TerminationManager term '{name}' returned shape {tuple(result.shape)}; "
                 f"expected ({self.num_envs},)."
             )
         return result
-
-    def _reset_mask(self, env_ids: torch.Tensor | slice) -> torch.Tensor:
-        if env_ids is None:
-            return torch.ones(self.num_envs, dtype=torch.bool, device=self._device)
-        if isinstance(env_ids, slice):
-            indices = torch.arange(self.num_envs, dtype=torch.int64, device=self._device)[env_ids]
-            return torch.zeros(self.num_envs, dtype=torch.bool, device=self._device).index_fill(
-                0, indices, True
-            )
-        if (
-            not isinstance(env_ids, torch.Tensor)
-            or env_ids.ndim != 1
-            or env_ids.dtype
-            not in {
-                torch.int32,
-                torch.int64,
-            }
-        ):
-            raise TypeError("TerminationManager reset rows must be one-dimensional integers")
-        rows = env_ids.to(self._device)
-        if rows.numel() and (rows.min() < 0 or rows.max() >= self.num_envs):
-            raise IndexError(f"TerminationManager reset rows out of range: {rows.tolist()}")
-        return torch.zeros(self.num_envs, dtype=torch.bool, device=self._device).index_fill(
-            0, rows.to(torch.int64), True
-        )

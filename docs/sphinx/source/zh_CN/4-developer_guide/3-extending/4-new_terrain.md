@@ -15,8 +15,8 @@
 4. 通过 `src/unilab/base/scene.py` 中的 `SceneCfg.terrain` 与
    `TerrainSceneCfg` 把地形暴露给场景。
 5. 如果某个 env 需要高度 observation，在 init 时通过
-   `create_hfield_scanner(...)` 创建后端 scanner；通过返回的
-   `BackendHeightScanner` 读取采样。
+   `bind_height_scanner(...)` 创建后端 scanner；通过返回的
+   `HeightScanner` 读取采样。
 6. 让地形的 spawn、curriculum 与 observation 维度在归属的 env config 与
    `obs_groups_spec` 中得到体现。
 
@@ -24,8 +24,8 @@
 
 - 地形生成器形状与数值行为：
   `tests/terrains/test_terrain_generator.py`
-- Rough locomotion 高度扫描与 spawn 行为：
-  `tests/envs/locomotion/test_terrain_spawn.py`
+- Backend terrain materialization contract：
+  `tests/base/test_backend_conformance.py`
 - 后端 materialization 边界：`tests/utils/test_xml_utils.py`
 
 ## 仓库内证据
@@ -33,4 +33,3 @@
 - 地形配置与 preset：`src/unilab/terrains/config.py`
 - 地形生成器：`unisim.terrain.generator`
 - Heightfield 地形类型：`src/unilab/terrains/heightfield_terrains.py`
-- 高度扫描辅助工具：`src/unilab/tasks/locomotion/common/height_scan.py`

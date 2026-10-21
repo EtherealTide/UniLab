@@ -60,24 +60,49 @@ NumPy remains allowed only inside a backend adapter that declares a `HOST_BRIDGE
 owns its explicit packed conversion boundary. MuJoCo remains a production backend and is the
 canonical in-process host-bridge implementation; it is not a test-only fallback.
 
-`env.tensor_runtime` and `env.tensor_runtime_device` are removed. Tensor execution is an invariant
+`env.tensor_runtime` and `env.tensor_runtime_device` are removed without compatibility reads.
+Tensor execution is an invariant
 of the Manager runtime. Placement is derived from the declared backend data plane and, for a
 `HOST_BRIDGE`, the process's explicit carrier request. No NumPy/dual-runtime compatibility alias
 or hidden fallback is retained.
 
 For a `HOST_BRIDGE` backend, CPU-authoritative physics keeps the default Manager/TorchEnv
 carriers on CPU. MuJoCo training may explicitly request the unindexed accelerator family with
-`training.collector_tensor_device=cuda`; routing maps that request to the existing
-`manager_torch_device` owner field, and the collector process resolves it to its current
+`training.sim_carrier_device=cuda`; routing maps that request to the
+`env.sim_carrier_device` owner field, and the collector process resolves it to its current
 rank-local Torch CUDA ordinal. UniLab validates the request against the backend's declared
 Torch devices. Learner CUDA selection, GPU visibility, and backend device acceptance alone
 are not placement requests. `DEVICE_RESIDENT` adapters keep their own CUDA-only placement and
 platform requirements; accepting HIP Torch buffers on a host bridge does not make those
 physics engines ROCm-compatible.
 
+> **Addendum (2026-10-15, issue #2365):** The sentence "Learner CUDA selection, GPU
+> visibility, and backend device acceptance alone are not placement requests" is superseded
+> for the scoped MuJoCo HOST_BRIDGE training path: `training.collector_tensor_device` now
+> defaults to `auto`, which turns the learner's CUDA device into the carrier placement
+> request, routed to the rank-local indexed learner device. CPU and torch.mps learners keep
+> the CPU carrier, and explicit `cpu`/`cuda` values are unchanged and win over `auto`.
+> Decision record:
+> <https://github.com/Motphys/UniLab/issues/2365#issuecomment-6189905767>.
+>
+> **Addendum (2026-10-17, issue #2382):** `training.collector_tensor_device` and
+> `manager_torch_device` are renamed to `training.sim_carrier_device` and
+> `env.sim_carrier_device` without dual-read compatibility. Removed keys fail closed with a
+> migration hint. `run_config.json` records the configured-to-resolved device map, and `cuda`
+> never silently maps to `mps`; only the abstract `gpu` alias may select an available
+> accelerator family.
+>
+> **Addendum (2026-10-19, issue #2401):** Carrier routing now follows the public
+> SDK-free `TensorPlatformProfile` inventory rather than a MuJoCo-only backend-name
+> scope. Any in-process packed `HOST_BRIDGE` profile may route the training carrier,
+> subject to its declared `torch_devices`; Motrix, Drake, and SuperDex therefore follow
+> the same `auto`/`cpu`/`cuda` contract as MuJoCo. Missing or unsupported capability
+> declarations fail closed, while final construction remains guarded by the actual
+> `SimBackend.get_tensor_capabilities()` declaration.
+
 ### Manager-owned RNG
 
-The Manager runtime owns one Torch RNG seeded from the resolved owner seed. Observation noise,
+The Manager runtime owns one ManagerRng-backed Torch generator seeded from the resolved owner seed. Observation noise,
 commands, events, and tensor selected reset consume that generator or generators explicitly
 derived from it. Seed/reset state and selected-row reproducibility are contract-tested.
 
@@ -115,6 +140,20 @@ present in UniSim but are gated out of this runtime with actionable errors. Re-e
 requires its own capability, parity, and support-matrix evidence. Permanent adapter deletion is a
 separate maintainer decision; this ADR does not delete those adapters.
 
+> **Addendum (2026-10-18, issue #2406):** The four-backend sentence above and
+> the “Backend support claims narrow during migration” consequence below are
+> historical decision context, not the current support scope. They describe the
+> temporary gate at the original 2026-10-02 baseline and were superseded through
+> staged, evidence-backed backend reintroductions; no later ADR replaces this
+> record. The current tensor Manager scope is the nine explicit owner selections
+> `mujoco`, `mjwarp`, `genesis`, `newton`, `motrix`, `superdex`, `drake`,
+> `isaacsim`, and `isaacgym`, matching
+> `src/unilab/base/registry.py::_SUPPORTED_SIM_BACKENDS` and
+> `src/unilab/cli.py::SUPPORTED_SIMS`. Drake and the external-worker Isaac
+> backends remain explicit selections and are excluded from implicit fallback
+> ordering. Backend-specific capability support remains defined by the generated
+> support matrix rather than by a global shelve list.
+
 ### Single-GPU default device behavior
 
 A single-GPU MJWarp run does not require `CUDA_VISIBLE_DEVICES`. It uses the current default CUDA
@@ -128,7 +167,7 @@ useful for launcher/debug/MPS isolation.
 | Sole training factory and no direct registration | `src/unilab/tasks/**/__init__.py`, registry tests, direct-entry architecture gate |
 | Tensor-only Manager execution | `src/unilab/envs/manager_based_rl_env.py`, Manager suites, no-NumPy-carrier gate |
 | Removal of `env.tensor_runtime` | `ManagerBasedRlEnvCfg`, owner YAMLs, run-config schema, config tests |
-| Manager-owned Torch RNG | Manager RNG owner, seed/reset and selected-row reproducibility tests |
+| Manager-owned RNG | Manager RNG owner, seed/reset and selected-row reproducibility tests |
 | Selected-reset publication postcondition | UniSim tensor capability + MuJoCo/MJWarp/Genesis/Newton contract tests |
 | Public sensor namespace | UniSim `SimBackend.get_sensor_names()`/inventory contract and adapter tests |
 | Public state widths | UniSim state-width API and reset-plan tests |
@@ -174,7 +213,14 @@ useful for launcher/debug/MPS isolation.
 - Tensor state store/readiness consumer:
   `src/unilab/tasks/motion_tracking/common/tensor_state_store.py`
 - Public backend contract: `unisim.backend.base.SimBackend`
-- Scoped adapters: `unisim.backend.mujoco`, `unisim.backend.mjwarp`, `unisim.backend.genesis`, `unisim.backend.newton`
+- Current tensor Manager backend scope:
+  `src/unilab/base/registry.py` (`_SUPPORTED_SIM_BACKENDS`,
+  `_DEFAULT_SIM_BACKEND_ORDER`) and
+  `src/unilab/cli.py` (`SUPPORTED_SIMS`)
+- Current adapters: `unisim.backend.mujoco`, `unisim.backend.mjwarp`,
+  `unisim.backend.genesis`, `unisim.backend.newton`, `unisim.backend.motrix`,
+  `unisim.backend.superdex`, `unisim.backend.drake`,
+  `unisim.backend.isaacsim`, `unisim.backend.isaacgym`
 - Backend-name readiness issue: #1790
 - Current Manager tensor migration: #1703
 - Delivery roadmap and performance budget: #1811

@@ -279,6 +279,9 @@ _LANGUAGE_PATH_FORWARD: dict[str, str] = {
     "en/2-user_guide/3-backends/6-drake": "zh_CN/2-user_guide/3-backends/6-drake",
     "en/2-user_guide/3-backends/8-superdex": "zh_CN/2-user_guide/3-backends/8-superdex",
     "en/1-getting_started/5-faq": "zh_CN/1-getting_started/5-faq",
+    "en/1-getting_started/6-migration_1_4_to_1_5": (
+        "zh_CN/1-getting_started/6-migration_1_4_to_1_5"
+    ),
     "en/4-developer_guide/1-architecture/6-manager_based_api": (
         "zh_CN/4-developer_guide/1-architecture/6-manager_based_api"
     ),
@@ -287,6 +290,9 @@ _LANGUAGE_PATH_FORWARD: dict[str, str] = {
     ),
     "en/4-developer_guide/8-tensor_runtime_production": (
         "zh_CN/4-developer_guide/8-tensor_runtime_production"
+    ),
+    "en/3-deployment/3-framework_migration/7-from_unilab_rl": (
+        "zh_CN/3-deployment/3-framework_migration/7-from_unilab_rl"
     ),
 }
 # Keyed by (current_pagename, target_language) → target_pagename.

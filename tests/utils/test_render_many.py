@@ -1,4 +1,4 @@
-"""Tests for MuJoCo GL backend resolution in unilab.visualization.render_many."""
+"""Tests for MuJoCo GL backend resolution in unisim.visualization.render_many."""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ pytestmark = pytest.mark.skipif(
 
 def _reload_render_many(monkeypatch):
     monkeypatch.setitem(sys.modules, "mujoco", types.SimpleNamespace())
-    sys.modules.pop("unilab.visualization.render_many", None)
-    return importlib.import_module("unilab.visualization.render_many")
+    sys.modules.pop("unisim.visualization.render_many", None)
+    return importlib.import_module("unisim.visualization.render_many")
 
 
 def test_resolve_gl_backend_uses_egl_when_probe_succeeds(monkeypatch) -> None:
@@ -127,8 +127,8 @@ def _reload_render_many_with_geom_enums(monkeypatch):
             mjtGeom=types.SimpleNamespace(mjGEOM_PLANE=0, mjGEOM_HFIELD=1, mjGEOM_BOX=6),
         ),
     )
-    sys.modules.pop("unilab.visualization.render_many", None)
-    return importlib.import_module("unilab.visualization.render_many")
+    sys.modules.pop("unisim.visualization.render_many", None)
+    return importlib.import_module("unisim.visualization.render_many")
 
 
 def test_replicable_terrain_geom_indices_selects_worldbody_box(monkeypatch) -> None:

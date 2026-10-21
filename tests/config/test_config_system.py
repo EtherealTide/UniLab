@@ -231,6 +231,17 @@ def test_offpolicy_flashsac_go2_joystick_mujoco_enables_full_dr_stack():
     assert mujoco_cfg.env.observations.policy.terms.joint_vel.noise.n_min == pytest.approx(-0.1)
 
 
+def test_model_field_dr_ranges_use_array_bounds_in_both_lifecycles():
+    """Keep startup and reset model-field DR declarations visually identical."""
+    yaml_path = CONF_DIR / "flashsac" / "task" / "go2_joystick_flat" / "mujoco.yaml"
+    yaml_text = yaml_path.read_text(encoding="utf-8")
+
+    assert "mass_distribution_params: [-1.5, 1.5]" in yaml_text
+    assert "mass_distribution_params:\n" not in yaml_text
+    assert "          x: [-0.05, 0.05]\n" in yaml_text
+    assert "          x:\n" not in yaml_text
+
+
 def test_cli_override_beats_task_defaults():
     cfg = _compose(
         "ppo",

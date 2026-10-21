@@ -29,15 +29,22 @@ architecture changes.
 
 ## Architecture contracts
 
-- UniLab provides environments and adapters. `uni_rl` owns the APPO and
-  off-policy algorithm runners, learners, collectors, IPC, and training logs;
-  `uni_rl` must not import UniLab. `uni_rl` is an optional dependency (extra
-  `uni_rl`, kept in the dev group): the PPO path is a direct rsl-rl
-  integration owned by `unilab.rl` (VecEnv adapter and
-  distributed helpers; runner and algorithm are upstream rsl-rl) and must
-  stay importable and functional without uni_rl for single-process runs;
-  only multi-GPU launch delegates lazily to `uni_rl.ipc`. The env factory
-  must be a pickleable `EnvFactory` for spawn collectors.
+- UniLab provides environments and adapters, and now also owns the RL
+  algorithm and training-execution stack in `unilab.rl` (merged from the
+  unilab_rl repo @ 3654e4b). Its layers: `contracts` (env injection and
+  observation semantics), `adapters/rsl_rl`, `algos` (APPO/SAC/FlashSAC),
+  `runtime` (distributed/ipc/offpolicy), and `logging`. Internal DAG:
+  `contracts` depends only on type/tensor libraries; `runtime` must not
+  depend on `algos`/`training`/`base`; `algos` must not construct concrete
+  envs; the RL core must not import `base`/`envs`/`tasks`/`managers`/
+  `training`/`scripts`/`unisim`. These boundaries are guarded by
+  `tests/test_library_import_boundary.py`. The PPO path is a direct rsl-rl
+  integration (`unilab.rl.adapters.rsl_rl`: VecEnv adapter and distributed
+  helpers; runner and algorithm are upstream rsl-rl). The env factory must
+  be a pickleable `EnvFactory` for spawn collectors. The `unilab.rl`,
+  `rl.runtime`, and `rl.runtime.distributed` `__init__` modules stay
+  lightweight (PEP 562 lazy loading): importing them must not pull in torch
+  or algorithm code.
 - Environment reset returns `(obs_dict, info_dict)` and `TorchEnvState.obs` is a
   dict of tensors. Keep `obs_groups_spec` and policy dimensions consistent with
   wrappers and learners.
@@ -59,6 +66,19 @@ architecture changes.
 - Do not add new owner logic to `src/unilab/utils/`; those modules are transition
   shims. Keep cross-cutting changes in the owning package.
 
+## API naming rules
+
+Approved in roadmap #2434; enforce in review.
+
+- Type/device qualifiers (`_tensor`, `_numpy`, `cpu_`, `torch_`) only when two
+  real implementations coexist in one scope; when needed, use `_tensor`.
+- Module names carry the qualifier; class/function names do not repeat it.
+- Package-internal functions do not carry an engine/package-name prefix.
+- Names consumed across modules never use a leading underscore; promote or
+  document them as protected protocols instead.
+- One public name per meaning; no aliases or deprecation fallbacks.
+- No time-based names (`legacy`, `old`, `new`, `v2`, `tmp`) on live APIs.
+
 ## Sim2Sim contract
 
 `src/unilab/utils/sim2sim.py` is the runtime source of truth. DENYLIST fields
@@ -78,6 +98,9 @@ make check                 # formatting and type checks
 make test                  # non-slow tests
 make test-all              # required before creating/updating a PR
 ```
+
+Dependency pin changes must keep the ROCm track in sync: apply the same bump
+to `pyproject.rocm.toml` and regenerate `uv.rocm.lock` in the same PR.
 
 Use focused tests for contract, IPC/runner, config, backend, asset, or docs
 changes. Docs-only validation is defined in `docs/sphinx/AGENTS.md`. Record the
@@ -106,7 +129,11 @@ them in the issue/ADR before expanding the work.
   `src/unilab/base/process_device.py`
 - Backend owner: `src/unilab/base/backend_factory.py`
 - Training/run helpers: `src/unilab/training/run.py`
-- PPO (direct rsl-rl integration): `src/unilab/rl/`
+- PPO (direct rsl-rl integration): `src/unilab/rl/adapters/rsl_rl/`
+- RL algorithms (APPO/SAC/FlashSAC): `src/unilab/rl/algos/`
+- FlashSAC custom actor contract (actor_config injection, aux losses,
+  checkpoint semantics): `src/unilab/rl/algos/flash_sac/actor_spec.py`
+- RL runtime (distributed/ipc/offpolicy): `src/unilab/rl/runtime/`
 - Sim2Sim: `src/unilab/utils/sim2sim.py`
 - Architecture and contracts: `docs/sphinx/source/zh_CN/4-developer_guide/0-index.md`
 - Workflow policy: `docs/sphinx/source/en/4-developer_guide/5-contributing_workflow.md`

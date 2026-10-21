@@ -5,15 +5,54 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
-from unilab.training.soak import (
-    build_g1_flashsac_mjwarp_command,
-    run_soak,
-    runtime_snapshot,
-)
+from unilab.cli import build_command
+from unilab.training.soak import run_soak, runtime_snapshot
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
+
+
+def build_g1_flashsac_mjwarp_command(
+    *,
+    num_envs: int,
+    iterations: int,
+    log_dir: Path,
+    extra_overrides: Sequence[str] = (),
+) -> list[str]:
+    """Build the owner-selected, single-process FlashSAC/MJWarp soak command."""
+    if num_envs <= 0:
+        raise ValueError("num_envs must be positive")
+    if iterations <= 0:
+        raise ValueError("iterations must be positive")
+    reserved = {
+        "algo",
+        "task",
+        "training.sim_backend",
+        "training.play_only",
+        "training.no_play",
+        "training.log_dir",
+        "algo.num_envs",
+        "algo.max_iterations",
+    }
+    for override in extra_overrides:
+        key = override.split("=", 1)[0].strip().lstrip("+~")
+        if key in reserved:
+            raise ValueError(f"soak-owned Hydra override cannot be overridden: {key}")
+    return build_command(
+        mode="train",
+        algo="flashsac",
+        task="g1_motion_tracking",
+        sim="mjwarp",
+        overrides=(
+            f"algo.num_envs={num_envs}",
+            f"algo.max_iterations={iterations}",
+            "training.no_play=true",
+            f"training.log_dir={log_dir}",
+            *extra_overrides,
+        ),
+    )
 
 
 def _parser() -> argparse.ArgumentParser:

@@ -21,7 +21,7 @@ import types
 import numpy as np
 import torch
 
-from unilab.utils.rotation import np_quat_apply_batched
+from unilab.base.rotation import np_quat_apply_batched
 
 # Mirrors TINY_MODEL_XML.  INIT_QPOS equals mj.qpos0 of that document
 # (pelvis body pos z=0.8) so materialize-time state matches the MJCF scan.
@@ -196,7 +196,7 @@ class _FakeEntity:
         if rows is None:
             self.qpos = value.clone()
         else:
-            self.qpos[rows] = value
+            self.qpos[rows] = value.clone()
         if zero_velocity:
             if rows is None:
                 self.qvel.zero_()
@@ -211,7 +211,7 @@ class _FakeEntity:
         if rows is None:
             self.qvel = value.clone()
         else:
-            self.qvel[rows] = value
+            self.qvel[rows] = value.clone()
 
     def control_dofs_position(self, position, dofs_idx_local=None, envs_idx=None):
         value = torch.as_tensor(position, dtype=torch.float32).cpu()

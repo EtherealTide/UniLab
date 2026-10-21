@@ -15,8 +15,8 @@ materialization out of `step()`, `reset()`, and hot domain-randomization loops.
 4. Expose terrain to scenes through `SceneCfg.terrain` and `TerrainSceneCfg` in
    `src/unilab/base/scene.py`.
 5. If an env needs height observations, create the backend scanner on init via
-   `create_hfield_scanner(...)`; read samples through the returned
-   `BackendHeightScanner`.
+   `bind_height_scanner(...)`; read samples through the returned
+   `HeightScanner`.
 6. Keep terrain spawn, curriculum, and observation dimensions reflected in the
    owning env config and `obs_groups_spec`.
 
@@ -24,8 +24,8 @@ materialization out of `step()`, `reset()`, and hot domain-randomization loops.
 
 - Terrain generator shape and numerical behavior:
   `tests/terrains/test_terrain_generator.py`
-- Rough locomotion height-scan and spawn behavior:
-  `tests/envs/locomotion/test_terrain_spawn.py`
+- Backend terrain materialization contract:
+  `tests/base/test_backend_conformance.py`
 - Backend materialization boundaries: `tests/utils/test_xml_utils.py`
 
 ## Evidence In Repo
@@ -33,4 +33,3 @@ materialization out of `step()`, `reset()`, and hot domain-randomization loops.
 - Terrain configs and presets: `src/unilab/terrains/config.py`
 - Terrain generator: `unisim.terrain.generator`
 - Heightfield terrain types: `src/unilab/terrains/heightfield_terrains.py`
-- Height-scan helper: `src/unilab/tasks/locomotion/common/height_scan.py`

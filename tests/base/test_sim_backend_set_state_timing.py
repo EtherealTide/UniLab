@@ -1,10 +1,10 @@
-"""Contract + parity tests for the extended ``SimBackend.set_state`` timing dict.
+"""Contract + parity tests for the ``SimBackend.set_state_tensor`` timing dict.
 
 Issue #679 extends the ``SimBackend.set_state`` return type from ``None`` to
 ``dict | None`` so backends can surface per-substep timing to the DR manager. This
 module locks in three invariants:
 
-1. Both MuJoCo and Motrix ``set_state`` return a dict with a ``"timing"`` sub-dict
+1. Both MuJoCo and Motrix ``set_state_tensor`` return a timing sub-dict
    whose keys are the schema documented in
    ``unilab.base.backend_timing.BACKEND_SET_STATE_DETAIL_TIMING_KEYS``.
 2. Every reported sub-timing is a non-negative float.
@@ -24,7 +24,8 @@ from typing import Any
 
 import numpy as np
 import pytest
-from unisim.dr.types import ResetRandomizationPayload
+import torch
+from unisim.dr.types import TensorResetRandomizationPayload
 
 from unilab.assets import ASSETS_ROOT_PATH
 from unilab.base.backend_timing import BACKEND_SET_STATE_DETAIL_TIMING_KEYS
@@ -93,7 +94,11 @@ def test_mujoco_set_state_returns_schema_conformant_timing() -> None:
     qpos = _identity_qpos_mujoco(backend.model.nq, xyz=(1.0, 2.0, 0.8))
     qvel = np.zeros((1, backend.model.nv))
 
-    result = backend.set_state(np.array([0]), qpos, qvel)
+    result = backend.set_state_tensor(
+        torch.tensor([0], dtype=torch.int64),
+        torch.from_numpy(qpos.astype(np.float32, copy=False)),
+        torch.from_numpy(qvel.astype(np.float32, copy=False)),
+    )
 
     timing = _assert_timing_dict_shape(result)
     _assert_gap_bounded(timing)
@@ -121,10 +126,10 @@ def test_mujoco_set_state_empty_env_indices_still_returns_timing_dict() -> None:
     )
     backend.materialize()
 
-    result = backend.set_state(
-        np.array([], dtype=np.int32),
-        np.zeros((0, backend.model.nq)),
-        np.zeros((0, backend.model.nv)),
+    result = backend.set_state_tensor(
+        torch.empty((0,), dtype=torch.int64),
+        torch.zeros((0, backend.model.nq), dtype=torch.float32),
+        torch.zeros((0, backend.model.nv), dtype=torch.float32),
     )
 
     timing = _assert_timing_dict_shape(result)
@@ -145,15 +150,20 @@ def test_motrix_set_state_returns_schema_conformant_timing() -> None:
         SIM_DT,
         base_name="pelvis",
     )
-    nq = backend.get_dof_pos().shape[-1] + 7
-    nv = backend.get_dof_vel().shape[-1] + 6
+    nq = backend.get_default_qpos().size
+    nv = backend.get_init_qvel().size
     qpos = _identity_qpos_mujoco(nq, xyz=(1.0, 2.0, 0.8))
     qvel = np.zeros((1, nv))
-    randomization = ResetRandomizationPayload(
-        gravity=np.asarray([[0.5, 0.5, -3.0]], dtype=np.float64)
+    randomization = TensorResetRandomizationPayload(
+        gravity=torch.tensor([[0.5, 0.5, -3.0]], dtype=torch.float32)
     )
 
-    result = backend.set_state(np.array([0]), qpos, qvel, randomization=randomization)
+    result = backend.set_state_tensor(
+        torch.tensor([0], dtype=torch.int64),
+        torch.from_numpy(qpos.astype(np.float32, copy=False)),
+        torch.from_numpy(qvel.astype(np.float32, copy=False)),
+        randomization=randomization,
+    )
 
     timing = _assert_timing_dict_shape(result)
     _assert_gap_bounded(timing)
@@ -183,14 +193,45 @@ def test_motrix_set_state_without_randomization_leaves_reset_rand_zero() -> None
         SIM_DT,
         base_name="pelvis",
     )
-    nq = backend.get_dof_pos().shape[-1] + 7
-    nv = backend.get_dof_vel().shape[-1] + 6
+    nq = backend.get_default_qpos().size
+    nv = backend.get_init_qvel().size
     qpos = _identity_qpos_mujoco(nq, xyz=(1.0, 2.0, 0.8))
     qvel = np.zeros((1, nv))
 
-    result = backend.set_state(np.array([0]), qpos, qvel)
+    result = backend.set_state_tensor(
+        torch.tensor([0], dtype=torch.int64),
+        torch.from_numpy(qpos.astype(np.float32, copy=False)),
+        torch.from_numpy(qvel.astype(np.float32, copy=False)),
+    )
 
-    timing = _assert_timing_dict_shape(result)
-    # No payload → the fast-return branch in _apply_reset_randomization keeps
-    # this sub-step at essentially zero.
-    assert timing["set_state_reset_rand_ms"] < 1.0
+    timing = result["timing"]
+    if "set_state_reset_rand_ms" in timing:
+        assert timing["set_state_reset_rand_ms"] < 1.0
+    else:
+        assert timing["tensor_reset_packed_d2h_ms"] >= 0.0
+        assert timing["tensor_reset_packed_d2h_count"] == 1.0
+        assert "set_state_reset_rand_ms" not in timing
+
+
+def test_set_state_tensor_keys_stay_out_of_host_set_state_schema() -> None:
+    """The mjwarp set_state_tensor sub-timings are tensor-path-only keys: they
+    are whitelisted for the env-facing reset-done timing dict but must not join
+    BACKEND_SET_STATE_DETAIL_TIMING_KEYS, which every backend's host set_state
+    must emit in full (0.0 when N/A)."""
+    from unilab.base.backend_timing import RESET_DONE_DETAIL_TIMING_KEYS
+
+    tensor_keys = (
+        "set_state_tensor_model_update_ms",
+        "set_state_tensor_mask_ms",
+        "set_state_tensor_commit_forward_ms",
+        "set_state_tensor_host_cache_refresh_ms",
+        "tensor_reset_packed_d2h_ms",
+        "tensor_reset_packed_d2h_bytes",
+        "tensor_reset_packed_d2h_count",
+    )
+    for key in tensor_keys:
+        assert key in RESET_DONE_DETAIL_TIMING_KEYS
+        assert key not in BACKEND_SET_STATE_DETAIL_TIMING_KEYS
+    # The host set_state schema stays a subset of the env-facing whitelist.
+    for key in BACKEND_SET_STATE_DETAIL_TIMING_KEYS:
+        assert key in RESET_DONE_DETAIL_TIMING_KEYS

@@ -6,7 +6,7 @@ from collections import Counter
 
 import numpy as np
 import pytest
-from unisim.backend.base import BackendSensorView, SimBackend
+from unisim.backend.base import SensorView, SimBackend
 
 
 class _SensorBackend:
@@ -38,14 +38,14 @@ def test_bind_sensor_data_validates_once_and_reads_through_formal_view() -> None
 
     view = SimBackend.bind_sensor_data(backend, ("contact_a", "contact_b"))  # type: ignore[arg-type]
 
-    assert isinstance(view, BackendSensorView)
+    assert isinstance(view, SensorView)
     assert view.names == ("contact_a", "contact_b")
     assert view.dimensions == (1, 1)
     assert view.width == 2
-    assert backend.calls == {"single": 2, "batch": 1}
+    assert backend.calls == {"batch": 3}
 
     np.testing.assert_array_equal(view.read(), [[1.0, 0.0], [0.0, 1.0]])
-    assert backend.calls == {"single": 2, "batch": 2}
+    assert backend.calls == {"batch": 4}
 
 
 @pytest.mark.parametrize(
@@ -72,8 +72,7 @@ def test_bind_sensor_data_fails_closed_on_unknown_sensor() -> None:
 @pytest.mark.parametrize(
     "value, error, match",
     [
-        (np.zeros((1, 2), dtype=np.float32), ValueError, "expected leading dimension 2"),
-        (np.full((2, 1), np.nan, dtype=np.float32), ValueError, "NaN or Inf"),
+        (np.zeros((1, 2), dtype=np.float32), ValueError, r"expected \(2, width>0\)"),
     ],
 )
 def test_backend_sensor_view_rejects_invalid_runtime_data(
@@ -95,6 +94,7 @@ def test_backend_sensor_view_rejects_invalid_runtime_data(
     "value, error, match",
     [
         (np.zeros((2, 2), dtype=np.float32), ValueError, r"expected \(2, 1\)"),
+        (np.full((2, 1), np.nan, dtype=np.float32), ValueError, "NaN or Inf"),
         (np.full((2, 1), np.inf, dtype=np.float32), ValueError, "NaN or Inf"),
         (np.full((2, 1), "invalid", dtype=object), TypeError, "non-numeric dtype"),
     ],
@@ -112,7 +112,7 @@ def test_backend_sensor_view_detects_runtime_contract_drift(
 
 
 def test_backend_sensor_view_metadata_is_immutable() -> None:
-    view = BackendSensorView(
+    view = SensorView(
         backend_type="fake",
         names=("sensor",),
         dimensions=(1,),

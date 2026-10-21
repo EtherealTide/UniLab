@@ -18,13 +18,27 @@ _MATERIALIZER_CONSUMERS = (
 def test_unisim_dependency_uses_an_approved_source() -> None:
     direct_url = distribution("unisim-core").read_text("direct_url.json")
     if direct_url is None:
+        # Published package registry install.
         return
-
+    # The only approved non-registry source is the local editable sibling
+    # checkout (#2363 established the coordinated-development pattern; #2410
+    # develops against the plain sibling checkout that `third-party/unisim`
+    # symlinks to, on its own feature branch).
     metadata = json.loads(direct_url)
-    assert metadata.get("url") == "https://github.com/unilabsim/unisim.git"
-    vcs_info = metadata.get("vcs_info", {})
-    assert vcs_info.get("vcs") == "git"
-    assert vcs_info.get("commit_id"), "Git-sourced UniSim must be pinned to a commit"
+    url = metadata.get("url", "")
+    assert isinstance(url, str) and url.startswith("file://"), (
+        "UniSim must resolve from the published registry or a file:// source"
+    )
+    dir_info = metadata.get("dir_info")
+    assert isinstance(dir_info, dict) and dir_info.get("editable") is True, (
+        "UniSim local validation must use an editable sibling checkout"
+    )
+    source = Path(url.removeprefix("file://")).resolve()
+    expected = (_REPO_ROOT.parent / "unisim").resolve()
+    assert source == expected, (
+        f"UniSim editable source must be the sibling checkout at {expected}, got {source}"
+    )
+    assert (source / "src" / "unisim").is_dir(), f"UniSim checkout is incomplete: {source}"
 
 
 def test_materializer_consumers_use_unisim_owner_module() -> None:
@@ -97,13 +111,13 @@ def test_motrix_backend_import_path_does_not_eagerly_import_mujoco() -> None:
 
         from unilab.base.backend_factory import create_backend
         from unisim.backend.motrix.scene import (
-            materialize_motrix_hfield_attached_scene,
-            materialize_motrix_scene,
+            materialize_hfield_attached_scene,
+            materialize_scene,
         )
 
         assert create_backend is not None
-        assert materialize_motrix_scene is not None
-        assert materialize_motrix_hfield_attached_scene is not None
+        assert materialize_scene is not None
+        assert materialize_hfield_attached_scene is not None
 
         if importlib.util.find_spec("motrixsim") is not None:
             import unisim.backend.motrix.backend

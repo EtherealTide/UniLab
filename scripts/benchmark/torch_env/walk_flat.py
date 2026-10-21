@@ -3,7 +3,7 @@
 Faithful xp-port of the NumPy computation in the collector-timed sections of
 `uv run train --algo sac --task g1_walk_flat --sim mujoco` (num_envs=2048):
 
-- the legacy `G1WalkEnv.update_state` computation (pre-Manager-Based migration;
+- the retired `G1WalkEnv.update_state` computation (pre-Manager-Based migration;
   src/unilab/tasks/locomotion/g1/manager_terms.py now owns the same math):
   termination, `_compute_reward` (9 active terms under the SAC scales incl.
   per-term logging every 4 steps), `_compute_obs` (noise + concat, walk
@@ -142,11 +142,7 @@ class WalkFlatWorkload:
             "obs": b.zeros((n, OBS_DIM)),
             "critic": b.zeros((n, CRITIC_DIM)),
         }
-        self.final_obs = {
-            "obs": b.zeros((n, OBS_DIM)),
-            "critic": b.zeros((n, CRITIC_DIM)),
-        }
-        self.compat_final_obs = {
+        self.final_observation = {
             "obs": b.zeros((n, OBS_DIM)),
             "critic": b.zeros((n, CRITIC_DIM)),
         }
@@ -292,8 +288,7 @@ class WalkFlatWorkload:
         # Selected-row reset: steps reset + terminal-observation copy.
         self.steps[env_ids] = 0
         for key in ("obs", "critic"):
-            self.final_obs[key][env_ids] = self.obs[key][env_ids]
-            self.compat_final_obs[key][env_ids] = self.final_obs[key][env_ids]
+            self.final_observation[key][env_ids] = self.obs[key][env_ids]
 
         # build_reset_plan: qpos/qvel sampling.
         qpos = b.tile_batch(self.init_qpos, n)

@@ -18,9 +18,13 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.mjwarp.dependencies import load_mjwarp_dependencies
 from unisim.backend.mjwarp.randomization import EXPANDED_MODEL_FIELDS
 from unisim.dr.types import (
+    INTERVAL_TERM_BODY_FORCE,
+    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+    INTERVAL_TERM_PUSH,
     RESET_TERM_BASE_COM,
     RESET_TERM_BASE_MASS,
     RESET_TERM_BODY_INERTIA,
@@ -38,7 +42,8 @@ from unisim.dr.types import (
     RESET_TERM_KD,
     RESET_TERM_KP,
     IntervalRandomizationPlan,
-    ResetRandomizationPayload,
+    IntervalTermOp,
+    TensorResetRandomizationPayload,
 )
 
 from unilab.base.backend_factory import create_backend
@@ -89,6 +94,12 @@ def _broadcast_rows(values: np.ndarray, count: int) -> np.ndarray:
     return np.broadcast_to(values, (count, *values.shape)).copy()
 
 
+def _tensor_payload(**fields: np.ndarray) -> TensorResetRandomizationPayload:
+    return TensorResetRandomizationPayload(
+        **{name: torch.as_tensor(values) for name, values in fields.items()}
+    )
+
+
 def _device_field(backend: Any, name: str) -> np.ndarray:
     return np.asarray(getattr(backend._device_model, name).numpy())
 
@@ -119,9 +130,9 @@ def test_dr_capabilities_advertise_supported_terms(backend: Any) -> None:
             RESET_TERM_KD,
         }
     )
-    assert capabilities.supports_interval_push
-    assert capabilities.supports_interval_body_velocity_delta
-    assert capabilities.supports_interval_body_force
+    assert capabilities.supports_interval_term(INTERVAL_TERM_PUSH)
+    assert capabilities.supports_interval_term(INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA)
+    assert capabilities.supports_interval_term(INTERVAL_TERM_BODY_FORCE)
 
 
 def test_declared_model_fields_are_expanded_per_world(backend: Any) -> None:
@@ -160,7 +171,7 @@ def test_reset_payload_writes_only_selected_rows(backend: Any) -> None:
         rows,
         qpos,
         qvel,
-        randomization=ResetRandomizationPayload(
+        randomization=_tensor_payload(
             body_mass=body_mass,
             body_ipos=body_ipos,
             dof_armature=dof_armature,
@@ -225,7 +236,7 @@ def test_reset_payload_writes_only_selected_rows(backend: Any) -> None:
         np.asarray([1], dtype=np.int32),
         qpos1,
         qvel1,
-        randomization=ResetRandomizationPayload(base_mass_delta=np.asarray([0.5])),
+        randomization=_tensor_payload(base_mass_delta=np.asarray([0.5])),
     )
     np.testing.assert_allclose(
         _device_field(backend, "body_mass")[1, base_id],
@@ -242,7 +253,7 @@ def test_base_com_offset_applies_default_plus_delta(backend: Any) -> None:
         rows,
         qpos,
         qvel,
-        randomization=ResetRandomizationPayload(base_com_offset=offset),
+        randomization=_tensor_payload(base_com_offset=offset),
     )
     base_id = backend._base_body_id
     expected = backend.get_body_ipos()[base_id] + offset
@@ -273,7 +284,7 @@ def test_body_inertia_and_iquat_recompute_invweight0(backend: Any) -> None:
         rows,
         qpos,
         qvel,
-        randomization=ResetRandomizationPayload(
+        randomization=_tensor_payload(
             body_inertia=inertia,
             body_iquat=iquat,
         ),
@@ -302,13 +313,21 @@ def test_heavier_world_accelerates_less_under_identical_body_force(backend: Any)
         heavy_rows,
         qpos,
         qvel,
-        randomization=ResetRandomizationPayload(body_mass=body_mass),
+        randomization=_tensor_payload(body_mass=body_mass),
     )
 
     force = np.zeros((backend.num_envs, 1, 3), dtype=np.float32)
     force[:, 0, 0] = 300.0
     backend.apply_interval_randomization(
-        IntervalRandomizationPlan(body_ids=np.asarray([backend._base_body_id]), body_force=force)
+        IntervalRandomizationPlan(
+            ops=(
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_FORCE,
+                    force,
+                    body_ids=np.asarray([backend._base_body_id]),
+                ),
+            )
+        )
     )
     backend.step(_stand_ctrl(backend), nsteps=3)
 
@@ -328,7 +347,9 @@ def test_heavier_world_accelerates_less_under_identical_body_force(backend: Any)
 def test_push_robots_stages_one_step_force(backend: Any) -> None:
     _reset_all(backend)
     backend.apply_interval_randomization(
-        IntervalRandomizationPlan(push_perturbation_limit=np.asarray([80.0, 0.0, 0.0]))
+        IntervalRandomizationPlan(
+            ops=(IntervalTermOp(INTERVAL_TERM_PUSH, np.asarray([80.0, 0.0, 0.0])),)
+        )
     )
     assert backend._xfrc_pending
     before = backend.get_base_lin_vel().copy()
@@ -346,8 +367,13 @@ def test_interval_velocity_delta_kicks_selected_rows(backend: Any) -> None:
     delta[[0, 3], 0, :] = np.asarray([[0.4, -0.2, 0.0], [-0.3, 0.1, 0.0]], dtype=np.float32)
     backend.apply_interval_randomization(
         IntervalRandomizationPlan(
-            body_ids=np.asarray([backend._base_body_id], dtype=np.int32),
-            body_linear_velocity_delta=delta,
+            ops=(
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                    delta,
+                    body_ids=np.asarray([backend._base_body_id], dtype=np.int32),
+                ),
+            )
         )
     )
     after = backend.get_base_lin_vel()
@@ -366,7 +392,7 @@ def test_kp_randomization_changes_tracking_response(backend: Any) -> None:
         rows,
         qpos,
         qvel,
-        randomization=ResetRandomizationPayload(
+        randomization=_tensor_payload(
             kp=np.broadcast_to(default_kp * 0.05, (rows.size, default_kp.size)).copy(),
         ),
     )
@@ -390,15 +416,20 @@ def test_low_friction_world_changes_kick_response(backend: Any) -> None:
         rows,
         qpos,
         qvel,
-        randomization=ResetRandomizationPayload(geom_friction=geom_friction),
+        randomization=_tensor_payload(geom_friction=geom_friction),
     )
     start = backend.get_base_pos()[:, :2].copy()
     delta = np.zeros((backend.num_envs, 1, 3), dtype=np.float32)
     delta[:, 0, 0] = 1.5
     backend.apply_interval_randomization(
         IntervalRandomizationPlan(
-            body_ids=np.asarray([backend._base_body_id], dtype=np.int32),
-            body_linear_velocity_delta=delta,
+            ops=(
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                    delta,
+                    body_ids=np.asarray([backend._base_body_id], dtype=np.int32),
+                ),
+            )
         )
     )
     for _ in range(6):
@@ -442,7 +473,7 @@ def test_dr_reset_bypasses_reset_scratch_graphs(monkeypatch: pytest.MonkeyPatch)
         rows,
         qpos,
         qvel,
-        randomization=ResetRandomizationPayload(body_mass=body_mass),
+        randomization=_tensor_payload(body_mass=body_mass),
     )
     assert backend._reset_scratch_reset_graph not in graph_launches
     assert backend._reset_scratch_forward_graph not in graph_launches
@@ -467,7 +498,7 @@ def test_mass_and_com_randomization_match_mujoco_statistics() -> None:
     qpos, qvel = _stand_state(mjwarp_backend, num_envs)
     mass_delta = rng.uniform(-0.5, 1.5, size=num_envs)
     com_offset = rng.uniform(-0.02, 0.02, size=(num_envs, 3))
-    payload = ResetRandomizationPayload(
+    payload = _tensor_payload(
         base_mass_delta=mass_delta,
         base_com_offset=com_offset,
     )

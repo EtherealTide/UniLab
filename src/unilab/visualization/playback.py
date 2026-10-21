@@ -1,4 +1,4 @@
-"""Playback rendering compatibility entrypoint."""
+"""Playback rendering entrypoint for trained policies."""
 
 from __future__ import annotations
 
@@ -6,13 +6,8 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar, cast
 
 import numpy as np
+import torch
 from unisim.backend.base import CameraCfg, DebugOverlayGetter
-from unisim.backend.mujoco.playback import (
-    materialize_visual_playback_model as _materialize_visual_playback_model,
-)
-from unisim.backend.mujoco.playback import (
-    resolve_render_play_model_files as _resolve_render_play_model_files,
-)
 
 ObsT = TypeVar("ObsT")
 
@@ -41,7 +36,6 @@ def camera_cfg_from_training(training_cfg: Any) -> CameraCfg:
 def render_play_mode(
     env,
     *,
-    sim_backend: str,
     initialize: Callable[[], ObsT],
     step: Callable[[ObsT], ObsT],
     num_steps: int | None,
@@ -57,10 +51,9 @@ def render_play_mode(
 ) -> str | None:
     """Run playback through the env/backend playback contract.
 
-    ``sim_backend`` is retained for older call sites; backend selection now
-    belongs to ``env.run_playback()`` and concrete backend implementations.
+    Backend selection belongs to ``env.run_playback()`` and the concrete
+    backend implementations.
     """
-    del sim_backend
     return cast(
         str | None,
         env.run_playback(
@@ -80,9 +73,32 @@ def render_play_mode(
     )
 
 
+def run_native_viewer_play_loop(
+    env,
+    *,
+    initialize: Callable[[], ObsT],
+    step: Callable[[ObsT], ObsT],
+    num_steps: int | None = None,
+    render_spacing: float | None = None,
+    render_offset_mode: str | None = None,
+) -> None:
+    """Run the backend-native viewer loop under ``torch.inference_mode()``.
+
+    Shared by the training entrypoints' native-viewer playback paths; callers
+    own the policy wiring through the ``initialize``/``step`` callbacks.
+    """
+    with torch.inference_mode():
+        env.run_playback(
+            render_spacing=render_spacing,
+            render_offset_mode=render_offset_mode,
+            num_steps=num_steps,
+            initialize=initialize,
+            step=step,
+        )
+
+
 __all__ = [
     "camera_cfg_from_training",
     "render_play_mode",
-    "_materialize_visual_playback_model",
-    "_resolve_render_play_model_files",
+    "run_native_viewer_play_loop",
 ]

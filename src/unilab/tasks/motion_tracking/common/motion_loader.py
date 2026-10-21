@@ -5,24 +5,25 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 import numpy as np
+import torch
 
 from unilab.assets.hub import resolve_motion_files
-from unilab.utils.rotation import np_quat_angular_velocity, np_quat_ensure_continuity
 
 
 @dataclass
 class MotionData:
     """Container for motion data at specific frame(s)."""
 
-    joint_pos: np.ndarray  # (N, num_joints)
-    joint_vel: np.ndarray  # (N, num_joints)
-    body_pos_w: np.ndarray  # (N, num_bodies, 3)
-    body_quat_w: np.ndarray  # (N, num_bodies, 4)
-    body_lin_vel_w: np.ndarray  # (N, num_bodies, 3)
-    body_ang_vel_w: np.ndarray  # (N, num_bodies, 3)
+    # Device-resident Torch carriers owned by TensorMotionCommand.
+    joint_pos: torch.Tensor  # (N, num_joints)
+    joint_vel: torch.Tensor  # (N, num_joints)
+    body_pos_w: torch.Tensor  # (N, num_bodies, 3)
+    body_quat_w: torch.Tensor  # (N, num_bodies, 4)
+    body_lin_vel_w: torch.Tensor  # (N, num_bodies, 3)
+    body_ang_vel_w: torch.Tensor  # (N, num_bodies, 3)
 
 
 def quat_slerp(q1: np.ndarray, q2: np.ndarray, t: float) -> np.ndarray:
@@ -53,6 +54,84 @@ def quat_slerp(q1: np.ndarray, q2: np.ndarray, t: float) -> np.ndarray:
     return w1 * q1 + w2 * q2
 
 
+def ensure_quat_continuity(q: np.ndarray) -> np.ndarray:
+    """Flip quaternion signs in a time sequence to keep adjacent dots positive."""
+    if q.ndim != 2 or q.shape[1] != 4:
+        raise ValueError(f"Expected quaternion sequence with shape (T, 4), got {q.shape}")
+
+    result = np.array(q, copy=True)
+    for index in range(1, result.shape[0]):
+        if float(np.dot(result[index - 1], result[index])) < 0.0:
+            result[index] *= -1.0
+    return result
+
+
+def _quat_conjugate(q: np.ndarray) -> np.ndarray:
+    result = q.copy()
+    result[..., 1:] *= -1
+    return result
+
+
+def _quat_mul(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
+    w1, x1, y1, z1 = q1[..., 0], q1[..., 1], q1[..., 2], q1[..., 3]
+    w2, x2, y2, z2 = q2[..., 0], q2[..., 1], q2[..., 2], q2[..., 3]
+    return np.stack(
+        [
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ],
+        axis=-1,
+    )
+
+
+def _quat_to_axis_angle(q: np.ndarray) -> np.ndarray:
+    sign = np.where(q[:, 0:1] < 0.0, -1.0, 1.0)
+    q = q * sign
+    xyz = q[:, 1:]
+    w = q[:, 0:1]
+    xyz_norm = np.linalg.norm(xyz, axis=-1, keepdims=True)
+    half_angle = np.arctan2(xyz_norm, w)
+    angle = 2.0 * half_angle
+    small = np.abs(angle) < 1.0e-6
+    safe_angle = np.where(small, 1.0, angle)
+    sin_half_over_angle = np.where(
+        small,
+        0.5 - angle**2 / 48.0,
+        np.sin(half_angle) / safe_angle,
+    )
+    return xyz / sin_half_over_angle
+
+
+def _quat_angular_velocity(q: np.ndarray, dt: float) -> np.ndarray:
+    """Estimate angular velocity from a shortest-arc quaternion sequence."""
+    if q.ndim != 2 or q.shape[1] != 4:
+        raise ValueError(f"Expected quaternion sequence with shape (T, 4), got {q.shape}")
+    if dt <= 0.0:
+        raise ValueError(f"dt must be positive, got {dt}")
+
+    rotations = ensure_quat_continuity(q)
+    num_frames = rotations.shape[0]
+    omega = np.zeros((num_frames, 3), dtype=rotations.dtype)
+    if num_frames <= 1:
+        return omega
+
+    if num_frames == 2:
+        q_rel = _quat_mul(rotations[1], _quat_conjugate(rotations[0]))
+        sign = np.where(q_rel[0] < 0.0, -1.0, 1.0)
+        omega[:] = _quat_to_axis_angle((q_rel * sign)[None, :])[0] / dt
+        return omega
+
+    q_prev = rotations[:-2]
+    q_next = rotations[2:]
+    q_rel = _quat_mul(q_next, _quat_conjugate(q_prev))
+    omega[1:-1] = _quat_to_axis_angle(q_rel) / (2.0 * dt)
+    omega[0] = omega[1]
+    omega[-1] = omega[-2]
+    return omega
+
+
 @dataclass
 class InterpolatedMotion:
     """Root/joint trajectory resampled to the output frame rate."""
@@ -75,7 +154,7 @@ def compute_motion_velocities(
     """Numerically differentiate a trajectory into base/dof velocities."""
     base_lin_vels = np.gradient(base_poss, dt, axis=0)
     dof_vels = np.gradient(dof_poss, dt, axis=0)
-    base_ang_vels = np_quat_angular_velocity(base_rots, dt)
+    base_ang_vels = _quat_angular_velocity(base_rots, dt)
     return base_lin_vels, base_ang_vels, dof_vels
 
 
@@ -124,7 +203,7 @@ def interpolate_motion(
         base_rots[i] = quat_slerp(
             base_rots_input[index_0[i]], base_rots_input[index_1[i]], blend[i]
         )
-    base_rots = np_quat_ensure_continuity(base_rots)
+    base_rots = ensure_quat_continuity(base_rots)
 
     # Linear interpolation for joint positions
     dof_poss = (
@@ -148,7 +227,7 @@ def interpolate_motion(
 class MotionLoader:
     """Loads and provides access to motion data from NPZ files."""
 
-    def __init__(self, motion_file: str | Sequence[str], body_indices: np.ndarray | None = None):
+    def __init__(self, motion_file: str | Sequence[str], body_indices: Sequence[int] | None = None):
         """Initialize motion loader.
 
         Args:
@@ -275,331 +354,35 @@ class MotionLoader:
         clip_indices = np.searchsorted(self.clip_offsets, frame_idx, side="right") - 1
         return np.asarray(clip_indices, dtype=np.int32)
 
-    def make_motion_data_buffer(self, num_frames: int) -> MotionData:
-        """Allocate a reusable ``MotionData`` buffer for frame-index gathers."""
-        return MotionData(
-            joint_pos=np.empty((num_frames, self.num_joints), dtype=self.joint_pos.dtype),
-            joint_vel=np.empty((num_frames, self.num_joints), dtype=self.joint_vel.dtype),
-            body_pos_w=np.empty((num_frames, self.num_bodies, 3), dtype=self.body_pos_w.dtype),
-            body_quat_w=np.empty((num_frames, self.num_bodies, 4), dtype=self.body_quat_w.dtype),
-            body_lin_vel_w=np.empty(
-                (num_frames, self.num_bodies, 3), dtype=self.body_lin_vel_w.dtype
-            ),
-            body_ang_vel_w=np.empty(
-                (num_frames, self.num_bodies, 3), dtype=self.body_ang_vel_w.dtype
-            ),
-        )
+    def motion_features_torch(self, device: str | torch.device) -> torch.Tensor:
+        """Return the immutable motion feature table on the requested device.
 
-    def get_motion_at_frame(
-        self, frame_idx: np.ndarray, out: MotionData | None = None
-    ) -> MotionData:
-        """Get motion data at specified frame indices.
-
-        Args:
-            frame_idx: Frame indices (N,)
-            out: Optional reusable output buffer.
-
-        Returns:
-            MotionData at specified frames
+        NPZ parsing and validation remain inside this cold-path leaf. Runtime
+        consumers receive one contiguous float32 table with columns packed in
+        the documented motion-feature order rather than mutable NumPy arrays.
         """
-        if out is not None:
-            np.take(self.joint_pos, frame_idx, axis=0, out=out.joint_pos)
-            np.take(self.joint_vel, frame_idx, axis=0, out=out.joint_vel)
-            np.take(self.body_pos_w, frame_idx, axis=0, out=out.body_pos_w)
-            np.take(self.body_quat_w, frame_idx, axis=0, out=out.body_quat_w)
-            np.take(self.body_lin_vel_w, frame_idx, axis=0, out=out.body_lin_vel_w)
-            np.take(self.body_ang_vel_w, frame_idx, axis=0, out=out.body_ang_vel_w)
-            return out
+        arrays = (
+            self.joint_pos,
+            self.joint_vel,
+            self.body_pos_w,
+            self.body_quat_w,
+            self.body_lin_vel_w,
+            self.body_ang_vel_w,
+        )
+        host = np.concatenate(
+            [np.asarray(value, dtype=np.float32).reshape(value.shape[0], -1) for value in arrays],
+            axis=1,
+        )
+        return torch.from_numpy(np.ascontiguousarray(host)).to(device=device)
 
-        return MotionData(
-            joint_pos=self.joint_pos[frame_idx],
-            joint_vel=self.joint_vel[frame_idx],
-            body_pos_w=self.body_pos_w[frame_idx],
-            body_quat_w=self.body_quat_w[frame_idx],
-            body_lin_vel_w=self.body_lin_vel_w[frame_idx],
-            body_ang_vel_w=self.body_ang_vel_w[frame_idx],
+    def clip_offsets_torch(self, device: str | torch.device) -> torch.Tensor:
+        """Return immutable clip start frames as a device-resident Torch table."""
+        return torch.from_numpy(np.array(self.clip_offsets, copy=True)).to(
+            device=device, dtype=torch.int64
         )
 
-
-class MotionSampler:
-    """Handles motion frame sampling with different strategies."""
-
-    def __init__(
-        self,
-        motion_loader: MotionLoader,
-        mode: Literal["start", "clip_start", "uniform", "adaptive", "mixed"],
-        num_envs: int,
-        bin_count: int | None = None,
-        adaptive_lambda: float = 0.8,
-        adaptive_kernel_size: int = 1,
-        adaptive_uniform_ratio: float = 0.1,
-        adaptive_alpha: float = 0.001,
-        start_ratio: float = 0.0,
-        rng: np.random.Generator | None = None,
-    ):
-        """Initialize motion sampler.
-
-        Args:
-            motion_loader: Motion loader instance
-            mode: Sampling mode ("start", "clip_start", "uniform", "adaptive", "mixed")
-            num_envs: Number of parallel environments
-            bin_count: Number of bins for adaptive sampling (auto if None)
-            adaptive_lambda: Decay factor for adaptive kernel
-            adaptive_kernel_size: Kernel size for adaptive sampling
-            adaptive_uniform_ratio: Uniform sampling ratio for adaptive mode
-            adaptive_alpha: EMA alpha for failure count updates
-            start_ratio: Fraction of envs forced to frame 0 in "mixed" mode
-                (remaining envs are uniformly sampled). Lets buffer concentrate
-                launch-transition samples while keeping motion-clip coverage.
-        """
-        if not 0.0 <= start_ratio <= 1.0:
-            raise ValueError(f"start_ratio must be in [0, 1], got {start_ratio}")
-        self.motion_loader = motion_loader
-        self.mode = mode
-        self.num_envs = num_envs
-        self.start_ratio = start_ratio
-        self.rng = rng
-
-        # Current frame indices for each environment
-        self.current_frames = np.zeros(num_envs, dtype=np.int32)
-        self.current_clip_indices = np.zeros(num_envs, dtype=np.int32)
-        self.current_clip_end_frames = np.full(
-            num_envs, motion_loader.clip_end_frames[0], dtype=np.int32
+    def clip_end_frames_torch(self, device: str | torch.device) -> torch.Tensor:
+        """Return immutable clip end frames as a device-resident Torch table."""
+        return torch.from_numpy(np.array(self.clip_end_frames, copy=True)).to(
+            device=device, dtype=torch.int64
         )
-
-        # Adaptive sampling parameters
-        if bin_count is None:
-            # Auto-compute bin count based on motion length and FPS
-            self.bin_count = int(motion_loader.num_frames // motion_loader.fps) + 1
-        else:
-            self.bin_count = bin_count
-
-        self.adaptive_lambda = adaptive_lambda
-        self.adaptive_kernel_size = adaptive_kernel_size
-        self.adaptive_uniform_ratio = adaptive_uniform_ratio
-        self.adaptive_alpha = adaptive_alpha
-
-        # Failure tracking for adaptive sampling
-        self.bin_failed_count = np.zeros(self.bin_count, dtype=np.float32)
-        self._current_bin_failed = np.zeros(self.bin_count, dtype=np.float32)
-
-        # Precompute adaptive kernel
-        self.kernel = np.array(
-            [adaptive_lambda**i for i in range(adaptive_kernel_size)], dtype=np.float32
-        )
-        self.kernel = self.kernel / self.kernel.sum()
-
-        # Metrics
-        self.sampling_entropy = 0.0
-        self.sampling_top1_prob = 0.0
-        self.sampling_top1_bin = 0.0
-        self._done_mask = np.zeros(num_envs, dtype=bool)
-
-    def sample_frames(self, env_ids: np.ndarray) -> np.ndarray:
-        """Sample motion frames for specified environments.
-
-        Args:
-            env_ids: Environment indices to sample for
-
-        Returns:
-            Sampled frame indices
-        """
-        if self.mode == "start":
-            return self._sample_start(env_ids)
-        elif self.mode == "clip_start":
-            return self._sample_clip_start(env_ids)
-        elif self.mode == "uniform":
-            return self._sample_uniform(env_ids)
-        elif self.mode == "adaptive":
-            return self._sample_adaptive(env_ids)
-        elif self.mode == "mixed":
-            return self._sample_mixed(env_ids)
-        else:
-            raise ValueError(f"Unknown sampling mode: {self.mode}")
-
-    def _sample_start(self, env_ids: np.ndarray) -> np.ndarray:
-        """Always start from the global first frame (historical behavior)."""
-        frames = np.zeros(len(env_ids), dtype=np.int32)
-        self._set_sampled_frames(env_ids, frames)
-        return frames
-
-    def _sample_clip_start(self, env_ids: np.ndarray) -> np.ndarray:
-        """Start from the first frame of a randomly chosen clip."""
-        frames: np.ndarray
-        if self.motion_loader.num_clips == 1:
-            frames = np.zeros(len(env_ids), dtype=np.int32)
-        else:
-            if self.rng is None:
-                clip_indices = np.random.randint(
-                    0, self.motion_loader.num_clips, len(env_ids), dtype=np.int32
-                )
-            else:
-                clip_indices = self.rng.integers(
-                    0, self.motion_loader.num_clips, len(env_ids), dtype=np.int32
-                )
-            frames = np.asarray(self.motion_loader.clip_offsets[clip_indices], dtype=np.int32)
-        self._set_sampled_frames(env_ids, frames)
-        return frames
-
-    def _sample_uniform(self, env_ids: np.ndarray) -> np.ndarray:
-        """Sample uniformly across motion."""
-        if self.rng is None:
-            frames = np.random.randint(
-                0, self.motion_loader.num_frames, len(env_ids), dtype=np.int32
-            )
-        else:
-            frames = self.rng.integers(
-                0, self.motion_loader.num_frames, len(env_ids), dtype=np.int32
-            )
-        self._set_sampled_frames(env_ids, frames)
-
-        # Update metrics
-        self.sampling_entropy = 1.0  # Maximum entropy for uniform
-        self.sampling_top1_prob = 1.0 / self.bin_count
-        self.sampling_top1_bin = 0.5  # No specific bin preference
-
-        return frames
-
-    def _sample_mixed(self, env_ids: np.ndarray) -> np.ndarray:
-        """Per-env Bernoulli mix of ``start`` (frame 0) and ``uniform``.
-
-        Each env independently lands on frame 0 with probability ``start_ratio``
-        and on a uniformly sampled frame otherwise. This concentrates buffer
-        coverage on the launch transition (frame 0 -> apex) while preserving
-        uniform RSI's whole-clip coverage everywhere else.
-        """
-        n = len(env_ids)
-        random_values = np.random.random(n) if self.rng is None else self.rng.random(n)
-        if self.rng is None:
-            uniform_frames = np.random.randint(0, self.motion_loader.num_frames, n)
-        else:
-            uniform_frames = self.rng.integers(0, self.motion_loader.num_frames, n)
-        use_start = random_values < self.start_ratio
-        frames = np.where(
-            use_start,
-            0,
-            uniform_frames,
-        ).astype(np.int32)
-        self._set_sampled_frames(env_ids, frames)
-
-        # Metrics: mixture of a degenerate start mass and a uniform spread.
-        # Reflect the start over-representation in top1.
-        start_mass = self.start_ratio + (1.0 - self.start_ratio) / self.bin_count
-        self.sampling_top1_prob = float(start_mass)
-        self.sampling_top1_bin = 0.0
-        if start_mass >= 1.0 - 1e-9:
-            self.sampling_entropy = 0.0
-        else:
-            uniform_mass = (1.0 - self.start_ratio) / self.bin_count
-            H = -start_mass * math.log(start_mass + 1e-12)
-            H -= (self.bin_count - 1) * uniform_mass * math.log(uniform_mass + 1e-12)
-            self.sampling_entropy = (
-                float(H / math.log(self.bin_count)) if self.bin_count > 1 else 1.0
-            )
-
-        return frames
-
-    def _sample_adaptive(self, env_ids: np.ndarray) -> np.ndarray:
-        """Sample adaptively based on failure statistics."""
-        # Compute sampling probabilities
-        sampling_probs = self.bin_failed_count + self.adaptive_uniform_ratio / float(self.bin_count)
-
-        # Apply smoothing kernel (non-causal convolution)
-        if self.adaptive_kernel_size > 1:
-            # Pad and convolve
-            padded = np.pad(sampling_probs, (0, self.adaptive_kernel_size - 1), mode="edge")
-            sampling_probs = np.convolve(padded, self.kernel, mode="valid")
-
-        # With no failure statistics yet, a zero uniform floor leaves every bin
-        # at weight zero. Initialize that cold-start state as uniform.
-        sampling_weight_sum = float(sampling_probs.sum())
-        if sampling_weight_sum <= 0.0:
-            sampling_probs = np.full(self.bin_count, 1.0 / self.bin_count, dtype=np.float64)
-        else:
-            sampling_probs = sampling_probs / sampling_weight_sum
-
-        # Sample bins
-        sampled_bins = (
-            np.random.choice(self.bin_count, size=len(env_ids), p=sampling_probs)
-            if self.rng is None
-            else self.rng.choice(self.bin_count, size=len(env_ids), p=sampling_probs)
-        )
-
-        # Add random offset within bin
-        bin_offsets = (
-            np.random.uniform(0.0, 1.0, len(env_ids))
-            if self.rng is None
-            else self.rng.uniform(0.0, 1.0, len(env_ids))
-        )
-        frames = (
-            (sampled_bins + bin_offsets) / self.bin_count * (self.motion_loader.num_frames - 1)
-        ).astype(np.int32)
-
-        self._set_sampled_frames(env_ids, frames)
-
-        # Update metrics
-        H = -(sampling_probs * np.log(sampling_probs + 1e-12)).sum()
-        H_norm = H / math.log(self.bin_count) if self.bin_count > 1 else 1.0
-        pmax_idx = np.argmax(sampling_probs)
-        pmax = sampling_probs[pmax_idx]
-
-        self.sampling_entropy = H_norm
-        self.sampling_top1_prob = float(pmax)
-        self.sampling_top1_bin = float(pmax_idx) / self.bin_count
-
-        return np.asarray(frames, dtype=np.int32)
-
-    def update_failure_stats(
-        self, terminated: np.ndarray, current_frames: np.ndarray | None = None
-    ):
-        """Update failure statistics for adaptive sampling.
-
-        Args:
-            terminated: Boolean array indicating which environments terminated
-            current_frames: Optional current frame indices (uses internal if None)
-        """
-        if self.mode != "adaptive":
-            return
-
-        if current_frames is None:
-            current_frames = self.current_frames
-
-        # Find which bins failed
-        if np.any(terminated):
-            bin_indices = np.clip(
-                (current_frames * self.bin_count) // max(self.motion_loader.num_frames, 1),
-                0,
-                self.bin_count - 1,
-            )
-            failed_bins = bin_indices[terminated]
-
-            # Count failures per bin
-            self._current_bin_failed[:] = 0
-            for bin_idx in failed_bins:
-                self._current_bin_failed[bin_idx] += 1
-
-            # Update EMA of failure counts
-            self.bin_failed_count = (
-                self.adaptive_alpha * self._current_bin_failed
-                + (1 - self.adaptive_alpha) * self.bin_failed_count
-            )
-
-    def _set_sampled_frames(self, env_ids: np.ndarray, frames: np.ndarray) -> None:
-        self.current_frames[env_ids] = frames
-        clip_indices = self.motion_loader.get_clip_indices(frames)
-        self.current_clip_indices[env_ids] = clip_indices
-        self.current_clip_end_frames[env_ids] = self.motion_loader.clip_end_frames[clip_indices]
-
-    def step(self, env_ids: np.ndarray | None = None) -> np.ndarray:
-        """Advance selected frames by one step and return their clip-end rows."""
-        ids = np.arange(self.num_envs, dtype=np.int32) if env_ids is None else env_ids
-        self.current_frames[ids] += 1
-
-        # Find environments that reached the end of their current clip.
-        self._done_mask.fill(False)
-        self._done_mask[ids] = self.current_frames[ids] > self.current_clip_end_frames[ids]
-        return np.flatnonzero(self._done_mask)
-
-    def get_current_motion(self, out: MotionData | None = None) -> MotionData:
-        """Get motion data at current frames for all environments."""
-        return self.motion_loader.get_motion_at_frame(self.current_frames, out=out)

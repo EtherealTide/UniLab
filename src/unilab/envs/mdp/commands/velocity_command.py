@@ -1,7 +1,7 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681),
 # src/mjlab/tasks/velocity/mdp/velocity_command.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy and the base-owned entity facade; Apache-2.0.
+# Modified by UniLab for Torch and the base-owned entity facade; Apache-2.0.
 """Uniform velocity commands for locomotion tasks."""
 
 from __future__ import annotations
@@ -11,14 +11,14 @@ from dataclasses import dataclass, field
 from numbers import Real
 from typing import TYPE_CHECKING, Any, cast
 
-import numpy as np
 import torch
 
 from unilab.managers.command_manager import CommandTerm, CommandTermCfg
+from unilab.managers.rng import ManagerRng
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 def _real(value: Any, *, label: str) -> float:
@@ -131,26 +131,31 @@ class UniformVelocityCommand(CommandTerm):
     }
 
     def _metric_velocities(self) -> tuple[torch.Tensor, torch.Tensor]:
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(self._env.scene, "read_plan", None)
         names = self.tensor_sensor_names
         packed = read_plan.sensor_names.get(self.cfg.entity_name, ()) if read_plan else ()
         # The scene pack negotiates backend-local aliases (Go2 ``local_linvel``/
         # ``gyro``) but the semantic metric remains the canonical IMU contract.
-        if len(names) == 2 and names[0] in packed and names[1] in packed:
+        if read_plan is None:
+            # Manager construction and command reset before plan compilation do
+            # not consume metrics; defer to the compiled packed phase.
+            return torch.zeros((self.num_envs, 3)), torch.zeros((self.num_envs, 3))
+        aliases = self.packed_sensor_aliases
+        resolved_names = tuple(
+            next((local for local in aliases.get(name, (name,)) if local in packed), name)
+            for name in names
+        )
+        if len(names) == 2 and set(resolved_names).issubset(packed):
             entity = self._env.scene[self.cfg.entity_name]
-            assert read_plan is not None
-            views = read_plan.sensor_tensor_views(entity, names).values
-            return views[names[0]], views[names[1]]
-        # HOST_BRIDGE owners use their public entity facade. This is an
-        # explicit carrier choice, not a hidden device transfer.
-        device = getattr(self._env, "device", torch.device("cpu"))
-        return (
-            torch.as_tensor(self.robot.data.root_link_lin_vel_b, device=device),
-            torch.as_tensor(self.robot.data.root_link_ang_vel_b, device=device),
+            views = read_plan.sensor_tensor_views(entity, resolved_names).values
+            return views[resolved_names[0]], views[resolved_names[1]]
+        raise NotImplementedError(
+            "UniformVelocityCommand term 'twist' requires sensors "
+            f"{names} in the Manager packed Torch read plan; "
+            f"compiled={tuple(packed)}"
         )
 
-    def _update_metrics(self, env_ids: torch.Tensor | None = None) -> None:
-        del env_ids  # Metrics accumulate over all rows on every compute.
+    def _update_metrics(self) -> None:
         max_command_steps = self.cfg.resampling_time_range[1] / self._env.step_dt
         lin_vel, ang_vel = self._metric_velocities()
         command = torch.as_tensor(self.command, device=lin_vel.device)
@@ -165,64 +170,69 @@ class UniformVelocityCommand(CommandTerm):
         self.metrics["error_vel_xy"] += errors[:, 0]
         self.metrics["error_vel_yaw"] += errors[:, 1]
 
-    def _resample_command(self, env_ids: torch.Tensor) -> None:
-        self._resample_tensor_command(env_ids)
-
-    def _resample_tensor_command(self, env_ids: torch.Tensor) -> None:
-        count = env_ids.numel()
-        if count == 0:
-            return
-        tensor = self._tensor_command
-        assert tensor is not None
-        rows = env_ids.to(dtype=torch.int64, device=self._device)
+    def _resample_command(self, reset_mask: torch.Tensor) -> None:
+        """Sample at full width and merge only selected rows."""
         ranges = self.cfg.ranges
-        samples = torch.empty((count, 3), dtype=torch.float32, device=self._device)
-        for column, bounds in enumerate((ranges.lin_vel_x, ranges.lin_vel_y, ranges.ang_vel_z)):
-            samples[:, column] = self._sample_uniform(bounds[0], bounds[1], count)
-
+        samples = self._sample_full_width()
         if self.cfg.heading_command:
             assert ranges.heading is not None
-            self._heading_target[rows] = self._sample_uniform(*ranges.heading, count)
-            self._is_heading_env[rows] = self._sample_uniform(0.0, 1.0, count) <= (
-                self.cfg.rel_heading_envs
+            self._heading_target.copy_(
+                torch.where(
+                    reset_mask,
+                    self._sample_uniform(ranges.heading[0], ranges.heading[1], self.num_envs),
+                    self._heading_target,
+                )
             )
-        self._is_standing_env[rows] = self._sample_uniform(0.0, 1.0, count) <= (
-            self.cfg.rel_standing_envs
+            self._is_heading_env.copy_(
+                torch.where(
+                    reset_mask,
+                    self._sample_uniform(0.0, 1.0, self.num_envs) <= self.cfg.rel_heading_envs,
+                    self._is_heading_env,
+                )
+            )
+        self._is_standing_env.copy_(
+            torch.where(
+                reset_mask,
+                self._sample_uniform(0.0, 1.0, self.num_envs) <= self.cfg.rel_standing_envs,
+                self._is_standing_env,
+            )
         )
-        self._is_world_env[rows] = self._sample_uniform(0.0, 1.0, count) <= self.cfg.rel_world_envs
-        self._is_forward_env[rows] = self._sample_uniform(0.0, 1.0, count) <= (
-            self.cfg.rel_forward_envs
+        self._is_world_env.copy_(
+            torch.where(
+                reset_mask,
+                self._sample_uniform(0.0, 1.0, self.num_envs) <= self.cfg.rel_world_envs,
+                self._is_world_env,
+            )
         )
-        forward = self._is_forward_env.index_select(0, rows)
-        if bool(forward.any()):
-            forward_rows = rows[forward]
-            tensor[forward_rows, 0] = torch.clamp(samples[forward, 0].abs(), min=0.3)
-            tensor[forward_rows, 1:] = 0.0
-            self._world_command[forward_rows] = tensor[forward_rows]
-            return
-        tensor.index_copy_(0, rows, samples)
-        self._world_command.index_copy_(0, rows, samples)
-
-    def _sample_uniform(self, lower: float, upper: float, count: int) -> torch.Tensor:
-        rng_owner = getattr(self._env, "torch_rng", None)
-        if rng_owner is not None:
-            return rng_owner.uniform(lower, upper, (count,), dtype=torch.float32)
-        # CPU reference owners may still use the legacy NumPy stream. This is
-        # confined to the public HOST_BRIDGE carrier and is uploaded once here.
-        return torch.as_tensor(
-            self._env.rng.uniform(lower, upper, count),
-            dtype=torch.float32,
-            device=self._device,
+        self._is_forward_env.copy_(
+            torch.where(
+                reset_mask,
+                self._sample_uniform(0.0, 1.0, self.num_envs) <= self.cfg.rel_forward_envs,
+                self._is_forward_env,
+            )
         )
+        forward = self._is_forward_env & reset_mask
+        samples[:, 0] = torch.where(forward, samples[:, 0].abs().clamp(min=0.3), samples[:, 0])
+        samples[:, 1:] = torch.where(
+            forward[:, None], torch.zeros_like(samples[:, 1:]), samples[:, 1:]
+        )
+        self._merge_samples_masked(samples, reset_mask)
 
-    def _heading(self) -> torch.Tensor:
-        heading = self.robot.data.heading_w
-        if isinstance(heading, torch.Tensor):
-            return heading.to(device=self._device, dtype=torch.float32)
-        return torch.as_tensor(heading, dtype=torch.float32, device=self._device)
+    def _sample_full_width(self) -> torch.Tensor:
+        ranges = self.cfg.ranges
+        samples = torch.empty((self.num_envs, 3), dtype=torch.float32, device=self._device)
+        for column, bounds in enumerate((ranges.lin_vel_x, ranges.lin_vel_y, ranges.ang_vel_z)):
+            samples[:, column] = self._sample_uniform(bounds[0], bounds[1], self.num_envs)
+        return samples
 
-    def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
-        del env_ids
+    def _merge_samples_masked(self, samples: torch.Tensor, reset_mask: torch.Tensor) -> None:
+        tensor = self._tensor_command
+        assert tensor is not None
+        expanded = reset_mask.reshape(-1, *([1] * (tensor.ndim - 1)))
+        tensor.copy_(torch.where(expanded, samples, tensor))
+        self._world_command.copy_(torch.where(expanded, samples, self._world_command))
+
+    def refresh_reset(self, reset_mask: torch.Tensor) -> None:
         tensor = self._tensor_command
         assert tensor is not None
 
@@ -234,28 +244,101 @@ class UniformVelocityCommand(CommandTerm):
                 )
                 - torch.pi
             )
-            heading_ids = self._is_heading_env.nonzero(as_tuple=False).flatten()
-            if heading_ids.numel():
-                tensor[heading_ids, 2] = torch.clamp(
-                    self.cfg.heading_control_stiffness * heading_error[heading_ids],
-                    min=self.cfg.ranges.ang_vel_z[0],
-                    max=self.cfg.ranges.ang_vel_z[1],
-                )
+            heading_command = torch.clamp(
+                self.cfg.heading_control_stiffness * heading_error,
+                min=self.cfg.ranges.ang_vel_z[0],
+                max=self.cfg.ranges.ang_vel_z[1],
+            )
+            tensor[:, 2] = torch.where(self._is_heading_env, heading_command, tensor[:, 2])
 
-        world_ids = self._is_world_env.nonzero(as_tuple=False).flatten()
-        if world_ids.numel():
-            heading = self._heading()[world_ids]
+        if bool(self._is_world_env.any()):
+            heading = self._heading()
             cos_heading = torch.cos(heading)
             sin_heading = torch.sin(heading)
-            velocity_x_w = self._world_command[world_ids, 0]
-            velocity_y_w = self._world_command[world_ids, 1]
-            tensor[world_ids, 0] = cos_heading * velocity_x_w + sin_heading * velocity_y_w
-            tensor[world_ids, 1] = -sin_heading * velocity_x_w + cos_heading * velocity_y_w
+            velocity_x_w = self._world_command[:, 0]
+            velocity_y_w = self._world_command[:, 1]
+            world_x = cos_heading * velocity_x_w + sin_heading * velocity_y_w
+            world_y = -sin_heading * velocity_x_w + cos_heading * velocity_y_w
+            tensor[:, 0] = torch.where(self._is_world_env, world_x, tensor[:, 0])
+            tensor[:, 1] = torch.where(self._is_world_env, world_y, tensor[:, 1])
 
-        standing_ids = self._is_standing_env.nonzero(as_tuple=False).flatten()
-        if standing_ids.numel():
-            tensor[standing_ids] = 0.0
-            self._world_command[standing_ids] = 0.0
+        if bool(self._is_standing_env.any()):
+            tensor.copy_(
+                torch.where(
+                    self._is_standing_env[:, None],
+                    torch.zeros_like(tensor),
+                    tensor,
+                )
+            )
+            self._world_command.copy_(
+                torch.where(
+                    self._is_standing_env[:, None],
+                    torch.zeros_like(self._world_command),
+                    self._world_command,
+                )
+            )
+
+    def post_compute_reset(self) -> None:
+        self.post_compute()
+
+    def _sample_uniform(self, lower: float, upper: float, count: int) -> torch.Tensor:
+        rng_owner = getattr(self._env, "rng", None)
+        if not isinstance(rng_owner, ManagerRng):
+            raise RuntimeError(
+                "UniformVelocityCommand sampling requires the Manager-owned Torch generator"
+            )
+        return rng_owner.uniform(lower, upper, (count,), dtype=torch.float32)
+
+    def _heading(self) -> torch.Tensor:
+        read_plan = getattr(self._env.scene, "read_plan", None)
+        root_body_name = getattr(self.robot, "root_body_name", None)
+        if read_plan is None or not isinstance(root_body_name, str) or not root_body_name:
+            # Command construction/reset does not consume heading; return the
+            # cold neutral value until the packed read plan is compiled.
+            return torch.zeros((self.num_envs,), dtype=torch.float32, device=self._device)
+        quat = read_plan.body_tensor_view(self.robot, (root_body_name,)).quat_w[:, 0, :]
+        w, x, y, z = quat.unbind(dim=-1)
+        return torch.atan2(
+            2.0 * (w * z + x * y),
+            1.0 - 2.0 * (y * y + z * z),
+        ).to(dtype=torch.float32)
+
+    def _update_command(self) -> None:
+        tensor = self._tensor_command
+        assert tensor is not None
+
+        if self.cfg.heading_command:
+            heading_error = (
+                torch.remainder(
+                    self._heading_target - self._heading() + torch.pi,
+                    2.0 * torch.pi,
+                )
+                - torch.pi
+            )
+            controlled_yaw = torch.clamp(
+                self.cfg.heading_control_stiffness * heading_error,
+                min=self.cfg.ranges.ang_vel_z[0],
+                max=self.cfg.ranges.ang_vel_z[1],
+            )
+            tensor[:, 2] = torch.where(self._is_heading_env, controlled_yaw, tensor[:, 2])
+
+        heading = self._heading()
+        cos_heading = torch.cos(heading)
+        sin_heading = torch.sin(heading)
+        velocity_x_w = self._world_command[:, 0]
+        velocity_y_w = self._world_command[:, 1]
+        velocity_x_b = cos_heading * velocity_x_w + sin_heading * velocity_y_w
+        velocity_y_b = -sin_heading * velocity_x_w + cos_heading * velocity_y_w
+        tensor[:, 0] = torch.where(self._is_world_env, velocity_x_b, tensor[:, 0])
+        tensor[:, 1] = torch.where(self._is_world_env, velocity_y_b, tensor[:, 1])
+
+        standing = self._is_standing_env
+        tensor.copy_(torch.where(standing[:, None], torch.zeros_like(tensor), tensor))
+        self._world_command.copy_(
+            torch.where(
+                standing[:, None], torch.zeros_like(self._world_command), self._world_command
+            )
+        )
 
 
 @dataclass(kw_only=True)

@@ -5,18 +5,19 @@
 
 from __future__ import annotations
 
+import math
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Sequence
 
-import numpy as np
 import torch
 from prettytable import PrettyTable
 
+from unilab.base.reset_selectors import resolve_reset_env_ids
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 @dataclass(kw_only=True)
@@ -95,27 +96,42 @@ class CurriculumManager(ManagerBase):
         return terms
 
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
-        extras = {}
+        """Publish curriculum state and reset term state for the selected envs."""
+        env_ids = resolve_reset_env_ids(
+            env_ids,
+            num_envs=self._env.num_envs,
+            device=torch.device(getattr(self._env, "device", "cpu")),
+            owner="CurriculumManager.reset",
+        )
+        extras: dict[str, float] = {}
         for term_name, term_state in self._curriculum_state.items():
-            if term_state is not None:
-                if isinstance(term_state, dict):
-                    for key, value in term_state.items():
-                        if isinstance(value, torch.Tensor):
-                            value = value.detach().cpu().item()
-                        extras[f"Curriculum/{term_name}/{key}"] = value
-                else:
-                    if isinstance(term_state, torch.Tensor):
-                        term_state = term_state.detach().cpu().item()
-                    extras[f"Curriculum/{term_name}"] = term_state
+            if term_state is None:
+                continue
+            if isinstance(term_state, dict):
+                for key, value in term_state.items():
+                    if isinstance(value, torch.Tensor):
+                        value = value.detach().cpu().item()
+                    extras[f"Curriculum/{term_name}/{key}"] = value
+            else:
+                if isinstance(term_state, torch.Tensor):
+                    term_state = term_state.detach().cpu().item()
+                extras[f"Curriculum/{term_name}"] = term_state
         for term_cfg in self._class_term_cfgs:
-            term_cfg.func.reset(env_ids=env_ids)
+            term_cfg.func.reset(env_ids)
         return extras
 
-    def compute(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        if env_ids is None:
-            env_ids = slice(None)
+    def compute(self, env_ids: torch.Tensor | None = None) -> None:
+        """Compute global and, when declared, env_ids-scoped curriculum terms."""
         for name, term_cfg in zip(self._term_names, self._term_cfgs, strict=False):
-            state = term_cfg.func(self._env, env_ids, **term_cfg.params)
+            reset_scoped = getattr(term_cfg.func, "reset_scoped", None)
+            if callable(reset_scoped):
+                if env_ids is None:
+                    raise ValueError(f"CurriculumManager term '{name}' requires env_ids")
+                state = reset_scoped(self._env, env_ids, **term_cfg.params)
+            else:
+                state = term_cfg.func(
+                    self._env, env_ids if env_ids is not None else slice(None), **term_cfg.params
+                )
             self._validate_state(name, state)
             self._curriculum_state[name] = state
 
@@ -125,7 +141,7 @@ class CurriculumManager(ManagerBase):
             if isinstance(value, torch.Tensor):
                 finite = bool(torch.isfinite(value).all())
             elif isinstance(value, (int, float)):
-                finite = bool(np.isfinite(value))
+                finite = bool(math.isfinite(value))
             else:
                 continue
             if not finite:
@@ -160,8 +176,9 @@ class NullCurriculumManager:
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:
         return []
 
-    def reset(self, env_ids: torch.Tensor | None = None) -> dict[str, float]:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
+        del env_ids
         return {}
 
     def compute(self, env_ids: torch.Tensor | None = None) -> None:
-        pass
+        del env_ids

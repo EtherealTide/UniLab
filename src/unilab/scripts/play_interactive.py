@@ -35,7 +35,7 @@ import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import torch
@@ -47,18 +47,16 @@ _PACKAGE_CONF_ROOT = Path(__file__).resolve().parents[1] / "conf"
 
 from unilab.base.process_device import (
     apply_backend_env_device_override,
-    apply_manager_torch_device_override,
+    apply_sim_carrier_device_override,
     configure_backend_process_device,
-    resolve_backend_env_device_id,
 )
 from unilab.training import (
     algo_config_dict,
     ensure_registries,
+    get_log_root,
 )
-from unilab.utils.checkpoint import (
-    get_entrypoint_log_root,
-    resolve_task_checkpoint_path,
-)
+from unilab.training.tensor_runtime import select_sim_carrier_device
+from unilab.utils.checkpoint import resolve_checkpoint_path
 from unilab.visualization.debug_primitives import (
     append_debug_primitives_to_scene,
     segment_arrow,
@@ -74,11 +72,11 @@ from unilab.visualization.interactive_playback import (
     create_appo_playback_session,
     create_rsl_rl_playback_session,
     create_sac_playback_session,
+    default_device,
     infer_checkpoint_actor_input_dim,
     make_sim2sim_preflight,
     normalize_checkpoint_value,
     prepare_motion_overlay_selection,
-    select_torch_device,
 )
 from unilab.visualization.playback_state import (
     PhysicsStateApplier,
@@ -102,39 +100,14 @@ ensure_registries()
 from unisim.backend.base import DebugPrimitive
 from unisim.backend.mujoco.playback import resolve_render_play_model_files
 
-from unilab.base import registry
 from unilab.base.scene import SceneCfg
-from unilab.structured_configs import PPOConfig as _StructuredPPOConfig
 
-PPOConfig = _StructuredPPOConfig
 _PLAYBACK_ENV_UNAVAILABLE = "playback_env_unavailable"
 
 import mujoco
 import mujoco.viewer
 
-
-def _algo_config_dict(cfg: DictConfig | None) -> dict[str, Any]:
-    """Return the composed PPO algo config as a plain dict.
-
-    Args:
-        cfg: Hydra config for the current playback run, or ``None`` when the
-            script is driven through its legacy non-Hydra path.
-
-    Returns:
-        The resolved ``cfg.algo`` subtree as a mutable dict for rsl_rl.
-    """
-    if cfg is None:
-        return cast(dict[str, Any], PPOConfig().to_dict())
-    return algo_config_dict(cfg)
-
-
 SUPPORTED_INTERACTIVE_ALGOS = ("ppo", "appo", "sac", "flashsac")
-_CONFIG_ROOT_BY_ALGO = {
-    "ppo": "ppo",
-    "appo": "appo",
-    "sac": "sac",
-    "flashsac": "flashsac",
-}
 _OFFPOLICY_INTERACTIVE_ALGOS = {"sac", "flashsac"}
 
 
@@ -151,7 +124,7 @@ def _override_key(override: str) -> str:
     return key.lstrip("+~")
 
 
-def _parse_interactive_cli(argv: Sequence[str]) -> InteractiveCliArgs:
+def parse_interactive_cli(argv: Sequence[str]) -> InteractiveCliArgs:
     parser = argparse.ArgumentParser(
         prog="play_interactive.py",
         description="Open a MuJoCo viewer for an interactive policy playback config.",
@@ -195,30 +168,20 @@ def _interactive_overrides_from_cli(
     return normalized
 
 
-def _normalize_interactive_overrides(algo: str, overrides: list[str]) -> list[str]:
-    # All algos now compose uniformly from their own tree with
-    # `task=<task>/<sim>`; no per-algo override rewriting is needed.
-    return list(overrides)
-
-
-def _compose_interactive_config(algo: str, overrides: list[str]) -> DictConfig:
-    config_group = _CONFIG_ROOT_BY_ALGO[algo]
+def compose_interactive_config(algo: str, overrides: list[str]) -> DictConfig:
     GlobalHydra.instance().clear()
     with initialize_config_dir(
-        config_dir=str(_PACKAGE_CONF_ROOT / config_group),
+        config_dir=str(_PACKAGE_CONF_ROOT / algo),
         version_base="1.3",
     ):
-        return compose(
-            config_name="config",
-            overrides=_normalize_interactive_overrides(algo, overrides),
-        )
+        return compose(config_name="config", overrides=overrides)
 
 
-def _select_playback_device(cfg: DictConfig | None) -> str:
-    configured = OmegaConf.select(cfg, "training.device") if cfg is not None else None
+def _select_playback_device(cfg: DictConfig) -> str:
+    configured = OmegaConf.select(cfg, "training.device")
     if configured not in (None, ""):
         return str(configured)
-    return select_torch_device()
+    return default_device(torch)
 
 
 # ---------------------------------------------------------------------------
@@ -233,13 +196,11 @@ def resolve_checkpoint(
     algo_log_name: str = "rsl_rl_ppo",
     log_root: str | None = None,
 ) -> str | None:
-    checkpoint_path, checkpoint_dir = resolve_task_checkpoint_path(
-        Path.cwd(),
-        task_name=task,
-        load_run=load_run,
-        algo_log_name=algo_log_name,
+    task_log_root = get_log_root(Path.cwd(), algo_log_name=algo_log_name, log_root=log_root) / task
+    checkpoint_path, checkpoint_dir = resolve_checkpoint_path(
+        task_log_root,
+        load_run,
         checkpoint=checkpoint,
-        log_root=log_root,
     )
     if checkpoint_path is None:
         if checkpoint is not None and checkpoint_dir is not None:
@@ -797,7 +758,7 @@ def _print_keyboard_legend(args) -> None:
 
 def create_playback_session(
     args,
-    cfg: DictConfig | None,
+    cfg: DictConfig,
     *,
     algo: str,
     num_envs: int = 1,
@@ -805,9 +766,18 @@ def create_playback_session(
 ) -> Any | None:
     """Create the algo-specific playback session shared by the viewer scripts.
 
-    Returns the session tuple (playback session at index 0), or ``None`` when
-    the task does not support the requested backend.
+    Requires the composed Hydra config for the playback run; the legacy
+    non-Hydra path has been removed. Returns the session tuple (playback
+    session at index 0), or ``None`` when the task does not support the
+    requested backend.
     """
+    if not isinstance(cfg, DictConfig):
+        raise ValueError(
+            "create_playback_session requires a composed Hydra config (DictConfig); "
+            "the legacy non-Hydra playback path has been removed. Compose the owner "
+            "config with hydra.compose (see compose_interactive_config) and pass it "
+            f"to the playback entrypoint; got {type(cfg).__name__}."
+        )
     device = _select_playback_device(cfg)
     log(f"Device: {device}")
 
@@ -828,36 +798,11 @@ def create_playback_session(
     # No-op for backends without a device binding requirement.  A non-zero
     # Genesis request pins CUDA_VISIBLE_DEVICES; the bound in-process device
     # replaces the requested one for the policy and the env overrides below.
-    backend_device_id = resolve_backend_env_device_id(sim_backend, learner_device=device)
-    bound_device = configure_backend_process_device(
-        sim_backend,
-        device,
-        backend_device_id=backend_device_id,
-    )
+    bound_device = configure_backend_process_device(sim_backend, device)
     if bound_device is not None:
         device = bound_device
 
     def _create_env(num_envs: int):
-        if cfg is None:
-            # Legacy programmatic callers do not carry a composed Hydra
-            # config, but the selected playback device still has to reach
-            # GPU-backed backend adapters (notably Isaac and Genesis).
-            legacy_env_cfg_override = apply_backend_env_device_override(
-                None,
-                sim_backend,
-                learner_device=device,
-            )
-            legacy_env_cfg_override = apply_manager_torch_device_override(
-                legacy_env_cfg_override,
-                sim_backend,
-                learner_device=device,
-            )
-            return registry.make(
-                args.task,
-                num_envs=num_envs,
-                sim_backend=sim_backend,
-                env_cfg_override=legacy_env_cfg_override or None,
-            )
         from unilab.base.config_adapter import create_env
 
         env_cfg_override: dict[str, Any] | None
@@ -872,12 +817,10 @@ def create_playback_session(
             sim_backend,
             learner_device=device,
         )
-        env_cfg_override = apply_manager_torch_device_override(
+        env_cfg_override = apply_sim_carrier_device_override(
             env_cfg_override,
             sim_backend,
-            collector_tensor_device=str(
-                OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
-            ),
+            sim_carrier_device=select_sim_carrier_device(cfg),
             learner_device=device,
         )
         try:
@@ -904,24 +847,22 @@ def create_playback_session(
             session: Any = create_rsl_rl_playback_session(
                 playback_cfg=playback_cfg,
                 env_factory=_create_env,
-                algo_config=_algo_config_dict(cfg),
+                algo_config=algo_config_dict(cfg),
                 root_dir=Path.cwd(),
                 device=device,
                 checkpoint_resolver=resolve_checkpoint,
                 checkpoint_input_dim_reader=infer_checkpoint_actor_input_dim,
-                entrypoint_log_root=get_entrypoint_log_root,
+                entrypoint_log_root=get_log_root,
                 sim2sim_preflight=make_sim2sim_preflight(cfg, algo_name="ppo"),
                 log=log,
             )
         elif algo == "appo":
-            if cfg is None:
-                raise ValueError("APPO interactive playback requires a composed Hydra config.")
             from unilab.rl import RslRlVecEnvAdapter
 
             session = create_appo_playback_session(
                 playback_cfg=playback_cfg,
                 cfg=cfg,
-                rl_cfg=_algo_config_dict(cfg),
+                rl_cfg=algo_config_dict(cfg),
                 env_factory=_create_env,
                 root_dir=Path.cwd(),
                 device=device,
@@ -929,8 +870,6 @@ def create_playback_session(
                 log=log,
             )
         elif algo in _OFFPOLICY_INTERACTIVE_ALGOS:
-            if cfg is None:
-                raise ValueError(f"{algo} interactive playback requires a composed Hydra config.")
             session = create_sac_playback_session(
                 playback_cfg=playback_cfg,
                 cfg=cfg,
@@ -949,7 +888,7 @@ def create_playback_session(
     return session
 
 
-def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = None):
+def play_interactive(args, cfg: DictConfig, *, algo: str | None = None):
     algo = str(algo or getattr(args, "algo", "ppo"))
 
     session = create_playback_session(
@@ -1179,7 +1118,7 @@ def play_interactive(args, cfg: DictConfig | None = None, *, algo: str | None = 
     print("[play_interactive] Done.")
 
 
-def _build_play_args(cfg: DictConfig, *, algo: str = "ppo") -> PlayInteractiveArgs:
+def build_play_args(cfg: DictConfig, *, algo: str = "ppo") -> PlayInteractiveArgs:
     return PlayInteractiveArgs(
         task=str(cfg.training.task_name),
         load_run=str(cfg.algo.load_run),
@@ -1258,9 +1197,9 @@ def _exit_if_mjpython() -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parsed = _parse_interactive_cli(sys.argv[1:] if argv is None else argv)
-    cfg = _compose_interactive_config(parsed.algo, parsed.overrides)
-    play_interactive(_build_play_args(cfg, algo=parsed.algo), cfg)
+    parsed = parse_interactive_cli(sys.argv[1:] if argv is None else argv)
+    cfg = compose_interactive_config(parsed.algo, parsed.overrides)
+    play_interactive(build_play_args(cfg, algo=parsed.algo), cfg)
     _exit_if_mjpython()
 
 

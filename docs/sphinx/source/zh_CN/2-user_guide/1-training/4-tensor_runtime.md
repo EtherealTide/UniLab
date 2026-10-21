@@ -2,7 +2,7 @@
 
 SAC 与 FlashSAC 会在探测环境或构造 learner 之前解析所有面向进程
 启动的 tensor-runtime 设置。owner YAML 中的值会被收敛为一个有边界的
-`TensorRuntimeSettings` 对象并传给 off-policy runner。因此，非法值、超出
+`RuntimeSettings` 对象并传给 off-policy runner。因此，非法值、超出
 边界的数据以及显存预算不可能满足的组合，都会在 collector 或 learner 进程
 启动前失败。
 
@@ -26,6 +26,58 @@ SAC 与 FlashSAC 会在探测环境或构造 learner 之前解析所有面向进
 `collector_metrics_interval` 覆盖为 `100`；其他 tensor-runtime 默认值仍保持
 上表所示。
 
+## 设备语义与解析
+
+设备相关设置按消费层分离：
+
+| 配置键 | 生效层 | 合法值 |
+| --- | --- | --- |
+| `training.sim_carrier_device` | 训练装配层，路由到环境 | `auto`、`cpu`、不带序号的 `cuda` |
+| `env.sim_carrier_device` | MuJoCo HOST_BRIDGE 的 Manager 公共 tensor | `cpu`、`cuda`、`cuda:<index>` |
+| `training.inference_transport` | off-policy IPC placement | `host`、`cuda` 或 `null`（auto） |
+| `training.device` | learner 与 rank-local 进程选择 | 具体 Torch device 标签 |
+
+训练键是唯一面向用户的 carrier 请求。`auto` 跟随已解析的 learner 设备：
+CUDA 路由 rank-local 带序号设备，CPU 路由 CPU，torch.mps（Metal
+Performance Shaders）保留 owner/default CPU 放置。显式 `cpu`/`cuda` 优先于
+`auto`。`cuda` 是具体设备家族，绝不映射到 MPS；无 CUDA 主机上的 CUDA 请求
+会 fail closed。
+
+carrier 路由由能力声明驱动：MuJoCo、Motrix、Drake 与 SuperDex 声明了
+in-process packed `HOST_BRIDGE` transfer plan，支持 `cpu`/`cuda` carrier。
+其他后端忽略 `auto`/`cpu`，但 `cuda` 请求会 fail closed。请求超出所选后端
+声明的 `torch_devices` 时同样 fail closed。`run_config.json` 保留组合后的
+配置，并在 `run.resolved_devices` 记录每个“配置值 → 解析值”映射；启动日志
+打印同一映射。
+
+已移除键会带迁移错误 fail closed：用 `training.sim_carrier_device` 替代
+`training.collector_tensor_device`，用 `env.sim_carrier_device` 替代
+`manager_torch_device`，并用已解析的 learner 设备替代
+`env.tensor_runtime_device`。
+
+迁移说明：默认 `auto` 下的 CUDA learner 会通过 packed host bridge 呈现 CUDA
+tensor，并解析为 CUDA inference transport。此时每个 collector 进程会在
+learner GPU 上额外持有一个 CUDA context（拓扑见
+{doc}`7-tensor_runtime_production`）。如需保留 CPU carrier，请固定
+`training.sim_carrier_device=cpu`。
+
+对 off-policy inference，`host` 命名的是传输边界，而不是完整 learner 拓扑：
+观测与动作使用 CPU inference ring，learner 本身可以是 CPU 或 Apple MPS。该
+取值同时服务纯 CPU 测试与 macOS MPS 的 host 边界场景。`cuda` 遵循 Torch
+device type 语义，覆盖 NVIDIA CUDA 与 AMD ROCm。它不会放宽独立平台 gate：
+CUDA-only tensor backend 在 ROCm/HIP 上仍 fail closed，`training.cuda_process_sharing`
+仍只开放给 NVIDIA 专属的 CUDA MPS daemon 与 native H2D 实现。已移除的
+`cpu` 拼写会 fail closed；请使用 `host`。
+
+“worker”一词同样按层区分：
+
+| 术语 | 含义 |
+| --- | --- |
+| Collector worker | APPO 或 off-policy 中推进环境并发布 rollout 的进程 |
+| Backend worker | 后端自有外部模拟器进程（例如 Isaac） |
+| torchrun rank | PPO 多 GPU launcher 启动的分布式 learner rank |
+| Backend process device | 进程全局加速器绑定，不是 Manager carrier 键 |
+
 ## Replay ingress 权衡
 
 默认 `replay_ingress_slot_rows: null` 会解析为 `algo.num_envs`，并为每个
@@ -45,17 +97,22 @@ vector。shutdown 时可能保留一个尚未完整发布 vector 的有效行前
 
 ## 随机数生成
 
-通用 Manager seam 仍由 NumPy 拥有：`ManagerBasedRlEnv.rng` 是
-`np.random.Generator`，既有种子流不变。已验证的 device-resident owner 可以
-改为持有 `unilab.managers.TorchManagerRng`。该适配器包装一个显式 CPU/CUDA
-`torch.Generator`，校验种子和未支持的采样语义，并始终在该 generator 的设备
-上返回 tensor。它不是 NumPy bitstream 兼容层。
+Manager 环境持有 `unilab.managers.ManagerRng`，它是训练 runtime 的
+唯一 RNG。该适配器包装一个显式 CPU/CUDA `torch.Generator`，校验种子和
+未支持的采样语义，并始终在该 generator 的设备上返回 tensor。它不是 NumPy
+bitstream 兼容层。训练入口 seed 契约只 seed 全局 Python 与 Torch RNG，不再
+修改 legacy 全局 NumPy RNG。
 
 当前 scoped G1 Motion Tracking / FlashSAC owner 使用 CUDA
-`TorchManagerRng` 驱动观测噪声、adaptive/mixed motion sampling 与
+`ManagerRng` 驱动观测噪声、adaptive/mixed motion sampling 与
 selected-row reset。因此 A/B 评估比较同一整数种子下的可复现性和分布，而不是
 逐位比较 NumPy 轨迹。确定性运行必须显式设置 `env.seed`；`algo.seed` 只 seed
-训练进程的全局 Python/NumPy/Torch RNG，不会替换 owner 本地 generator 的种子。
+训练进程的全局 Python/Torch RNG，不会替换 owner 本地 generator 的种子。
+
+`ManagerRng.get_state()` 返回 generator 的 CPU state tensor，
+`set_state()` 负责恢复。可复现性的权威载荷就是精确的 generator state；
+恢复或审计 RNG 的 owner 记录该 state tensor 即可。runtime 不再维护逐
+transition 的版本号簿记。
 
 ## Runtime evidence
 

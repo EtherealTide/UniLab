@@ -28,12 +28,29 @@ class EpisodeLengthTracker:
         )
         self._average.add_((batch_average - self._average) * weight)
 
+    def update_masked(self, episode_lengths: torch.Tensor, mask: torch.Tensor) -> None:
+        """Update from a fixed-width episode-length carrier and bool mask.
+
+        This boundary avoids materializing reset
+        rows; false values are excluded with fixed-shape ``where`` operations.
+        """
+        if mask.shape != episode_lengths.shape:
+            raise ValueError("episode lengths and update mask must share one shape")
+        selected_mask = mask.to(device=self._average.device, dtype=torch.bool)
+        count = selected_mask.sum()
+        if bool(count == 0):
+            return
+        lengths = episode_lengths.to(dtype=torch.float64, device=self._average.device)
+        selected = torch.where(
+            selected_mask,
+            lengths,
+            torch.zeros_like(lengths),
+        )
+        batch_average = selected.sum() / count.clamp(min=1)
+        weight = (count.to(dtype=torch.float64) / float(self.window_size)).clamp(max=1.0)
+        self._average.add_((batch_average - self._average) * weight)
+
     @property
     def average(self) -> torch.Tensor:
         """Recursive average as a device-resident scalar tensor."""
         return self._average
-
-    @property
-    def average_length(self) -> float:
-        """Public scalar view; only this boundary synchronizes."""
-        return float(self._average.item())

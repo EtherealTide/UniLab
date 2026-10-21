@@ -179,7 +179,7 @@ def test_appo_runner_kwargs_default_load_run_does_not_resume(
         del args, kwargs
         raise AssertionError("training default load_run=-1 must not request resume")
 
-    monkeypatch.setattr(mod, "resolve_appo_checkpoint_path", fail_resolve)
+    monkeypatch.setattr(mod.checkpoint_utils, "resolve_checkpoint_path", fail_resolve)
 
     kwargs = mod.build_appo_runner_kwargs(
         cfg,
@@ -201,7 +201,7 @@ def test_appo_runner_kwargs_explicit_load_run_sets_resume_path(
     run_dir.mkdir(parents=True)
     (run_dir / "model_3.pt").write_bytes(b"")
     (run_dir / "model_9.pt").write_bytes(b"")
-    monkeypatch.setattr(mod, "_get_log_root", lambda _cfg: str(log_root))
+    monkeypatch.setattr(mod, "get_log_root", lambda *_args, **_kwargs: log_root)
 
     kwargs = mod.build_appo_runner_kwargs(
         cfg,
@@ -218,7 +218,7 @@ def test_appo_runner_kwargs_missing_explicit_load_run_fails(
 ) -> None:
     mod = _train_appo()
     cfg = _appo_cfg(["task=g1_walk_flat/mujoco", "algo.load_run=missing_run"])
-    monkeypatch.setattr(mod, "_get_log_root", lambda _cfg: str(tmp_path / "logs" / "appo"))
+    monkeypatch.setattr(mod, "get_log_root", lambda *_args, **_kwargs: tmp_path / "logs" / "appo")
 
     with pytest.raises(FileNotFoundError, match="missing_run"):
         mod.build_appo_runner_kwargs(
@@ -256,7 +256,7 @@ def test_offpolicy_hydra_default_sim_backend():
 
 
 @pytest.mark.parametrize("algo", ["sac", "flashsac", "ppo", "appo"])
-def test_hydra_default_collector_tensor_device_is_cpu(algo: str):
+def test_hydra_default_sim_carrier_device_is_auto(algo: str):
     if algo in {"sac", "flashsac"}:
         cfg = _offpolicy_cfg(algo=algo)
     elif algo == "ppo":
@@ -264,7 +264,14 @@ def test_hydra_default_collector_tensor_device_is_cpu(algo: str):
     else:
         cfg = _appo_cfg()
 
-    assert cfg.training.collector_tensor_device == "cpu"
+    assert cfg.training.sim_carrier_device == "auto"
+
+
+def test_removed_collector_tensor_device_hydra_override_fails_closed() -> None:
+    cfg = _offpolicy_cfg(["task=g1_walk_flat/mujoco", "+training.collector_tensor_device=cpu"])
+
+    with pytest.raises(ValueError, match="training.sim_carrier_device"):
+        _offpolicy().build_offpolicy_env_cfg_override("sac", cfg)
 
 
 def test_ppo_hydra_default_wandb_fields():
@@ -318,46 +325,67 @@ def test_offpolicy_g1_walk_flat_env_cfg_override_has_rewards_and_events():
     assert env_cfg_override["rewards"]["tracking_lin_vel"]["weight"] == pytest.approx(2.0)
 
 
-def test_host_bridge_env_overrides_keep_cpu_with_automatic_learner_cuda(monkeypatch):
+def test_host_bridge_env_overrides_auto_follow_automatic_learner_cuda(monkeypatch):
     offpolicy_cfg = _offpolicy_cfg(["task=g1_walk_flat/mujoco"])
     ppo_cfg = _ppo_cfg(["task=g1_walk_flat/mujoco", "training.device=cuda:2"])
     ppo_mod = _train_rsl_rl(monkeypatch)
     offpolicy_mod = _offpolicy()
 
-    monkeypatch.setattr(offpolicy_mod, "resolve_dp_rank_device", lambda rank: "cuda:2")
+    monkeypatch.setattr(offpolicy_mod, "rank_local_cuda_device", lambda rank: "cuda:2")
     monkeypatch.setattr("unilab.utils.device.get_default_device", lambda: "cuda:2", raising=False)
 
     offpolicy_override = offpolicy_mod.build_offpolicy_env_cfg_override("sac", offpolicy_cfg)
     ppo_override = ppo_mod.build_ppo_env_cfg_override(ppo_cfg)
 
     assert offpolicy_override is not None
-    assert offpolicy_override["manager_torch_device"] == "cpu"
-    assert ppo_override["manager_torch_device"] == "cpu"
+    assert offpolicy_override["sim_carrier_device"] == "cuda:2"
+    assert ppo_override["sim_carrier_device"] == "cuda:2"
 
 
-def test_host_bridge_env_overrides_route_explicit_collector_tensor_device(monkeypatch):
-    offpolicy_cfg = _offpolicy_cfg(
-        ["task=g1_walk_flat/mujoco", "training.collector_tensor_device=cuda"]
-    )
+def test_host_bridge_env_overrides_explicit_sim_carrier_cpu_still_wins(monkeypatch):
+    offpolicy_cfg = _offpolicy_cfg(["task=g1_walk_flat/mujoco", "training.sim_carrier_device=cpu"])
     ppo_cfg = _ppo_cfg(
         [
             "task=g1_walk_flat/mujoco",
             "training.device=cuda:2",
-            "training.collector_tensor_device=cuda",
+            "training.sim_carrier_device=cpu",
         ]
     )
     ppo_mod = _train_rsl_rl(monkeypatch)
     offpolicy_mod = _offpolicy()
 
-    monkeypatch.setattr(offpolicy_mod, "resolve_dp_rank_device", lambda rank: "cuda:2")
+    monkeypatch.setattr(offpolicy_mod, "rank_local_cuda_device", lambda rank: "cuda:2")
     monkeypatch.setattr("unilab.utils.device.get_default_device", lambda: "cuda:2", raising=False)
 
     offpolicy_override = offpolicy_mod.build_offpolicy_env_cfg_override("sac", offpolicy_cfg)
     ppo_override = ppo_mod.build_ppo_env_cfg_override(ppo_cfg)
 
     assert offpolicy_override is not None
-    assert offpolicy_override["manager_torch_device"] == "cuda"
-    assert ppo_override["manager_torch_device"] == "cuda"
+    assert offpolicy_override["sim_carrier_device"] == "cpu"
+    assert ppo_override["sim_carrier_device"] == "cpu"
+
+
+def test_host_bridge_env_overrides_route_explicit_sim_carrier_device(monkeypatch):
+    offpolicy_cfg = _offpolicy_cfg(["task=g1_walk_flat/mujoco", "training.sim_carrier_device=cuda"])
+    ppo_cfg = _ppo_cfg(
+        [
+            "task=g1_walk_flat/mujoco",
+            "training.device=cuda:2",
+            "training.sim_carrier_device=cuda",
+        ]
+    )
+    ppo_mod = _train_rsl_rl(monkeypatch)
+    offpolicy_mod = _offpolicy()
+
+    monkeypatch.setattr(offpolicy_mod, "rank_local_cuda_device", lambda rank: "cuda:2")
+    monkeypatch.setattr("unilab.utils.device.get_default_device", lambda: "cuda:2", raising=False)
+
+    offpolicy_override = offpolicy_mod.build_offpolicy_env_cfg_override("sac", offpolicy_cfg)
+    ppo_override = ppo_mod.build_ppo_env_cfg_override(ppo_cfg)
+
+    assert offpolicy_override is not None
+    assert offpolicy_override["sim_carrier_device"] == "cuda"
+    assert ppo_override["sim_carrier_device"] == "cuda"
 
 
 @pytest.mark.parametrize(
@@ -369,7 +397,7 @@ def test_host_bridge_env_overrides_route_explicit_collector_tensor_device(monkey
 def test_offpolicy_backend_env_follows_rank_local_cuda_visibility(
     monkeypatch: pytest.MonkeyPatch, backend: str, field: str
 ) -> None:
-    """Single-entry CVD owns the rank namespace without training.devices."""
+    """Single-entry CVD owns the rank namespace."""
 
     mod = _offpolicy()
     cfg = _offpolicy_cfg([f"task=g1_walk_flat/{backend}"])
@@ -381,14 +409,6 @@ def test_offpolicy_backend_env_follows_rank_local_cuda_visibility(
 
     assert override is not None
     assert override[field] == 0
-
-
-def test_removed_training_devices_fails_closed() -> None:
-    mod = _offpolicy()
-    cfg = _offpolicy_cfg(["+training.devices=[0]"])
-
-    with pytest.raises(ValueError, match="training.devices was removed"):
-        mod.main(cfg)
 
 
 @pytest.mark.parametrize(
@@ -541,6 +561,19 @@ def _build_rsl_lifecycle_case(
         num_envs = 1
         play_capabilities = types.SimpleNamespace(supports_physics_state_playback=False)
 
+        def get_backend_runtime_diagnostics(self) -> dict[str, Any]:
+            return {
+                "available": True,
+                "backend_type": "mjwarp",
+                "diagnostics": {
+                    "cuda_graph": {
+                        "requested": True,
+                        "enabled": True,
+                        "disable_reason": None,
+                    }
+                },
+            }
+
         def close(self) -> None:
             captured["env_close"] += 1
             if close_exception is not None:
@@ -594,7 +627,7 @@ def _build_rsl_lifecycle_case(
     monkeypatch.setattr(mod, "build_ppo_env_cfg_override", lambda _cfg: {})
     monkeypatch.setattr(mod, "get_default_device", lambda: "cpu")
     monkeypatch.setattr(mod, "resolve_rsl_rl_device", lambda **kwargs: "cpu")
-    monkeypatch.setattr(mod, "resolve_ppo_log_dir", lambda _cfg, world_size: str(tmp_path))
+    monkeypatch.setattr(mod, "resolve_run_log_dir", lambda _cfg, world_size: str(tmp_path))
     monkeypatch.setattr(mod, "ExperimentTracker", FakeTracker)
 
     def create_env(*args: Any, **kwargs: Any) -> FakeEnv:
@@ -618,7 +651,7 @@ def _build_rsl_lifecycle_case(
         del args, kwargs
         captured["playback"] += 1
 
-    monkeypatch.setattr(mod, "play_rsl_rl", playback)
+    monkeypatch.setattr(mod, "play_ppo", playback)
     return mod, cfg, captured, learn_exception
 
 
@@ -659,6 +692,11 @@ def test_train_rsl_rl_success_keeps_playback_and_single_cleanup(
     assert captured["playback"] == 1
     assert captured["summaries"][0]["status"] == "completed"
     assert captured["summaries"][0]["run_env_steps"] == 8
+    assert captured["summaries"][0]["backend_diagnostics"]["diagnostics"]["cuda_graph"] == {
+        "requested": True,
+        "enabled": True,
+        "disable_reason": None,
+    }
 
 
 def test_train_rsl_rl_runtime_error_propagates_after_single_cleanup(
@@ -830,13 +868,11 @@ def test_build_ppo_play_env_cfg_override_keeps_task_owned_manager_scene(
     assert env_cfg_override["scene"]["entities"]["robot"]["joint_names"]
 
 
-def test_run_motrix_rsl_play_loop_uses_render_spacing_and_offset_mode(
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_run_native_viewer_play_loop_uses_render_spacing_and_offset_mode():
     import torch
     from tensordict import TensorDict
 
-    mod = _train_rsl_rl(monkeypatch)
+    from unilab.visualization.playback import run_native_viewer_play_loop
 
     class FakePolicy:
         def __call__(self, obs):
@@ -848,7 +884,7 @@ def test_run_motrix_rsl_play_loop_uses_render_spacing_and_offset_mode(
             self.init_renderer_calls = []
             self.render_calls = 0
 
-        def init_renderer(self, spacing=1.0, offset_mode="grid"):
+        def bind_renderer(self, spacing=1.0, offset_mode="grid"):
             self.init_renderer_calls.append((spacing, offset_mode))
 
         def render(self):
@@ -862,12 +898,9 @@ def test_run_motrix_rsl_play_loop_uses_render_spacing_and_offset_mode(
         def init_play_renderer(self, render_spacing=None, render_offset_mode=None):
             offset_mode = "grid" if render_offset_mode is None else render_offset_mode
             if render_spacing is None:
-                self._renderer.init_renderer(offset_mode=offset_mode)
+                self._renderer.bind_renderer(offset_mode=offset_mode)
             else:
-                self._renderer.init_renderer(render_spacing, offset_mode=offset_mode)
-
-        def render_play_frame(self):
-            self._renderer.render()
+                self._renderer.bind_renderer(render_spacing, offset_mode=offset_mode)
 
         def run_playback(self, **kwargs):
             kwargs.pop("frame_state_getter", None)
@@ -905,13 +938,15 @@ def test_run_motrix_rsl_play_loop_uses_render_spacing_and_offset_mode(
             )
 
     wrapped_env = FakeWrapper()
+    policy = FakePolicy()
 
-    mod.run_motrix_rsl_play_loop(
-        wrapped_env=wrapped_env,
-        policy=FakePolicy(),
+    run_native_viewer_play_loop(
+        wrapped_env.env,
         render_spacing=2.5,
         render_offset_mode="zero",
         num_steps=3,
+        initialize=lambda: wrapped_env.reset()[0],
+        step=lambda obs: wrapped_env.step(policy(obs))[0],
     )
 
     assert wrapped_env.reset_calls == 1
@@ -921,14 +956,14 @@ def test_run_motrix_rsl_play_loop_uses_render_spacing_and_offset_mode(
 
 
 def test_g1_motion_tracking_appo_reward_extraction_prefers_backend_specific_reward():
-    from unilab.base.config_adapter import BackendAdapter
+    from unilab.base.config_adapter import EnvConfigAdapter
 
     cfg = _appo_cfg(["task=g1_motion_tracking/mujoco"])
 
     assert cfg.reward.motion_body_pos.weight == pytest.approx(1.0)
     cfg.reward.motion_body_pos.weight = 1.5
 
-    env_cfg_override = BackendAdapter(cfg, root_dir=_SRC_DIR.parent).build_task_env_cfg_override()
+    env_cfg_override = EnvConfigAdapter(cfg, root_dir=_SRC_DIR.parent).build_task_env_cfg_override()
 
     assert env_cfg_override["rewards"]["motion_body_pos"]["weight"] == pytest.approx(1.5)
 
@@ -970,41 +1005,42 @@ def test_build_appo_runner_kwargs_forwards_sim_backend():
     assert runner_kwargs["env_cfg_overrides"]["rewards"] == {}
 
 
-def test_appo_host_bridge_carriers_require_explicit_collector_tensor_cuda(monkeypatch):
+def test_appo_host_bridge_carriers_follow_sim_carrier_device_auto(monkeypatch):
     mod = _train_appo()
     cfg = _appo_cfg(["task=g1_motion_tracking/mujoco"])
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
 
     auto = mod.build_appo_runner_kwargs(cfg, env_cfg_override={}, collector_device=None)
-    assert auto["env_cfg_overrides"]["manager_torch_device"] == "cpu"
+    assert "sim_carrier_device" not in auto["env_cfg_overrides"]
 
+    cpu_learner_cfg = _appo_cfg(["task=g1_motion_tracking/mujoco", "training.device=cpu"])
     collector_cpu = mod.build_appo_runner_kwargs(
-        cfg,
+        cpu_learner_cfg,
         env_cfg_override={},
         collector_device="cpu",
     )
-    assert collector_cpu["env_cfg_overrides"]["manager_torch_device"] == "cpu"
+    assert collector_cpu["env_cfg_overrides"]["sim_carrier_device"] == "cpu"
 
     collector_cuda = mod.build_appo_runner_kwargs(
         cfg,
         env_cfg_override={},
         collector_device="cuda:1",
     )
-    assert collector_cuda["env_cfg_overrides"]["manager_torch_device"] == "cpu"
+    assert collector_cuda["env_cfg_overrides"]["sim_carrier_device"] == "cuda:1"
 
     explicit_cuda_cfg = _appo_cfg(
-        ["task=g1_motion_tracking/mujoco", "training.collector_tensor_device=cuda"]
+        ["task=g1_motion_tracking/mujoco", "training.sim_carrier_device=cuda"]
     )
     explicit_cuda = mod.build_appo_runner_kwargs(
         explicit_cuda_cfg,
         env_cfg_override={},
         collector_device="cuda:1",
     )
-    assert explicit_cuda["env_cfg_overrides"]["manager_torch_device"] == "cuda"
+    assert explicit_cuda["env_cfg_overrides"]["sim_carrier_device"] == "cuda"
 
 
-def test_run_motrix_play_loop_runs_without_physics_state():
-    mod = _train_appo()
+def test_run_native_viewer_play_loop_runs_without_physics_state():
+    from unilab.visualization.playback import run_native_viewer_play_loop
 
     class FakeActor:
         def __call__(self, td):
@@ -1017,7 +1053,7 @@ def test_run_motrix_play_loop_runs_without_physics_state():
             self.init_renderer_calls = 0
             self.render_calls = 0
 
-        def init_renderer(self, spacing=1.0, offset_mode="grid", **kwargs):
+        def bind_renderer(self, spacing=1.0, offset_mode="grid", **kwargs):
             del spacing, offset_mode, kwargs
             self.init_renderer_calls += 1
 
@@ -1044,8 +1080,9 @@ def test_run_motrix_play_loop_runs_without_physics_state():
         def reset(self, env_indices):
             self.reset_calls += 1
             assert env_indices.shape == (2,)
-            assert env_indices.dtype == torch.int64
+            assert env_indices.dtype == torch.bool
             assert env_indices.device == self.device
+            assert bool(env_indices.all())
             return {"obs": torch.ones((2, 5), dtype=torch.float32, device=self.device)}, {}
 
         def step(self, actions):
@@ -1057,10 +1094,7 @@ def test_run_motrix_play_loop_runs_without_physics_state():
 
         def init_play_renderer(self, render_spacing=None, render_offset_mode=None):
             del render_spacing, render_offset_mode
-            self._renderer.init_renderer()
-
-        def render_play_frame(self):
-            self._renderer.render()
+            self._renderer.bind_renderer()
 
         def run_playback(self, **kwargs):
             kwargs.pop("frame_state_getter", None)
@@ -1081,14 +1115,29 @@ def test_run_motrix_play_loop_runs_without_physics_state():
             )
 
     env = FakeEnv()
+    actor = FakeActor()
 
-    mod.run_motrix_play_loop(
-        env=env,
-        actor=FakeActor(),
-        device="cpu",
-        play_env_num=2,
-        num_steps=3,
-    )
+    def _reset_obs() -> torch.Tensor:
+        obs = env.reset(torch.ones(2, dtype=torch.bool, device=env.device))[0]["obs"]
+        assert isinstance(obs, torch.Tensor)
+        return obs
+
+    def _step(obs: torch.Tensor) -> torch.Tensor:
+        from tensordict import TensorDict
+
+        assert isinstance(obs, torch.Tensor)
+        action = actor(
+            TensorDict(
+                {"policy": obs.to(device="cpu", dtype=torch.float32)},
+                batch_size=2,
+            )
+        ).to(device=env.device, dtype=torch.float32)
+        return env.step(action.contiguous()).obs["obs"]
+
+    if env.state is None:
+        env.init_state()
+
+    run_native_viewer_play_loop(env, num_steps=3, initialize=_reset_obs, step=_step)
 
     assert env.init_state_calls == 1
     assert env.reset_calls == 1
@@ -1097,21 +1146,21 @@ def test_run_motrix_play_loop_runs_without_physics_state():
     assert env._renderer.render_calls == 3
 
 
-def test_resolve_appo_checkpoint_path_prefers_latest_model_in_explicit_dir(tmp_path):
+def test_resolve_checkpoint_path_prefers_latest_model_in_explicit_dir(tmp_path):
     mod = _train_appo()
     run_dir = tmp_path / "logs" / "appo" / "MyTask" / "run1"
     run_dir.mkdir(parents=True)
     (run_dir / "model_1.pt").write_bytes(b"")
     (run_dir / "model_7.pt").write_bytes(b"")
 
-    checkpoint_path, checkpoint_dir = mod.resolve_appo_checkpoint_path(
-        base_log_dir=tmp_path / "logs" / "appo" / "MyTask",
-        load_run=str(run_dir),
+    checkpoint_path, checkpoint_dir = mod.checkpoint_utils.resolve_checkpoint_path(
+        tmp_path / "logs" / "appo" / "MyTask",
+        str(run_dir),
     )
 
     assert checkpoint_path is not None
-    assert checkpoint_path.endswith("model_7.pt")
-    assert checkpoint_dir == str(run_dir)
+    assert checkpoint_path.name == "model_7.pt"
+    assert checkpoint_dir == run_dir
 
 
 # ---------------------------------------------------------------------------
@@ -1284,11 +1333,11 @@ def test_offpolicy_build_failure_summary_preserves_failed_status():
 
 
 def test_offpolicy_build_run_dir_name_uses_timestamp_and_backend():
-    mod = _offpolicy()
+    from unilab.training import build_run_dir_name
 
-    assert mod.build_run_dir_name("2026-06-22_22-31-24", "mujoco") == ("2026-06-22_22-31-24_mujoco")
+    assert build_run_dir_name("2026-06-22_22-31-24", "mujoco") == ("2026-06-22_22-31-24_mujoco")
     assert (
-        mod.build_run_dir_name("2026-06-22_22-31-24", "mujoco", world_size=2)
+        build_run_dir_name("2026-06-22_22-31-24", "mujoco", world_size=2)
         == "2026-06-22_22-31-24_mujoco_gpux2"
     )
 
@@ -1364,13 +1413,15 @@ def test_offpolicy_main_failure_summary_and_skips_playback(
 
 
 # ---------------------------------------------------------------------------
-# train_offpolicy.py — resolve_checkpoint_path()
+# train_offpolicy.py — checkpoint resolution (unilab.utils.checkpoint)
 # ---------------------------------------------------------------------------
 
 
 def test_resolve_checkpoint_no_base_dir(tmp_path):
     """load_run='-1' with no log directory → (None, None)."""
-    path, path_dir = _offpolicy().resolve_checkpoint_path(tmp_path, "sac", "MyTask", "-1")
+    path, path_dir = _offpolicy().resolve_checkpoint_path(
+        tmp_path / "logs" / "sac" / "MyTask", "-1"
+    )
     assert path is None
     assert path_dir is None
 
@@ -1380,10 +1431,10 @@ def test_resolve_checkpoint_explicit_existing_file(tmp_path):
     model_file = tmp_path / "model_100.pt"
     model_file.write_bytes(b"")
     path, path_dir = _offpolicy().resolve_checkpoint_path(
-        tmp_path, "sac", "MyTask", str(model_file)
+        tmp_path / "logs" / "sac" / "MyTask", str(model_file)
     )
-    assert path == str(model_file)
-    assert path_dir == str(tmp_path)
+    assert path == model_file
+    assert path_dir == tmp_path
 
 
 def test_resolve_checkpoint_latest_picks_highest_iter(tmp_path):
@@ -1394,9 +1445,11 @@ def test_resolve_checkpoint_latest_picks_highest_iter(tmp_path):
     (task_dir / "model_50.pt").write_bytes(b"")
     (task_dir / "model_100.pt").write_bytes(b"")
 
-    path, path_dir = _offpolicy().resolve_checkpoint_path(tmp_path, "sac", "MyTask", "-1")
+    path, path_dir = _offpolicy().resolve_checkpoint_path(
+        tmp_path / "logs" / "sac" / "MyTask", "-1"
+    )
     assert path is not None
-    assert "model_100.pt" in path
+    assert "model_100.pt" in str(path)
 
 
 def test_resolve_checkpoint_accepts_integer_latest_run(tmp_path):
@@ -1406,11 +1459,11 @@ def test_resolve_checkpoint_accepts_integer_latest_run(tmp_path):
     (task_dir / "model_10.pt").write_bytes(b"")
     (task_dir / "model_50.pt").write_bytes(b"")
 
-    path, path_dir = _offpolicy().resolve_checkpoint_path(tmp_path, "sac", "MyTask", -1)
+    path, path_dir = _offpolicy().resolve_checkpoint_path(tmp_path / "logs" / "sac" / "MyTask", -1)
 
     assert path is not None
-    assert "model_50.pt" in path
-    assert path_dir == str(task_dir)
+    assert "model_50.pt" in str(path)
+    assert path_dir == task_dir
 
 
 def test_resolve_checkpoint_explicit_run_name(tmp_path):
@@ -1419,27 +1472,31 @@ def test_resolve_checkpoint_explicit_run_name(tmp_path):
     task_dir.mkdir(parents=True)
     (task_dir / "model_5.pt").write_bytes(b"")
 
-    path, path_dir = _offpolicy().resolve_checkpoint_path(tmp_path, "sac", "MyTask", "myrun")
+    path, path_dir = _offpolicy().resolve_checkpoint_path(
+        tmp_path / "logs" / "sac" / "MyTask", "myrun"
+    )
     assert path is not None
-    assert "model_5.pt" in path
-    assert path_dir == str(task_dir)
+    assert "model_5.pt" in str(path)
+    assert path_dir == task_dir
 
 
 def test_resolve_checkpoint_nonexistent_explicit_path(tmp_path):
     """load_run points to a path that doesn't exist → (None, None)."""
     path, path_dir = _offpolicy().resolve_checkpoint_path(
-        tmp_path, "sac", "MyTask", "/nonexistent/model.pt"
+        tmp_path / "logs" / "sac" / "MyTask", "/nonexistent/model.pt"
     )
     assert path is None
     assert path_dir is None
 
 
 def test_resolve_checkpoint_empty_run_dir(tmp_path):
-    """Run directory exists but has no model_*.pt → (None, None)."""
+    """Run directory exists but has no model_*.pt → no checkpoint path."""
     task_dir = tmp_path / "logs" / "sac" / "MyTask" / "run1"
     task_dir.mkdir(parents=True)
 
-    path, path_dir = _offpolicy().resolve_checkpoint_path(tmp_path, "sac", "MyTask", "-1")
+    path, path_dir = _offpolicy().resolve_checkpoint_path(
+        tmp_path / "logs" / "sac" / "MyTask", "-1"
+    )
     assert path is None
 
 
@@ -1462,10 +1519,10 @@ def test_offpolicy_extract_reset_obs_rejects_three_tuple():
         extract_reset_obs(("ignored", obs, {"info": 1}))
 
 
-def test_offpolicy_resolve_play_obs_dim_ignores_critic():
-    from unilab.visualization.interactive_playback import resolve_play_obs_dim
+def test_offpolicy_resolve_play_obs_dims_ignore_critic():
+    from unilab.visualization.interactive_playback import resolve_play_obs_dims
 
-    obs_dim = resolve_play_obs_dim({"obs": 98, "critic": 101})
+    obs_dim = resolve_play_obs_dims({"obs": 98, "critic": 101})[0]
 
     assert obs_dim == 98
 
@@ -1510,9 +1567,8 @@ def test_offpolicy_play_actor_spec_keeps_standard_sac_and_flashsac():
 def test_offpolicy_build_play_actor_preserves_flashsac_model_kwargs(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    import uni_rl.algos.common.actor_factory as actor_factory
-    import uni_rl.algos.common.normalization as normalization
-
+    import unilab.rl.algos.common.actor_factory as actor_factory
+    import unilab.rl.algos.common.normalization as normalization
     from unilab.visualization.interactive_playback import build_play_actor
 
     captured: dict[str, Any] = {}
@@ -1628,8 +1684,8 @@ def test_play_offpolicy_can_skip_onnx_export_and_still_record_video(
                 {"obs": {"obs": torch.zeros((cfg.training.play_env_num, 4), dtype=torch.float32)}},
             )()
 
-        def reset(self, env_ids):
-            batch = len(env_ids)
+        def reset(self):
+            batch = int(cfg.training.play_env_num)
             return ({"obs": torch.zeros((batch, 4), dtype=torch.float32)}, {})
 
         def step(self, actions):
@@ -1667,7 +1723,7 @@ def test_play_offpolicy_can_skip_onnx_export_and_still_record_video(
 
     monkeypatch.setattr(
         checkpoint_utils,
-        "resolve_offpolicy_checkpoint_path",
+        "resolve_checkpoint_path",
         lambda *args, **kwargs: (str(checkpoint), str(run_dir)),
     )
     monkeypatch.setattr(
@@ -1678,7 +1734,7 @@ def test_play_offpolicy_can_skip_onnx_export_and_still_record_video(
         ),
     )
 
-    import uni_rl.algos.common.actor_factory as actor_factory
+    import unilab.rl.algos.common.actor_factory as actor_factory
 
     monkeypatch.setattr(actor_factory, "build_actor", lambda *args, **kwargs: FakeActor())
 
@@ -1706,8 +1762,7 @@ def _patch_offpolicy_play_session(
     fake_actor,
     fake_env_cls,
 ) -> None:
-    import uni_rl.algos.common.actor_factory as actor_factory
-
+    import unilab.rl.algos.common.actor_factory as actor_factory
     import unilab.utils.checkpoint as checkpoint_utils
 
     monkeypatch.setattr(mod, "build_offpolicy_env_cfg_override", lambda algo_name, cfg: {})
@@ -1720,7 +1775,7 @@ def _patch_offpolicy_play_session(
     )
     monkeypatch.setattr(
         checkpoint_utils,
-        "resolve_offpolicy_checkpoint_path",
+        "resolve_checkpoint_path",
         lambda *args, **kwargs: (str(checkpoint), str(run_dir)),
     )
     monkeypatch.setattr(actor_factory, "build_actor", lambda *args, **kwargs: fake_actor)
@@ -1759,8 +1814,8 @@ def _make_play_fake_env(captured: dict[str, Any], play_env_num: int):
                 {"obs": {"obs": torch.zeros((play_env_num, 4), dtype=torch.float32)}},
             )()
 
-        def reset(self, env_ids):
-            batch = len(env_ids)
+        def reset(self):
+            batch = int(play_env_num)
             return ({"obs": torch.zeros((batch, 4), dtype=torch.float32)}, {})
 
         def step(self, actions):
@@ -1920,26 +1975,26 @@ def test_play_resolve_checkpoint_empty_dir(tmp_path):
 def test_play_resolve_checkpoint_delegates_to_shared_helper(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
+    monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
     mod = _load_script("play_interactive")
     model_path = tmp_path / "resolved" / "model_12.pt"
     model_path.parent.mkdir(parents=True)
     model_path.write_bytes(b"")
     captured: dict[str, object] = {}
 
-    def _fake_resolver(root_dir, **kwargs):
-        captured["root_dir"] = root_dir
+    def _fake_resolver(task_log_root, load_run, **kwargs):
+        captured["task_log_root"] = task_log_root
+        captured["load_run"] = load_run
         captured.update(kwargs)
         return model_path, model_path.parent
 
-    monkeypatch.setattr(mod, "resolve_task_checkpoint_path", _fake_resolver)
+    monkeypatch.setattr(mod, "resolve_checkpoint_path", _fake_resolver)
 
     result = mod.resolve_checkpoint("MyTask", "-1", checkpoint="12", algo_log_name="custom_ppo")
 
     assert result == str(model_path)
-    assert captured["root_dir"] == Path.cwd()
-    assert captured["task_name"] == "MyTask"
+    assert captured["task_log_root"] == Path.cwd() / "logs" / "custom_ppo" / "MyTask"
     assert captured["load_run"] == "-1"
-    assert captured["algo_log_name"] == "custom_ppo"
     assert captured["checkpoint"] == "12"
 
 
@@ -1956,12 +2011,13 @@ def _play_interactive():
 def test_play_wrapper_imports_shared_implementation():
     """PPO and APPO playback both use the UniLab-owned VecEnv adapter."""
     mod = _play_interactive()
-    # uni_rl's RslRlVecEnvWrapper is no longer referenced: the PPO playback
-    # session defaults to the UniLab-owned adapter and the APPO branch passes
-    # it explicitly.
+    # The PPO playback session uses the UniLab-owned adapter owned by
+    # unilab.rl.adapters.rsl_rl (re-exported at the unilab.rl package level);
+    # the deleted uni_rl wrapper must not be referenced.
     assert not hasattr(mod, "RslRlVecEnvWrapper")
     source = Path(mod.__file__).read_text(encoding="utf-8")
-    assert "uni_rl.algos.rsl_rl" not in source
+    assert "uni_rl" not in source
+    assert "from unilab.rl import RslRlVecEnvAdapter" in source
     assert "wrapper_cls=RslRlVecEnvAdapter" in source
 
 
@@ -1986,7 +2042,7 @@ def test_play_wrapper_uses_current_reset_contract():
         def init_state(self):
             pass
 
-        def reset(self, env_indices):
+        def reset(self):
             # Returns current contract: (obs, info)
             return {"obs": torch.ones((2, 5))}, {}
 
@@ -2021,7 +2077,7 @@ def test_play_wrapper_policy_obs_mode_actor():
         def init_state(self):
             pass
 
-        def reset(self, env_indices):
+        def reset(self):
             return {
                 "obs": torch.ones((1, 3)),
                 "critic": torch.zeros((1, 5)),
@@ -2069,7 +2125,7 @@ def test_play_wrapper_flat_policy_excludes_critic_only_group():
         def init_state(self):
             pass
 
-        def reset(self, env_indices):
+        def reset(self):
             return cast(dict[str, torch.Tensor], getattr(self.state, "obs")), {}
 
     wrapper = RslRlVecEnvAdapter(FakeEnv(), device="cpu", policy_obs_mode="flat")
@@ -2099,7 +2155,7 @@ def test_play_wrapper_step_exports_time_outs_without_bootstrap_obs():
         def init_state(self):
             pass
 
-        def reset(self, env_indices):
+        def reset(self):
             return {"obs": torch.zeros((1, 3))}, {}
 
         def step(self, actions):
@@ -2144,7 +2200,7 @@ def test_play_wrapper_round_trips_torchenv_training_state():
         def init_state(self):
             pass
 
-        def reset(self, env_indices):
+        def reset(self):
             return {"obs": torch.zeros((1, 3))}, {}
 
         def export_training_state(self):
@@ -2166,7 +2222,7 @@ def test_play_wrapper_round_trips_torchenv_training_state():
         def init_state(self):
             pass
 
-        def reset(self, env_indices):
+        def reset(self):
             return {"obs": torch.zeros((1, 3))}, {}
 
     provider = _ProviderEnv()
@@ -2254,7 +2310,7 @@ def test_offpolicy_rejects_algo_argument_mismatch():
 
 
 def test_train_rsl_rl_get_log_root_uses_algo_log_name(monkeypatch: pytest.MonkeyPatch):
-    """Verify _get_log_root uses algo.algo_log_name (issue #168)."""
+    """Verify get_log_root uses algo.algo_log_name (issue #168)."""
     monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
     mod = _train_rsl_rl(monkeypatch)
     cfg = _ppo_cfg()
@@ -2262,8 +2318,8 @@ def test_train_rsl_rl_get_log_root_uses_algo_log_name(monkeypatch: pytest.Monkey
     # Override algo_log_name to test
     cfg.algo.algo_log_name = "test_rsl_rl_ppo"
 
-    log_root = mod._get_log_root(cfg)
-    assert "logs/test_rsl_rl_ppo" in log_root.replace("\\", "/")
+    log_root = mod.get_log_root(Path.cwd(), cfg)
+    assert "logs/test_rsl_rl_ppo" in str(log_root).replace("\\", "/")
 
 
 def test_train_rsl_rl_play_missing_checkpoint_skips_env_creation_and_prints_context(
@@ -2279,11 +2335,11 @@ def test_train_rsl_rl_play_missing_checkpoint_skips_env_creation_and_prints_cont
         mod,
         "create_env",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("play_rsl_rl should not create an env before checkpoint resolution")
+            AssertionError("play_ppo should not create an env before checkpoint resolution")
         ),
     )
 
-    result = mod.play_rsl_rl(cfg, device="cpu")
+    result = mod.play_ppo(cfg, device="cpu")
 
     captured = capsys.readouterr().out
     expected_task_log_root = tmp_path / "logs" / "custom_ppo" / cfg.training.task_name
@@ -2315,11 +2371,11 @@ def test_train_rsl_rl_play_reports_missing_requested_checkpoint_in_resolved_run(
         mod,
         "create_env",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("play_rsl_rl should not create an env before checkpoint resolution")
+            AssertionError("play_ppo should not create an env before checkpoint resolution")
         ),
     )
 
-    result = mod.play_rsl_rl(cfg, device="cpu")
+    result = mod.play_ppo(cfg, device="cpu")
 
     captured = capsys.readouterr().out
 
@@ -2403,7 +2459,9 @@ def test_train_rsl_rl_auto_play_is_interactive(monkeypatch: pytest.MonkeyPatch, 
     captured: dict[str, Any] = {}
 
     monkeypatch.setattr(mod, "EXPORT_POLICY", False, raising=False)
-    monkeypatch.setattr(mod, "parse_checkpoint_path", lambda *args, **kwargs: (checkpoint, run_dir))
+    monkeypatch.setattr(
+        mod, "resolve_configured_checkpoint_path", lambda *args, **kwargs: (checkpoint, run_dir)
+    )
     monkeypatch.setattr(mod, "build_ppo_play_env_cfg_override", lambda cfg: {})
     monkeypatch.setattr(mod, "create_env", lambda *args, **kwargs: FakeEnv())
     create_session = mod.create_rsl_rl_playback_session
@@ -2415,7 +2473,7 @@ def test_train_rsl_rl_auto_play_is_interactive(monkeypatch: pytest.MonkeyPatch, 
         ),
     )
 
-    result = mod.play_rsl_rl(cfg, device="cpu")
+    result = mod.play_ppo(cfg, device="cpu")
 
     assert result is None
     assert captured["headless"] is False
@@ -2502,7 +2560,9 @@ def test_train_rsl_rl_record_play_uses_backend_plan(
     captured: dict[str, Any] = {}
 
     monkeypatch.setattr(mod, "EXPORT_POLICY", False, raising=False)
-    monkeypatch.setattr(mod, "parse_checkpoint_path", lambda *args, **kwargs: (checkpoint, run_dir))
+    monkeypatch.setattr(
+        mod, "resolve_configured_checkpoint_path", lambda *args, **kwargs: (checkpoint, run_dir)
+    )
     monkeypatch.setattr(mod, "build_ppo_play_env_cfg_override", lambda cfg: {})
     monkeypatch.setattr(mod, "create_env", lambda *args, **kwargs: FakeEnv())
     create_session = mod.create_rsl_rl_playback_session
@@ -2514,7 +2574,7 @@ def test_train_rsl_rl_record_play_uses_backend_plan(
         ),
     )
 
-    result = mod.play_rsl_rl(cfg, device="cpu")
+    result = mod.play_ppo(cfg, device="cpu")
 
     assert result == str(run_dir / "play_video.mp4")
     assert captured["headless"] is True
@@ -2524,15 +2584,15 @@ def test_train_rsl_rl_record_play_uses_backend_plan(
 
 
 def test_train_appo_get_log_root_uses_algo_log_name(monkeypatch: pytest.MonkeyPatch):
-    """Verify APPO _get_log_root uses algo.algo_log_name (issue #168)."""
+    """Verify APPO get_log_root uses algo.algo_log_name (issue #168)."""
     monkeypatch.delenv("UNILAB_TEST_LOG_ROOT", raising=False)
     mod = _train_appo()
     cfg = _appo_cfg()
 
     cfg.algo.algo_log_name = "test_appo"
 
-    log_root = mod._get_log_root(cfg)
-    assert "logs/test_appo" in log_root.replace("\\", "/")
+    log_root = mod.get_log_root(Path.cwd(), cfg)
+    assert "logs/test_appo" in str(log_root).replace("\\", "/")
 
 
 def test_play_resolve_checkpoint_uses_algo_log_name(
@@ -2571,7 +2631,7 @@ def test_play_interactive_respects_training_device_override():
 def test_play_interactive_parses_explicit_cli():
     mod = _play_interactive()
 
-    parsed = mod._parse_interactive_cli(
+    parsed = mod.parse_interactive_cli(
         ["--algo", "ppo", "--task", "go2_joystick_flat", "--sim", "mujoco"]
     )
 
@@ -2585,7 +2645,7 @@ def test_play_interactive_parses_explicit_cli():
 def test_play_interactive_parses_feature_algo_flags(algo: str):
     mod = _play_interactive()
 
-    parsed = mod._parse_interactive_cli(
+    parsed = mod.parse_interactive_cli(
         [f"--algo={algo}", "--task", "g1_walk_flat", "--sim", "mujoco"]
     )
 
@@ -2596,14 +2656,14 @@ def test_play_interactive_parses_feature_algo_flags(algo: str):
 def test_play_interactive_cli_respects_owner_action_mode_and_user_override():
     mod = _play_interactive()
 
-    default_parsed = mod._parse_interactive_cli(
+    default_parsed = mod.parse_interactive_cli(
         ["--algo", "ppo", "--task", "go2_joystick_flat", "--sim", "mujoco"]
     )
-    default_cfg = mod._compose_interactive_config(default_parsed.algo, default_parsed.overrides)
+    default_cfg = mod.compose_interactive_config(default_parsed.algo, default_parsed.overrides)
 
     assert default_cfg.interactive.action_mode == "zero"
 
-    parsed = mod._parse_interactive_cli(
+    parsed = mod.parse_interactive_cli(
         [
             "--algo",
             "ppo",
@@ -2614,7 +2674,7 @@ def test_play_interactive_cli_respects_owner_action_mode_and_user_override():
             "interactive.action_mode=random",
         ]
     )
-    cfg = mod._compose_interactive_config(parsed.algo, parsed.overrides)
+    cfg = mod.compose_interactive_config(parsed.algo, parsed.overrides)
 
     assert parsed.overrides == [
         "task=go2_joystick_flat/mujoco",
@@ -2627,7 +2687,7 @@ def test_play_interactive_rejects_unknown_algo_flag():
     mod = _play_interactive()
 
     with pytest.raises(SystemExit):
-        mod._parse_interactive_cli(
+        mod.parse_interactive_cli(
             ["--algo=unknown", "--task", "go2_joystick_flat", "--sim", "mujoco"]
         )
 
@@ -2635,27 +2695,13 @@ def test_play_interactive_rejects_unknown_algo_flag():
 def test_play_interactive_dynamic_compose_supports_algo_roots():
     mod = _play_interactive()
 
-    ppo_cfg = mod._compose_interactive_config("ppo", ["task=go2_joystick_flat/mujoco"])
-    appo_cfg = mod._compose_interactive_config("appo", ["task=g1_walk_flat/mujoco"])
-    sac_cfg = mod._compose_interactive_config("sac", ["task=g1_walk_flat/mujoco"])
+    ppo_cfg = mod.compose_interactive_config("ppo", ["task=go2_joystick_flat/mujoco"])
+    appo_cfg = mod.compose_interactive_config("appo", ["task=g1_walk_flat/mujoco"])
+    sac_cfg = mod.compose_interactive_config("sac", ["task=g1_walk_flat/mujoco"])
 
     assert ppo_cfg.algo.algo == "ppo"
     assert appo_cfg.algo.algo == "appo"
     assert sac_cfg.algo.algo == "sac"
-
-
-def test_play_interactive_sac_overrides_pass_through():
-    mod = _play_interactive()
-
-    overrides = mod._normalize_interactive_overrides(
-        "sac",
-        ["task=g1_walk_flat/mujoco", "algo.load_run=my_run"],
-    )
-
-    assert overrides == [
-        "task=g1_walk_flat/mujoco",
-        "algo.load_run=my_run",
-    ]
 
 
 def test_play_interactive_keyboard_commands_write_device_tensors():
@@ -2798,12 +2844,23 @@ def test_play_interactive_runner_log_dir_uses_algo_log_name(monkeypatch: pytest.
         get_physics_state_snapshot=lambda: np.zeros((1, 8), dtype=np.float32),
     )
 
-    monkeypatch.setattr(mod.registry, "make", lambda *args, **kwargs: fake_env)
-    monkeypatch.setattr(mod, "resolve_checkpoint", lambda *args, **kwargs: "/tmp/model_10.pt")
+    monkeypatch.setattr(mod, "configure_backend_process_device", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         mod,
-        "get_entrypoint_log_root",
-        lambda root_dir, *, algo_log_name, log_root=None: Path("/tmp") / algo_log_name,
+        "build_play_backend_adapter",
+        lambda *args, **kwargs: types.SimpleNamespace(build_task_env_cfg_override=lambda: {}),
+    )
+    from unilab.base import config_adapter
+
+    monkeypatch.setattr(config_adapter, "create_env", lambda *args, **kwargs: fake_env)
+    monkeypatch.setattr(mod, "resolve_checkpoint", lambda *args, **kwargs: "/tmp/model_10.pt")
+    monkeypatch.setattr(mod, "make_sim2sim_preflight", lambda cfg, *, algo_name: None)
+    monkeypatch.setattr(
+        mod,
+        "get_log_root",
+        lambda root_dir, cfg=None, *, algo_log_name=None, log_root=None: (
+            Path("/tmp") / str(algo_log_name)
+        ),
     )
     create_session = mod.create_rsl_rl_playback_session
     monkeypatch.setattr(
@@ -2813,7 +2870,6 @@ def test_play_interactive_runner_log_dir_uses_algo_log_name(monkeypatch: pytest.
             *args, wrapper_cls=FakeWrapper, runner_cls=FakeRunner, **kwargs
         ),
     )
-    monkeypatch.setattr(mod, "PPOConfig", lambda: types.SimpleNamespace(to_dict=lambda: {}))
     monkeypatch.setattr(mod.mujoco, "MjData", lambda model: object())
     monkeypatch.setattr(mod, "PhysicsStateApplier", FakePhysicsStateApplier)
     monkeypatch.setattr(mod.mujoco.viewer, "launch_passive", lambda *args, **kwargs: FakeViewer())
@@ -2842,7 +2898,11 @@ def test_play_interactive_runner_log_dir_uses_algo_log_name(monkeypatch: pytest.
         start_paused=False,
     )
 
-    mod.play_interactive(args)
+    cfg = OmegaConf.create(
+        {"training": {"device": "cpu", "task_name": "MyTask"}, "algo": {"algo": "ppo"}}
+    )
+
+    mod.play_interactive(args, cfg)
 
     assert captured["ckpt"] == "/tmp/model_10.pt"
     assert captured["log_dir"].replace("\\", "/") == "/tmp/custom_ppo/MyTask/play_temp"
@@ -2861,6 +2921,7 @@ def test_play_interactive_import_does_not_swallow_registry_bootstrap_errors(
 
     training_mod.ensure_registries = _fail_bootstrap
     training_mod.algo_config_dict = lambda cfg: {}
+    training_mod.get_log_root = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "unilab.training", training_mod)
 
     mujoco_mod = cast(Any, types.ModuleType("mujoco"))
@@ -2937,10 +2998,12 @@ def test_train_rsl_rl_play_uses_shared_playback_session_factory(
         return fake_session, "flat", str(checkpoint)
 
     monkeypatch.setattr(mod, "EXPORT_POLICY", False, raising=False)
-    monkeypatch.setattr(mod, "parse_checkpoint_path", lambda *args, **kwargs: (checkpoint, run_dir))
+    monkeypatch.setattr(
+        mod, "resolve_configured_checkpoint_path", lambda *args, **kwargs: (checkpoint, run_dir)
+    )
     monkeypatch.setattr(mod, "create_rsl_rl_playback_session", fake_create_session)
 
-    result = mod.play_rsl_rl(cfg, device="cpu")
+    result = mod.play_ppo(cfg, device="cpu")
 
     assert result == str(run_dir / "play_video.mp4")
     factory_kwargs = captured["factory_kwargs"]
@@ -2953,7 +3016,7 @@ def test_train_rsl_rl_play_uses_shared_playback_session_factory(
     assert factory_kwargs["device"] == "cpu"
     assert factory_kwargs["root_dir"] == Path.cwd()
     # The session factory resolves the UniLab adapter and the upstream
-    # OnPolicyRunner itself; play_rsl_rl no longer forwards them.
+    # OnPolicyRunner itself; play_ppo no longer forwards them.
     assert "wrapper_cls" not in factory_kwargs
     assert "runner_cls" not in factory_kwargs
     assert "train_cfg_normalizer" not in factory_kwargs
@@ -3132,7 +3195,8 @@ def test_play_offpolicy_uses_shared_playback_session_factory(
 
     monkeypatch.setattr(mod, "default_device", lambda torch_module, preferred=None: "cpu")
 
-    def fake_resolve_checkpoint_path(_root, _algo, _task, selected_run):
+    def fake_resolve_checkpoint_path(task_log_root, selected_run, **kwargs):
+        del task_log_root, kwargs
         captured["selected_run"] = selected_run
         return str(checkpoint), str(run_dir)
 

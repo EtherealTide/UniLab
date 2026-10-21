@@ -79,6 +79,12 @@ Use Conventional Commit titles. State whether the change affects MuJoCo, Motrix,
 another backend, macOS, Linux, or training behavior. A documentation-only change
 uses its focused docs checks as well as the repository gate required for its PR.
 
+Dependency maintenance is dual-track: a change to `pyproject.toml` dependency
+pins must apply the same bump to `pyproject.rocm.toml` and `uv.rocm.lock` in
+the same PR. For a published-dependency transition the upstream release must
+exist on PyPI before the bump lands; see the tensor-runtime transition
+subsection below.
+
 ## Architecture Decisions
 
 When work changes a runtime, backend, config, registry, or other public
@@ -107,8 +113,9 @@ be true:
 2. The required public `unisim-core` tensor lifecycle contracts and adapters are
    available in a released `unisim-core` version with a passing standalone
    package gate.
-3. The required CUDA inference/replay runner behavior is available in a released
-   `unilab-rl` version with its complete repository gate.
+3. The required CUDA inference/replay runner behavior is available in the
+   in-tree `unilab.rl` stack (the former `unilab-rl` package is merged into
+   this repository) with its complete repository gate.
 4. The required MJBatch executor API is available in a published `mjbatch-uni`
    version supported by the UniSim adapter contract.
 5. The default and ROCm lock profiles resolve only registry packages.

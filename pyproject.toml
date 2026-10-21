@@ -14,7 +14,7 @@ source-exclude = [
 
 [project]
 name = "unilab"
-version = "1.3.3"
+version = "1.4.0"
 description = "Configurable, contract-driven robot learning across physics backends"
 readme = "README.md"
 license = "Apache-2.0"
@@ -33,8 +33,7 @@ classifiers = [
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "numpy",
-    "unisim-core>=1.7.13",
-    "numba>=0.67",
+    "unisim-core==2.0.0",
     "prettytable>=3.10",
     # A range (not an exact pin) lets ROCm users substitute a ROCm torch
     # build; uv.lock pins the tested CUDA builds via tool.uv.sources.
@@ -43,6 +42,7 @@ dependencies = [
     "imageio",
     "etils",
     "hydra-core>=1.3",
+    "omegaconf",
     "tensordict",
     "rsl-rl-lib>=5.0.0",
     "packaging",
@@ -53,7 +53,7 @@ dependencies = [
     "tqdm",
     "typing-extensions",
     "lark>=1.3.1",
-    "wandb",
+    "wandb>=0.22.3",
     "onnxruntime<1.20 ; python_version < '3.11'",
     "onnxruntime>=1.20 ; python_version >= '3.11'",
     "huggingface_hub>=0.25",
@@ -106,19 +106,18 @@ newton = [
     "pyglet>=2.1.6,<3",
     "imgui-bundle>=1.92.0",
 ]
-motrix = ["unisim-core[motrix]>=1.7.13"]
+motrix = ["unisim-core[motrix]==2.0.0"]
 genesis = ["genesis-world==1.3.3"]
-uni_rl = ["unilab-rl==1.4.11"]
 # Wheels are CPython 3.12/3.13 Linux x86_64 only; the marker keeps uv lock
 # resolvable for the other required-environments.
 superdex = [
-    "unisim-core[superdex]>=1.7.13 ; python_version >= '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "unisim-core[superdex]==2.0.0 ; python_version >= '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
 [dependency-groups]
-# Dev/CI exercises the APPO/off-policy/multi-GPU paths, so the optional
-# unilab-rl runtime stays installed in the dev environment.
-dev = ["pytest", "pytest-cov", "ruff", "mypy", "pyright>=1.1.408", "unilab-rl==1.4.11"]
+# The RL stack (APPO/off-policy/multi-GPU) is merged into unilab itself
+# (src/unilab/rl/), so the dev environment no longer installs unilab-rl.
+dev = ["pytest", "pytest-cov", "ruff", "mypy", "pyright>=1.1.408"]
 
 [[tool.uv.index]]
 name = "r2-cu130"
@@ -130,7 +129,6 @@ explicit = true
 torch = [
     { index = "r2-cu130", marker = "sys_platform=='linux' or sys_platform=='win32'" },
 ]
-
 [tool.uv]
 exclude-dependencies = ["torchvision"]
 required-environments = [

@@ -156,7 +156,7 @@ _TRANSFER_BOUNDARY_INVENTORY: tuple[dict[str, object], ...] = (
 def _build_cfg(backend: str, num_envs: int, *, isaacsim_test_fixture: bool = False) -> Any:
     from hydra import compose, initialize_config_dir
 
-    from unilab.base.config_adapter import BackendAdapter
+    from unilab.base.config_adapter import EnvConfigAdapter
     from unilab.base.registry import apply_cfg_overrides
     from unilab.envs import ManagerBasedRlEnvCfg
 
@@ -183,7 +183,7 @@ def _build_cfg(backend: str, num_envs: int, *, isaacsim_test_fixture: bool = Fal
                 "hydra/hydra_logging=disabled",
             ],
         )
-    override = BackendAdapter(
+    override = EnvConfigAdapter(
         owner_cfg, root_dir=ROOT_DIR, algo_name="flashsac"
     ).build_task_env_cfg_override()
     cfg = ManagerBasedRlEnvCfg()
@@ -612,7 +612,7 @@ def _backend_timing_stats(results: list[dict[str, Any] | None]) -> dict[str, dic
 def _materialize_and_negotiate(backend_name: str, sim_backend: Any) -> tuple[str, Any]:
     """Materialize before lifecycle negotiation for subprocess model metadata."""
     sim_backend.materialize()
-    mode = sim_backend.tensor_execution().value
+    mode = sim_backend.get_tensor_execution().value
     if mode not in {"device_resident", "host_bridge"}:
         raise RuntimeError(f"backend {backend_name} did not negotiate a tensor lifecycle: {mode}")
     return mode, sim_backend.get_tensor_capabilities()
@@ -729,7 +729,7 @@ def _run_with_backend(
     if mode == "host_bridge":
         if not capabilities.packed_host_bridge:
             raise RuntimeError("host-bridge benchmark backend does not support packed I/O")
-        host_bridge_plan = sim_backend.compile_host_bridge_io(
+        host_bridge_plan = sim_backend.bind_host_bridge_io(
             TensorIOSpec(
                 state_fields=("qpos", "qvel"),
                 sensor_names=_host_bridge_sensor_names(tuple(robot_body_names)),
@@ -1009,9 +1009,7 @@ def _run_with_backend(
         "backend": backend,
         "isaacsim_owner": {
             "test_fixture_requested": isaacsim_test_fixture,
-            "production_owner": "src/unilab/conf/flashsac/task/g1_motion_tracking/isaacsim.yaml"
-            if backend == "isaacsim"
-            else None,
+            "production_owner": None,
         },
         "tensor_execution": mode,
         "tensor_process_topology": capabilities.process_topology.value,
@@ -1173,7 +1171,7 @@ def main() -> None:
         "process_isolation": "one_process_per_backend",
         "isaacsim_owner": {
             "test_fixture_requested": args.isaacsim_test_fixture,
-            "production_owner": "src/unilab/conf/flashsac/task/g1_motion_tracking/isaacsim.yaml",
+            "production_owner": None,
         },
         "acceptance_mode": args.acceptance,
         "torch_version": torch.__version__,
@@ -1197,7 +1195,8 @@ def main() -> None:
         "unilab_source": _git_source_info(ROOT_DIR),
         "external_worker_runtimes": _external_worker_runtime_provenance(backends),
         "local_dependencies": {
-            "unilab_rl": _package_source_info("uni_rl"),
+            # The RL stack is merged in-tree as ``unilab.rl``; its provenance
+            # is the ``unilab_source`` record above.
             "mjbatch_uni": _git_source_info(ROOT_DIR.parent / "mjbatch_uni"),
         },
         "runtime": {

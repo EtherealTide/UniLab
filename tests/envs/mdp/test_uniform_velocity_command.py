@@ -11,6 +11,7 @@ import torch
 from unisim.backend.base import SimBackend
 
 from unilab.base.entity import EntityCfg, EntityScene
+from unilab.base.rotation import np_yaw_to_quat
 from unilab.envs.mdp import UniformVelocityCommand, UniformVelocityCommandCfg
 from unilab.envs.mdp.commands import (
     UniformVelocityCommand as ExportedUniformVelocityCommand,
@@ -19,8 +20,8 @@ from unilab.envs.mdp.commands import (
     UniformVelocityCommandCfg as ExportedUniformVelocityCommandCfg,
 )
 from unilab.managers import CommandManager
-from unilab.managers._types import ManagerBasedRlEnv
-from unilab.utils.rotation import np_yaw_to_quat
+from unilab.managers.rng import ManagerRng
+from unilab.managers.types import ManagerBasedRlEnv
 
 
 class _Backend:
@@ -69,6 +70,30 @@ class _Backend:
     def get_body_ang_vel_b(self, ids: np.ndarray) -> np.ndarray:
         return self.body_ang_vel_b[:, ids]
 
+    def get_sensor_view(self, name: str, device=None) -> torch.Tensor:
+        if name == "track_linvel_w_base" and self.unsupported == "body-frame linear velocity":
+            raise NotImplementedError("fake lacks body-frame linear velocity")
+        if name == "track_angvel_w_base":
+            values = self.body_ang_vel_b[:, 0]
+        elif name == "track_linvel_w_base":
+            values = self.body_lin_vel_b[:, 0]
+        elif name == "track_quat_w_base":
+            values = self.body_quat[:, 0]
+        else:
+            values = {
+                "pelvis_local_linvel": self.body_lin_vel_b[:, 0],
+                "torso_gyro": self.body_ang_vel_b[:, 0],
+            }[name]
+        values = {
+            "track_pos_w_base": self.body_pos[:, 0],
+            "track_quat_w_base": self.body_quat[:, 0],
+            "track_linvel_w_base": values,
+            "track_angvel_w_base": values,
+            "pelvis_local_linvel": values,
+            "torso_gyro": values,
+        }[name]
+        return torch.from_numpy(np.array(values, copy=True)).to(device=device)
+
 
 def _env(seed: int = 7) -> tuple[ManagerBasedRlEnv, _Backend]:
     backend = _Backend()
@@ -76,11 +101,29 @@ def _env(seed: int = 7) -> tuple[ManagerBasedRlEnv, _Backend]:
         {"robot": EntityCfg(root_body_name="base")},
         cast(SimBackend, backend),
     )
+    scene.read_plan = SimpleNamespace(
+        sensor_names={"robot": ("pelvis_local_linvel", "torso_gyro")},
+        body_tensor_view=lambda entity, names: SimpleNamespace(
+            quat_w=torch.from_numpy(backend.body_quat[:, 0]).unsqueeze(1)
+        ),
+        sensor_tensor_views=lambda entity, names: SimpleNamespace(
+            values={
+                name: torch.from_numpy(
+                    {
+                        "pelvis_local_linvel": backend.body_lin_vel_b[:, 0],
+                        "torso_gyro": backend.body_ang_vel_b[:, 0],
+                    }[name]
+                )
+                for name in names
+            }
+        ),
+    )
     env = cast(
         ManagerBasedRlEnv,
         SimpleNamespace(
             num_envs=backend.num_envs,
-            rng=np.random.default_rng(seed),
+            device=torch.device("cpu"),
+            rng=ManagerRng.seeded(seed),
             scene=scene,
             step_dt=0.02,
         ),
@@ -120,7 +163,7 @@ def test_public_exports_and_cfg_build_are_canonical() -> None:
 def test_manager_boundary_publishes_torch_commands() -> None:
     env, _ = _env()
     manager = _manager(env)
-    manager.reset(torch.arange(env.num_envs, dtype=torch.int64))
+    manager.reset(torch.ones(env.num_envs, dtype=torch.bool, device=env.device))
 
     command = manager.get_command("twist")
     term = manager.get_term("twist")
@@ -136,10 +179,10 @@ def test_resampling_is_seeded_and_partial_reset_is_local() -> None:
     right_env, _ = _env(seed=19)
     left = _manager(left_env, resampling_time_range=(0.5, 1.5))
     right = _manager(right_env, resampling_time_range=(0.5, 1.5))
-    all_ids = torch.arange(left_env.num_envs, dtype=torch.int64)
+    all_mask = torch.ones(left_env.num_envs, dtype=torch.bool, device=left_env.device)
 
-    left.reset(all_ids)
-    right.reset(all_ids)
+    left.reset(all_mask)
+    right.reset(all_mask)
     np.testing.assert_array_equal(left.get_command("twist"), right.get_command("twist"))
     np.testing.assert_array_equal(
         left.get_term("twist").time_left,
@@ -148,12 +191,20 @@ def test_resampling_is_seeded_and_partial_reset_is_local() -> None:
 
     before_command = left.get_command("twist").clone()
     before_counter = left.get_term("twist").command_counter.clone()
-    left.reset(torch.tensor([1, 3], dtype=torch.int64))
+    left.reset(torch.tensor([1, 3], dtype=torch.int64, device=left_env.device))
     np.testing.assert_array_equal(left.get_command("twist")[[0, 2]], before_command[[0, 2]])
     np.testing.assert_array_equal(
         left.get_term("twist").command_counter[[0, 2]], before_counter[[0, 2]]
     )
     np.testing.assert_array_equal(left.get_term("twist").command_counter[[1, 3]], 1)
+
+
+def test_uniform_velocity_command_fails_closed_without_rng() -> None:
+    env, _ = _env(seed=23)
+    env.rng = None
+
+    with pytest.raises(RuntimeError, match="CommandTerm scheduling"):
+        _cfg().build(env)
 
 
 def test_metrics_and_fixed_interval_resampling_follow_manager_schedule() -> None:
@@ -169,8 +220,7 @@ def test_metrics_and_fixed_interval_resampling_follow_manager_schedule() -> None
             ang_vel_z=(0.2, 0.2),
         ),
     )
-    all_ids = torch.arange(env.num_envs, dtype=torch.int64)
-    manager.reset(all_ids)
+    manager.reset(torch.ones(env.num_envs, dtype=torch.bool, device=env.device))
     term = manager.get_term("twist")
 
     manager.compute(0.1)
@@ -183,7 +233,7 @@ def test_metrics_and_fixed_interval_resampling_follow_manager_schedule() -> None
 
 
 def test_heading_world_forward_and_standing_modes() -> None:
-    all_ids = torch.arange(4, dtype=torch.int64)
+    all_mask = torch.ones(4, dtype=torch.bool)
 
     heading_env, _ = _env()
     heading = _manager(
@@ -198,8 +248,8 @@ def test_heading_world_forward_and_standing_modes() -> None:
             heading=(np.pi / 2, np.pi / 2),
         ),
     )
-    heading.reset(all_ids)
-    heading.compute(0.0, env_ids=all_ids)
+    heading.reset(all_mask)
+    heading.compute(0.0)
     np.testing.assert_allclose(heading.get_command("twist")[:, 2], 0.5)
 
     world_env, world_backend = _env()
@@ -213,8 +263,8 @@ def test_heading_world_forward_and_standing_modes() -> None:
             ang_vel_z=(0.0, 0.0),
         ),
     )
-    world.reset(all_ids)
-    world.compute(0.0, env_ids=all_ids)
+    world.reset(all_mask)
+    world.compute(0.0)
     np.testing.assert_allclose(world.get_command("twist")[:, :2], [[0.0, -1.0]] * 4, atol=1e-6)
 
     forward_env, _ = _env()
@@ -227,13 +277,13 @@ def test_heading_world_forward_and_standing_modes() -> None:
             ang_vel_z=(0.2, 0.2),
         ),
     )
-    forward.reset(all_ids)
+    forward.reset(all_mask)
     np.testing.assert_allclose(forward.get_command("twist"), [[0.3, 0.0, 0.0]] * 4)
 
     standing_env, _ = _env()
     standing = _manager(standing_env, rel_standing_envs=1.0)
-    standing.reset(all_ids)
-    standing.compute(0.0, env_ids=all_ids)
+    standing.reset(all_mask)
+    standing.compute(0.0)
     np.testing.assert_array_equal(standing.get_command("twist"), 0.0)
 
 
@@ -268,19 +318,21 @@ def test_invalid_or_unsupported_config_fails_at_construction(
 
 def test_root_body_frame_capability_and_finite_values_fail_closed() -> None:
     unsupported = _Backend(unsupported="body-frame linear velocity")
+    unsupported_scene = EntityScene(
+        {"robot": EntityCfg(root_body_name="base")},
+        cast(SimBackend, unsupported),
+    )
     with pytest.raises(
         NotImplementedError,
-        match="body-frame linear velocity state.*backend 'fake'",
+        match="tracked body 'lin_vel_w'.*backend 'fake'",
     ):
-        EntityScene(
-            {"robot": EntityCfg(root_body_name="base")},
-            cast(SimBackend, unsupported),
-        )
+        _ = unsupported_scene["robot"].data._host_root_link_lin_vel_b
 
     non_finite = _Backend()
     non_finite.body_ang_vel_b[0, 0, 0] = np.nan
-    with pytest.raises(ValueError, match="body-frame angular velocity state.*NaN or Inf"):
-        EntityScene(
-            {"robot": EntityCfg(root_body_name="base")},
-            cast(SimBackend, non_finite),
-        )
+    non_finite_scene = EntityScene(
+        {"robot": EntityCfg(root_body_name="base")},
+        cast(SimBackend, non_finite),
+    )
+    with pytest.raises(ValueError, match="Entity 'robot'.*tracked body 'ang_vel_w'.*finite values"):
+        _ = non_finite_scene["robot"].data._host_root_link_ang_vel_b

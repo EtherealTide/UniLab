@@ -44,11 +44,11 @@ def _patch_render_pipeline(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     playback_mod = types.ModuleType("unisim.backend.mujoco.playback")
 
-    def _resolve_render_play_model_files(env: Any, *, num_envs: int, tmp_dir: str) -> str:
+    def fake_resolve_render_play_model_files(env: Any, *, num_envs: int, tmp_dir: str) -> str:
         log["resolve_model_files"] = {"num_envs": num_envs}
         return "fake_model.xml"
 
-    playback_mod.resolve_render_play_model_files = _resolve_render_play_model_files  # type: ignore[attr-defined]
+    playback_mod.resolve_render_play_model_files = fake_resolve_render_play_model_files  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "unisim.backend.mujoco.playback", playback_mod)
 
     render_many_mod = types.ModuleType("unisim.visualization.render_many")
@@ -71,12 +71,12 @@ def _patch_render_pipeline(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     if visualization_pkg is not None:
         monkeypatch.setattr(visualization_pkg, "render_many", render_many_mod, raising=False)
 
-    from unisim.backend import playback_common
+    from unisim.backend import playback
 
     def _write_playback_video(path: str, frames: list[np.ndarray], *, fps: int) -> None:
         log["write_playback_video"] = {"path": path, "frames": list(frames), "fps": fps}
 
-    monkeypatch.setattr(playback_common, "write_playback_video", _write_playback_video)
+    monkeypatch.setattr(playback, "write_playback_video", _write_playback_video)
     return log
 
 
@@ -232,7 +232,6 @@ def test_render_play_mode_forwards_overlay_and_on_frame() -> None:
     on_frame = lambda i, frame: frame  # noqa: E731
     result = render_play_mode(
         _Env(),
-        sim_backend="mujoco",
         initialize=lambda: None,
         step=lambda obs: obs,
         num_steps=1,

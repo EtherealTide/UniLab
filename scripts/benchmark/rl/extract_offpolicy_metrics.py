@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Extract end-to-end off-policy benchmark metrics from TensorBoard event files.
 
-unilab-rl 1.4.1 replaced the ``timing/*`` and lowercase ``perf/*`` tags with the
-canonical schema in ``uni_rl.logging.metric_schema`` (see ``docs/metrics.md`` in
-the unilab_rl repo). A current run records ``metric_schema_version = 1`` in
+The canonical metric schema (``unilab.rl.logging.metric_schema``) replaced the
+historical ``timing/*`` and lowercase ``perf/*`` tags. A current run records
+``metric_schema_version = 1`` in
 ``run_summary.json`` and contains canonical ``Perf/`` / ``Train/`` scalar tags.
 Historical event files are immutable and can be read only with the explicit
-``--legacy-unversioned`` compatibility mode. That mode accepts recognized
-pre-schema lowercase ``perf/*``, ``timing/*``, ``train/*``, and ``reward/*``
-tags, never canonical tags, and never a newer schema version. Two canonical
+``--legacy-unversioned`` compatibility mode. That mode accepts only recognized
+pre-schema extraction tags (lowercase ``perf/*`` and ``timing/*``), never
+canonical tags, and never a schema-stamped summary (including a newer schema
+version). The command reads and prints only; it never rewrites, migrates,
+augments, or deletes a historical event or run-summary artifact. Two canonical
 fields are seconds where the retired tags were milliseconds:
 ``Perf/iteration_time`` (was ``perf/iter_ms``) and ``Perf/learning_time`` (was
 ``timing/learner_train_ms``). Rows whose source chart was retired without a
@@ -78,7 +80,7 @@ class MetricSchemaError(RuntimeError):
 
 
 def _read_run_summary(event_file: Path) -> dict[str, Any] | None:
-    """Read only the summary co-located with the selected event file."""
+    """Read only the summary co-located with the selected immutable event file."""
     summary_path = event_file.parent / "run_summary.json"
     if not summary_path.is_file():
         return None
@@ -97,7 +99,11 @@ def _validate_metric_schema(
     *,
     allow_legacy_unversioned: bool,
 ) -> bool:
-    """Return whether extraction is restricted to the immutable legacy tags."""
+    """Validate schema ownership and return whether extraction is legacy-only.
+
+    Validation and extraction are read-only; no event or summary artifact is
+    rewritten, migrated, or upgraded.
+    """
     summary_has_schema_key = summary is not None and "metric_schema_version" in summary
     if allow_legacy_unversioned and summary_has_schema_key:
         schema_value = summary["metric_schema_version"]
@@ -192,8 +198,9 @@ def main(argv: list[str]) -> int:
         "--legacy-unversioned",
         action="store_true",
         help=(
-            "read only an immutable pre-schema event file with recognized legacy tags; "
-            "canonical or schema-stamped runs are rejected"
+            "read, without rewriting or migrating, an immutable pre-schema event "
+            "file with recognized legacy tags; canonical or schema-stamped runs "
+            "are rejected"
         ),
     )
     args = parser.parse_args(argv)

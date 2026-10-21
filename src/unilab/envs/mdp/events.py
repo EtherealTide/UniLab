@@ -1,29 +1,29 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681),
 # src/mjlab/envs/mdp/events.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy reset transactions; Apache-2.0.
+# Modified by UniLab for Torch reset transactions; Apache-2.0.
 # The mass/CoM/gravity public names and signatures follow Isaac Lab v2.2.0;
 # their implementation here is UniLab's original payload adapter, not vendored PhysX code.
-"""Community-style reset event terms for UniLab's NumPy manager runtime."""
+"""Community-style reset event terms for UniLab's torch-first manager runtime."""
 
 from __future__ import annotations
 
 import math
 import re
+from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-import numpy as np
 import torch
 
+from unilab.base.reset_selectors import ResetMaskBuffer
 from unilab.managers.event_manager import EventTermCfg
 from unilab.managers.manager_base import ManagerTermBase
+from unilab.managers.rng import ManagerRng
 from unilab.managers.scene_entity_config import SceneEntityCfg
-from unilab.managers.torch_rng import TorchManagerRng
-from unilab.utils.rotation import np_quat_apply_batched, np_quat_from_euler_xyz, np_quat_mul
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
@@ -41,14 +41,13 @@ def _gain_range(
     distribution: Literal["uniform", "log_uniform"],
 ) -> tuple[float, float]:
     try:
-        bounds = np.asarray(value, dtype=np.float64)
+        if isinstance(value, (str, bytes)) or len(tuple(value)) != 2:
+            raise ValueError(f"pd_gains {name} must have shape (2,)")
+        lower, upper = float(value[0]), float(value[1])
     except (TypeError, ValueError) as exc:
         raise TypeError(f"pd_gains {name} must be a numeric (min, max) pair") from exc
-    if bounds.shape != (2,):
-        raise ValueError(f"pd_gains {name} must have shape (2,), got {bounds.shape}")
-    if not np.isfinite(bounds).all():
+    if not (math.isfinite(lower) and math.isfinite(upper)):
         raise ValueError(f"pd_gains {name} must contain only finite values")
-    lower, upper = float(bounds[0]), float(bounds[1])
     if lower > upper:
         raise ValueError(f"pd_gains {name} minimum {lower} exceeds maximum {upper}")
     if distribution == "log_uniform" and lower <= 0.0:
@@ -70,47 +69,49 @@ def _gain_choice(
 
 
 def _sample_gain_range(
-    rng: np.random.Generator,
+    rng: ManagerRng,
     bounds: tuple[float, float],
     shape: tuple[int, int],
     distribution: Literal["uniform", "log_uniform"],
-) -> np.ndarray:
+) -> torch.Tensor:
     if distribution == "uniform":
-        return rng.uniform(bounds[0], bounds[1], size=shape)
-    return np.exp(rng.uniform(np.log(bounds[0]), np.log(bounds[1]), size=shape))
+        return rng.uniform(bounds[0], bounds[1], shape, dtype=torch.float64)
+    return rng.uniform(math.log(bounds[0]), math.log(bounds[1]), shape, dtype=torch.float64).exp()
 
 
 def _sample_se3_range(
     range_dict: dict[str, tuple[float, float]] | None,
     shape: tuple[int, ...],
-    rng: np.random.Generator,
-) -> np.ndarray:
-    """Sample uniform ``[x, y, z, roll, pitch, yaw]`` offsets with NumPy."""
+    rng: ManagerRng,
+) -> torch.Tensor:
+    """Sample uniform ``[x, y, z, roll, pitch, yaw]`` offsets with Torch RNG."""
     if not shape or shape[-1] != len(_SE3_KEYS):
         raise ValueError(
             f"reset_root_state_uniform SE(3) sample shape must end in 6; received {shape}"
         )
     try:
-        ranges = np.asarray(
+        ranges = torch.tensor(
             [(range_dict or {}).get(key, (0.0, 0.0)) for key in _SE3_KEYS],
-            dtype=np.float64,
+            dtype=torch.float64,
         )
     except (TypeError, ValueError) as exc:
         raise ValueError(
             "reset_root_state_uniform ranges must map each SE(3) key to a numeric (min, max) pair"
         ) from exc
-    if ranges.shape != (len(_SE3_KEYS), 2):
+    if tuple(ranges.shape) != (len(_SE3_KEYS), 2):
         raise ValueError(
             "reset_root_state_uniform ranges must map each SE(3) key to a "
             f"(min, max) pair; received shape {ranges.shape}"
         )
-    if not np.isfinite(ranges).all():
+    if not bool(torch.isfinite(ranges).all()):
         raise ValueError("reset_root_state_uniform ranges must contain only finite values")
     invalid = ranges[:, 0] > ranges[:, 1]
-    if np.any(invalid):
-        keys = [_SE3_KEYS[index] for index in np.flatnonzero(invalid)]
+    if bool(invalid.any()):
+        keys = [_SE3_KEYS[index] for index in torch.nonzero(invalid).flatten().tolist()]
         raise ValueError(f"reset_root_state_uniform range minimum exceeds maximum for keys {keys}")
-    return rng.uniform(ranges[:, 0], ranges[:, 1], size=shape)
+    lower = ranges[:, 0].to(device=rng.device)
+    upper = ranges[:, 1].to(device=rng.device)
+    return rng.uniform(lower, upper, shape, dtype=torch.float64)
 
 
 def _event_choice(value: Any, *, term_name: str, name: str, choices: tuple[str, ...]) -> str:
@@ -134,67 +135,113 @@ def _distribution_parameters(
     name: str,
     width: int | None = None,
     distribution: str,
-) -> np.ndarray:
+) -> torch.Tensor:
     try:
-        params = np.asarray(value, dtype=np.float64)
+        params = torch.as_tensor(value, dtype=torch.float64)
     except (TypeError, ValueError) as exc:
         raise TypeError(
             f"EventManager term '{term_name}' parameter '{name}' must contain numeric values"
         ) from exc
     expected = (2,) if width is None else (2, width)
-    if params.shape != expected:
+    if tuple(params.shape) != expected:
         raise ValueError(
             f"EventManager term '{term_name}' parameter '{name}' has shape {params.shape}; "
             f"expected {expected}"
         )
-    if not np.isfinite(params).all():
+    if not bool(torch.isfinite(params).all()):
         raise ValueError(
             f"EventManager term '{term_name}' parameter '{name}' must contain only finite values"
         )
     if distribution == "gaussian":
-        if np.any(params[1] < 0.0):
+        if bool((params[1] < 0.0).any()):
             raise ValueError(
                 f"EventManager term '{term_name}' parameter '{name}' standard deviation "
                 "must be non-negative"
             )
     else:
-        if np.any(params[0] > params[1]):
+        if bool((params[0] > params[1]).any()):
             raise ValueError(
                 f"EventManager term '{term_name}' parameter '{name}' lower bound exceeds upper bound"
             )
-        if distribution == "log_uniform" and np.any(params <= 0.0):
+        if distribution == "log_uniform" and bool((params <= 0.0).any()):
             raise ValueError(
                 f"EventManager term '{term_name}' parameter '{name}' must be positive "
                 "for log_uniform sampling"
             )
-    result = np.array(params, copy=True)
-    result.setflags(write=False)
-    return result
+    return params.clone()
 
 
 def _sample_distribution(
-    rng: np.random.Generator,
-    params: np.ndarray,
+    rng: ManagerRng,
+    params: torch.Tensor,
     shape: tuple[int, ...],
     distribution: str,
-) -> np.ndarray:
+) -> torch.Tensor:
+    low = params[0].to(device=rng.device, dtype=torch.float64)
+    high = params[1].to(device=rng.device, dtype=torch.float64)
     if distribution == "gaussian":
-        return rng.normal(params[0], params[1], size=shape)
+        return rng.normal(low, high, shape, dtype=torch.float64)
     if distribution == "log_uniform":
-        return np.exp(rng.uniform(np.log(params[0]), np.log(params[1]), size=shape))
-    return rng.uniform(params[0], params[1], size=shape)
+        return rng.uniform(torch.log(low), torch.log(high), shape, dtype=torch.float64).exp()
+    return rng.uniform(low, high, shape, dtype=torch.float64)
 
 
-def _apply_randomization_operation(
-    default: np.ndarray,
-    samples: np.ndarray,
-    operation: str,
-) -> np.ndarray:
-    if operation == "add":
-        return default + samples
-    if operation == "scale":
-        return default * samples
-    return samples
+def _selected_reset_defaults(
+    defaults: torch.Tensor,
+    env_ids: torch.Tensor,
+    *,
+    canonical_ndim: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Select entity-local event defaults without a host row conversion."""
+    table = defaults
+    rows = env_ids.to(dtype=torch.int64, device=device)
+    selected = table.to(dtype=torch.float64, device=device)
+    if table.ndim == canonical_ndim:
+        return selected.expand((rows.numel(), *selected.shape)).clone()
+    if table.ndim == canonical_ndim + 1:
+        return selected.index_select(0, rows)
+    raise ValueError(
+        f"Selected event default table has shape {tuple(table.shape)}; expected "
+        f"a {canonical_ndim}-D selected-column table or a per-environment "
+        f"(*, {canonical_ndim}) table"
+    )
+
+
+def _model_field_default_rows(
+    defaults: torch.Tensor,
+    env_ids: torch.Tensor,
+    *,
+    field_width: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Select entity-local model-field defaults without a host row conversion."""
+    table = defaults
+    canonical_ndim = 1 if field_width == 1 else 2
+    canonical = table.ndim == canonical_ndim
+    rows = env_ids.to(dtype=torch.int64, device=device)
+    if canonical:
+        selected = table.to(device=device, dtype=torch.float64)
+    elif table.ndim == canonical_ndim + 1:
+        selected = table.to(device=device, dtype=torch.float64).index_select(0, rows)
+    else:
+        raise ValueError(
+            f"Selected model-field default table has shape {tuple(table.shape)}; expected "
+            f"a {canonical_ndim}-D canonical table or a per-environment "
+            f"(*, {canonical_ndim}) table"
+        )
+    if canonical:
+        return selected.expand((rows.numel(), *selected.shape)).clone()
+    return selected
+
+
+def _require_rng(env: ManagerBasedRlEnv, term_name: str) -> ManagerRng:
+    rng = getattr(env, "rng", None)
+    if not isinstance(rng, ManagerRng):
+        raise RuntimeError(
+            f"EventManager term '{term_name}' requires the Manager-owned Torch generator"
+        )
+    return rng
 
 
 def _axis_ranges(
@@ -203,7 +250,7 @@ def _axis_ranges(
     term_name: str,
     name: str,
     keys: tuple[str, ...],
-) -> np.ndarray:
+) -> torch.Tensor:
     if not isinstance(value, dict):
         raise TypeError(f"EventManager term '{term_name}' parameter '{name}' must be a dict")
     unknown = sorted(set(value) - set(keys))
@@ -211,7 +258,10 @@ def _axis_ranges(
         raise ValueError(
             f"EventManager term '{term_name}' parameter '{name}' has unknown axes {unknown}"
         )
-    parameters = np.asarray([value.get(key, (0.0, 0.0)) for key in keys], dtype=object).T
+    parameters = [
+        [value.get(key, (0.0, 0.0))[0] for key in keys],
+        [value.get(key, (0.0, 0.0))[1] for key in keys],
+    ]
     return _distribution_parameters(
         parameters,
         term_name=term_name,
@@ -225,13 +275,15 @@ def _validate_event_term(
     cfg: EventTermCfg,
     *,
     term_name: str,
-    mode: str,
+    mode: str | tuple[str, ...],
     allowed_params: frozenset[str],
     required_params: tuple[str, ...],
 ) -> None:
-    if cfg.mode != mode:
+    supported_modes = (mode,) if isinstance(mode, str) else mode
+    if cfg.mode not in supported_modes:
         raise NotImplementedError(
-            f"EventManager term '{term_name}' only supports mode='{mode}' on the UniLab runtime"
+            "EventManager term "
+            f"'{term_name}' only supports mode='{'/'.join(supported_modes)}' on the UniLab runtime"
         )
     unknown = sorted(set(cfg.params) - allowed_params)
     if unknown:
@@ -241,35 +293,111 @@ def _validate_event_term(
         raise ValueError(f"EventManager term '{term_name}' is missing parameters {missing}")
 
 
-def resolve_env_ids(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> np.ndarray:
-    """Return the NumPy rows still owned by generic event-term internals."""
+def resolve_env_ids(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> torch.Tensor:
+    """Return int64 env rows on the env device; no host detour for device envs."""
+    device = getattr(env, "device", torch.device("cpu"))
     if env_ids is None:
-        return np.arange(env.num_envs, dtype=np.int32)
+        return torch.arange(env.num_envs, dtype=torch.int64, device=device)
     if isinstance(env_ids, torch.Tensor):
-        return env_ids.detach().cpu().numpy().astype(np.int32, copy=False)
-    return np.asarray(env_ids, dtype=np.int32)
+        return env_ids.detach().to(dtype=torch.int64)
+    return torch.as_tensor(env_ids, dtype=torch.int64, device=device)
 
 
-def _selected_reset_defaults(
-    defaults: np.ndarray,
-    env_ids: np.ndarray,
+def _device_reset_table(values: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """Materialize one immutable default/parameter table on a device."""
+    return values.to(device=device, dtype=torch.float32)
+
+
+def _sample_distribution_on_device(
+    rng: ManagerRng,
+    low: torch.Tensor,
+    high: torch.Tensor,
+    shape: tuple[int, ...],
+    distribution: str,
+) -> torch.Tensor:
+    """Sample one DR distribution on the Torch RNG's device."""
+    if distribution == "gaussian":
+        return rng.normal(low, high, shape)
+    if distribution == "log_uniform":
+        return rng.uniform(low.log(), high.log(), shape).exp()
+    return rng.uniform(low, high, shape)
+
+
+def _apply_randomization_operation(
+    default: torch.Tensor,
+    samples: torch.Tensor,
+    operation: str,
+) -> torch.Tensor:
+    """Compose sampled multipliers/offsets with default rows on device."""
+    if operation == "add":
+        return default + samples
+    if operation == "scale":
+        return default * samples
+    return samples
+
+
+def _sample_axis_on_device(
+    rng: ManagerRng,
+    parameters: torch.Tensor,
+    count: int,
     *,
-    canonical_ndim: int,
-) -> np.ndarray:
-    """Select canonical or per-environment reset defaults for concrete rows."""
-    if defaults.ndim == canonical_ndim:
-        return np.broadcast_to(defaults, (env_ids.size, *defaults.shape))
-    if defaults.ndim == canonical_ndim + 1:
-        return defaults[env_ids]
-    raise ValueError(
-        f"Reset default table has shape {defaults.shape}; expected a canonical "
-        f"{canonical_ndim}-D table or a per-environment "
-        f"({env_ids.size}, *canonical) table"
+    distribution: str,
+    shared_random: bool,
+) -> torch.Tensor:
+    if not shared_random:
+        return _sample_distribution_on_device(
+            rng,
+            parameters[:, 0],
+            parameters[:, 1],
+            (count, parameters.shape[0]),
+            distribution,
+        )
+    samples = torch.empty(
+        (count, parameters.shape[0]), dtype=parameters.dtype, device=parameters.device
     )
+    groups: dict[tuple[float, float], list[int]] = {}
+    for index, pair in enumerate(parameters.detach().cpu().tolist()):
+        groups.setdefault((float(pair[0]), float(pair[1])), []).append(index)
+    for low, high, indices in _shared_parameter_groups(parameters, groups):
+        shared = _sample_distribution_on_device(
+            rng,
+            low,
+            high,
+            (count, 1),
+            distribution,
+        ).to(dtype=samples.dtype)
+        samples[:, indices] = shared
+    return samples
 
 
-class _ModelFieldRandomizer(ManagerTermBase):
-    """Cold-path-bound NumPy adapter for pinned mjlab model-field DR terms."""
+def _shared_parameter_groups(
+    parameters: torch.Tensor,
+    groups: Mapping[tuple[float, float], Sequence[int]],
+) -> Iterable[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """Turn host-scalar shared bounds into device broadcast tensors."""
+    device = parameters.device
+    for (low, high), indices in groups.items():
+        yield (
+            torch.full((1,), low, dtype=parameters.dtype, device=device),
+            torch.full((1,), high, dtype=parameters.dtype, device=device),
+            torch.as_tensor(list(indices), dtype=torch.int64, device=device),
+        )
+
+
+class _ResetRandomizationTerm(ManagerTermBase):
+    """Reset DR base whose ``__call__`` stages rows into the packed transaction.
+
+    The environment owns the packed reset transaction
+    (``ResetStateTransaction.scoped_device_event_tensor``); the event manager
+    dispatches reset terms as ``term(env, env_ids, **params)``, so each term's
+    ``__call__`` sampling and facade staging compose into the same
+    exactly-once commit. Backends missing a field's reset capability still
+    fail closed at construction binding.
+    """
+
+
+class _ModelFieldRandomizer(_ResetRandomizationTerm):
+    """Pinned mjlab-style model-field DR terms with Torch sampling tables."""
 
     _term_name = "model_field"
     _field_width = 1
@@ -326,28 +454,32 @@ class _ModelFieldRandomizer(ManagerTermBase):
         self._defaults = defaults
         self._axes = self._resolve_axes(cfg.params.get("axes"), ranges)
         self._ranges = self._resolve_ranges(ranges, names)
+        self._device_ranges: torch.Tensor | None = None
+        self._device_axis_groups: dict[
+            int, list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+        ] = {}
 
     def _bind(
         self,
         entity: Entity,
         asset_cfg: SceneEntityCfg,
-    ) -> tuple[np.ndarray, np.ndarray, tuple[str, ...]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, tuple[str, ...]]:
         raise NotImplementedError
 
     def _write(
         self,
-        values: np.ndarray,
-        env_ids: np.ndarray,
+        values: torch.Tensor,
+        env_ids: torch.Tensor,
     ) -> None:
         raise NotImplementedError
 
     def _select_string_ranges(
         self,
-        local_ids: np.ndarray,
-        defaults: np.ndarray,
+        local_ids: torch.Tensor,
+        defaults: torch.Tensor,
         names: tuple[str, ...],
         ranges: Any,
-    ) -> tuple[np.ndarray, np.ndarray, tuple[str, ...], Any]:
+    ) -> tuple[torch.Tensor, torch.Tensor, tuple[str, ...], Any]:
         if not isinstance(ranges, dict) or not ranges:
             return local_ids, defaults, names, ranges
         keys = tuple(ranges)
@@ -379,22 +511,20 @@ class _ModelFieldRandomizer(ManagerTermBase):
                         f"selected name '{names[index]}'"
                     )
                 assigned[index] = bounds
-        selected = np.asarray(
-            [index for index, value in enumerate(assigned) if value is not None],
-            dtype=np.intp,
-        )
+        selected = [index for index, value in enumerate(assigned) if value is not None]
+        selected_tensor = torch.tensor(selected, dtype=torch.int64)
         canonical_ndim = 1 if self._field_width == 1 else 2
         if defaults.ndim == canonical_ndim:
-            selected_defaults = defaults[selected]
+            selected_defaults = defaults.index_select(0, selected_tensor)
         elif defaults.ndim == canonical_ndim + 1:
-            selected_defaults = defaults[:, selected]
+            selected_defaults = defaults.index_select(1, selected_tensor)
         else:
             raise ValueError(
                 f"EventManager term '{self._term_name}' bound an invalid default table with "
                 f"shape {defaults.shape}"
             )
         return (
-            local_ids[selected],
+            local_ids.index_select(0, selected_tensor),
             selected_defaults,
             tuple(names[index] for index in selected),
             [assigned[index] for index in selected],
@@ -410,9 +540,7 @@ class _ModelFieldRandomizer(ManagerTermBase):
                 raise TypeError(
                     f"EventManager term '{self._term_name}' parameter 'axes' must be a sequence"
                 )
-            if any(
-                isinstance(axis, bool) or not isinstance(axis, (int, np.integer)) for axis in value
-            ):
+            if any(isinstance(axis, bool) or not isinstance(axis, int) for axis in value):
                 raise TypeError(
                     f"EventManager term '{self._term_name}' parameter 'axes' must contain integers"
                 )
@@ -433,20 +561,23 @@ class _ModelFieldRandomizer(ManagerTermBase):
             )
         return axes
 
-    def _resolve_ranges(self, value: Any, names: tuple[str, ...]) -> np.ndarray:
+    def _resolve_ranges(self, value: Any, names: tuple[str, ...]) -> torch.Tensor:
         per_entity: list[Any]
         if (
             isinstance(value, list)
             and len(value) == len(names)
-            and any(isinstance(item, (tuple, list, np.ndarray)) for item in value)
+            and any(isinstance(item, (tuple, list, torch.Tensor)) for item in value)
         ):
             per_entity = list(value)
             value = None
         else:
             per_entity = []
 
-        result = np.empty((len(names), self._field_width, 2), dtype=np.float64)
-        result[:] = np.nan
+        result = torch.full(
+            (len(names), self._field_width, 2),
+            float("nan"),
+            dtype=torch.float64,
+        )
         if per_entity:
             if len(self._axes) != 1:
                 raise ValueError(
@@ -483,39 +614,57 @@ class _ModelFieldRandomizer(ManagerTermBase):
             )
             for axis in self._axes:
                 result[:, axis] = parameters
-        result.setflags(write=False)
         return result
 
-    def _sample_axis(self, env: ManagerBasedRlEnv, axis: int, count: int) -> np.ndarray:
-        parameters = self._ranges[:, axis]
-        if self._shared_random:
-            samples = np.empty((count, len(parameters)), dtype=np.float64)
-            groups: dict[tuple[float, float], list[int]] = {}
-            for index, pair in enumerate(parameters):
-                groups.setdefault((float(pair[0]), float(pair[1])), []).append(index)
-            for (first, second), indices in groups.items():
-                if self._distribution == "gaussian":
-                    shared = env.rng.normal(first, second, size=(count, 1))
-                elif self._distribution == "log_uniform":
-                    shared = np.exp(env.rng.uniform(np.log(first), np.log(second), size=(count, 1)))
-                else:
-                    shared = env.rng.uniform(first, second, size=(count, 1))
-                samples[:, indices] = shared
-            return samples
-        if self._distribution == "gaussian":
-            return env.rng.normal(parameters[:, 0], parameters[:, 1], size=(count, len(parameters)))
-        if self._distribution == "log_uniform":
-            return np.exp(
-                env.rng.uniform(
-                    np.log(parameters[:, 0]),
-                    np.log(parameters[:, 1]),
-                    size=(count, len(parameters)),
-                )
+    def _build_axis_groups(
+        self, axis: int
+    ) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+        """Group selected columns sharing identical bounds for one axis on device."""
+        ranges = self._device_ranges
+        assert ranges is not None
+        parameters = self._ranges[:, axis].to(device=ranges.device)
+        groups: dict[tuple[float, float], list[int]] = {}
+        for index, pair in enumerate(parameters.detach().cpu().tolist()):
+            groups.setdefault((float(pair[0]), float(pair[1])), []).append(index)
+        return list(_shared_parameter_groups(parameters, groups))
+
+    def _sample_axis_on_device(self, rng: ManagerRng, axis: int, count: int) -> torch.Tensor:
+        """Sample one axis on the RNG device, honoring shared_random groups."""
+        ranges = self._device_ranges
+        assert ranges is not None
+        parameters = ranges[:, axis]
+        if not self._shared_random:
+            return _sample_distribution_on_device(
+                rng,
+                parameters[:, 0],
+                parameters[:, 1],
+                (count, parameters.shape[0]),
+                self._distribution,
             )
-        return env.rng.uniform(
-            parameters[:, 0],
-            parameters[:, 1],
-            size=(count, len(parameters)),
+        groups = self._device_axis_groups.get(axis)
+        if groups is None:
+            groups = self._build_axis_groups(axis)
+            self._device_axis_groups[axis] = groups
+        samples = torch.empty(
+            (count, parameters.shape[0]), dtype=torch.float32, device=parameters.device
+        )
+        for low, high, indices in groups:
+            shared = _sample_distribution_on_device(rng, low, high, (count, 1), self._distribution)
+            samples[:, indices] = shared
+        return samples
+
+    def _sample_device(self, env: ManagerBasedRlEnv) -> torch.device:
+        return _require_rng(env, self.name).device
+
+    def _sample_axis(self, env: ManagerBasedRlEnv, axis: int, count: int) -> torch.Tensor:
+        parameters = self._ranges[:, axis].to(device=self._sample_device(env))
+        rng = _require_rng(env, self.name)
+        return _sample_axis_on_device(
+            rng,
+            parameters,
+            count,
+            distribution=self._distribution,
+            shared_random=self._shared_random,
         )
 
     def __call__(
@@ -531,17 +680,22 @@ class _ModelFieldRandomizer(ManagerTermBase):
     ) -> None:
         del ranges, asset_cfg, distribution, operation, axes, shared_random
         ids = resolve_env_ids(env, env_ids)
-        canonical_ndim = 1 if self._field_width == 1 else 2
-        default_values = _selected_reset_defaults(
+        default_values = _model_field_default_rows(
             self._defaults,
             ids,
-            canonical_ndim=canonical_ndim,
+            field_width=self._field_width,
+            device=self._sample_device(env),
         )
-        values = np.array(default_values, copy=True)
-        for axis in self._axes:
-            samples = self._sample_axis(env, axis, len(ids))
+        sampled_axis = (
+            self._sample_axis(env, self._axes[0], ids.numel()).to(device=default_values.device)
+            if self._axes
+            else None
+        )
+        values = default_values.clone()
+        for index, axis in enumerate(self._axes):
+            samples = sampled_axis if index == 0 else self._sample_axis(env, axis, ids.numel())
             if self._field_width == 1:
-                values[...] = _apply_randomization_operation(
+                values = _apply_randomization_operation(
                     default_values,
                     samples,
                     self._operation,
@@ -552,7 +706,7 @@ class _ModelFieldRandomizer(ManagerTermBase):
                     samples,
                     self._operation,
                 )
-        if np.any(values < 0.0) or not np.isfinite(values).all():
+        if bool((values < 0.0).any()) or not bool(torch.isfinite(values).all()):
             raise ValueError(
                 f"EventManager term '{self._term_name}' produced negative, NaN, or Inf values"
             )
@@ -571,7 +725,7 @@ class GeomFriction(_ModelFieldRandomizer):
         self,
         entity: Entity,
         asset_cfg: SceneEntityCfg,
-    ) -> tuple[np.ndarray, np.ndarray, tuple[str, ...]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, tuple[str, ...]]:
         local_ids, defaults = entity.bind_geom_friction_write(
             asset_cfg.geom_ids,
             term_name=self._term_name,
@@ -579,7 +733,7 @@ class GeomFriction(_ModelFieldRandomizer):
         names = tuple(entity.geom_names[int(index)] for index in local_ids)
         return local_ids, defaults, names
 
-    def _write(self, values: np.ndarray, env_ids: np.ndarray) -> None:
+    def _write(self, values: torch.Tensor, env_ids: torch.Tensor) -> None:
         self._entity.write_geom_friction_to_sim(
             values,
             self._local_ids,
@@ -588,16 +742,16 @@ class GeomFriction(_ModelFieldRandomizer):
         )
 
 
-class JointArmature(_ModelFieldRandomizer):
-    """Pinned mjlab-style joint armature randomization through the reset payload."""
+class DofArmature(_ModelFieldRandomizer):
+    """Pinned mjlab-style dof armature randomization through the reset payload."""
 
-    _term_name = "joint_armature"
+    _term_name = "dof_armature"
 
     def _bind(
         self,
         entity: Entity,
         asset_cfg: SceneEntityCfg,
-    ) -> tuple[np.ndarray, np.ndarray, tuple[str, ...]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, tuple[str, ...]]:
         local_ids, defaults = entity.bind_joint_armature_write(
             asset_cfg.joint_ids,
             term_name=self._term_name,
@@ -605,7 +759,7 @@ class JointArmature(_ModelFieldRandomizer):
         names = tuple(entity.joint_names[int(index)] for index in local_ids)
         return local_ids, defaults, names
 
-    def _write(self, values: np.ndarray, env_ids: np.ndarray) -> None:
+    def _write(self, values: torch.Tensor, env_ids: torch.Tensor) -> None:
         self._entity.write_joint_armature_to_sim(
             values,
             self._local_ids,
@@ -615,11 +769,10 @@ class JointArmature(_ModelFieldRandomizer):
 
 
 geom_friction = GeomFriction
-joint_armature = JointArmature
-dof_armature = joint_armature
+dof_armature = DofArmature
 
 
-class PdGains(ManagerTermBase):
+class PdGains(_ResetRandomizationTerm):
     """Pinned-mjlab-compatible PD gain randomization on UniLab reset payloads."""
 
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedRlEnv):
@@ -689,20 +842,28 @@ class PdGains(ManagerTermBase):
     ) -> None:
         del kp_range, kd_range, asset_cfg, distribution, operation
         ids = resolve_env_ids(env, env_ids)
-        shape = (len(ids), len(self._actuator_ids))
-        kp = _sample_gain_range(env.rng, self._kp_range, shape, self._distribution)
-        kd = _sample_gain_range(env.rng, self._kd_range, shape, self._distribution)
+        shape = (ids.numel(), len(self._actuator_ids))
+        kp = _sample_gain_range(
+            _require_rng(env, "pd_gains"), self._kp_range, shape, self._distribution
+        )
+        kd = _sample_gain_range(
+            _require_rng(env, "pd_gains"), self._kd_range, shape, self._distribution
+        )
         if self._operation == "scale":
-            kp = kp * _selected_reset_defaults(
+            default_kp = _selected_reset_defaults(
                 self._default_kp,
                 ids,
                 canonical_ndim=1,
+                device=kp.device,
             )
-            kd = kd * _selected_reset_defaults(
+            default_kd = _selected_reset_defaults(
                 self._default_kd,
                 ids,
                 canonical_ndim=1,
+                device=kd.device,
             )
+            kp = kp * default_kp.to(dtype=kp.dtype, device=kp.device)
+            kd = kd * default_kd.to(dtype=kd.dtype, device=kd.device)
         self._entity.write_actuator_gains_to_sim(
             kp,
             kd,
@@ -715,8 +876,8 @@ class PdGains(ManagerTermBase):
 pd_gains = PdGains
 
 
-class RandomizeRigidBodyMass(ManagerTermBase):
-    """Community-compatible body-mass randomization via the reset payload."""
+class RandomizeRigidBodyMass(_ResetRandomizationTerm):
+    """Community-compatible body-mass randomization via reset/startup payloads."""
 
     _PARAMS = frozenset(
         (
@@ -728,6 +889,7 @@ class RandomizeRigidBodyMass(ManagerTermBase):
             "min_mass",
         )
     )
+    uses_startup_rows = True
 
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedRlEnv):
         super().__init__(env)
@@ -735,7 +897,7 @@ class RandomizeRigidBodyMass(ManagerTermBase):
         _validate_event_term(
             cfg,
             term_name=term_name,
-            mode="reset",
+            mode=("reset", "startup"),
             allowed_params=self._PARAMS,
             required_params=("asset_cfg", "mass_distribution_params", "operation"),
         )
@@ -751,7 +913,7 @@ class RandomizeRigidBodyMass(ManagerTermBase):
         if recompute_inertia:
             raise NotImplementedError(
                 f"EventManager term '{term_name}' recompute_inertia=True is unavailable: "
-                "ResetRandomizationPayload has no inertia-recomputation contract; set it "
+                "TensorResetRandomizationPayload has no inertia-recomputation contract; set it "
                 "explicitly to false or do not configure this term"
             )
         self._operation = _event_choice(
@@ -776,7 +938,7 @@ class RandomizeRigidBodyMass(ManagerTermBase):
         if isinstance(min_mass, bool) or not isinstance(min_mass, (int, float)):
             raise TypeError(f"EventManager term '{term_name}' min_mass must be numeric")
         self._min_mass = float(min_mass)
-        if not np.isfinite(self._min_mass) or self._min_mass < 1e-6:
+        if not math.isfinite(self._min_mass) or self._min_mass < 1e-6:
             raise ValueError(
                 f"EventManager term '{term_name}' min_mass must be finite and at least 1e-6"
             )
@@ -784,6 +946,52 @@ class RandomizeRigidBodyMass(ManagerTermBase):
         self._body_ids, self._default_mass = self._entity.bind_body_mass_write(
             asset_cfg.body_ids,
             term_name=term_name,
+        )
+        self._startup = cfg.mode == "startup"
+        self._startup_values: torch.Tensor | None = None
+
+    def _apply_startup(self, env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> None:
+        """Sample every world once and replay the immutable startup table.
+
+        Manager startup always supplies every environment row. The event is
+        full-width so the backend pays its derived-constant refresh once and
+        later mask resets can omit this field entirely.
+        """
+        ids = resolve_env_ids(env, env_ids)
+        if not torch.equal(ids, torch.arange(env.num_envs, dtype=torch.int64, device=ids.device)):
+            raise ValueError(
+                "EventManager term 'randomize_rigid_body_mass' startup mode requires all "
+                f"environment rows; got {ids.tolist()} for {env.num_envs} environments"
+            )
+        if self._startup_values is None:
+            sampled = _sample_distribution(
+                _require_rng(env, "randomize_rigid_body_mass"),
+                self._distribution_params,
+                (env.num_envs, self._body_ids.size),
+                self._distribution,
+            )
+            default_mass = _selected_reset_defaults(
+                self._default_mass,
+                ids,
+                canonical_ndim=1,
+                device=sampled.device,
+            )
+            values = _apply_randomization_operation(
+                default_mass,
+                sampled,
+                self._operation,
+            ).clamp_min(self._min_mass)
+            if not bool(torch.isfinite(values).all()):
+                raise ValueError(
+                    "EventManager term 'randomize_rigid_body_mass' produced NaN or Inf "
+                    "startup values"
+                )
+            self._startup_values = values
+        self._entity.record_startup_body_mass_to_sim(
+            self._startup_values,
+            body_ids=self._body_ids,
+            env_ids=ids,
+            term_name="randomize_rigid_body_mass",
         )
 
     def __call__(
@@ -805,24 +1013,27 @@ class RandomizeRigidBodyMass(ManagerTermBase):
             recompute_inertia,
             min_mass,
         )
+        if self._startup:
+            self._apply_startup(env, env_ids)
+            return
         ids = resolve_env_ids(env, env_ids)
-        samples = _sample_distribution(
-            env.rng,
+        sampled = _sample_distribution(
+            _require_rng(env, "randomize_rigid_body_mass"),
             self._distribution_params,
-            (ids.size, self._body_ids.size),
+            (ids.numel(), self._body_ids.size),
             self._distribution,
         )
         default_mass = _selected_reset_defaults(
             self._default_mass,
             ids,
             canonical_ndim=1,
+            device=sampled.device,
         )
         values = _apply_randomization_operation(
             default_mass,
-            samples,
+            sampled,
             self._operation,
-        )
-        np.maximum(values, self._min_mass, out=values)
+        ).clamp_min(self._min_mass)
         self._entity.write_body_mass_to_sim(
             values,
             body_ids=self._body_ids,
@@ -834,10 +1045,10 @@ class RandomizeRigidBodyMass(ManagerTermBase):
 randomize_rigid_body_mass = RandomizeRigidBodyMass
 
 
-class RandomizeBodyMassInertia(ManagerTermBase):
+class RandomizeBodyMassInertia(_ResetRandomizationTerm):
     """Startup-style mass+inertia scaling via one shared per-env factor.
 
-    NumPy adapter for the alpha-only slice of mjlab's ``dr.pseudo_inertia``:
+    Device-tensor adapter for the alpha-only slice of mjlab's ``dr.pseudo_inertia``:
     mass and principal inertia of the selected bodies are multiplied by the
     same factor s = e^{2α} with α ~ U(ln(lo)/2, ln(hi)/2) — i.e. s is
     log-uniform in ``scale_range``; the CoM (``body_ipos``) and the principal
@@ -886,7 +1097,7 @@ class RandomizeBodyMassInertia(ManagerTermBase):
             asset_cfg.body_ids,
             term_name=term_name,
         )
-        if not np.array_equal(self._body_ids, inertia_ids):
+        if self._body_ids.tolist() != inertia_ids.tolist():
             raise RuntimeError(
                 f"EventManager term '{term_name}' mass/inertia body bindings diverged: "
                 f"{self._body_ids.tolist()} != {inertia_ids.tolist()}"
@@ -896,7 +1107,7 @@ class RandomizeBodyMassInertia(ManagerTermBase):
                 f"EventManager term '{term_name}' mass and inertia default tables use "
                 "incompatible canonical/per-environment layouts"
             )
-        self._scales: np.ndarray | None = None
+        self._scales: torch.Tensor | None = None
 
     def __call__(
         self,
@@ -908,22 +1119,26 @@ class RandomizeBodyMassInertia(ManagerTermBase):
         del asset_cfg, scale_range
         ids = resolve_env_ids(env, env_ids)
         if self._scales is None:
-            alpha = env.rng.uniform(
+            alpha = _require_rng(env, "randomize_body_mass_inertia").uniform(
                 math.log(self._scale_lo) / 2.0,
                 math.log(self._scale_hi) / 2.0,
-                size=(env.num_envs, self._body_ids.size),
+                (env.num_envs, self._body_ids.size),
+                dtype=torch.float64,
             )
-            self._scales = np.exp(2.0 * alpha)
-        scales = self._scales[ids]
+            self._scales = torch.exp(2.0 * alpha)
+        rows = ids.to(dtype=torch.int64, device=self._scales.device)
+        scales = self._scales.index_select(0, rows)
         default_mass = _selected_reset_defaults(
             self._default_mass,
             ids,
             canonical_ndim=1,
+            device=self._scales.device,
         )
         default_inertia = _selected_reset_defaults(
             self._default_inertia,
             ids,
             canonical_ndim=2,
+            device=self._scales.device,
         )
         self._entity.write_body_mass_to_sim(
             default_mass * scales,
@@ -932,7 +1147,7 @@ class RandomizeBodyMassInertia(ManagerTermBase):
             term_name="randomize_body_mass_inertia",
         )
         self._entity.write_body_inertia_to_sim(
-            default_inertia * scales[:, :, None],
+            default_inertia * scales[..., None],
             body_ids=self._body_ids,
             env_ids=ids,
             term_name="randomize_body_mass_inertia",
@@ -942,13 +1157,19 @@ class RandomizeBodyMassInertia(ManagerTermBase):
 randomize_body_mass_inertia = RandomizeBodyMassInertia
 
 
-class RandomizeRigidBodyCom(ManagerTermBase):
+class RandomizeRigidBodyCom(_ResetRandomizationTerm):
     """Community-compatible additive rigid-body CoM randomization.
 
     The ``com_range`` param is re-resolved from the live term params on every
     apply (not cached at construction), so step-staged curricula can widen the
     range by updating the event term config between resets.
+
+    In startup mode the declared range is sampled once for every environment and
+    the resulting full-width table is replayed; later curriculum changes do not
+    retroactively alter the already-fixed per-env values.
     """
+
+    uses_startup_rows = True
 
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedRlEnv):
         super().__init__(env)
@@ -956,7 +1177,7 @@ class RandomizeRigidBodyCom(ManagerTermBase):
         _validate_event_term(
             cfg,
             term_name=term_name,
-            mode="reset",
+            mode=("reset", "startup"),
             allowed_params=frozenset(("com_range", "asset_cfg")),
             required_params=("com_range", "asset_cfg"),
         )
@@ -979,6 +1200,54 @@ class RandomizeRigidBodyCom(ManagerTermBase):
             asset_cfg.body_ids,
             term_name=term_name,
         )
+        self._startup = cfg.mode == "startup"
+        self._startup_values: torch.Tensor | None = None
+
+    def _apply_startup(
+        self,
+        env: ManagerBasedRlEnv,
+        env_ids: torch.Tensor | None,
+        com_range: dict[str, tuple[float, float]],
+    ) -> None:
+        """Sample every world once and commit the immutable startup table."""
+        ids = resolve_env_ids(env, env_ids)
+        if not torch.equal(ids, torch.arange(env.num_envs, dtype=torch.int64, device=ids.device)):
+            raise ValueError(
+                "EventManager term 'randomize_rigid_body_com' startup mode requires all "
+                f"environment rows; got {ids.tolist()} for {env.num_envs} environments"
+            )
+        if self._startup_values is None:
+            ranges = _axis_ranges(
+                com_range,
+                term_name="randomize_rigid_body_com",
+                name="com_range",
+                keys=_XYZ_KEYS,
+            )
+            offsets = _require_rng(env, "randomize_rigid_body_com").uniform(
+                torch.as_tensor(ranges[:, 0], dtype=torch.float64),
+                torch.as_tensor(ranges[:, 1], dtype=torch.float64),
+                (env.num_envs, 3),
+                dtype=torch.float64,
+            )
+            default_ipos = _selected_reset_defaults(
+                self._default_ipos,
+                ids,
+                canonical_ndim=2,
+                device=offsets.device,
+            )
+            values = default_ipos + offsets[:, None, :]
+            if not bool(torch.isfinite(values).all()):
+                raise ValueError(
+                    "EventManager term 'randomize_rigid_body_com' produced NaN or Inf "
+                    "startup values"
+                )
+            self._startup_values = values
+        self._entity.record_startup_body_ipos_to_sim(
+            self._startup_values,
+            body_ids=self._body_ids,
+            env_ids=ids,
+            term_name="randomize_rigid_body_com",
+        )
 
     def __call__(
         self,
@@ -988,6 +1257,9 @@ class RandomizeRigidBodyCom(ManagerTermBase):
         asset_cfg: SceneEntityCfg,
     ) -> None:
         del asset_cfg
+        if self._startup:
+            self._apply_startup(env, env_ids, com_range)
+            return
         ranges = _axis_ranges(
             com_range,
             term_name="randomize_rigid_body_com",
@@ -995,15 +1267,17 @@ class RandomizeRigidBodyCom(ManagerTermBase):
             keys=_XYZ_KEYS,
         )
         ids = resolve_env_ids(env, env_ids)
-        offsets = env.rng.uniform(
-            ranges[:, 0],
-            ranges[:, 1],
-            size=(ids.size, 3),
+        offsets = _require_rng(env, "randomize_rigid_body_com").uniform(
+            torch.as_tensor(ranges[:, 0], dtype=torch.float64),
+            torch.as_tensor(ranges[:, 1], dtype=torch.float64),
+            (ids.numel(), 3),
+            dtype=torch.float64,
         )
         default_ipos = _selected_reset_defaults(
             self._default_ipos,
             ids,
             canonical_ndim=2,
+            device=offsets.device,
         )
         values = default_ipos + offsets[:, None, :]
         self._entity.write_body_ipos_to_sim(
@@ -1017,7 +1291,7 @@ class RandomizeRigidBodyCom(ManagerTermBase):
 randomize_rigid_body_com = RandomizeRigidBodyCom
 
 
-class RandomizePhysicsSceneGravity(ManagerTermBase):
+class RandomizePhysicsSceneGravity(_ResetRandomizationTerm):
     """Community-compatible gravity randomization through reset transactions."""
 
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedRlEnv):
@@ -1049,7 +1323,9 @@ class RandomizePhysicsSceneGravity(ManagerTermBase):
             width=3,
             distribution=self._distribution,
         )
-        self._default_gravity = env.scene.bind_gravity_write(term_name=term_name)
+        self._default_gravity = env.scene.bind_gravity_write_tensor(
+            term_name=term_name, device=getattr(env, "device", torch.device("cpu"))
+        )
 
     def __call__(
         self,
@@ -1061,20 +1337,28 @@ class RandomizePhysicsSceneGravity(ManagerTermBase):
     ) -> None:
         del gravity_distribution_params, operation, distribution
         ids = resolve_env_ids(env, env_ids)
-        samples = _sample_distribution(
-            env.rng,
+        sampled = _sample_distribution(
+            _require_rng(env, "randomize_physics_scene_gravity"),
             self._distribution_params,
-            (ids.size, 3),
+            (ids.numel(), 3),
             self._distribution,
         )
-        default_gravity = _selected_reset_defaults(
-            self._default_gravity,
-            ids,
-            canonical_ndim=1,
-        )
+        if self._default_gravity.ndim == 1:
+            default_gravity = (
+                self._default_gravity.expand(ids.numel(), 3).clone()
+                if self._default_gravity.shape[0] == 1
+                else self._default_gravity
+            ).to(device=sampled.device)
+        else:
+            default_gravity = _selected_reset_defaults(
+                self._default_gravity,
+                ids,
+                canonical_ndim=1,
+                device=sampled.device,
+            )
         values = _apply_randomization_operation(
             default_gravity,
-            samples,
+            sampled,
             self._operation,
         )
         env.scene.write_gravity_to_sim(
@@ -1124,7 +1408,7 @@ class PushBySettingVelocity(ManagerTermBase):
             name="velocity_range",
             keys=_SE3_KEYS,
         )
-        self._angular_active = bool(np.any(ranges[3:] != 0.0))
+        self._angular_active = bool((ranges[3:] != 0.0).any())
         self._entity = cast("Entity", env.scene[asset_cfg.name])
         self._entity.bind_root_linear_velocity_delta(term_name=term_name)
         if self._angular_active:
@@ -1150,11 +1434,11 @@ class PushBySettingVelocity(ManagerTermBase):
         linear_delta = self._host_uniform(
             linear_ranges[:, 0],
             linear_ranges[:, 1],
-            size=(ids.size, 3),
+            size=(ids.numel(), 3),
             env=env,
         )
         angular_delta = None
-        if np.any(angular_ranges != 0.0):
+        if bool((angular_ranges != 0.0).any()):
             if not self._angular_active:
                 raise NotImplementedError(
                     "EventManager term 'push_by_setting_velocity' velocity_range activated "
@@ -1165,7 +1449,7 @@ class PushBySettingVelocity(ManagerTermBase):
             angular_delta = self._host_uniform(
                 angular_ranges[:, 0],
                 angular_ranges[:, 1],
-                size=(ids.size, 3),
+                size=(ids.numel(), 3),
                 env=env,
             )
         self._entity.apply_root_velocity_delta_to_sim(
@@ -1177,20 +1461,19 @@ class PushBySettingVelocity(ManagerTermBase):
 
     def _host_uniform(
         self,
-        lower: np.ndarray,
-        upper: np.ndarray,
+        lower: torch.Tensor,
+        upper: torch.Tensor,
         *,
         size: tuple[int, ...],
         env: ManagerBasedRlEnv,
-    ) -> np.ndarray:
-        rng_owner = getattr(env, "torch_rng", None)
-        generator = rng_owner.generator if isinstance(rng_owner, TorchManagerRng) else None
-        if generator is not None:
-            unit = torch.rand(size, generator=generator, device=generator.device)
-            scale = torch.as_tensor(upper - lower, dtype=unit.dtype, device=unit.device)
-            offset = torch.as_tensor(lower, dtype=unit.dtype, device=unit.device)
-            return (unit * scale + offset).cpu().numpy()
-        return env.rng.uniform(lower, upper, size=size)
+    ) -> torch.Tensor:
+        rng = _require_rng(env, "push_by_setting_velocity")
+        unit = torch.rand(size, generator=rng.generator, device=rng.device)
+        scale = torch.as_tensor(upper - lower, dtype=unit.dtype, device=unit.device)
+        offset = torch.as_tensor(lower, dtype=unit.dtype, device=unit.device)
+        # The interval plan is torch-first; samples stay on the Manager
+        # generator device and the backend adapter owns any host conversion.
+        return unit * scale + offset
 
 
 push_by_setting_velocity = PushBySettingVelocity
@@ -1203,21 +1486,17 @@ def _time_range(
     name: str,
 ) -> tuple[float, float]:
     try:
-        bounds = np.asarray(value, dtype=np.float64)
+        if isinstance(value, (str, bytes)) or len(tuple(value)) != 2:
+            raise ValueError
+        lower, upper = float(value[0]), float(value[1])
     except (TypeError, ValueError) as exc:
         raise TypeError(
             f"EventManager term '{term_name}' parameter '{name}' must be a numeric (min, max) pair"
         ) from exc
-    if bounds.shape != (2,):
-        raise ValueError(
-            f"EventManager term '{term_name}' parameter '{name}' must have shape (2,), "
-            f"got {bounds.shape}"
-        )
-    if not np.isfinite(bounds).all():
+    if not (math.isfinite(lower) and math.isfinite(upper)):
         raise ValueError(
             f"EventManager term '{term_name}' parameter '{name}' must contain only finite values"
         )
-    lower, upper = float(bounds[0]), float(bounds[1])
     if lower < 0.0 or lower > upper:
         raise ValueError(
             f"EventManager term '{term_name}' parameter '{name}' must satisfy "
@@ -1229,7 +1508,7 @@ def _time_range(
 class ApplyBodyImpulse(ManagerTermBase):
     """Transient random body impulses with a cooldown->trigger->sustain->expire lifecycle.
 
-    NumPy adaptation of the pinned mjlab ``apply_body_impulse`` term. Each
+    Device-tensor adaptation of the pinned mjlab ``apply_body_impulse`` term. Each
     environment runs an independent timer: after a sampled cooldown, a
     uniformly sampled world-frame wrench is staged on the selected bodies and
     re-staged every step for a sampled duration, then expires back into
@@ -1253,6 +1532,14 @@ class ApplyBodyImpulse(ManagerTermBase):
             "body_point_offset",
         )
     )
+
+    @property
+    def entity_name(self) -> str:
+        return self._asset_cfg_name
+
+    @property
+    def tensor_body_names(self) -> tuple[str, ...]:
+        return self._body_names if self._body_point_offset is not None else ()
 
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedRlEnv):
         super().__init__(env)
@@ -1290,57 +1577,63 @@ class ApplyBodyImpulse(ManagerTermBase):
             )
         offset = cfg.params.get("body_point_offset")
         if offset is not None:
-            offset_array = np.asarray(offset, dtype=np.float64)
-            if offset_array.shape != (3,) or not np.isfinite(offset_array).all():
+            try:
+                if isinstance(offset, (str, bytes)) or len(tuple(offset)) != 3:
+                    raise ValueError
+                x, y, z = (float(component) for component in offset)
+            except (TypeError, ValueError) as exc:
+                raise TypeError(
+                    f"EventManager term '{term_name}' body_point_offset must be numeric"
+                ) from exc
+            if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
                 raise ValueError(
                     f"EventManager term '{term_name}' body_point_offset must be a finite "
                     f"(x, y, z) triple, got {offset!r}"
                 )
-            self._body_point_offset: np.ndarray | None = np.array(offset_array)
+            self._body_point_offset: tuple[float, float, float] | None = (x, y, z)
         else:
             self._body_point_offset = None
 
         self._entity = cast("Entity", env.scene[asset_cfg.name])
+        self._asset_cfg_name = asset_cfg.name
         self._uses_torque = (
-            bool(np.any(self._torque_range != 0.0)) or self._body_point_offset is not None
+            bool((self._torque_range != 0.0).any()) or self._body_point_offset is not None
         )
         self._local_body_ids, self._backend_body_ids = self._entity.bind_body_wrench(
             asset_cfg.body_ids,
             torque=self._uses_torque,
             term_name=term_name,
         )
+        self._body_names = tuple(
+            self._entity.body_names[int(index)] for index in self._local_body_ids
+        )
         self._step_dt = float(env.step_dt)
-        if not np.isfinite(self._step_dt) or self._step_dt <= 0.0:
+        if not math.isfinite(self._step_dt) or self._step_dt <= 0.0:
             raise ValueError(
                 f"EventManager term '{term_name}' requires a positive env step_dt, "
                 f"got {self._step_dt}"
             )
         num_bodies = self._backend_body_ids.size
-        self._time_remaining = np.zeros(self.num_envs, dtype=np.float64)
-        self._active = np.zeros(self.num_envs, dtype=np.bool_)
-        self._active_forces = np.zeros((self.num_envs, num_bodies, 3), dtype=np.float64)
-        self._active_torques = np.zeros((self.num_envs, num_bodies, 3), dtype=np.float64)
+        self._device = _require_rng(self._env, "apply_body_impulse").device
+        self._time_remaining = torch.zeros(self.num_envs, dtype=torch.float64, device=self._device)
+        self._active = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
+        self._active_forces = torch.zeros(
+            (self.num_envs, num_bodies, 3), dtype=torch.float64, device=self._device
+        )
+        self._active_torques = torch.zeros(
+            (self.num_envs, num_bodies, 3), dtype=torch.float64, device=self._device
+        )
         # Pre-sample the initial cooldown so the first impulse is preceded by a
         # cooldown rather than firing immediately at t=0.
         self._interval_time_left = self._sample_cooldown(self.num_envs)
 
-    def _sample_cooldown(self, count: int) -> np.ndarray:
+    def _sample_cooldown(self, count: int) -> torch.Tensor:
         return self._host_uniform(self._cooldown_s[0], self._cooldown_s[1], count)
 
-    def _host_uniform(self, lower: float, upper: float, count: int) -> np.ndarray:
-        rng_owner = getattr(self._env, "torch_rng", None)
-        generator = rng_owner.generator if isinstance(rng_owner, TorchManagerRng) else None
-        if generator is not None:
-            return (
-                (
-                    torch.rand((count,), generator=generator, device=generator.device)
-                    * float(upper - lower)
-                    + float(lower)
-                )
-                .cpu()
-                .numpy()
-            )
-        return self._env.rng.uniform(lower, upper, count)
+    def _host_uniform(self, lower: float, upper: float, count: int) -> torch.Tensor:
+        rng = _require_rng(self._env, "apply_body_impulse")
+        samples = torch.rand((count,), generator=rng.generator, device=rng.device)
+        return (samples * float(upper - lower) + float(lower)).to(dtype=torch.float64)
 
     def __call__(
         self,
@@ -1359,20 +1652,20 @@ class ApplyBodyImpulse(ManagerTermBase):
         # Decrement active impulse timers, then expire finished impulses.
         self._time_remaining[self._active] -= dt
         expired = self._active & (self._time_remaining <= 0.0)
-        if np.any(expired):
-            expired_ids = np.flatnonzero(expired)
-            self._active[expired_ids] = False
-            self._active_forces[expired_ids] = 0.0
-            self._active_torques[expired_ids] = 0.0
-            self._time_remaining[expired_ids] = 0.0
-            self._interval_time_left[expired_ids] = self._sample_cooldown(len(expired_ids))
+        self._active &= ~expired
+        self._active_forces[expired] = 0.0
+        self._active_torques[expired] = 0.0
+        self._time_remaining[expired] = 0.0
+        if bool(expired.any()):
+            expired_ids = torch.nonzero(expired, as_tuple=False).flatten()
+            self._interval_time_left[expired_ids] = self._sample_cooldown(expired_ids.numel())
 
         # Decrement cooldown timers, then trigger eligible envs.
         self._interval_time_left -= dt
         eligible = (~self._active) & (self._interval_time_left <= 0.0)
-        if np.any(eligible):
-            trigger_ids = np.flatnonzero(eligible)
-            count = len(trigger_ids)
+        if bool(eligible.any()):
+            trigger_ids = torch.nonzero(eligible, as_tuple=False).flatten()
+            count = trigger_ids.numel()
             num_bodies = self._backend_body_ids.size
             forces = self._host_uniform(
                 self._force_range[0], self._force_range[1], count * num_bodies * 3
@@ -1381,12 +1674,23 @@ class ApplyBodyImpulse(ManagerTermBase):
                 self._torque_range[0], self._torque_range[1], count * num_bodies * 3
             ).reshape(count, num_bodies, 3)
             if self._body_point_offset is not None:
-                quats = self._entity.data.body_link_quat_w[trigger_ids][:, self._local_body_ids]
-                offset_w = np_quat_apply_batched(
-                    quats.reshape(-1, 4),
-                    np.broadcast_to(self._body_point_offset, (count * num_bodies, 3)),
-                ).reshape(count, num_bodies, 3)
-                torques = torques + np.cross(offset_w, forces)
+                read_plan = getattr(self._env.scene, "read_plan", None)
+                if read_plan is None:
+                    raise NotImplementedError(
+                        "EventManager term 'apply_body_impulse' requires the packed "
+                        "Torch body-state read plan for body_point_offset"
+                    )
+                quats = read_plan.body_tensor_view(self._asset_cfg_name, self._body_names).quat_w
+                quat_rows = self._selected_body_quats(
+                    quats.to(device=self._device, dtype=torch.float64), trigger_ids
+                )
+                offsets = torch.tensor(
+                    self._body_point_offset,
+                    dtype=quat_rows.dtype,
+                    device=quat_rows.device,
+                ).expand(count * num_bodies, 3)
+                offset_w = _quat_apply(quat_rows, offsets).reshape(count, num_bodies, 3)
+                torques = torques + torch.linalg.cross(offset_w, forces)
             self._active_forces[trigger_ids] = forces
             self._active_torques[trigger_ids] = torques
             self._time_remaining[trigger_ids] = self._host_uniform(
@@ -1401,7 +1705,7 @@ class ApplyBodyImpulse(ManagerTermBase):
         # target update. Newly expired rows stage zeros, which actively clears
         # persistent channels. Idle envs skip the call entirely so the term
         # never clobbers another producer's staged forces.
-        if np.any(self._active) or np.any(expired):
+        if bool(self._active.any() or expired.any()):
             self._entity.apply_body_wrench_to_sim(
                 self._active_forces,
                 self._active_torques if self._uses_torque else None,
@@ -1410,29 +1714,34 @@ class ApplyBodyImpulse(ManagerTermBase):
                 term_name="apply_body_impulse",
             )
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        ids = (
-            np.arange(self.num_envs, dtype=np.intp)
-            if env_ids is None
-            else np.arange(self.num_envs, dtype=np.intp)[env_ids]
-            if isinstance(env_ids, slice)
-            else resolve_env_ids(self._env, env_ids).astype(np.intp, copy=False)
-        )
-        was_active = ids[self._active[ids]]
-        self._active[ids] = False
-        self._active_forces[ids] = 0.0
-        self._active_torques[ids] = 0.0
-        self._time_remaining[ids] = 0.0
-        self._interval_time_left[ids] = self._sample_cooldown(len(ids))
-        if was_active.size:
-            zeros = np.zeros((len(was_active), self._backend_body_ids.size, 3), dtype=np.float64)
+    def reset(self, env_ids: torch.Tensor) -> None:
+        """Clear transient impulse state for the selected envs (state-clearing hook)."""
+        was_active = bool(self._active.any())
+        self._active[env_ids] = False
+        self._active_forces[env_ids] = 0.0
+        self._active_torques[env_ids] = 0.0
+        self._time_remaining[env_ids] = 0.0
+        self._interval_time_left[env_ids] = self._sample_cooldown(env_ids.numel())
+        if was_active:
+            # Reset rows now stage zeros, which actively clears persistent
+            # channels; other rows re-stage their unchanged wrench.
             self._entity.apply_body_wrench_to_sim(
-                zeros,
-                zeros.copy() if self._uses_torque else None,
+                self._active_forces,
+                self._active_torques if self._uses_torque else None,
                 self._backend_body_ids,
-                env_ids=was_active,
+                env_ids=None,
                 term_name="apply_body_impulse",
             )
+
+    def _selected_body_quats(
+        self,
+        quats: torch.Tensor,
+        trigger_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        rows = quats.to(device=self._device)
+        rows = rows.index_select(0, trigger_ids.to(device=self._device))
+        columns = self._local_body_ids.to(device=self._device)
+        return rows.index_select(1, columns).reshape(-1, 4)
 
 
 apply_body_impulse = ApplyBodyImpulse
@@ -1457,19 +1766,33 @@ class RandomizeEncoderBias(ManagerTermBase):
                 f"EventManager term '{term_name}' asset_cfg must be SceneEntityCfg, "
                 f"got {type(asset_cfg).__name__}"
             )
-        bias_range = np.asarray(cfg.params["bias_range"], dtype=np.float64)
-        if bias_range.shape != (2,) or not np.isfinite(bias_range).all():
+        try:
+            raw_bias_range = cfg.params["bias_range"]
+            if isinstance(raw_bias_range, (str, bytes)) or len(tuple(raw_bias_range)) != 2:
+                raise ValueError
+            bias_lower, bias_upper = float(raw_bias_range[0]), float(raw_bias_range[1])
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                f"EventManager term '{term_name}' bias_range must be a numeric (min, max) pair"
+            ) from exc
+        if not (math.isfinite(bias_lower) and math.isfinite(bias_upper)):
             raise ValueError(f"EventManager term '{term_name}' bias_range must be a finite pair")
-        if bias_range[0] > bias_range[1]:
+        if bias_lower > bias_upper:
             raise ValueError(f"EventManager term '{term_name}' bias_range minimum exceeds maximum")
-        self._range = (float(bias_range[0]), float(bias_range[1]))
+        self._range = (bias_lower, bias_upper)
         self._entity = cast("Entity", env.scene[asset_cfg.name])
-        joint_ids = np.arange(self._entity.num_joints, dtype=np.intp)[asset_cfg.joint_ids]
-        if joint_ids.ndim != 1 or joint_ids.size == 0:
+        all_joint_ids = tuple(range(self._entity.num_joints))
+        if isinstance(asset_cfg.joint_ids, slice):
+            selected_ids: Sequence[int] = range(len(all_joint_ids))[asset_cfg.joint_ids]
+        else:
+            selected_ids = asset_cfg.joint_ids
+        joint_ids = tuple(all_joint_ids[index] for index in selected_ids)
+        if not joint_ids:
             raise ValueError(
                 f"EventManager term '{term_name}' asset_cfg must select at least one joint"
             )
         self._joint_ids = joint_ids
+        self._reset_mask_buffer = ResetMaskBuffer(self.num_envs, torch.device(env.device))
 
     def __call__(
         self,
@@ -1479,76 +1802,57 @@ class RandomizeEncoderBias(ManagerTermBase):
         asset_cfg: SceneEntityCfg,
     ) -> None:
         del bias_range, asset_cfg
-        ids = resolve_env_ids(env, env_ids)
         control = getattr(self._entity.data, "control_buffer", None)
         if isinstance(control, torch.Tensor):
-            rows = torch.as_tensor(ids, dtype=torch.int64, device=control.device)
-            columns = torch.from_numpy(self._joint_ids.astype(np.int64, copy=False)).to(
-                device=control.device
-            )
-            rng_owner = getattr(env, "torch_rng", None)
+            columns = torch.tensor(self._joint_ids, dtype=torch.int64, device=control.device)
+            rng_owner = getattr(env, "rng", None)
             if rng_owner is None:
-                raise NotImplementedError(
-                    "Tensor encoder-bias reset requires the Manager Torch RNG"
-                )
+                raise NotImplementedError("Tensor encoder-bias reset requires the Manager RNG")
+            ids = resolve_env_ids(env, env_ids)
             lower, upper = self._range
             sampled = rng_owner.uniform(
                 lower,
                 upper,
-                (rows.numel(), columns.numel()),
+                (self.num_envs, columns.numel()),
                 dtype=torch.float32,
             )
-            bias = self._entity.data.encoder_bias_tensor
-            bias.index_copy_(0, rows, bias.index_select(0, rows).index_copy_(1, columns, sampled))
+            reset_mask = self._reset_mask_buffer.scatter(ids)
+            self._entity.data.update_encoder_bias_tensor_mask(reset_mask, columns, sampled)
             return
-        self._entity.data.encoder_bias[np.ix_(ids, self._joint_ids)] = self._host_uniform(
-            (ids.size, self._joint_ids.size), env
+        raise NotImplementedError(
+            "EventManager term 'randomize_encoder_bias' requires a Torch control plane"
         )
-
-    def _host_uniform(self, size: tuple[int, ...], env: ManagerBasedRlEnv) -> np.ndarray:
-        rng_owner = getattr(env, "torch_rng", None)
-        generator = rng_owner.generator if isinstance(rng_owner, TorchManagerRng) else None
-        lower, upper = self._range
-        if generator is not None:
-            return (
-                (
-                    torch.rand(size, generator=generator, device=generator.device)
-                    * float(upper - lower)
-                    + float(lower)
-                )
-                .cpu()
-                .numpy()
-            )
-        return env.rng.uniform(lower, upper, size=size)
 
 
 randomize_encoder_bias = RandomizeEncoderBias
 
 
-def reset_scene_to_default(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> None:
+def reset_scene_to_default(env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> None:
     """Reset all materialized scene entities to backend default qpos/qvel."""
     if not env.scene.entities:
         return
-    env.scene.reset_to_default(env_ids, term_name="reset_scene_to_default")
+    reset_mask = env.event_term_mask_buffer.scatter(env_ids)
+    env.scene.reset_to_default(reset_mask, term_name="reset_scene_to_default")
 
 
 def reset_root_state_uniform(
     env: ManagerBasedRlEnv,
-    env_ids: torch.Tensor | None,
+    env_ids: torch.Tensor,
     pose_range: dict[str, tuple[float, float]],
     velocity_range: dict[str, tuple[float, float]] | None = None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
     """Reset a floating root from defaults plus uniformly sampled SE(3) offsets.
 
-    This is the NumPy adaptation of the pinned mjlab event. UniLab currently has
+    This is the Torch adaptation of the pinned mjlab event. UniLab currently has
     no public mocap-pose write contract, so fixed-base/mocap requests fail through
     the entity's cached floating-root capability instead of falling back.
     """
-    ids = resolve_env_ids(env, env_ids)
     asset = cast("Entity", env.scene[asset_cfg.name])
+    reset_mask = env.event_term_mask_buffer.scatter(env_ids)
     try:
-        root_states = np.array(asset.data.default_root_state[ids], copy=True)
+        default_root_state = asset.data.default_root_state(torch.device(env.device))
+        root_states = default_root_state.clone()
     except NotImplementedError as exc:
         raise NotImplementedError(
             "EventManager term 'reset_root_state_uniform' requires a floating-root "
@@ -1556,36 +1860,48 @@ def reset_root_state_uniform(
             f"unsupported without a formal backend contract: {exc}"
         ) from exc
 
-    pose_samples = _sample_se3_range(pose_range, (len(ids), 6), env.rng)
-    root_states[:, 0:3] = root_states[:, 0:3] + pose_samples[:, 0:3] + env.scene.env_origins[ids]
-    orientation_delta = np_quat_from_euler_xyz(
+    pose_samples = _sample_se3_range(
+        pose_range, (env.num_envs, 6), _require_rng(env, "reset_root_state_uniform")
+    )
+    root_states[:, 0:3] = (
+        root_states[:, 0:3]
+        + pose_samples[:, 0:3].to(dtype=root_states.dtype)
+        + env.scene.env_origins(torch.device(env.device))
+    )
+    orientation_delta = _quat_from_euler_xyz(
         pose_samples[:, 3], pose_samples[:, 4], pose_samples[:, 5]
     )
-    root_states[:, 3:7] = np_quat_mul(root_states[:, 3:7], orientation_delta)
+    root_states[:, 3:7] = _quat_mul(root_states[:, 3:7], orientation_delta.to(root_states.dtype))
 
-    velocity_samples = _sample_se3_range(velocity_range, (len(ids), 6), env.rng)
-    root_states[:, 7:13] = root_states[:, 7:13] + velocity_samples
-    asset.write_root_state_to_sim(root_states, env_ids=ids)
+    velocity_samples = _sample_se3_range(
+        velocity_range, (env.num_envs, 6), _require_rng(env, "reset_root_state_uniform")
+    )
+    root_states[:, 7:13] = root_states[:, 7:13] + velocity_samples.to(dtype=root_states.dtype)
+    asset.write_root_state_tensor_to_sim(root_states, reset_mask)
 
 
-def _tensor_se3_bounds(range_dict: dict[str, tuple[float, float]] | None) -> torch.Tensor:
+def _se3_bounds(range_dict: dict[str, tuple[float, float]] | None) -> torch.Tensor:
     try:
-        bounds = np.asarray(
-            [(range_dict or {}).get(key, (0.0, 0.0)) for key in _SE3_KEYS],
-            dtype=np.float32,
-        )
-    except (TypeError, ValueError) as exc:
+        values = [
+            [
+                float((range_dict or {}).get(key, (0.0, 0.0))[0]),
+                float((range_dict or {}).get(key, (0.0, 0.0))[1]),
+            ]
+            for key in _SE3_KEYS
+        ]
+        bounds = torch.tensor(values, dtype=torch.float32)
+    except (TypeError, ValueError, RuntimeError) as exc:
         raise ValueError(
             "tensor reset SE(3) ranges must map each key to a numeric (min, max) pair"
         ) from exc
-    if bounds.shape != (len(_SE3_KEYS), 2) or not np.isfinite(bounds).all():
+    if bounds.shape != (len(_SE3_KEYS), 2) or not bool(torch.isfinite(bounds).all()):
         raise ValueError("tensor reset SE(3) ranges must be finite (min, max) pairs")
-    if np.any(bounds[:, 0] > bounds[:, 1]):
+    if bool((bounds[:, 0] > bounds[:, 1]).any()):
         raise ValueError("tensor reset SE(3) range minimum exceeds maximum")
-    return torch.as_tensor(bounds)
+    return bounds
 
 
-def _tensor_quat_from_euler_xyz(
+def _quat_from_euler_xyz(
     roll: torch.Tensor, pitch: torch.Tensor, yaw: torch.Tensor
 ) -> torch.Tensor:
     """Convert XYZ Euler angles to device-resident wxyz quaternions."""
@@ -1603,7 +1919,17 @@ def _tensor_quat_from_euler_xyz(
     )
 
 
-def _tensor_quat_mul(left_wxyz: torch.Tensor, right_wxyz: torch.Tensor) -> torch.Tensor:
+def _quat_apply(quat_wxyz: torch.Tensor, vector: torch.Tensor) -> torch.Tensor:
+    """Apply broadcast-compatible wxyz quaternions to device-resident vectors."""
+    quat_xyz = quat_wxyz[..., 1:4]
+    if vector.ndim < quat_xyz.ndim:
+        vector = vector.expand_as(quat_xyz)
+    cross = torch.linalg.cross(quat_xyz, vector, dim=-1)
+    second_cross = torch.linalg.cross(quat_xyz, cross, dim=-1)
+    return vector + 2.0 * quat_wxyz[..., 0:1] * cross + 2.0 * second_cross
+
+
+def _quat_mul(left_wxyz: torch.Tensor, right_wxyz: torch.Tensor) -> torch.Tensor:
     """Multiply broadcast-compatible device-resident wxyz quaternions."""
     left_w, left_xyz = left_wxyz[..., 0:1], left_wxyz[..., 1:4]
     right_w, right_xyz = right_wxyz[..., 0:1], right_wxyz[..., 1:4]
@@ -1617,7 +1943,7 @@ def _tensor_quat_mul(left_wxyz: torch.Tensor, right_wxyz: torch.Tensor) -> torch
     )
 
 
-def _tensor_root_reset_kernel(
+def _root_reset_kernel(
     default_rows: torch.Tensor,
     origins_rows: torch.Tensor | None,
     pose_delta: torch.Tensor,
@@ -1629,107 +1955,63 @@ def _tensor_root_reset_kernel(
     if origins_rows is not None:
         output[:, 0:3] += origins_rows[:, 0:3]
     output[:, 0:3] += pose_delta[:, 0:3]
-    orientation_delta = _tensor_quat_from_euler_xyz(
-        pose_delta[:, 3], pose_delta[:, 4], pose_delta[:, 5]
-    )
-    output[:, 3:7] = _tensor_quat_mul(output[:, 3:7], orientation_delta)
+    orientation_delta = _quat_from_euler_xyz(pose_delta[:, 3], pose_delta[:, 4], pose_delta[:, 5])
+    output[:, 3:7] = _quat_mul(output[:, 3:7], orientation_delta)
     output[:, 7:13] += velocity_delta
 
 
-_TensorRootResetFn = Any
-_tensor_root_reset_compiled: _TensorRootResetFn | None = None
+_RootResetFn = Any
+_root_reset_compiled: _RootResetFn | None = None
 
 
-def _bind_tensor_root_reset() -> _TensorRootResetFn:
-    global _tensor_root_reset_compiled
-    if _tensor_root_reset_compiled is not None:
-        return _tensor_root_reset_compiled
+def _bind_root_reset() -> _RootResetFn:
+    global _root_reset_compiled
+    if _root_reset_compiled is not None:
+        return _root_reset_compiled
     if not (hasattr(torch, "compile") and hasattr(torch.compiler, "is_compiling")):
-        _tensor_root_reset_compiled = _tensor_root_reset_kernel
-        return _tensor_root_reset_compiled
-    _tensor_root_reset_compiled = torch.compile(_tensor_root_reset_kernel, dynamic=True)
-    return _tensor_root_reset_compiled
+        _root_reset_compiled = _root_reset_kernel
+        return _root_reset_compiled
+    _root_reset_compiled = torch.compile(_root_reset_kernel, dynamic=True)
+    return _root_reset_compiled
 
 
-def reset_root_state_uniform_tensor(
+def reset_root_state_uniform_fused(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
     pose_range: dict[str, tuple[float, float]],
     velocity_range: dict[str, tuple[float, float]] | None = None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
-    """Sample and stage a floating-root reset wholly on the declared device.
-
-    This owner-level event is the device-resident peer of
-    :func:`reset_root_state_uniform`. It consumes the environment's public CUDA
-    Torch generator and entity default table, so selected rows do not traverse a
-    NumPy composer or three host-to-device transfers.
-    """
-    if env.torch_rng is None:
+    """Full-width fused root reset."""
+    if env.rng is None:
         raise NotImplementedError(
-            "reset_root_state_uniform_tensor requires env.torch_rng on a CUDA "
-            "Manager tensor runtime"
+            "reset_root_state_uniform_fused requires env.rng on a CUDA Manager tensor runtime"
         )
-    if env_ids.device != torch.device(env.device):
-        raise ValueError("reset_root_state_uniform_tensor reset rows must live on env.device")
-    ids = env_ids
-    asset = env.scene[asset_cfg.name]
-    try:
-        default = asset.data.default_root_state
-    except NotImplementedError as exc:
-        raise NotImplementedError(
-            "EventManager term 'reset_root_state_uniform_tensor' requires a "
-            f"floating-root state for entity '{asset_cfg.name}'"
-        ) from exc
     device = torch.device(env.device)
-    rows = ids.to(dtype=torch.int64)
-    count = rows.numel()
-    if count == 0:
-        return
-
-    # Cache immutable default and origin tables on the event owner. The first
-    # selected reset pays one cold H2D copy; subsequent resets reuse them.
-    default_tensor = getattr(env, "_tensor_reset_default_root_state", None)
-    origins_tensor = getattr(env, "_tensor_reset_env_origins", None)
-    origins_enabled = getattr(env, "_tensor_reset_env_origins_nonzero", None)
-    pose_bounds_tensor = getattr(env, "_tensor_reset_pose_bounds", None)
-    velocity_bounds_tensor = getattr(env, "_tensor_reset_velocity_bounds", None)
-    bounds_key = getattr(env, "_tensor_reset_bounds_key", None)
-    origins_key = getattr(env, "_tensor_reset_env_origins_key", None)
-    new_origins_key = tuple(map(tuple, np.asarray(env.scene.env_origins, dtype=np.float32)))
-    new_bounds_key = (
+    reset_mask = env.event_term_mask_buffer.scatter(env_ids)
+    asset = cast("Entity", env.scene[asset_cfg.name])
+    asset.data.default_root_state(device)
+    num_envs = env.num_envs
+    bounds_key = (
         (asset_cfg.name, tuple(sorted(pose_range.items())), tuple(sorted(velocity_range.items())))
         if velocity_range is not None
         else (asset_cfg.name, tuple(sorted(pose_range.items())), None)
     )
-    if default_tensor is None or default_tensor.device != device:
-        default_tensor = torch.as_tensor(
-            np.array(default, copy=True, dtype=np.float32), device=device
-        )
-        env._tensor_reset_default_root_state = default_tensor
-    if origins_tensor is None or origins_tensor.device != device or origins_key != new_origins_key:
-        origins_tensor = torch.as_tensor(
-            np.array(env.scene.env_origins, dtype=np.float32, copy=True), device=device
-        )
-        env._tensor_reset_env_origins = origins_tensor
-        setattr(env, "_tensor_reset_env_origins_key", new_origins_key)
-        # Decide immutable origin applicability once on the cold path. A hot
-        # ``max().item()`` would synchronize every selected reset.
-        origins_enabled = bool(torch.not_equal(origins_tensor, 0.0).any().item())
-        setattr(env, "_tensor_reset_env_origins_nonzero", origins_enabled)
-    if pose_bounds_tensor is None or bounds_key != new_bounds_key:
-        new_pose_bounds = _tensor_se3_bounds(pose_range).to(device=device)
-        new_velocity_bounds = _tensor_se3_bounds(velocity_range).to(device=device)
-        env._tensor_reset_pose_bounds = new_pose_bounds
+    pose_bounds_tensor = getattr(env, "tensor_reset_pose_bounds", None)
+    velocity_bounds_tensor = getattr(env, "tensor_reset_velocity_bounds", None)
+    if pose_bounds_tensor is None or getattr(env, "tensor_reset_bounds_key", None) != bounds_key:
+        new_pose_bounds = _se3_bounds(pose_range).to(device=device)
+        new_velocity_bounds = _se3_bounds(velocity_range).to(device=device)
+        env.tensor_reset_pose_bounds = new_pose_bounds
+        env.tensor_reset_velocity_bounds = new_velocity_bounds
+        env.tensor_reset_bounds_key = bounds_key
         pose_bounds_tensor = new_pose_bounds
-        env._tensor_reset_velocity_bounds = new_velocity_bounds
         velocity_bounds_tensor = new_velocity_bounds
-        setattr(env, "_tensor_reset_bounds_key", new_bounds_key)
     reset_unit = torch.rand(
-        (count, 2 * len(_SE3_KEYS)),
+        (num_envs, 2 * len(_SE3_KEYS)),
         dtype=torch.float32,
         device=device,
-        generator=env.torch_rng.generator,
+        generator=env.rng.generator,
     )
     bounds = torch.cat((pose_bounds_tensor, velocity_bounds_tensor), dim=0)
     deltas = torch.addcmul(
@@ -1738,50 +2020,25 @@ def reset_root_state_uniform_tensor(
         bounds[None, :, 1] - bounds[None, :, 0],
     )
     pose_delta, velocity_delta = torch.split(deltas, len(_SE3_KEYS), dim=1)
-
-    default_rows = (
-        default_tensor if count == default_tensor.shape[0] else default_tensor.index_select(0, rows)
-    )
-    origins_rows = None
-    if origins_enabled:
-        origins_rows = (
-            origins_tensor
-            if count == origins_tensor.shape[0]
-            else origins_tensor.index_select(0, rows)
-        )
-    root_state = torch.empty_like(default_rows)
-    _bind_tensor_root_reset()(
-        default_rows,
-        origins_rows,
-        pose_delta,
-        velocity_delta,
-        root_state,
-    )
-    asset.write_root_state_tensor_to_sim(root_state, env_ids=rows)
+    default_tensor = asset.data.default_root_state(device)
+    origins = env.scene.env_origins(device)
+    root_state = torch.empty_like(default_tensor)
+    _bind_root_reset()(default_tensor, origins, pose_delta, velocity_delta, root_state)
+    asset.write_root_state_tensor_to_sim(root_state, reset_mask)
 
 
-setattr(reset_root_state_uniform_tensor, "uses_tensor_rows", True)
-
-
-def reset_scene_to_default_tensor(env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> None:
-    """Initialize canonical scalar reset defaults for selected device rows.
-
-    The tensor root reset term owns the same transaction and materializes the
-    full-width default state before writing sampled roots. This owner event
-    preserves the community reset hook while avoiding a duplicate selected-row
-    commit.
-    """
+def skip_scene_reset(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+) -> None:
+    """No-op reset hook for the canonical MJWarp reset scene term."""
     del env, env_ids
-
-
-setattr(reset_scene_to_default_tensor, "uses_tensor_rows", True)
 
 
 __all__ = [
     "apply_body_impulse",
     "dof_armature",
     "geom_friction",
-    "joint_armature",
     "pd_gains",
     "push_by_setting_velocity",
     "randomize_body_mass_inertia",
@@ -1790,8 +2047,8 @@ __all__ = [
     "randomize_rigid_body_com",
     "randomize_rigid_body_mass",
     "reset_root_state_uniform",
-    "reset_root_state_uniform_tensor",
+    "reset_root_state_uniform_fused",
     "reset_scene_to_default",
-    "reset_scene_to_default_tensor",
+    "skip_scene_reset",
     "resolve_env_ids",
 ]

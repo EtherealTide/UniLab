@@ -17,11 +17,12 @@ if str(_SCRIPTS_DIR) not in sys.path:
 from unilab.visualization.interactive_playback import (
     KeyboardCommander,
     OffPolicyPlaybackSession,
+    PlaybackConfig,
     PlaybackControls,
-    RslRlPlaybackConfig,
     RslRlPlaybackSession,
     create_rsl_rl_playback_session,
     create_sac_playback_session,
+    make_sim2sim_preflight,
     prepare_motion_overlay_selection,
 )
 
@@ -137,7 +138,7 @@ def test_create_rsl_rl_playback_session_loads_checkpoint_and_runner_log_dir() ->
             return lambda obs: torch.ones((1, 2))
 
     session, policy_obs_mode, checkpoint = create_rsl_rl_playback_session(
-        playback_cfg=RslRlPlaybackConfig(
+        playback_cfg=PlaybackConfig(
             task="MyTask",
             load_run="-1",
             checkpoint=None,
@@ -173,7 +174,7 @@ def test_create_rsl_rl_playback_session_loads_checkpoint_and_runner_log_dir() ->
 def test_create_rsl_rl_playback_session_rejects_missing_env() -> None:
     with pytest.raises(RuntimeError, match="Playback env factory"):
         create_rsl_rl_playback_session(
-            playback_cfg=RslRlPlaybackConfig(
+            playback_cfg=PlaybackConfig(
                 task="MyTask",
                 load_run="-1",
                 checkpoint=None,
@@ -232,14 +233,19 @@ class _StrictTensorPlaybackEnv:
             high=torch.full((4,), 2.0),
         )
         self.state = SimpleNamespace(info={"timing": {}})
-        self.reset_indices: list[torch.Tensor] = []
+        self.reset_masks: list[torch.Tensor] = []
         self.actions: list[torch.Tensor] = []
 
     def init_state(self):
         self.state = SimpleNamespace(info={"timing": {}})
 
-    def reset(self, env_indices):
-        self.reset_indices.append(env_indices)
+    def reset(self, reset_mask: torch.Tensor | None = None):
+        mask = (
+            torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+            if reset_mask is None
+            else reset_mask
+        )
+        self.reset_masks.append(mask)
         return {
             "obs": torch.arange(6, dtype=torch.float32).reshape(2, 3),
             "critic": torch.zeros((2, 5), dtype=torch.float32),
@@ -272,7 +278,7 @@ class _ConstantActor:
 
 def _rsl_rl_session_kwargs(tmp_path: Path) -> dict[str, Any]:
     return dict(
-        playback_cfg=RslRlPlaybackConfig(
+        playback_cfg=PlaybackConfig(
             task="MyTask",
             load_run="-1",
             checkpoint=None,
@@ -295,6 +301,25 @@ def _rsl_rl_session_kwargs(tmp_path: Path) -> dict[str, Any]:
         policy_obs_dims_getter=lambda spec: (5, 7),
         log=lambda message: None,
     )
+
+
+def test_make_sim2sim_preflight_requires_hydra_config() -> None:
+    with pytest.raises(ValueError, match="composed Hydra config"):
+        make_sim2sim_preflight(None, algo_name="ppo")
+    with pytest.raises(ValueError, match="composed Hydra config"):
+        make_sim2sim_preflight({"training": {}}, algo_name="ppo")
+
+
+def test_make_sim2sim_preflight_builds_closure_for_dictconfig() -> None:
+    from omegaconf import OmegaConf
+
+    cfg = OmegaConf.create({"training": {"sim2sim_strict": False}})
+
+    preflight = make_sim2sim_preflight(cfg, algo_name="ppo")
+
+    assert callable(preflight)
+    # No source run dir -> the sim2sim contract check is skipped by design.
+    assert preflight(None) is None
 
 
 def test_create_rsl_rl_playback_session_runs_sim2sim_preflight(tmp_path: Path) -> None:
@@ -355,9 +380,9 @@ def test_sac_playback_session_runs_sim2sim_preflight(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import uni_rl.algos.common.actor_factory as actor_factory
     from omegaconf import OmegaConf
 
+    import unilab.rl.algos.common.actor_factory as actor_factory
     import unilab.utils.checkpoint as checkpoint_utils
     import unilab.visualization.interactive_playback as interactive_playback
     import unilab.visualization.interactive_playback as offpolicy_play
@@ -415,18 +440,19 @@ def test_sac_playback_session_runs_sim2sim_preflight(
         "resolve_play_actor_spec",
         lambda algo_name, cfg, *, obs_dim, critic_obs_dim: ("sac", {}),
     )
+    resolved_checkpoint = (str(checkpoint), str(tmp_path))
     monkeypatch.setattr(
         checkpoint_utils,
-        "resolve_offpolicy_checkpoint_path",
-        lambda root, algo_log_name, task_name, selected_run: (
-            resolved_runs.append(selected_run),
-            (str(checkpoint), str(tmp_path)),
+        "resolve_checkpoint_path",
+        lambda task_log_root, load_run, *, checkpoint=None, suffix=".pt": (
+            resolved_runs.append(load_run),
+            resolved_checkpoint,
         )[1],
     )
     monkeypatch.setattr(actor_factory, "build_actor", lambda *args, **kwargs: FakeActor())
 
     _session, _mode, resolved = create_sac_playback_session(
-        playback_cfg=RslRlPlaybackConfig(
+        playback_cfg=PlaybackConfig(
             task="Task",
             load_run="run",
             checkpoint=None,
@@ -465,8 +491,8 @@ def test_offpolicy_playback_keeps_policy_io_on_env_device() -> None:
 
     assert torch.equal(obs, torch.arange(6, dtype=torch.float32).reshape(2, 3))
     assert obs.device == env.device
-    assert len(env.reset_indices) == 1
-    assert torch.equal(env.reset_indices[0], torch.arange(2, dtype=torch.int64, device=env.device))
+    assert len(env.reset_masks) == 1
+    assert torch.equal(env.reset_masks[0], torch.ones(2, dtype=torch.bool, device=env.device))
 
     next_obs = session.step_once()
 
@@ -695,7 +721,7 @@ def test_build_playback_config_maps_play_interactive_args() -> None:
 
     playback_cfg = build_playback_config(args, num_envs=3)
 
-    assert playback_cfg == RslRlPlaybackConfig(
+    assert playback_cfg == PlaybackConfig(
         task="OtherTask",
         load_run="run_1",
         checkpoint="12",
@@ -736,18 +762,18 @@ def test_build_play_backend_adapter_injects_root_dir_and_materializer(
     captured: dict[str, Any] = {}
     sentinel_materializer = object()
 
-    class FakeBackendAdapter:
+    class FakeEnvConfigAdapter:
         def __init__(self, cfg: Any, **kwargs: Any) -> None:
             captured["cfg"] = cfg
             captured.update(kwargs)
 
-    monkeypatch.setattr(config_adapter, "BackendAdapter", FakeBackendAdapter)
+    monkeypatch.setattr(config_adapter, "EnvConfigAdapter", FakeEnvConfigAdapter)
     monkeypatch.setattr(config_adapter, "materialize_scene_visual_override", sentinel_materializer)
 
     cfg = SimpleNamespace(training=SimpleNamespace(task_name="Task"))
     adapter = build_play_backend_adapter(cfg, root_dir="/repo", algo_name="appo")
 
-    assert isinstance(adapter, FakeBackendAdapter)
+    assert isinstance(adapter, FakeEnvConfigAdapter)
     assert captured == {
         "cfg": cfg,
         "root_dir": "/repo",

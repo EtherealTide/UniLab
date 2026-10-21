@@ -14,7 +14,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import unisim
-from unisim.backend.base import SimBackend, TensorExecution, validate_tensor_device
+from unisim.backend.base import SimBackend, TensorExecution, validate_torch_device
 from unisim.support import get_tensor_platform_profiles
 
 from unilab.assets.hub import ensure_robot_assets_for_paths, resolve_superdex_robot_asset
@@ -43,12 +43,17 @@ def _requested_cuda_only_device(backend_type: str, kwargs: dict[str, Any]) -> st
         device = kwargs.get("newton_device")
         return "cuda" if device is None else str(device)
 
+    if backend_type not in _CUDA_BACKEND_INT_DEVICE_FIELDS:
+        raise ValueError(
+            f"{backend_type} is a CUDA-only tensor backend without a UniLab "
+            "EnvCfg device binding; it is shelved out of the Manager runtime "
+            "(issue #1811)."
+        )
     field = _CUDA_BACKEND_INT_DEVICE_FIELDS[backend_type]
     device_id = kwargs.get(field)
     if device_id is None:
-        # Genesis follows its current/default process device when unset.  The
-        # Isaac workers instead default their payload to ordinal zero, so an
-        # omitted owner field remains an explicit zero request.
+        # Genesis follows its current/default process device when unset. Isaac
+        # workers default their payload to ordinal zero.
         return "cuda:0" if backend_type in _EXTERNAL_WORKER_DEVICE_FIELDS else "cuda"
     if isinstance(device_id, bool) or not isinstance(device_id, int) or device_id < 0:
         raise ValueError(f"{field} must be a non-negative integer or None, got {device_id!r}")
@@ -129,7 +134,7 @@ def _validate_cuda_only_backend_platform(backend_type: str, kwargs: dict[str, An
 
     runtime_state, current_device = _torch_cuda_runtime_state()
     try:
-        validate_tensor_device(
+        validate_torch_device(
             profile.torch_devices,
             requested_device,
             current_device=current_device,
@@ -203,14 +208,8 @@ def _validate_cuda_only_backend_platform(backend_type: str, kwargs: dict[str, An
 
 
 def _validate_isaacsim_tensor_cuda_ipc_runtime() -> None:
-    """Fail closed before constructing an IsaacSim release without CUDA IPC.
+    """Fail closed when UniSim does not understand its CUDA IPC option."""
 
-    ``isaacsim_tensor_cuda_ipc`` is an M9 candidate contract.  A production
-    owner must not reach a released unisim-core that silently ignores or does
-    not understand the constructor option.  The public adapter constructor is
-    the compatibility boundary; no backend-private implementation state is
-    inspected.
-    """
     from unisim.backend.isaacsim import IsaacSimBackend
 
     parameter = inspect.signature(IsaacSimBackend.__init__).parameters.get("tensor_cuda_ipc")
@@ -250,28 +249,14 @@ def env_backend_kwargs(cfg: "EnvCfg") -> dict[str, Any]:
         "isaacsim_render_mode": cfg.isaacsim_render_mode,
         "isaacsim_render_width": cfg.isaacsim_render_width,
         "isaacsim_render_height": cfg.isaacsim_render_height,
-        "isaacsim_solver_position_iteration_count": cfg.isaacsim_solver_position_iteration_count,
-        "isaacsim_solver_velocity_iteration_count": cfg.isaacsim_solver_velocity_iteration_count,
-        "isaacsim_bounce_threshold_velocity": cfg.isaacsim_bounce_threshold_velocity,
-        "isaacsim_contact_offset": cfg.isaacsim_contact_offset,
-        "isaacsim_rest_offset": cfg.isaacsim_rest_offset,
-        "isaacsim_max_depenetration_velocity": cfg.isaacsim_max_depenetration_velocity,
         "superdex_execution_mode": cfg.superdex_execution_mode,
     }
-    # Forward the GPU buffer capacities only when set: unisim-core releases
-    # before unilabsim/unisim#292 do not pop these keys, and forwarding None
-    # would leak them into other backends' constructors; setting them against
-    # an older unisim-core fails closed at the factory.
-    if cfg.isaacsim_gpu_max_rigid_contact_count is not None:
-        result["isaacsim_gpu_max_rigid_contact_count"] = cfg.isaacsim_gpu_max_rigid_contact_count
-    if cfg.isaacsim_gpu_max_rigid_patch_count is not None:
-        result["isaacsim_gpu_max_rigid_patch_count"] = cfg.isaacsim_gpu_max_rigid_patch_count
-    # Forward the tensor opt-in only when enabled so releases without the M9
-    # constructor never see an unknown keyword on the legacy default path.
     if cfg.isaacsim_tensor_cuda_ipc:
         result["isaacsim_tensor_cuda_ipc"] = True
     if cfg.isaacsim_share_friction_materials:
         result["share_friction_materials"] = True
+    if cfg.isaacsim_env_spacing is not None:
+        result["isaacsim_env_spacing"] = cfg.isaacsim_env_spacing
     # Forward the explicit Genesis device id only when a rank selected one;
     # when absent, unisim-core's factory default applies and Genesis picks
     # its own device.

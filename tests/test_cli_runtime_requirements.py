@@ -23,10 +23,15 @@ def test_check_runtime_requirements_mujoco_needs_mjbatch(
         cli._check_runtime_requirements("ppo", "mujoco")
 
 
-@pytest.mark.parametrize("sim", cli._SHELVED_SIMS)
-def test_shelved_sims_fail_closed_before_dependency_detection(sim: str) -> None:
-    with pytest.raises(SystemExit, match="temporarily outside the tensor-only Manager runtime"):
-        cli._check_runtime_requirements("ppo", sim)
+@pytest.mark.parametrize("sim", ["isaacgym", "isaacsim"])
+def test_isaac_sims_fail_closed_when_external_worker_is_unavailable(
+    sim: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(f"unisim.backend.{sim}.dependencies.{sim}_runtime_available", lambda: False)
+
+    with pytest.raises(SystemExit, match=f"sim={sim} requires the external"):
+        cli._check_runtime_requirements("sac", sim)
 
 
 def test_check_runtime_requirements_requires_newton_extra(
@@ -81,4 +86,6 @@ def test_cli_backend_choices_are_tensor_manager_scope() -> None:
         "motrix",
         "superdex",
         "drake",
+        "isaacsim",
+        "isaacgym",
     )

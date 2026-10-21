@@ -1,0 +1,129 @@
+# @package _global_
+# SAC IsaacSim owner for the canonical G1 flat walk task. IsaacSim runs in
+# the external Python 3.11 worker and uses the mapped CUDA-IPC scene required
+# by its public tensor lifecycle. Reset-time PD mutation remains disabled.
+defaults:
+  - /task/g1_walk_flat/base
+  - _self_
+
+training:
+  task_name: G1WalkFlat
+  sim_backend: isaacsim
+  play_render_mode: none
+algo:
+  num_envs: 2048
+  learning_starts: 10
+  max_iterations: 5000
+  save_interval: 1000
+  updates_per_step: 8
+  algo_params:
+    alpha_init: 0.001
+    target_entropy_ratio: 0.0
+  g1_walk_pack:
+    _target_: unilab.tasks.locomotion.g1.manager_terms.G1WalkRewardPackCfg
+    func: unilab.tasks.locomotion.g1.manager_terms.G1WalkRewardPack
+    weight: 0.0
+    command_name: twist
+    entity_name: robot
+    tracking_lin_sigma: 0.25
+    tracking_ang_sigma: 0.25
+    gait_frequency: 1.5
+    gait_init_mode: offset_phase
+    swing_height: 0.09
+    feet_phase_sigma: 0.04
+    min_forward_speed: 0.0
+    pose_weights: [0.01, 1.0, 5.0, 0.01, 5.0, 5.0, 0.01, 1.0, 5.0, 0.01, 5.0, 5.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
+    reward_pack_names:
+      - tracking_lin_vel
+      - tracking_ang_vel
+      - penalty_ang_vel_xy
+      - penalty_orientation
+      - penalty_action_rate
+      - pose
+      - penalty_feet_ori
+      - feet_phase
+      - alive
+env:
+  isaacsim_device_id: 0
+  isaacsim_worker_timeout_s: 300.0
+  isaacsim_render_width: 1280
+  isaacsim_render_height: 720
+  isaacsim_tensor_cuda_ipc: true
+  isaacsim_share_friction_materials: true
+  # The mapped finite floor is 48 m wide; separate clone origins by 50 m so
+  # adjacent support boxes do not flood broadphase while still spanning a 20 s walk.
+  isaacsim_env_spacing: 50.0
+  scene:
+    model_file: null
+    primary_entity: robot
+    entity_assets:
+      - name: robot
+        source:
+          model_file: src/unilab/assets/robots/g1/isaacsim/g1_stand_entity.xml
+        root_mode: floating
+        initial_state:
+          position: [0.0, 0.0, 0.754]
+          quaternion: [1.0, 0.0, 0.0, 0.0]
+      - name: floor
+        source:
+          model_file: src/unilab/assets/robots/g1/isaacsim/flat_floor_entity.xml
+        kind: rigid
+        root_mode: fixed
+    entities:
+      robot:
+        physical_entity: robot
+        root_body_name: robot/pelvis
+        joint_names: &mapped_g1_joints
+          - robot/left_hip_pitch_joint
+          - robot/left_hip_roll_joint
+          - robot/left_hip_yaw_joint
+          - robot/left_knee_joint
+          - robot/left_ankle_pitch_joint
+          - robot/left_ankle_roll_joint
+          - robot/right_hip_pitch_joint
+          - robot/right_hip_roll_joint
+          - robot/right_hip_yaw_joint
+          - robot/right_knee_joint
+          - robot/right_ankle_pitch_joint
+          - robot/right_ankle_roll_joint
+          - robot/waist_yaw_joint
+          - robot/waist_roll_joint
+          - robot/waist_pitch_joint
+          - robot/left_shoulder_pitch_joint
+          - robot/left_shoulder_roll_joint
+          - robot/left_shoulder_yaw_joint
+          - robot/left_elbow_joint
+          - robot/left_wrist_roll_joint
+          - robot/left_wrist_pitch_joint
+          - robot/left_wrist_yaw_joint
+          - robot/right_shoulder_pitch_joint
+          - robot/right_shoulder_roll_joint
+          - robot/right_shoulder_yaw_joint
+          - robot/right_elbow_joint
+          - robot/right_wrist_roll_joint
+          - robot/right_wrist_pitch_joint
+          - robot/right_wrist_yaw_joint
+        actuator_names: *mapped_g1_joints
+        body_names: [robot/pelvis]
+  reset_owners:
+    walk:
+      _target_: unilab.tasks.locomotion.g1.manager_terms.G1WalkResetOwnerCfg
+      func: unilab.tasks.locomotion.g1.manager_terms.G1WalkResetOwner
+      command_name: twist
+  events:
+    reset_scene_to_default:
+      func: unilab.envs.mdp.skip_scene_reset
+    reset_root_state_uniform:
+      func: unilab.envs.mdp.reset_root_state_uniform_fused
+    # IsaacSim reset DR remains outside this training owner's support slice.
+    pd_gains: null
+  terminations:
+    tilt: null
+    base_height: null
+    g1_walk_termination_pack:
+      _target_: unilab.tasks.locomotion.g1.manager_terms.G1WalkTerminationPackCfg
+      func: unilab.tasks.locomotion.g1.manager_terms.G1WalkTerminationPack
+      entity_name: robot
+      root_body_name: robot/pelvis
+      max_tilt_deg: 65.0
+      minimum_height: 0.3

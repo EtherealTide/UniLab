@@ -15,7 +15,7 @@ from prettytable import PrettyTable
 from unilab.managers.manager_base import ManagerBase, ManagerTermBase, ManagerTermBaseCfg
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 @dataclass
@@ -192,12 +192,12 @@ class RecorderManager(ManagerBase):
             raise KeyError(msg) from None
 
     def record_pre_reset(self, env_ids: torch.Tensor) -> None:
-        """Forward to each term's :meth:`RecorderTerm.record_pre_reset`."""
+        """Forward to each term's pre-reset boundary."""
         for term in self._terms.values():
             term.record_pre_reset(env_ids)
 
     def record_post_reset(self, env_ids: torch.Tensor) -> None:
-        """Forward to each term's :meth:`RecorderTerm.record_post_reset`."""
+        """Forward to each term's post-reset boundary."""
         for term in self._terms.values():
             term.record_post_reset(env_ids)
 

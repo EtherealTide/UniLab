@@ -15,8 +15,10 @@ historical context.
 - Community manager semantics and a general structure take priority over local
   optimizations that would create a UniLab-only term API.
 - Manager carriers, term returns, environment IDs, and entity views use Torch
-  tensors (with explicit NumPy host boundaries only for not-yet-migrated terms);
-  manager core does not depend on Warp, runners, learners, or IPC.
+  tensors. Production `managers` and `envs` source rejects NumPy imports and
+  Torch↔NumPy conversions. The cold NPZ MotionLoader is the only task-runtime
+  NumPy leaf, while base owners consume legacy NumPy formats only inside explicit
+  adapter/reset-host boundaries.
 - `SceneEntityCfg` resolves through a base-owned scene/entity facade on the cold path.
   The facade uses only the public `SimBackend` contract, and hot paths reuse cached IDs
   and views.
@@ -24,8 +26,8 @@ historical context.
   `EntityScene.bind_sensor_data(...)` during construction; their hot path only reads
   that view and never re-resolves sensor names or XML/model metadata.
 - `ManagerBasedRlEnv` owns backend materialization exactly once: manager construction
-  and startup events run first, then `SimBackend.materialize()` completes before any
-  reset or step can execute.
+  completes, then `SimBackend.materialize()` and startup events run before any
+  reset or step.
 - Explicitly empty configuration may use a Null manager. A requested capability that
   is unavailable fails at the nearest boundary; it is never skipped, zero-filled, or
   routed back to a legacy environment.

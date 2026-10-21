@@ -2,8 +2,8 @@
 # Test-fixture-only FlashSAC IsaacSim tensor overlay. It is intentionally not
 # a discoverable production Hydra owner: the current mapped-entity compiler
 # cannot compose a task keyframe without a temporary full robot-source copy,
-# and a shipped owner could otherwise resolve unisim-core 1.7.10 without the
-# CUDA IPC tensor lifecycle. Kit/PhysX stay in the external Python 3.11
+# and it requires the unisim-core 1.8.0 CUDA IPC tensor lifecycle. Kit/PhysX
+# stay in the external Python 3.11
 # worker; tensor_cuda_ipc replaces bulk CPU shared memory with a same-GPU CUDA
 # IPC arena. The static backend matrix remains unsupported until #1675 closes.
 
@@ -18,6 +18,8 @@ env:
   # This throughput fixture does not use geom-friction reset DR. Sharing equal
   # initial native materials keeps 2048 clones below PhysX's 64K material cap.
   isaacsim_share_friction_materials: true
+  # Keep the fixture's production-sized 48 m support boxes from overlapping.
+  isaacsim_env_spacing: 50.0
   scene:
     # IsaacSim consumes the mapped physical-scene profile.  The task source,
     # not an all-zero EntityInitialState, remains authoritative for the 29

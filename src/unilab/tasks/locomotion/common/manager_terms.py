@@ -2,25 +2,24 @@
 
 The equations come from UniLab's quadruped joystick tasks and are reused
 by quadruped and biped owners alike.  The adaptation uses community
-``func + params`` terms, NumPy, and the base-owned sensor facade.  Reward terms
-that read named XML sensors live in ``sensor_reward_terms.py`` and build on the
-``SensorTermBase`` cold-path binding contract defined here.
+``func + params`` terms, Torch state carriers, and packed named-sensor reads.
+Reward terms that read named XML sensors live in ``sensor_reward_terms.py``
+and build on the ``SensorTermBase`` cold-path binding contract defined here.
 """
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, cast
 
-import numpy as np
 import torch
 
-from unilab.dtype_config import get_global_dtype
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv, ManagerSensorView
+    from unilab.managers.types import ManagerBasedRlEnv, ManagerSensorView
 
     class _GaitEnv(ManagerBasedRlEnv, Protocol):
         @property
@@ -31,7 +30,7 @@ _OFFSETS = (0.0, 0.5, 0.5, 0.0)
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
 
-def _real(
+def require_real(
     term: str,
     name: str,
     value: Any,
@@ -40,10 +39,10 @@ def _real(
     maximum: float | None = None,
     strict_minimum: bool = False,
 ) -> float:
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.number)):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{term} {name} must be a real number")
     result = float(value)
-    if not np.isfinite(result):
+    if not math.isfinite(result):
         raise ValueError(f"{term} {name} must be finite")
     if minimum is not None and (result <= minimum if strict_minimum else result < minimum):
         relation = "greater than" if strict_minimum else "at least"
@@ -53,20 +52,16 @@ def _real(
     return result
 
 
-def _offsets(term: str, value: Any) -> np.ndarray:
-    if isinstance(value, (str, bytes)) or not isinstance(value, (tuple, list, np.ndarray)):
+def _offsets(term: str, value: Any) -> torch.Tensor:
+    if isinstance(value, (str, bytes)) or not isinstance(value, (tuple, list)):
         raise TypeError(f"{term} phase_offsets must be a sequence of four real numbers")
-    if isinstance(value, np.ndarray) and value.ndim != 1:
-        raise ValueError(f"{term} phase_offsets must be one-dimensional, got {value.shape}")
     items = list(value)
     if len(items) != 4:
         raise ValueError(f"{term} phase_offsets must contain 4 values, got {len(items)}")
-    result = np.asarray(
-        [_real(term, f"phase_offsets[{index}]", item) for index, item in enumerate(items)],
-        dtype=get_global_dtype(),
+    return torch.tensor(
+        [require_real(term, f"phase_offsets[{index}]", item) for index, item in enumerate(items)],
+        dtype=torch.float32,
     )
-    result.setflags(write=False)
-    return result
 
 
 def _names(term: str, value: Any) -> tuple[str, ...]:
@@ -82,18 +77,7 @@ def _names(term: str, value: Any) -> tuple[str, ...]:
     return names
 
 
-def _state(term: str, capability: str, value: Any, shape: tuple[int, ...]) -> np.ndarray:
-    if not isinstance(value, np.ndarray):
-        raise TypeError(f"{term} {capability} must be an np.ndarray")
-    if value.shape != shape:
-        raise ValueError(f"{term} {capability} must have shape {shape}, got {value.shape}")
-    if not np.isfinite(value).all():
-        env_ids = np.flatnonzero(~np.isfinite(value).reshape(shape[0], -1).all(axis=1)).tolist()
-        raise ValueError(f"{term} {capability} contains NaN or Inf for environments {env_ids[:10]}")
-    return value
-
-
-def _command(env: ManagerBasedRlEnv, term: str, command_name: str) -> np.ndarray | torch.Tensor:
+def require_command(env: ManagerBasedRlEnv, term: str, command_name: str) -> torch.Tensor:
     if not isinstance(command_name, str) or not command_name:
         raise ValueError(f"{term} command_name must be a non-empty string")
     try:
@@ -102,11 +86,7 @@ def _command(env: ManagerBasedRlEnv, term: str, command_name: str) -> np.ndarray
         raise KeyError(f"{term} command capability '{command_name}' is unavailable") from exc
     if command is None:
         raise KeyError(f"{term} command capability '{command_name}' is unavailable")
-    if isinstance(command, torch.Tensor):
-        return command
-    if isinstance(command, torch.Tensor):
-        command = command.detach().cpu().numpy()
-    return _state(term, f"command '{command_name}'", command, (env.num_envs, 3))
+    return _torch_state(command)
 
 
 def _asset(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> Entity:
@@ -137,169 +117,124 @@ class SensorTermBase(ManagerTermBase):
                 f"materialized for {sensor_names}: {exc}"
             ) from exc
 
-    @staticmethod
-    def _read(view: ManagerSensorView, term: str) -> np.ndarray:
-        try:
-            return view.read()
-        except (KeyError, TypeError, ValueError, NotImplementedError) as exc:
-            raise type(exc)(
-                f"Manager term '{term}' named-sensor capability failed on "
-                f"backend '{view.backend_type}': {exc}"
-            ) from exc
+    def reset(self, env_ids: torch.Tensor) -> None:
+        """Row boundary for stateless sensor terms."""
+        del env_ids
 
 
-def track_lin_vel_xy_exp(
-    env: ManagerBasedRlEnv,
-    std: float,
-    command_name: str,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray | torch.Tensor:
-    """Track commanded planar velocity with the legacy independent exponential kernel."""
-    scale = _real("track_lin_vel_xy_exp", "std", std, minimum=0.0, strict_minimum=True)
-    actual = _state(
-        "track_lin_vel_xy_exp",
-        "root linear velocity",
-        _asset(env, asset_cfg).data.root_link_lin_vel_b,
-        (env.num_envs, 3),
-    )
-    command = _command(env, "track_lin_vel_xy_exp", command_name)
-    if isinstance(command, torch.Tensor):
-        actual_t = (
-            actual
-            if isinstance(actual, torch.Tensor)
-            else torch.as_tensor(actual, device=command.device, dtype=command.dtype)
-        )
-        actual_tensor = cast(torch.Tensor, actual_t)
-        delta_t = command[:, :2] - actual_tensor[:, :2]
-        error = torch.sum(delta_t.square(), dim=1)
-    else:
-        error = np.sum(np.square(command[:, :2] - actual[:, :2]), axis=1)
-    return _exp_scaled(error, scale)
-
-
-def track_ang_vel_z_exp(
-    env: ManagerBasedRlEnv,
-    std: float,
-    command_name: str,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray | torch.Tensor:
-    """Track commanded yaw velocity without folding roll/pitch into the kernel."""
-    scale = _real("track_ang_vel_z_exp", "std", std, minimum=0.0, strict_minimum=True)
-    actual = _state(
-        "track_ang_vel_z_exp",
-        "root angular velocity",
-        _asset(env, asset_cfg).data.root_link_ang_vel_b,
-        (env.num_envs, 3),
-    )
-    command = _command(env, "track_ang_vel_z_exp", command_name)
-    if isinstance(command, torch.Tensor):
-        actual_t = (
-            actual
-            if isinstance(actual, torch.Tensor)
-            else torch.as_tensor(actual, device=command.device, dtype=command.dtype)
-        )
-        actual_tensor = cast(torch.Tensor, actual_t)
-        error = (command[:, 2] - actual_tensor[:, 2]).square()
-    else:
-        error = np.square(command[:, 2] - actual[:, 2])
-    return _exp_scaled(error, scale)
-
-
-def _exp_scaled(error: np.ndarray | torch.Tensor, scale: float):
-    if isinstance(error, torch.Tensor):
-        return torch.exp(-error / (scale * scale))
-    return np.asarray(np.exp(-error / (scale * scale)), dtype=get_global_dtype())
-
-
-def lin_vel_z_l2(
-    env: ManagerBasedRlEnv,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
-    """Penalize vertical root velocity independently from planar tracking."""
-    velocity = _state(
-        "lin_vel_z_l2",
-        "root linear velocity",
-        _asset(env, asset_cfg).data.root_link_lin_vel_b,
-        (env.num_envs, 3),
-    )
-    return np.asarray(np.square(velocity[:, 2]), dtype=get_global_dtype())
-
-
-def ang_vel_xy_l2(
-    env: ManagerBasedRlEnv,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
-    """Penalize root roll/pitch angular velocity independently from yaw tracking."""
-    velocity = _state(
-        "ang_vel_xy_l2",
-        "root angular velocity",
-        _asset(env, asset_cfg).data.root_link_ang_vel_b,
-        (env.num_envs, 3),
-    )
-    return np.asarray(np.sum(np.square(velocity[:, :2]), axis=1), dtype=get_global_dtype())
-
-
-def base_height_l2(
-    env: ManagerBasedRlEnv,
-    target_height: float,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
+class base_height_l2(ManagerTermBase):
     """Penalize world-frame root height error for the flat-ground pilot."""
-    target = _real("base_height_l2", "target_height", target_height)
-    position = _state(
-        "base_height_l2",
-        "root position",
-        _asset(env, asset_cfg).data.root_link_pos_w,
-        (env.num_envs, 3),
-    )
-    return np.asarray(np.square(position[:, 2] - target), dtype=get_global_dtype())
 
-
-def alive(env: ManagerBasedRlEnv) -> np.ndarray:
-    """Constant reward for every step, unconditional as in the legacy tasks."""
-    return np.ones((env.num_envs,), dtype=get_global_dtype())
-
-
-def joint_deviation_l1(
-    env: ManagerBasedRlEnv,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
-    """Penalize selected joint displacement from the default pose with an L1 kernel."""
-    asset = _asset(env, asset_cfg)
-    position = asset.data.joint_pos[:, asset_cfg.joint_ids]
-    default = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
-    if (
-        not isinstance(position, np.ndarray)
-        or position.ndim != 2
-        or position.shape[0] != env.num_envs
-    ):
-        shape = getattr(position, "shape", None)
-        raise ValueError(
-            f"joint_deviation_l1 joint position must be 2-D with leading dimension {env.num_envs}, got {shape}"
+    def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
+        super().__init__(env)
+        self._target_height = require_real(
+            self.name,
+            "target_height",
+            cfg.params["target_height"],
         )
-    default = _state("joint_deviation_l1", "default joint position", default, position.shape)
-    position = _state("joint_deviation_l1", "joint position", position, position.shape)
-    return np.asarray(np.sum(np.abs(position - default), axis=1), dtype=get_global_dtype())
+        asset_cfg = cfg.params.get("asset_cfg", _DEFAULT_ASSET_CFG)
+        if not isinstance(asset_cfg, SceneEntityCfg):
+            raise TypeError(f"{self.name} asset_cfg must be a SceneEntityCfg")
+        self._entity_name = asset_cfg.name
+        entity_cfg = env.cfg.scene.entities.get(self._entity_name) if env.cfg.scene else None
+        root = getattr(entity_cfg, "root_body_name", None) if entity_cfg is not None else None
+        if not isinstance(root, str) or not root:
+            raise ValueError(f"{self.name} requires an entity root_body_name")
+        self._root_body_name = root
+
+    @property
+    def tensor_body_names(self) -> tuple[str, ...]:
+        return (self._root_body_name,)
+
+    @property
+    def entity_name(self) -> str:
+        return self._entity_name
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        target_height: float,
+        asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    ) -> torch.Tensor:
+        del target_height, asset_cfg
+        read_plan = getattr(env.scene, "read_plan", None)
+        if read_plan is None:
+            raise NotImplementedError(
+                f"{self.name} requires the Manager packed root-body read plan"
+            )
+        body = read_plan.body_tensor_view(self._entity_name, (self._root_body_name,))
+        return (body.pos_w[:, 0, 2] - self._target_height).square()
 
 
-def stand_still_l1(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    command_threshold: float = 0.1,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
+def alive(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """Constant reward for every step, unconditional as in the legacy tasks."""
+    device = torch.device(getattr(env, "device", torch.device("cpu")))
+    return torch.ones((env.num_envs,), dtype=torch.float32, device=device)
+
+
+class joint_deviation_l1(ManagerTermBase):
+    """Penalize selected joint displacement from the default pose with an L1 kernel."""
+
+    def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
+        super().__init__(env)
+        asset_cfg = cfg.params.get("asset_cfg", _DEFAULT_ASSET_CFG)
+        if not isinstance(asset_cfg, SceneEntityCfg):
+            raise TypeError(f"{self.name} asset_cfg must be a SceneEntityCfg")
+        self._entity_name = asset_cfg.name
+        self._joint_ids = asset_cfg.joint_ids
+
+    @property
+    def tensor_state_entity(self) -> str:
+        return self._entity_name
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        command_name: str = "twist",
+        command_threshold: float = 0.1,
+        asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    ) -> torch.Tensor:
+        del asset_cfg
+        read_plan = getattr(env.scene, "read_plan", None)
+        if read_plan is None:
+            raise NotImplementedError(
+                f"{self.name} requires the Manager packed joint-state read plan"
+            )
+        position = read_plan.joint_tensor_view(self._entity_name).joint_pos[self._joint_ids]
+        default = env.scene[self._entity_name].data.default_joint_pos(env.device)[
+            :, self._joint_ids
+        ]
+        return (position - default).abs().sum(dim=1)
+
+
+class stand_still_l1(joint_deviation_l1):
     """Penalize selected joint deviation only below the commanded-motion threshold."""
-    threshold = _real(
-        "stand_still_l1",
-        "command_threshold",
-        command_threshold,
-        minimum=0.0,
-    )
-    stopped = np.linalg.norm(_command(env, "stand_still_l1", command_name), axis=1) < threshold
-    return np.asarray(
-        joint_deviation_l1(env, asset_cfg=asset_cfg) * stopped,
-        dtype=get_global_dtype(),
-    )
+
+    def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
+        super().__init__(cfg, env)
+        self._command_name = cfg.params["command_name"]
+        if not isinstance(self._command_name, str) or not self._command_name:
+            raise ValueError(f"{self.name} command_name must be a non-empty string")
+        self._command_threshold = require_real(
+            self.name,
+            "command_threshold",
+            cfg.params.get("command_threshold", 0.1),
+            minimum=0.0,
+        )
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        command_name: str = "twist",
+        command_threshold: float = 0.1,
+        asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    ) -> torch.Tensor:
+        del command_name, command_threshold, asset_cfg
+        command = require_command(env, self.name, self._command_name)
+        if not isinstance(command, torch.Tensor):
+            command = _torch_state(command)
+        stopped = torch.linalg.vector_norm(command, dim=1) < self._command_threshold
+        return super().__call__(env) * stopped.to(dtype=torch.float32)
 
 
 class _GaitTerm(ManagerTermBase):
@@ -312,21 +247,21 @@ class _GaitTerm(ManagerTermBase):
         unexpected = set(cfg.params) - self._allowed_params
         if unexpected:
             raise TypeError(f"{self.name} received unsupported parameters: {sorted(unexpected)}")
-        self._frequency = _real(
+        self._frequency = require_real(
             self.name, "frequency", cfg.params.get("frequency", 2.0), minimum=0.0
         )
         self._device = torch.device(getattr(env, "device", "cpu"))
-        self._offsets = torch.tensor(
-            _offsets(self.name, cfg.params.get("phase_offsets", _OFFSETS)),
-            dtype=torch.float32,
-            device=self._device,
+        self._offsets = _offsets(self.name, cfg.params.get("phase_offsets", _OFFSETS)).to(
+            device=self._device
         )
-        self._step_dt = _real(self.name, "step_dt", env.step_dt, minimum=0.0, strict_minimum=True)
+        self._step_dt = require_real(
+            self.name, "step_dt", env.step_dt, minimum=0.0, strict_minimum=True
+        )
         command_name = cfg.params.get("command_name")
         if command_name is not None and (not isinstance(command_name, str) or not command_name):
             raise ValueError(f"{self.name} command_name must be a non-empty string or None")
         self._command_name = command_name
-        self._command_threshold = _real(
+        self._command_threshold = require_real(
             self.name,
             "command_threshold",
             cfg.params.get("command_threshold", 0.0),
@@ -338,7 +273,7 @@ class _GaitTerm(ManagerTermBase):
 
     def _counter(self, env: _GaitEnv) -> int:
         counter = env.common_step_counter
-        if isinstance(counter, (bool, np.bool_)) or not isinstance(counter, (int, np.integer)):
+        if isinstance(counter, bool) or not isinstance(counter, int):
             raise TypeError(f"{self.name} common_step_counter must be an integer")
         if counter < 0:
             raise ValueError(f"{self.name} common_step_counter must be non-negative")
@@ -347,7 +282,9 @@ class _GaitTerm(ManagerTermBase):
     def _moving(self, env: _GaitEnv) -> torch.Tensor:
         if self._command_name is None:
             return torch.ones(env.num_envs, dtype=torch.bool, device=self._device)
-        command = torch.as_tensor(_command(env, self.name, self._command_name), device=self._device)
+        command = torch.as_tensor(
+            require_command(env, self.name, self._command_name), device=self._device
+        )
         return torch.linalg.vector_norm(command, dim=1) > self._command_threshold
 
     def _advance_to(self, env: _GaitEnv, counter: int) -> None:
@@ -396,17 +333,15 @@ class _FootSensorTerm(_GaitTerm):
         return self._sensor_names
 
     def _read(self) -> torch.Tensor:
-        read_plan = getattr(self._env.scene, "_tensor_read_plan", None)
-        if read_plan is not None:
-            values = read_plan.sensor_tensor_views("robot", self._sensor_names).values
-            return torch.cat([values[name] for name in self._sensor_names], dim=1)
-        try:
-            return torch.as_tensor(self._view.read(), device=self._device)
-        except (KeyError, TypeError, ValueError, NotImplementedError) as exc:
-            raise type(exc)(
-                f"Manager term '{self.name}' named-foot-sensor capability failed on "
-                f"backend '{self._view.backend_type}': {exc}"
-            ) from exc
+        read_plan = getattr(self._env.scene, "read_plan", None)
+        sensor_names = getattr(read_plan, "sensor_names", {}).get("robot", ())
+        if read_plan is None or not set(self._sensor_names).issubset(set(sensor_names)):
+            raise NotImplementedError(
+                f"Manager term '{self.name}' requires its named sensors "
+                f"{self._sensor_names} in the packed Torch read plan"
+            )
+        values = read_plan.sensor_tensor_views("robot", self._sensor_names).values
+        return torch.cat([values[name] for name in self._sensor_names], dim=1)
 
 
 class feet_phase_contact(_FootSensorTerm):
@@ -420,10 +355,10 @@ class feet_phase_contact(_FootSensorTerm):
 
     def __init__(self, cfg: ManagerTermBaseCfg, env: _GaitEnv):
         super().__init__(cfg, env)
-        self._contact_threshold = _real(
+        self._contact_threshold = require_real(
             self.name, "contact_threshold", cfg.params.get("contact_threshold", 0.1), minimum=0.0
         )
-        self._stance_threshold = _real(
+        self._stance_threshold = require_real(
             self.name,
             "stance_threshold",
             cfg.params.get("stance_threshold", 0.6),
@@ -435,13 +370,30 @@ class feet_phase_contact(_FootSensorTerm):
                 f"{self.name} contact sensors must each expose 1-D found or 3-D force; "
                 f"received {self._view.dimensions} on backend '{self._view.backend_type}'"
             )
-        starts = np.cumsum((0, *self._view.dimensions[:-1]), dtype=np.int64)
+        starts = torch.cumsum(
+            torch.tensor((0, *self._view.dimensions[:-1]), dtype=torch.int64), dim=0
+        )
         # MuJoCo ``<contact data="force">`` sensors report the force in the
         # contact frame whose first axis is the contact normal, so the gating
         # component is column 0 for both 1-D ``found`` and 3-D ``force``.
         # ``reduce="netforce"`` variants report world-frame force instead and
         # are outside this contract.
         self._columns = starts
+
+    @property
+    def tensor_sensor_names(self) -> tuple[str, ...]:
+        return self._sensor_names
+
+    def _read_contact(self) -> torch.Tensor:
+        read_plan = getattr(self._env.scene, "read_plan", None)
+        sensor_names = getattr(read_plan, "sensor_names", {}).get("robot", ())
+        if read_plan is None or not set(self._sensor_names).issubset(set(sensor_names)):
+            raise NotImplementedError(
+                f"Manager term '{self.name}' requires its named sensors "
+                f"{self._sensor_names} in the packed Torch read plan"
+            )
+        values = read_plan.sensor_tensor_views("robot", self._sensor_names).values
+        return torch.cat([values[name] for name in self._sensor_names], dim=1)
 
     def __call__(self, env: _GaitEnv, **params: Any) -> torch.Tensor:
         del params
@@ -466,17 +418,17 @@ class feet_phase_swing_height(_FootSensorTerm):
 
     def __init__(self, cfg: ManagerTermBaseCfg, env: _GaitEnv):
         super().__init__(cfg, env)
-        self._target = _real(
+        self._target = require_real(
             self.name, "target_height", cfg.params.get("target_height", 0.1), minimum=0.0
         )
-        self._kernel = _real(
+        self._kernel = require_real(
             self.name,
             "kernel",
             cfg.params.get("kernel", 0.01),
             minimum=0.0,
             strict_minimum=True,
         )
-        self._swing_start = _real(
+        self._swing_start = require_real(
             self.name,
             "swing_start",
             cfg.params.get("swing_start", 0.6),
@@ -512,17 +464,18 @@ class feet_air_while_standing(ManagerTermBase):
         if unexpected:
             raise TypeError(f"{self.name} received unsupported parameters: {sorted(unexpected)}")
         sensor_names = _names(self.name, cfg.params.get("sensor_names"))
+        self._sensor_names = sensor_names
         command_name = cfg.params.get("command_name")
         if not isinstance(command_name, str) or not command_name:
             raise ValueError(f"{self.name} command_name must be a non-empty string")
         self._command_name = command_name
-        self._command_threshold = _real(
+        self._command_threshold = require_real(
             self.name,
             "command_threshold",
             cfg.params.get("command_threshold", 0.1),
             minimum=0.0,
         )
-        self._contact_threshold = _real(
+        self._contact_threshold = require_real(
             self.name,
             "contact_threshold",
             cfg.params.get("contact_threshold", 0.1),
@@ -540,7 +493,9 @@ class feet_air_while_standing(ManagerTermBase):
                 f"{self.name} contact sensors must each expose 1-D found or 3-D force; "
                 f"received {self._view.dimensions} on backend '{self._view.backend_type}'"
             )
-        starts = np.cumsum((0, *self._view.dimensions[:-1]), dtype=np.int64)
+        starts = torch.cumsum(
+            torch.tensor((0, *self._view.dimensions[:-1]), dtype=torch.int64), dim=0
+        )
         # MuJoCo ``<contact data="force">`` sensors report the force in the
         # contact frame whose first axis is the contact normal, so the gating
         # component is column 0 for both 1-D ``found`` and 3-D ``force``.
@@ -548,35 +503,52 @@ class feet_air_while_standing(ManagerTermBase):
         # are outside this contract.
         self._columns = starts
 
-    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray:
+    @property
+    def tensor_sensor_names(self) -> tuple[str, ...]:
+        return self._sensor_names
+
+    def _read_contact(self) -> torch.Tensor:
+        read_plan = getattr(self._env.scene, "read_plan", None)
+        sensor_names = getattr(read_plan, "sensor_names", {}).get("robot", ())
+        if read_plan is None or not set(self._sensor_names).issubset(set(sensor_names)):
+            raise NotImplementedError(
+                f"Manager term '{self.name}' requires its named sensors "
+                f"{self._sensor_names} in the packed Torch read plan"
+            )
+        values = read_plan.sensor_tensor_views("robot", self._sensor_names).values
+        return torch.cat([values[name] for name in self._sensor_names], dim=1)
+
+    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
-        try:
-            values = self._view.read()
-        except (KeyError, TypeError, ValueError, NotImplementedError) as exc:
-            raise type(exc)(
-                f"Manager term '{self.name}' named-foot-sensor capability failed on "
-                f"backend '{self._view.backend_type}': {exc}"
-            ) from exc
-        contact = values[:, self._columns] > self._contact_threshold
+        contact = self._read_contact()[:, self._columns] > self._contact_threshold
         standing = (
-            np.linalg.norm(_command(env, self.name, self._command_name), axis=1)
+            torch.linalg.vector_norm(_command_tensor(env, self.name, self._command_name), dim=1)
             <= self._command_threshold
         )
-        return np.asarray(np.sum(~contact, axis=1) * standing, dtype=get_global_dtype())
+        air = contact.logical_not().sum(dim=1)
+        return (air * standing).to(dtype=torch.float32)
+
+
+def _command_tensor(
+    env: ManagerBasedRlEnv,
+    term: str,
+    command_name: str,
+) -> torch.Tensor:
+    return require_command(env, term, command_name).to(dtype=torch.float32)
+
+
+def _torch_state(value: torch.Tensor, *, dtype: torch.dtype = torch.float32) -> torch.Tensor:
+    return value.to(dtype=dtype)
 
 
 __all__ = [
     "SensorTermBase",
     "alive",
-    "ang_vel_xy_l2",
     "base_height_l2",
     "feet_air_while_standing",
     "feet_phase_contact",
     "feet_phase_swing_height",
     "joint_deviation_l1",
-    "lin_vel_z_l2",
     "quadruped_gait_phase",
     "stand_still_l1",
-    "track_ang_vel_z_exp",
-    "track_lin_vel_xy_exp",
 ]

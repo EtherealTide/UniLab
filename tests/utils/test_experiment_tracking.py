@@ -6,11 +6,11 @@ import types
 from typing import Any
 
 import pytest
-import uni_rl.logging.common as common_module
 from rich.console import Console
-from uni_rl.logging import OffPolicyLogger, OnPolicyLogger
 
+import unilab.rl.logging.base as base_module
 import unilab.training.experiment as experiment_module
+from unilab.rl.logging import OffPolicyLogger, OnPolicyLogger
 from unilab.training.experiment import ExperimentTracker, build_wandb_settings
 
 
@@ -86,7 +86,7 @@ def test_training_logger_defers_initial_live_render(monkeypatch):
         def stop(self) -> None:
             pass
 
-    monkeypatch.setattr(common_module, "Live", _FakeLive)
+    monkeypatch.setattr(base_module, "Live", _FakeLive)
 
     logger = OffPolicyLogger(log_backend="none")
     logger.start()
@@ -119,8 +119,8 @@ def test_offpolicy_training_terminal_uses_fixed_clock_and_only_forces_errors(mon
     def _fake_time() -> float:
         return now
 
-    monkeypatch.setattr(common_module, "Live", _FakeLive)
-    monkeypatch.setattr(common_module.time, "time", _fake_time)
+    monkeypatch.setattr(base_module, "Live", _FakeLive)
+    monkeypatch.setattr(base_module.time, "time", _fake_time)
 
     logger = OffPolicyLogger(log_backend="none", refresh_per_second=4)
     logger.start()
@@ -179,7 +179,7 @@ def test_onpolicy_logger_uses_offpolicy_terminal_layout():
 
 
 def test_offpolicy_logger_terminal_keeps_core_bottleneck_timing_rows():
-    # uni_rl 1.4.9 selects its terminal layout from the logger console width.
+    # unilab.rl.logging selects its terminal layout from the logger console width.
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setenv("COLUMNS", "120")
     logger = OffPolicyLogger(
@@ -343,7 +343,7 @@ def test_experiment_device_info_uses_library_helper():
     assert experiment_module.get_device_info_dict is device_module.get_device_info_dict
 
 
-def test_experiment_tracker_writes_local_run_files(tmp_path, monkeypatch):
+def test_experiment_tracker_writes_local_run_files(tmp_path, monkeypatch, capsys):
     hardware = {
         "platform": "test-platform",
         "chip": "test-cpu",
@@ -362,7 +362,12 @@ def test_experiment_tracker_writes_local_run_files(tmp_path, monkeypatch):
         training_cfg={"logger": "tensorboard"},
         full_cfg={"training": {"logger": "tensorboard", "cuda_process_sharing": None}},
         device="cuda",
+        configured_device="gpu",
         collector_device="cpu",
+        device_resolution={
+            "learner": {"configured": "gpu", "resolved": "cuda:0"},
+            "collector": {"configured": "cpu", "resolved": "cpu"},
+        },
         seed_info={
             "configured_seed": 5,
             "configured_seed_source": "algo.seed",
@@ -371,6 +376,9 @@ def test_experiment_tracker_writes_local_run_files(tmp_path, monkeypatch):
     )
 
     tracker.start()
+    assert (
+        "[experiment_tracking] Device resolution: learner gpu -> cuda:0" in capsys.readouterr().out
+    )
     tracker.update_summary({"final_mean_reward": 12.3, "completed_iterations": 10})
     tracker.finish()
 
@@ -382,6 +390,11 @@ def test_experiment_tracker_writes_local_run_files(tmp_path, monkeypatch):
     assert run_config["run"]["configured_seed"] == 5
     assert run_config["run"]["configured_seed_source"] == "algo.seed"
     assert run_config["run"]["effective_seed"] == 5
+    assert run_config["run"]["configured_device"] == "gpu"
+    assert run_config["run"]["resolved_devices"]["learner"] == {
+        "configured": "gpu",
+        "resolved": "cuda:0",
+    }
     assert run_config["run"]["hardware"] == hardware
     assert run_config["config"]["training"]["cuda_process_sharing"] is None
     assert run_summary["final_mean_reward"] == 12.3
@@ -389,6 +402,34 @@ def test_experiment_tracker_writes_local_run_files(tmp_path, monkeypatch):
     assert run_summary["configured_seed"] == 5
     assert run_summary["effective_seed"] == 5
     assert run_summary["wall_time_sec"] >= 0.0
+
+
+def test_run_config_snapshot_passes_sim2sim_reader(tmp_path):
+    # The current run writer's payload must round-trip through the sim2sim
+    # contract reader: same-schema snapshots are the minimum supported format.
+    from omegaconf import OmegaConf
+
+    from unilab.utils.sim2sim import extract_contract_snapshot, resolve_sim2sim_config
+
+    full_cfg = OmegaConf.create(
+        {
+            "training": {"sim_backend": "mujoco"},
+            "algo": {
+                "obs_groups": {"actor": ["actor"]},
+                "actor": {"hidden_dims": [512, 256, 128], "obs_normalization": False},
+            },
+            "env": {"control_config": {"action_scale": 0.25}, "ctrl_dt": 0.01},
+        }
+    )
+    experiment_module.write_run_config_snapshot(
+        tmp_path,
+        run_metadata={"algo": "ppo", "task": "Task"},
+        full_cfg=full_cfg,
+        contract_snapshot=extract_contract_snapshot(full_cfg),
+    )
+
+    target = OmegaConf.create(OmegaConf.to_container(full_cfg, resolve=True))
+    assert resolve_sim2sim_config(tmp_path, target) is target
 
 
 def test_onpolicy_logger_reuses_existing_wandb_run(monkeypatch):

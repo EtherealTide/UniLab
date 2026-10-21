@@ -2,7 +2,7 @@
 
 FlashSAC 通过 `src/unilab/scripts/train_flashsac.py` 运行，拥有独立的配置树。使用
 `--algo flashsac` 选择它；默认值内联在 `src/unilab/conf/flashsac/config.yaml` 中，实现位于
-`uni_rl.algos.flash_sac` (unilab-rl repo) 下。
+`unilab.rl.algos.flash_sac` 下。
 
 它与 SAC 共用 off-policy runner 设计，但默认网络并不相同：actor 使用
 block-based 结构，critic 使用 distributional（categorical）Q 变体。
@@ -51,6 +51,19 @@ FlashSAC 要求同步采集，并与 SAC 共用唯一 replay 路径：有界 hos
 training 不受支持。
 
 日志根目录为 `logs/flash_sac/<task>/`。
+
+## Checkpoint 兼容性
+
+每个 FlashSAC checkpoint 都会记录 `actor_semantics` 载荷
+（`schema_version`/`kind`/`builder`/`kwargs`/`obs_dim`/`action_dim`/
+`action_transform`，由 `unilab.rl.algos.flash_sac.actor_spec` 写入）。训练
+续训与 play 两条加载路径都会在恢复任何权重之前对其 fail-closed 校验，内置
+actor 与经 `algo.algo_params.actor_config` 注入的自定义 actor 同样适用。
+
+pre-contract checkpoint（缺失或为 null 的 `actor_semantics` 条目）对所有
+actor 一律不再支持，包括内置 actor：加载会 fail closed，错误信息说明最低
+支持的格式。唯一恢复路径是使用当前版本重新训练策略。支持基线从 1.3.5 之后
+首个包含该变更的版本开始，不回 port 到任何 1.3.5 patch release。
 
 ## 多卡数据并行
 

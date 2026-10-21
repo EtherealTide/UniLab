@@ -9,7 +9,7 @@ from typing import Any, cast
 import numpy as np
 import pytest
 import torch
-from unisim.backend.base import BackendSensorView
+from unisim.backend.base import SensorView
 
 from unilab.managers import (
     ObservationGroupCfg,
@@ -18,9 +18,9 @@ from unilab.managers import (
     RewardManager,
     RewardTermCfg,
 )
-from unilab.managers._types import ManagerBasedRlEnv
 from unilab.managers.scene_entity_config import SceneEntityCfg
-from unilab.tasks.locomotion.common import manager_terms
+from unilab.managers.types import ManagerBasedRlEnv
+from unilab.tasks.locomotion.common import manager_terms, sensor_reward_terms
 
 CONTACTS = ("fl_contact", "fr_contact", "rl_contact", "rr_contact")
 POSITIONS = ("fl_pos", "fr_pos", "rl_pos", "rr_pos")
@@ -42,8 +42,9 @@ class _Scene:
             "rl_pos": np.array([[0, 0, 0.1], [0, 0, 0.2]], dtype=np.float32),
             "rr_pos": np.array([[0, 0, 0], [0, 0, 0.1]], dtype=np.float32),
         }
+        self.refresh_tensor_read_plan()
 
-    def bind_sensor_data(self, names) -> BackendSensorView:
+    def bind_sensor_data(self, names) -> SensorView:
         names = tuple(names)
         self.calls["bind"] += 1
         dimensions = tuple(self.values[name].shape[1] for name in names)
@@ -52,13 +53,46 @@ class _Scene:
             self.calls["read"] += 1
             return np.concatenate([self.values[name] for name in names], axis=1)
 
-        view = BackendSensorView("fake", names, dimensions, 2, read)
+        view = SensorView("fake", names, dimensions, 2, read)
         view.read()  # Mirror SimBackend.bind_sensor_data materialization validation.
         return view
+
+    def refresh_tensor_read_plan(self, device: torch.device = torch.device("cpu")) -> None:
+        values = {
+            name: torch.as_tensor(value, device=device) for name, value in self.values.items()
+        }
+        requests: list[tuple[str, tuple[str, ...]]] = []
+
+        def sensor_tensor_views(entity, names):
+            requests.append((entity, tuple(names)))
+            return SimpleNamespace(values={name: values[name] for name in names})
+
+        self.read_plan = SimpleNamespace(
+            device=device,
+            sensor_names={"robot": tuple(self.values)},
+            sensor_tensor_views=sensor_tensor_views,
+        )
 
 
 class _ParityScene:
     def __init__(self) -> None:
+        self.read_plan = SimpleNamespace(
+            device=torch.device("cpu"),
+            sensor_names={"robot": ("local_linvel", "gyro")},
+            sensor_tensor_views=lambda entity, names: SimpleNamespace(
+                values={name: torch.as_tensor(self.values[name]) for name in names}
+            ),
+            body_tensor_view=lambda entity, names: SimpleNamespace(
+                pos_w=torch.tensor([[[1.0, 2.0, 0.4]], [[-1.0, 0.5, 0.2]]], dtype=torch.float32)
+            ),
+            joint_tensor_view=lambda entity: SimpleNamespace(
+                joint_pos=torch.tensor([[0.2, -0.1, 0.5], [-0.4, 0.3, 0.1]], dtype=torch.float32)
+            ),
+        )
+        self.values = {
+            "local_linvel": np.array([[0.2, 0.1, -0.3], [0.3, -0.2, 0.5]], dtype=np.float32),
+            "gyro": np.array([[0.1, -0.2, 0.4], [-0.3, 0.2, -0.1]], dtype=np.float32),
+        }
         self.robot = SimpleNamespace(
             data=SimpleNamespace(
                 root_link_lin_vel_b=np.array(
@@ -67,9 +101,9 @@ class _ParityScene:
                 root_link_ang_vel_b=np.array(
                     [[0.1, -0.2, 0.4], [-0.3, 0.2, -0.1]], dtype=np.float32
                 ),
-                root_link_pos_w=np.array([[1.0, 2.0, 0.4], [-1.0, 0.5, 0.2]], dtype=np.float32),
-                joint_pos=np.array([[0.2, -0.1, 0.5], [-0.4, 0.3, 0.1]], dtype=np.float32),
-                default_joint_pos=np.array([[0.1, -0.2, 0.5], [-0.1, 0.1, 0.0]], dtype=np.float32),
+                default_joint_pos=lambda device: torch.tensor(
+                    [[0.1, -0.2, 0.5], [-0.1, 0.1, 0.0]], dtype=torch.float32
+                ),
             )
         )
 
@@ -78,22 +112,35 @@ class _ParityScene:
             raise KeyError(name)
         return self.robot
 
+    def bind_sensor_data(self, names):
+        names = tuple(names)
+        dimensions = tuple(self.values[name].shape[1] for name in names)
+
+        def read() -> np.ndarray:
+            return np.concatenate([self.values[name] for name in names], axis=1)
+
+        view = SensorView("fake", names, dimensions, 2, read)
+        view.read()
+        return view
+
 
 class _Commands:
-    def __init__(self, command: np.ndarray | None = None) -> None:
+    def __init__(self, command: torch.Tensor | None = None) -> None:
         self.command = (
-            np.array([[0.5, -0.2, 0.3], [-0.1, 0.4, -0.2]], dtype=np.float32)
+            torch.tensor([[0.5, -0.2, 0.3], [-0.1, 0.4, -0.2]], dtype=torch.float32)
             if command is None
             else command
         )
 
-    def get_command(self, name: str) -> np.ndarray:
+    def get_command(self, name: str) -> torch.Tensor:
         if name != "twist":
             raise KeyError(name)
         return self.command
 
 
 def _env(counter: int = 0, scene: _Scene | None = None, device: str = "cpu") -> ManagerBasedRlEnv:
+    scene = scene or _Scene()
+    scene.refresh_tensor_read_plan(torch.device(device))
     return cast(
         ManagerBasedRlEnv,
         SimpleNamespace(
@@ -102,7 +149,7 @@ def _env(counter: int = 0, scene: _Scene | None = None, device: str = "cpu") -> 
             common_step_counter=counter,
             episode_length_buf=np.array([counter, 0]),
             step_dt=0.02,
-            scene=scene or _Scene(),
+            scene=scene,
             command_manager=_Commands(),
         ),
     )
@@ -137,6 +184,10 @@ def _parity_env() -> ManagerBasedRlEnv:
         ManagerBasedRlEnv,
         SimpleNamespace(
             num_envs=2,
+            device=torch.device("cpu"),
+            cfg=SimpleNamespace(
+                scene=SimpleNamespace(entities={"robot": SimpleNamespace(root_body_name="base")})
+            ),
             scene=_ParityScene(),
             command_manager=_Commands(),
             max_episode_length_s=20.0,
@@ -221,10 +272,9 @@ def test_standing_aware_foot_rewards_gate_swing_and_expect_planted_feet(device: 
 
 def test_standing_penalties_match_a2_legacy_gates() -> None:
     parity_env = _parity_env()
-    cast(Any, parity_env).command_manager.command[:] = [
-        [0.0, 0.0, 0.0],
-        [0.5, 0.0, 0.0],
-    ]
+    cast(Any, parity_env).command_manager.command.copy_(
+        torch.tensor([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]], dtype=torch.float32)
+    )
     stand_still = _reward_value(
         parity_env,
         manager_terms.stand_still_l1,
@@ -234,10 +284,9 @@ def test_standing_penalties_match_a2_legacy_gates() -> None:
     np.testing.assert_allclose(stand_still, [0.2, 0.0], atol=1e-7)
 
     foot_env = _env()
-    cast(Any, foot_env).command_manager.command[:] = [
-        [0.0, 0.0, 0.0],
-        [0.5, 0.0, 0.0],
-    ]
+    cast(Any, foot_env).command_manager.command.copy_(
+        torch.tensor([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]], dtype=torch.float32)
+    )
     feet_air = _reward_value(
         foot_env,
         manager_terms.feet_air_while_standing,
@@ -248,14 +297,29 @@ def test_standing_penalties_match_a2_legacy_gates() -> None:
     np.testing.assert_array_equal(feet_air, [2.0, 0.0])
 
 
+def test_feet_air_while_standing_fails_closed_without_packed_sensors() -> None:
+    env = _env()
+    cfg = RewardTermCfg(
+        func=manager_terms.feet_air_while_standing,
+        weight=1.0,
+        params={"sensor_names": CONTACTS, "command_name": "twist"},
+    )
+    built = manager_terms.feet_air_while_standing(cfg=cfg, env=cast(Any, env))
+    cast(Any, env).scene.read_plan.sensor_names = {"robot": ()}
+
+    with pytest.raises(NotImplementedError, match="packed Torch read plan"):
+        built(env)
+
+
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
 def test_foot_rewards_match_legacy_equations_and_read_only_bound_views(dtype) -> None:
     scene = _Scene()
     scene.values = {name: values.astype(dtype) for name, values in scene.values.items()}
+    scene.refresh_tensor_read_plan()
     manager = _rewards(_env(5, scene))
     assert scene.calls == {"bind": 2, "read": 2}
     result = manager.compute(dt=0.02)
-    assert scene.calls == {"bind": 2, "read": 4}
+    assert scene.calls == {"bind": 2, "read": 2}
 
     phase = np.array([[0.2, 0.7, 0.7, 0.2]] * 2)
     contact = np.array([[True, False, False, True], [False, True, True, False]])
@@ -264,7 +328,7 @@ def test_foot_rewards_match_legacy_equations_and_read_only_bound_views(dtype) ->
     expected += np.mean(np.exp(-np.square(heights - 0.1) / 0.01) * (phase >= 0.6), axis=1)
     np.testing.assert_allclose(result, expected, atol=1e-7)
     manager.compute(dt=0.02)
-    assert scene.calls == {"bind": 2, "read": 6}
+    assert scene.calls == {"bind": 2, "read": 2}
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda:0"])
@@ -282,7 +346,11 @@ def test_foot_rewards_use_compiled_tensor_sensors_without_host_reads(device: str
         requests.append((entity, names))
         return SimpleNamespace(values={name: values[name] for name in names})
 
-    cast(Any, scene)._tensor_read_plan = SimpleNamespace(sensor_tensor_views=sensor_tensor_views)
+    cast(Any, scene).read_plan = SimpleNamespace(
+        device=torch.device(device),
+        sensor_names={"robot": CONTACTS + POSITIONS},
+        sensor_tensor_views=sensor_tensor_views,
+    )
     torch.testing.assert_close(manager.compute(dt=0.02), expected)
     assert scene.calls == calls
     assert requests == [("robot", CONTACTS), ("robot", POSITIONS)]
@@ -329,34 +397,58 @@ def test_runtime_nonfinite_sensor_data_reports_term_and_backend() -> None:
     scene = _Scene()
     manager = _rewards(_env(scene=scene))
     scene.values["fl_contact"][1, 0] = np.nan
-    with pytest.raises(ValueError, match="feet_phase_contact.*backend 'fake'.*NaN or Inf"):
+    values = {name: torch.as_tensor(value) for name, value in scene.values.items()}
+
+    def sensor_tensor_views(entity, names):
+        # Mirror the public read-plan validation boundary: non-finite sensor
+        # values fail closed with the requesting sensor named in the error.
+        if not bool(torch.isfinite(values["fl_contact"]).all()):
+            raise ValueError("fl_contact has NaN or Inf")
+        return SimpleNamespace(values={name: values[name] for name in names})
+
+    cast(Any, scene).read_plan = SimpleNamespace(
+        device=torch.device("cpu"),
+        sensor_names={"robot": tuple(scene.values)},
+        sensor_tensor_views=sensor_tensor_views,
+    )
+    with pytest.raises(ValueError, match="fl_contact has NaN or Inf"):
         manager.compute(dt=0.02)
 
 
 def test_base_reward_terms_match_go2_flat_equations() -> None:
     env = _parity_env()
-    asset = SceneEntityCfg("robot")
-    data = cast(Any, env).scene.robot.data
+    data = cast(Any, env).scene
+    local_linvel = data.values["local_linvel"]
+    gyro = data.values["gyro"]
+    root_pos_w = torch.tensor([[[1.0, 2.0, 0.4]], [[-1.0, 0.5, 0.2]]], dtype=torch.float32)[:, 0]
+    joint_pos = torch.tensor([[0.2, -0.1, 0.5], [-0.4, 0.3, 0.1]], dtype=torch.float32)
+    default_joint_pos = torch.tensor([[0.1, -0.2, 0.5], [-0.1, 0.1, 0.0]], dtype=torch.float32)
     command = cast(Any, env).command_manager.command
-    std = 0.5
+    sigma = 0.5
     actual = {
         "track_xy": _reward_value(
             env,
-            manager_terms.track_lin_vel_xy_exp,
-            std=std,
+            sensor_reward_terms.track_lin_vel,
+            tracking_sigma=sigma,
+            sensor_name="local_linvel",
             command_name="twist",
-            asset_cfg=asset,
         ),
         "track_yaw": _reward_value(
             env,
-            manager_terms.track_ang_vel_z_exp,
-            std=std,
+            sensor_reward_terms.track_ang_vel,
+            tracking_sigma=sigma,
+            sensor_name="gyro",
             command_name="twist",
-            asset_cfg=SceneEntityCfg("robot"),
         ),
-        "lin_z": _reward_value(env, manager_terms.lin_vel_z_l2, asset_cfg=SceneEntityCfg("robot")),
+        "lin_z": _reward_value(
+            env,
+            sensor_reward_terms.lin_vel_z,
+            sensor_name="local_linvel",
+        ),
         "ang_xy": _reward_value(
-            env, manager_terms.ang_vel_xy_l2, asset_cfg=SceneEntityCfg("robot")
+            env,
+            sensor_reward_terms.ang_vel_xy,
+            sensor_name="gyro",
         ),
         "height": _reward_value(
             env,
@@ -369,38 +461,64 @@ def test_base_reward_terms_match_go2_flat_equations() -> None:
         ),
     }
     expected = {
-        "track_xy": np.exp(
-            -np.sum(np.square(command[:, :2] - data.root_link_lin_vel_b[:, :2]), axis=1) / std**2
-        ),
-        "track_yaw": np.exp(-np.square(command[:, 2] - data.root_link_ang_vel_b[:, 2]) / std**2),
-        "lin_z": np.square(data.root_link_lin_vel_b[:, 2]),
-        "ang_xy": np.sum(np.square(data.root_link_ang_vel_b[:, :2]), axis=1),
-        "height": np.square(data.root_link_pos_w[:, 2] - 0.3),
-        "pose": np.sum(np.abs(data.joint_pos - data.default_joint_pos), axis=1),
+        "track_xy": torch.exp(-(command[:, :2] - local_linvel[:, :2]).square().sum(dim=1) / sigma),
+        "track_yaw": np.exp(-np.square(command[:, 2] - gyro[:, 2]) / sigma),
+        "lin_z": np.square(local_linvel[:, 2]),
+        "ang_xy": np.sum(np.square(gyro[:, :2]), axis=1),
+        "height": torch.square(root_pos_w[:, 2] - 0.3),
+        "pose": (joint_pos - default_joint_pos).abs().sum(dim=1),
     }
     for name in expected:
         assert actual[name].shape == (2,)
         assert actual[name].dtype == torch.float32
-        torch.testing.assert_close(
-            actual[name],
-            torch.from_numpy(np.ascontiguousarray(expected[name])),
-            rtol=1e-6,
-            atol=1e-7,
-        )
+        expected_tensor = expected[name]
+        if isinstance(expected_tensor, torch.Tensor):
+            expected_tensor = expected_tensor.to(device=actual[name].device)
+        if isinstance(expected_tensor, np.ndarray):
+            expected_tensor = torch.from_numpy(np.ascontiguousarray(expected_tensor))
+        torch.testing.assert_close(actual[name], expected_tensor, rtol=1e-6, atol=1e-7)
 
 
 def test_base_reward_terms_fail_closed_at_nearest_boundary() -> None:
     env = _parity_env()
-    with pytest.raises(ValueError, match="track_lin_vel_xy_exp std must be greater than 0.0"):
-        _reward_value(env, manager_terms.track_lin_vel_xy_exp, std=0.0, command_name="twist")
-    with pytest.raises(KeyError, match="track_ang_vel_z_exp command capability 'missing'"):
-        _reward_value(env, manager_terms.track_ang_vel_z_exp, std=0.5, command_name="missing")
+    with pytest.raises(ValueError, match="track_lin_vel tracking_sigma must be greater than 0.0"):
+        _reward_value(
+            env,
+            sensor_reward_terms.track_lin_vel,
+            tracking_sigma=0.0,
+            sensor_name="local_linvel",
+            command_name="twist",
+        )
+    with pytest.raises(KeyError, match="track_ang_vel command capability 'missing'"):
+        _reward_value(
+            env,
+            sensor_reward_terms.track_ang_vel,
+            tracking_sigma=0.5,
+            sensor_name="gyro",
+            command_name="missing",
+        )
     with pytest.raises(ValueError, match="base_height_l2 target_height must be finite"):
         _reward_value(env, manager_terms.base_height_l2, target_height=np.nan)
 
-    cast(Any, env).scene.robot.data.root_link_lin_vel_b[1, 2] = np.inf
-    with pytest.raises(ValueError, match="lin_vel_z_l2 root linear velocity contains NaN or Inf"):
-        _reward_value(env, manager_terms.lin_vel_z_l2)
+    scene = cast(Any, env).scene
+    scene.values = {
+        "local_linvel": cast(Any, env).scene.robot.data.root_link_lin_vel_b.copy(),
+        "gyro": cast(Any, env).scene.robot.data.root_link_ang_vel_b.copy(),
+    }
+    scene.values["local_linvel"][1, 2] = np.inf
+    scene.read_plan = SimpleNamespace(
+        device=torch.device("cpu"),
+        sensor_names={"robot": ("local_linvel", "gyro")},
+        sensor_tensor_views=lambda entity, names: SimpleNamespace(
+            values={name: torch.as_tensor(scene.values[name]) for name in names}
+        ),
+    )
+    with pytest.raises(ValueError, match="named-sensor capability.*NaN or Inf"):
+        _reward_value(
+            env,
+            sensor_reward_terms.lin_vel_z,
+            sensor_name="local_linvel",
+        )
 
     with pytest.raises(KeyError, match="RewardManager term 'parity'.*asset_cfg.*missing"):
         _reward_value(

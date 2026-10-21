@@ -19,7 +19,7 @@ The training scripts follow the same high-level sequence:
 
 - `src/unilab/scripts/train_rsl_rl.py` uses
   `unilab.rl.RslRlVecEnvAdapter` and RSL-RL's `OnPolicyRunner`.
-- `src/unilab/scripts/train_appo.py` uses `APPORunner`, `RolloutRingBuffer`, and
+- `src/unilab/scripts/train_appo.py` uses `APPORunner`, `TensorRolloutRingBuffer`, and
   `SharedWeightSync`.
 - `src/unilab/scripts/train_sac.py` and
   `src/unilab/scripts/train_flashsac.py` use off-policy runners with `ReplayBuffer` and
@@ -39,6 +39,7 @@ The training scripts follow the same high-level sequence:
 
 - Shared training helpers: `src/unilab/training/common.py`,
   `src/unilab/training/run.py`
-- Async lifecycle: `uni_rl.ipc.async_runner` (unilab-rl repo)
+- Async lifecycle: `unilab.rl.runtime.async_runner`
 - Runner tests: `tests/algos/test_appo_runner.py`,
-  `tests/algos/test_offpolicy_runner.py`, `tests/ipc/test_async_runner.py`
+  `tests/algos/test_offpolicy_double_buffer_runner.py`,
+  `tests/rl/runtime/test_async_runner.py`

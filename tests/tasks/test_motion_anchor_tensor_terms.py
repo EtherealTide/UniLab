@@ -10,12 +10,12 @@ import pytest
 import torch
 
 from unilab.base.entity import EntityTensorBodyStateView
+from unilab.base.rotation import np_matrix_first_two_cols_from_quat
 from unilab.managers import ManagerTermBaseCfg
-from unilab.managers._types import ManagerBasedRlEnv
+from unilab.managers.types import ManagerBasedRlEnv
 from unilab.tasks.motion_tracking.common import manager_terms as mt
 from unilab.tasks.motion_tracking.common.manager_terms import MotionCommand
 from unilab.tasks.motion_tracking.common.tensor_rotation import quat_to_rot6
-from unilab.utils.rotation import np_matrix_first_two_cols_from_quat
 
 
 class _MotionCommand(MotionCommand):
@@ -23,12 +23,23 @@ class _MotionCommand(MotionCommand):
 
     cfg = None
 
-    def __init__(self, **values: Any) -> None:
-        self.__dict__.update(values)
+    def __new__(cls, *_args: Any, **values: Any) -> "_MotionCommand":
+        command = cast("_MotionCommand", MotionCommand.__new__(cls))
+        command.__dict__.update(values)
+        return command
+
+    def __init__(self, *_args: Any, **_values: Any) -> None:
+        return None
 
     @property
     def tensor_carrier(self) -> bool:
-        return bool(self.__dict__.get("tensor_carrier", False))
+        return True
+
+    @property
+    def robot_joint_pos(self) -> torch.Tensor:
+        value = self.__dict__["robot_joint_pos"]
+        assert isinstance(value, torch.Tensor)
+        return value
 
 
 class _FakeCommandManager:
@@ -51,7 +62,7 @@ def _env(command: Any, view: EntityTensorBodyStateView) -> Any:
         pass
 
     scene = _Scene()
-    scene._tensor_read_plan = SimpleNamespace(
+    scene.read_plan = SimpleNamespace(
         body_tensor_view=lambda *_: view,
         sensor_tensor_views=lambda *_: SimpleNamespace(
             values={
@@ -78,7 +89,7 @@ def _command(
     body_quat_w: np.ndarray,
 ) -> Any:
     return _MotionCommand(
-        cfg=_MotionCommand(
+        cfg=SimpleNamespace(
             entity_name="robot",
             body_names=("torso", "pelvis"),
         ),
@@ -112,6 +123,11 @@ def test_quat_to_rot6_matches_numpy_first_two_columns() -> None:
     torch.testing.assert_close(actual, torch.as_tensor(expected))
 
 
+def test_quat_to_rot6_rejects_invalid_width() -> None:
+    with pytest.raises(ValueError, match="quaternion must have final dimension 4"):
+        quat_to_rot6(torch.zeros((2, 3)))
+
+
 def _cfg(term_class: type) -> ManagerTermBaseCfg:
     return ManagerTermBaseCfg(func=term_class, params={"command_name": "motion"})
 
@@ -140,7 +156,7 @@ def test_anchor_position_uses_reference_and_aggregate_body_view() -> None:
     body_pos_w, _ = _reference_state()
     command = _command(body_pos_w=body_pos_w.copy(), body_quat_w=np.zeros((2, 2, 4)))
     env = _env(command, _view())
-    view = env.scene._tensor_read_plan.body_tensor_view(None, None)
+    view = env.scene.read_plan.body_tensor_view(None, None)
     term = mt.MotionAnchorPositionObservation(
         _cfg(mt.MotionAnchorPositionObservation), cast(ManagerBasedRlEnv, env)
     )
@@ -160,7 +176,7 @@ def test_anchor_orientation_uses_reference_and_aggregate_body_view() -> None:
     _, body_quat_w = _reference_state()
     command = _command(body_pos_w=np.zeros((2, 2, 3)), body_quat_w=body_quat_w.copy())
     env = _env(command, _view())
-    view = env.scene._tensor_read_plan.body_tensor_view(None, None)
+    view = env.scene.read_plan.body_tensor_view(None, None)
     term = mt.MotionAnchorOrientationObservation(_cfg(mt.MotionAnchorOrientationObservation), env)
 
     value = term(cast(ManagerBasedRlEnv, env), command_name="motion")
@@ -182,7 +198,7 @@ def test_anchor_terms_return_default_shape_probe_without_read_plan() -> None:
         body_quat_w=np.zeros((2, 2, 4), dtype=np.float32),
     )
     env = _env(command, _view())
-    env.scene._tensor_read_plan = None
+    env.scene.read_plan = None
     position = mt.MotionAnchorPositionObservation(_cfg(mt.MotionAnchorPositionObservation), env)
     orientation = mt.MotionAnchorOrientationObservation(
         _cfg(mt.MotionAnchorOrientationObservation), env
@@ -223,7 +239,7 @@ def test_anchor_terms_declare_command_body_namespace() -> None:
 
 
 def test_tensor_command_observation_accessors_return_carrier_views() -> None:
-    command = _MotionCommand(tensor_carrier=True)
+    command = _MotionCommand()
     command.motion_anchor_pos_b = torch.zeros((2, 3), dtype=torch.float32)
     command.motion_anchor_ori_b = torch.zeros((2, 6), dtype=torch.float32)
     command.robot_body_pos_b = torch.zeros((2, 2, 3), dtype=torch.float32)
@@ -251,13 +267,12 @@ def test_tensor_command_observation_accessors_return_carrier_views() -> None:
 def test_tensor_command_joint_observation_uses_cached_default() -> None:
     robot = SimpleNamespace(
         data=SimpleNamespace(
-            default_joint_pos_torch=lambda device: torch.full((2, 29), 0.25),
+            default_joint_pos=lambda device: torch.full((2, 29), 0.25),
         )
     )
     command = _MotionCommand(
-        tensor_carrier=True,
         robot=robot,
-        device_robot_joint_pos=torch.full((2, 29), 1.0),
+        robot_joint_pos=torch.full((2, 29), 1.0),
         joint_default_bias=torch.full((2, 29), 0.125),
     )
     env = _env(command, _view())

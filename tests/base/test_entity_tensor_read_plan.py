@@ -77,13 +77,13 @@ class _SceneTensorBackend:
             torch_devices=("cpu",),
         )
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         return (
             TensorExecution.DEVICE_RESIDENT if self.device_resident else TensorExecution.HOST_BRIDGE
         )
 
     def get_state_views(self, names, device=None) -> dict[str, torch.Tensor]:
-        assert tuple(names) == ("qpos", "qvel")
+        assert set(names) <= {"qpos", "qvel"}
         target = torch.device(device) if device is not None else torch.device("cpu")
         return {
             "qpos": self.qpos.to(target),
@@ -181,7 +181,7 @@ class _SceneTensorBackend:
 
         return np.zeros(len(names), dtype=np.int32)
 
-    def compile_host_bridge_io(self, spec: TensorIOSpec):
+    def bind_host_bridge_io(self, spec: TensorIOSpec):
         backend = self
 
         class _Plan(HostBridgeTransferPlan):
@@ -311,7 +311,7 @@ def test_device_resident_scene_plan_reuses_aggregate_body_views() -> None:
     assert backend.aggregate_body_view_calls == 2
 
 
-def test_device_resident_scene_plan_reuses_stable_sensor_views() -> None:
+def test_device_resident_scene_plan_refreshes_every_sensor_boundary() -> None:
     backend = _SceneTensorBackend(device_resident=True)
     scene = _scene(backend)
     plan = scene.compile_tensor_reads("cpu", _specs())
@@ -319,15 +319,38 @@ def test_device_resident_scene_plan_reuses_stable_sensor_views() -> None:
     plan.refresh()
     calls_after_first_refresh = backend.sensor_view_calls
     first = plan.sensor_tensor_views("robot", ("imu_gyro",)).values["imu_gyro"]
+
+    # Model adapter-owned derived-sensor semantics: a later public boundary call
+    # returns a newly materialized projection rather than mutating the old one.
+    backend.sensors["imu_gyro"] = torch.full((2, 3), 7.0, dtype=torch.float32)
     plan.refresh()
     second = plan.sensor_tensor_views("robot", ("imu_gyro",)).values["imu_gyro"]
 
-    assert first is second
-    # The first boundary refreshes adapter-owned projections. Later read phases
-    # republish the same live aliases without another Python/DLPack crossing.
-    assert backend.sensor_view_calls == calls_after_first_refresh
+    assert first is not second
+    torch.testing.assert_close(first, torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
+    torch.testing.assert_close(second, torch.full((2, 3), 7.0))
+    # Every compiled sensor crosses its public backend boundary on every phase.
+    # Genesis/Newton derived sensors are stable outputs, not native-live arrays.
+    assert backend.sensor_view_calls == calls_after_first_refresh + len(plan.packet_names)
     assert plan.transfer_stats == {}
     assert plan.last_timing == {}
+    plan.close()
+
+
+def test_device_resident_selected_reset_refreshes_body_sensor_boundary() -> None:
+    backend = _SceneTensorBackend(device_resident=True)
+    scene = _scene(backend)
+    plan = scene.compile_tensor_reads("cpu", _specs())
+
+    plan.refresh_selected()
+    calls_after_selected_refresh = backend.sensor_view_calls
+
+    backend.sensors["track_pos_w_hip"] = torch.full((2, 3), 9.0, dtype=torch.float32)
+    plan.refresh_selected()
+    body = plan.body_tensor_view("robot")
+
+    torch.testing.assert_close(body.pos_w[:, 0], backend.sensors["track_pos_w_hip"])
+    assert backend.sensor_view_calls == calls_after_selected_refresh + len(plan.packet_names)
     plan.close()
 
 

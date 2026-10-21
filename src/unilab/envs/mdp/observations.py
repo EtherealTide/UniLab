@@ -1,27 +1,94 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681),
 # src/mjlab/envs/mdp/observations.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy and the base-owned entity facade; Apache-2.0.
-"""Community-style observation terms for the NumPy manager runtime."""
+# Modified by UniLab for the base-owned entity facade; Apache-2.0.
+"""Community-style observation terms for the Manager runtime."""
 
 from __future__ import annotations
 
+import math
 import weakref
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
-import numpy as np
 import torch
 
+from unilab.base.entity import EntityTensorStateView
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
+from unilab.managers.rng import ManagerRng
 from unilab.managers.scene_entity_config import SceneEntityCfg
-from unilab.utils.rotation import np_quat_apply_batched, np_quat_from_angle_axis
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
+
+
+def quat_apply_inverse(quat_wxyz: torch.Tensor, vector: torch.Tensor) -> torch.Tensor:
+    """Rotate vectors by the inverse of broadcast-compatible wxyz quaternions."""
+    quat = torch.cat((quat_wxyz[..., 0:1], -quat_wxyz[..., 1:4]), dim=-1)
+    quat_xyz = quat[..., 1:4]
+    if vector.ndim < quat_xyz.ndim:
+        vector = vector.expand_as(quat_xyz)
+    cross = torch.linalg.cross(quat_xyz, vector, dim=-1)
+    second_cross = torch.linalg.cross(quat_xyz, cross, dim=-1)
+    return vector + 2.0 * quat[..., 0:1] * cross + 2.0 * second_cross
+
+
+def require_read_plan(env: ManagerBasedRlEnv, term_name: str) -> Any:
+    read_plan = getattr(env.scene, "read_plan", None)
+    if read_plan is None:
+        raise NotImplementedError(
+            f"Observation term '{term_name}' requires the Manager packed Torch read plan"
+        )
+    return read_plan
+
+
+def _root_body_name(asset: "Entity", term_name: str) -> str:
+    root_body_name = getattr(asset, "root_body_name", None)
+    if not isinstance(root_body_name, str) or not root_body_name:
+        raise NotImplementedError(
+            f"Observation term '{term_name}' requires entity '{asset.name}' "
+            "to declare root_body_name"
+        )
+    return root_body_name
+
+
+def root_body_view(
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg,
+    term_name: str,
+) -> tuple[Entity, Any]:
+    asset = cast("Entity", env.scene[asset_cfg.name])
+    read_plan = require_read_plan(env, term_name)
+    return asset, read_plan.body_tensor_view(asset, (_root_body_name(asset, term_name),))
+
+
+def joint_view(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg, term_name: str) -> Any:
+    asset = env.scene[asset_cfg.name]
+    read_plan = getattr(env.scene, "read_plan", None)
+    if read_plan is None:
+        # ObservationManager probes shape before cold packed-read compilation.
+        # Return a zeros-shaped probe from the immutable declared joint namespace.
+        width = len(asset.joint_names)
+        return EntityTensorStateView(
+            joint_pos=torch.zeros(
+                (env.num_envs, width),
+                dtype=torch.float32,
+                device=getattr(env, "device", torch.device("cpu")),
+            ),
+            joint_vel=torch.zeros(
+                (env.num_envs, width),
+                dtype=torch.float32,
+                device=getattr(env, "device", torch.device("cpu")),
+            ),
+        )
+    return require_read_plan(env, term_name).joint_tensor_view(asset)
+
+
+def world_to_body_vector(quat_wxyz: torch.Tensor, vector_w: torch.Tensor) -> torch.Tensor:
+    return quat_apply_inverse(quat_wxyz, vector_w)
 
 
 class _NamedSensorObservation(ManagerTermBase):
@@ -62,7 +129,7 @@ class _NamedSensorObservation(ManagerTermBase):
                 f"'{self._sensor_name}', received '{sensor_name}'"
             )
 
-    def _read(self) -> np.ndarray:
+    def _read(self) -> Any:
         try:
             return self._view.read()
         except (KeyError, TypeError, ValueError, NotImplementedError) as exc:
@@ -72,25 +139,39 @@ class _NamedSensorObservation(ManagerTermBase):
             ) from exc
 
     def _read_tensor(self, env: ManagerBasedRlEnv) -> torch.Tensor:
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
+        read_plan = getattr(env.scene, "read_plan", None)
         if read_plan is None:
+            # Manager construction probes immutable observation shape before
+            # cold packed-read compilation. This is not a hot-path read.
             device = getattr(env, "device", torch.device("cpu"))
             return torch.as_tensor(self._read(), device=device)
+        read_plan = require_read_plan(env, self._term_name)
         entity = env.scene[self._entity_name]
         sensor_names = self._tensor_sensor_names
         compiled = set(read_plan.sensor_names.get(self._entity_name, ()))
-        if read_plan.device.type == "cuda" and not set(sensor_names).issubset(compiled):
-            # Narrow device-resident adapters still expose only their audited
-            # scalar sensor subset. Keep the validated backend host/cache view
-            # rather than fabricating a packed packet entry.
-            device = getattr(env, "device", torch.device("cpu"))
-            return torch.as_tensor(self._read(), device=device)
+        if not set(sensor_names).issubset(compiled):
+            raise NotImplementedError(
+                f"Observation term '{self._term_name}' requires entity "
+                f"'{self._entity_name}' sensors {sensor_names} in the packed Torch "
+                f"read plan; compiled={tuple(sorted(compiled))}"
+            )
         views = read_plan.sensor_tensor_views(entity, sensor_names)
-        return views.values[self._sensor_name]
+        value = views.values[self._sensor_name]
+        if not bool(torch.isfinite(value).all()):
+            raise ValueError(
+                f"Observation term '{self._term_name}' capability "
+                f"'named sensor {self._sensor_name}' on backend "
+                f"'{self._view.backend_type}' returned NaN or Inf"
+            )
+        return value
 
     @property
     def tensor_sensor_names(self) -> tuple[str, ...]:
         return self._tensor_sensor_names
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        """Row boundary for stateless sensor observations."""
+        del env_ids
 
 
 class builtin_sensor(_NamedSensorObservation):
@@ -103,7 +184,7 @@ class builtin_sensor(_NamedSensorObservation):
         env: ManagerBasedRlEnv,
         sensor_name: str,
         entity_name: str | None = None,
-    ) -> np.ndarray:
+    ) -> torch.Tensor:
         del entity_name
         self._validate_call_name(sensor_name)
         return self._read_tensor(env)
@@ -128,7 +209,7 @@ class projected_gravity_from_sensor(_NamedSensorObservation):
         env: ManagerBasedRlEnv,
         sensor_name: str,
         entity_name: str | None = None,
-    ) -> np.ndarray:
+    ) -> torch.Tensor:
         del entity_name
         self._validate_call_name(sensor_name)
         return -self._read_tensor(env)
@@ -137,46 +218,48 @@ class projected_gravity_from_sensor(_NamedSensorObservation):
 def base_lin_vel(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
-    asset = cast("Entity", env.scene[asset_cfg.name])
-    return asset.data.root_link_lin_vel_b
+) -> torch.Tensor:
+    _, view = root_body_view(env, asset_cfg, "base_lin_vel")
+    return world_to_body_vector(view.quat_w[:, 0, :], view.lin_vel_w[:, 0, :])
 
 
 def base_ang_vel(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
-    asset = cast("Entity", env.scene[asset_cfg.name])
-    return asset.data.root_link_ang_vel_b
+) -> torch.Tensor:
+    _, view = root_body_view(env, asset_cfg, "base_ang_vel")
+    return world_to_body_vector(view.quat_w[:, 0, :], view.ang_vel_w[:, 0, :])
 
 
 def projected_gravity(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
-    asset = cast("Entity", env.scene[asset_cfg.name])
-    return asset.data.projected_gravity_b
+) -> torch.Tensor:
+    asset, view = root_body_view(env, asset_cfg, "projected_gravity")
+    gravity = asset.data.gravity_vec_w(getattr(env, "device", torch.device("cpu")))[0]
+    return quat_apply_inverse(view.quat_w[:, 0, :], gravity.expand((view.quat_w.shape[0], 3)))
 
 
 # Per-env constant IMU mounting-misalignment quaternions, keyed by env instance
 # and max_angle_rad. Sampled once per (env, angle) at term construction and
 # shared by every misaligned term of that env, so the gyroscope and gravity
-# observations see the SAME mounting error (legacy microduck recipe,
+# observations see the SAME mounting error (upstream microduck recipe:
 # microduck_rl/src/mjlab_microduck/tasks/mdp.py:3618-3660). Weak keys keep the
 # cache from outliving the env.
-_IMU_MISALIGNMENT_QUATS: weakref.WeakKeyDictionary[ManagerBasedRlEnv, dict[float, np.ndarray]] = (
+_IMU_MISALIGNMENT_QUATS: weakref.WeakKeyDictionary[ManagerBasedRlEnv, dict[float, torch.Tensor]] = (
     weakref.WeakKeyDictionary()
 )
 
 
-def _imu_misalignment_quat(env: ManagerBasedRlEnv, max_angle_rad: float) -> np.ndarray:
+def _imu_misalignment_quat(env: ManagerBasedRlEnv, max_angle_rad: float) -> torch.Tensor:
     """Per-env constant IMU mounting-misalignment rotation, sampled once.
 
     Models a fixed small mounting/calibration error of the IMU on each robot:
     a rotation about an axis uniform on the sphere with magnitude uniform in
     [0, max_angle_rad]. Sampled from ``env.rng`` on first use and cached for the
     whole run (a startup-style systematic per-robot bias, not per-step noise and
-    not resampled on episode reset), matching the legacy semantics.
+    not resampled on episode reset) — the behavior pinned from the upstream
+    microduck reference above.
 
     Returns (num_envs, 4) unit quaternions (w, x, y, z) in float32.
     """
@@ -186,21 +269,17 @@ def _imu_misalignment_quat(env: ManagerBasedRlEnv, max_angle_rad: float) -> np.n
         _IMU_MISALIGNMENT_QUATS[env] = per_env
     quat = per_env.get(max_angle_rad)
     if quat is None:
-        rng_owner = getattr(env, "torch_rng", None)
-        if rng_owner is not None:
-            axis = rng_owner.standard_normal((env.num_envs, 3))
-            angle = rng_owner.uniform(0.0, max_angle_rad, (env.num_envs,), dtype=torch.float32)
-            axis = axis / torch.linalg.vector_norm(axis, dim=-1, keepdim=True)
-            half = 0.5 * angle
-            quat_torch = torch.cat(
-                (torch.cos(half)[:, None], axis * torch.sin(half)[:, None]), dim=1
+        rng_owner = getattr(env, "rng", None)
+        if not isinstance(rng_owner, ManagerRng):
+            raise RuntimeError(
+                "IMU misalignment sampling requires the Manager-owned Torch generator"
             )
-            quat = quat_torch.detach().cpu().numpy().astype(np.float32, copy=False)
-            per_env[max_angle_rad] = quat
-            return quat
-        axis = env.rng.standard_normal((env.num_envs, 3))
-        angle = env.rng.uniform(0.0, max_angle_rad, size=env.num_envs)
-        quat = np_quat_from_angle_axis(angle, axis).astype(np.float32)
+        axis = rng_owner.standard_normal((env.num_envs, 3))
+        angle = rng_owner.uniform(0.0, max_angle_rad, (env.num_envs,), dtype=torch.float32)
+        axis = axis / torch.linalg.vector_norm(axis, dim=-1, keepdim=True)
+        half = 0.5 * angle
+        quat_torch = torch.cat((torch.cos(half)[:, None], axis * torch.sin(half)[:, None]), dim=1)
+        quat = quat_torch.detach().to(dtype=torch.float32)
         per_env[max_angle_rad] = quat
     return quat
 
@@ -219,13 +298,13 @@ class _ImuMisalignedObservation(ManagerTermBase):
                 f"requires a real max_angle_deg, got {max_angle_deg!r}"
             )
         max_angle_deg = float(max_angle_deg)
-        if not np.isfinite(max_angle_deg) or max_angle_deg < 0.0:
+        if not math.isfinite(max_angle_deg) or max_angle_deg < 0.0:
             raise ValueError(
                 f"Observation term '{self._term_name}' capability 'IMU misalignment' "
                 f"requires a finite non-negative max_angle_deg, got {max_angle_deg}"
             )
         self._max_angle_deg = max_angle_deg
-        self._quat = _imu_misalignment_quat(env, float(np.deg2rad(max_angle_deg)))
+        self._quat = _imu_misalignment_quat(env, math.radians(max_angle_deg))
 
     def _validate_max_angle(self, max_angle_deg: float) -> None:
         if float(max_angle_deg) != self._max_angle_deg:
@@ -234,8 +313,13 @@ class _ImuMisalignedObservation(ManagerTermBase):
                 f"{self._max_angle_deg}, received {max_angle_deg}"
             )
 
-    def _rotate(self, values: np.ndarray) -> np.ndarray:
-        return np_quat_apply_batched(self._quat, values)
+    def _rotate(self, values: Any) -> torch.Tensor:
+        device = getattr(self._env, "device", torch.device("cpu"))
+        vectors = torch.as_tensor(values, dtype=torch.float32, device=device)
+        quat = self._quat.to(device=device)
+        quat_w, quat_xyz = quat[..., 0:1], quat[..., 1:4]
+        cross = 2.0 * torch.linalg.cross(quat_xyz, vectors, dim=-1)
+        return vectors + quat_w * cross + torch.linalg.cross(quat_xyz, cross, dim=-1)
 
 
 class base_ang_vel_imu_misaligned(_ImuMisalignedObservation):
@@ -248,10 +332,10 @@ class base_ang_vel_imu_misaligned(_ImuMisalignedObservation):
         env: ManagerBasedRlEnv,
         max_angle_deg: float = 1.0,
         asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-    ) -> np.ndarray:
+    ) -> torch.Tensor:
         self._validate_max_angle(max_angle_deg)
-        asset = cast("Entity", env.scene[asset_cfg.name])
-        return self._rotate(asset.data.root_link_ang_vel_b)
+        _, view = root_body_view(env, asset_cfg, self._term_name)
+        return self._rotate(world_to_body_vector(view.quat_w[:, 0, :], view.ang_vel_w[:, 0, :]))
 
 
 class projected_gravity_imu_misaligned(_ImuMisalignedObservation):
@@ -264,51 +348,47 @@ class projected_gravity_imu_misaligned(_ImuMisalignedObservation):
         env: ManagerBasedRlEnv,
         max_angle_deg: float = 1.0,
         asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-    ) -> np.ndarray:
+    ) -> torch.Tensor:
         self._validate_max_angle(max_angle_deg)
-        asset = cast("Entity", env.scene[asset_cfg.name])
-        return self._rotate(asset.data.projected_gravity_b)
+        asset, view = root_body_view(env, asset_cfg, self._term_name)
+        gravity = asset.data.gravity_vec_w(getattr(env, "device", torch.device("cpu")))[0]
+        projected = quat_apply_inverse(
+            view.quat_w[:, 0, :], gravity.expand((view.quat_w.shape[0], 3))
+        )
+        return self._rotate(projected)
 
 
 def joint_pos_rel(
     env: ManagerBasedRlEnv,
     biased: bool = False,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray | torch.Tensor:
+) -> torch.Tensor:
     if not isinstance(biased, bool):
         raise TypeError(f"joint_pos_rel biased must be bool, got {type(biased).__name__}")
-    asset = cast("Entity", env.scene[asset_cfg.name])
     joint_ids = asset_cfg.joint_ids
-    read_plan = getattr(env.scene, "_tensor_read_plan", None)
-    if read_plan is not None:
-        state = read_plan.joint_tensor_view(asset)
-        return (
-            state.joint_pos[:, joint_ids]
-            - asset.data.default_joint_pos_torch(env.device)[:, joint_ids]
-        )
-    joint_pos = asset.data.joint_pos_biased if biased else asset.data.joint_pos
-    return joint_pos[:, joint_ids] - asset.data.default_joint_pos[:, joint_ids]
+    device = getattr(env, "device", torch.device("cpu"))
+    asset = env.scene[asset_cfg.name]
+    state = joint_view(env, asset_cfg, "joint_pos_rel")
+    result = state.joint_pos[:, joint_ids] - asset.data.default_joint_pos(device)[:, joint_ids]
+    return (
+        result
+        if not biased
+        else result + asset.data.encoder_bias_tensor.to(result.device)[:, joint_ids]
+    )
 
 
 def joint_vel_rel(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray | torch.Tensor:
-    asset = cast("Entity", env.scene[asset_cfg.name])
+) -> torch.Tensor:
     joint_ids = asset_cfg.joint_ids
-    read_plan = getattr(env.scene, "_tensor_read_plan", None)
-    if read_plan is not None:
-        state = read_plan.joint_tensor_view(asset)
-        return (
-            state.joint_vel[:, joint_ids]
-            - asset.data.default_joint_vel_torch(env.device)[:, joint_ids]
-        )
-    return asset.data.joint_vel[:, joint_ids] - asset.data.default_joint_vel[:, joint_ids]
+    device = getattr(env, "device", torch.device("cpu"))
+    asset = env.scene[asset_cfg.name]
+    state = joint_view(env, asset_cfg, "joint_vel_rel")
+    return state.joint_vel[:, joint_ids] - asset.data.default_joint_vel(device)[:, joint_ids]
 
 
-def last_action(
-    env: ManagerBasedRlEnv, action_name: str | None = None
-) -> np.ndarray | torch.Tensor:
+def last_action(env: ManagerBasedRlEnv, action_name: str | None = None) -> torch.Tensor:
     if action_name is None:
         return env.action_manager.action
     try:
@@ -318,7 +398,7 @@ def last_action(
     return action
 
 
-def generated_commands(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray:
+def generated_commands(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     try:
         command = env.command_manager.get_command(command_name)
     except KeyError as exc:
@@ -336,8 +416,13 @@ __all__ = [
     "generated_commands",
     "joint_pos_rel",
     "joint_vel_rel",
+    "joint_view",
     "last_action",
     "projected_gravity",
     "projected_gravity_from_sensor",
     "projected_gravity_imu_misaligned",
+    "quat_apply_inverse",
+    "require_read_plan",
+    "root_body_view",
+    "world_to_body_vector",
 ]

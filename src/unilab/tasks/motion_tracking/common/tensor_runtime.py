@@ -12,7 +12,6 @@ from dataclasses import dataclass, field, is_dataclass
 from dataclasses import fields as dataclass_fields
 from typing import Any, Mapping
 
-import numpy as np
 import torch
 
 from unilab.managers._noise.noise_cfg import UniformNoiseCfg
@@ -24,6 +23,10 @@ def _qualified_name(value: Any) -> str:
     return f"{type(value).__module__}.{type(value).__qualname__}"
 
 
+def _finite_float(value: float) -> bool:
+    return value == value and value not in {float("inf"), float("-inf")}
+
+
 def semantic_token(value: Any) -> Any:
     """Normalize an owner configuration value without unknown escapes."""
     if value is None:
@@ -32,6 +35,7 @@ def semantic_token(value: Any) -> Any:
         return "slice", value.start, value.stop, value.step
     if is_dataclass(value) and not isinstance(value, type):
         excluded = {"fixed_variant_plan"} if type(value).__name__ == "SceneCfg" else set()
+        excluded |= getattr(value, "_semantic_fingerprint_excludes", frozenset())
         return (
             _qualified_name(value),
             tuple(
@@ -41,15 +45,9 @@ def semantic_token(value: Any) -> Any:
             ),
         )
     if isinstance(value, (str, bytes, bool, int, float)):
-        if isinstance(value, float) and not bool(np.isfinite(value)):
+        if isinstance(value, float) and not _finite_float(value):
             raise ValueError("tensor task owner identity contains a non-finite scalar")
         return type(value).__name__, value
-    if isinstance(value, np.generic):
-        if isinstance(value, (float, np.floating)) and not bool(np.isfinite(value)):
-            raise ValueError("tensor task owner identity contains a non-finite scalar")
-        return type(value).__name__, value.item()
-    if isinstance(value, np.ndarray):
-        return _qualified_name(value), str(value.dtype), value.shape, value.tobytes(order="C")
     if isinstance(value, Mapping):
         return tuple((str(key), semantic_token(item)) for key, item in value.items())
     if isinstance(value, (list, tuple)):
@@ -70,7 +68,7 @@ def semantic_fingerprint(domain: str, value: Any) -> str:
 
 
 @dataclass(frozen=True)
-class TensorObservationNoise:
+class ObservationNoise:
     """Uniform additive observation noise with owner-declared bounds."""
 
     lower: torch.Tensor
@@ -94,14 +92,14 @@ class TensorObservationNoise:
         terms: tuple[UniformNoiseCfg, ...],
         widths: tuple[int, ...],
         device: torch.device,
-    ) -> TensorObservationNoise:
+    ) -> ObservationNoise:
         if len(terms) != len(widths) or not terms or min(widths) <= 0:
             raise ValueError("observation noise terms and widths must be non-empty and aligned")
         lower_values = tuple(term.n_min for term in terms if isinstance(term.n_min, float))
         upper_values = tuple(term.n_max for term in terms if isinstance(term.n_max, float))
         if len(lower_values) != len(terms) or len(upper_values) != len(terms):
             raise TypeError("motion-tracking tensor runtime requires scalar uniform noise bounds")
-        if any(not np.isfinite(value) for value in (*lower_values, *upper_values)):
+        if any(not _finite_float(value) for value in (*lower_values, *upper_values)):
             raise ValueError("observation noise bounds must be finite")
         if any(upper < lower for lower, upper in zip(lower_values, upper_values)):
             raise ValueError("observation noise upper bounds must not be below lower bounds")
@@ -132,12 +130,11 @@ class TensorObservationNoise:
 
 
 @dataclass
-class TensorResetPlan:
-    """Device-side done union and selected reset-row planner."""
+class ResetMasks:
+    """Device-side fixed-width done union."""
 
     terminated: torch.Tensor
     truncated: torch.Tensor
-    _rows: torch.Tensor | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.terminated.shape != self.truncated.shape or self.terminated.ndim != 1:
@@ -151,17 +148,9 @@ class TensorResetPlan:
     def done(self) -> torch.Tensor:
         return self.terminated | self.truncated
 
-    @property
-    def rows(self) -> torch.Tensor:
-        rows = self._rows
-        if rows is None:
-            rows = self.done.nonzero(as_tuple=False).flatten().to(torch.int64)
-            object.__setattr__(self, "_rows", rows)
-        return rows
-
 
 @dataclass
-class TensorEpisodeMetrics:
+class EpisodeMetrics:
     """Device-resident current episode accumulators.
 
     ``snapshot`` and ``finished_values`` return tensors; callers decide when a
@@ -172,7 +161,7 @@ class TensorEpisodeMetrics:
     lengths: torch.Tensor
 
     @classmethod
-    def create(cls, num_envs: int, device: torch.device) -> TensorEpisodeMetrics:
+    def create(cls, num_envs: int, device: torch.device) -> EpisodeMetrics:
         if num_envs <= 0:
             raise ValueError("tensor episode metrics require a positive environment count")
         return cls(
@@ -190,23 +179,33 @@ class TensorEpisodeMetrics:
         self.rewards += reward
         self.lengths += 1
 
-    def finished_values(self, rows: torch.Tensor) -> torch.Tensor:
+    def finished_values(self, done_mask: torch.Tensor) -> torch.Tensor:
+        if done_mask.shape != self.rewards.shape or done_mask.dtype != torch.bool:
+            raise ValueError("episode metric finished mask must be full-width bool")
         return torch.stack(
-            (self.rewards[rows].to(torch.float64), self.lengths[rows].to(torch.float64)), dim=1
+            (
+                torch.where(done_mask, self.rewards, torch.zeros_like(self.rewards)).to(
+                    torch.float64
+                ),
+                torch.where(done_mask, self.lengths, torch.zeros_like(self.lengths)).to(
+                    torch.float64
+                ),
+            ),
+            dim=1,
         )
 
-    def reset(self, rows: torch.Tensor) -> None:
-        self.rewards[rows] = 0.0
-        self.lengths[rows] = 0
+    def reset(self, done_mask: torch.Tensor) -> None:
+        self.rewards.masked_fill_(done_mask, 0.0)
+        self.lengths.masked_fill_(done_mask, 0)
 
     def snapshot(self) -> dict[str, torch.Tensor]:
         return {"reward": self.rewards, "length": self.lengths}
 
 
 __all__ = [
-    "TensorEpisodeMetrics",
-    "TensorObservationNoise",
-    "TensorResetPlan",
+    "EpisodeMetrics",
+    "ObservationNoise",
+    "ResetMasks",
     "semantic_fingerprint",
     "semantic_token",
 ]

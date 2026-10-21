@@ -13,12 +13,13 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 import torch
 
+from unilab.base.reset_selectors import reset_env_ids_mask
 from unilab.managers import ActionTerm, ActionTermCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 def finite_real(value: Real, *, label: str) -> float:
@@ -120,45 +121,47 @@ class JointEffortAction(ActionTerm):
             actuator_ids=self._actuator_ids,
         )
 
-    def reset(self, env_ids: np.ndarray | torch.Tensor | slice | None = None) -> None:
-        ids = slice(None) if env_ids is None else env_ids
-        self._raw_actions[ids] = 0.0
-        self._processed_actions[ids] = 0.0
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if env_ids is None:
+            self._raw_actions.zero_()
+            self._processed_actions.zero_()
+            return
+        self._raw_actions[env_ids] = 0.0
+        self._processed_actions[env_ids] = 0.0
 
 
 def reset_joints_by_offset(
     env: ManagerBasedRlEnv,
-    env_ids: np.ndarray | torch.Tensor | None,
+    env_ids: torch.Tensor,
     position_range: tuple[float, float] | list[float],
     velocity_range: tuple[float, float] | list[float],
     asset_cfg: SceneEntityCfg,
 ) -> None:
     """Write uniformly offset joint defaults through the reset transaction."""
-    if env_ids is None:
-        raise ValueError("reset_joints_by_offset requires concrete environment IDs")
-    if isinstance(env_ids, torch.Tensor):
-        env_ids = env_ids.detach().cpu().numpy()
+    reset_mask = reset_env_ids_mask(env_ids, num_envs=env.num_envs, device=torch.device(env.device))
     position_lower, position_upper = numeric_range(position_range, label="position_range")
     velocity_lower, velocity_upper = numeric_range(velocity_range, label="velocity_range")
     asset = cast("Entity", env.scene[asset_cfg.name])
     joint_ids = asset_cfg.joint_ids
-    default_position = asset.data.default_joint_pos[env_ids][:, joint_ids]
-    default_velocity = asset.data.default_joint_vel[env_ids][:, joint_ids]
+    default_position = asset.data.default_joint_pos(env.device)[:, joint_ids]
+    default_velocity = asset.data.default_joint_vel(env.device)[:, joint_ids]
     position = default_position + env.rng.uniform(
         position_lower,
         position_upper,
-        default_position.shape,
+        tuple(default_position.shape),
+        dtype=default_position.dtype,
     )
     velocity = default_velocity + env.rng.uniform(
         velocity_lower,
         velocity_upper,
-        default_velocity.shape,
+        tuple(default_velocity.shape),
+        dtype=default_velocity.dtype,
     )
-    asset.write_joint_state_to_sim(
-        position.astype(default_position.dtype, copy=False),
-        velocity.astype(default_velocity.dtype, copy=False),
+    asset.write_joint_state_to_sim_mask(
+        position,
+        velocity,
+        reset_mask,
         joint_ids=joint_ids,
-        env_ids=env_ids,
     )
 
 

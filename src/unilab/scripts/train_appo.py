@@ -11,21 +11,23 @@ from typing import Any, cast
 import hydra
 import torch
 from omegaconf import DictConfig, OmegaConf
-from uni_rl.algos.appo.runtime import resolve_appo_runtime
 from unisim.backend.base import log_playback_plan
 
+import unilab.utils.checkpoint as checkpoint_utils
 from unilab.base.config_adapter import (
-    BackendAdapter,
+    EnvConfigAdapter,
     create_env,
 )
 from unilab.base.env_factory import registry_env_factory
 from unilab.base.process_device import (
     apply_backend_env_device_override,
-    apply_manager_torch_device_override,
+    apply_sim_carrier_device_override,
+    canonicalize_sim_carrier_device,
     configure_backend_process_device,
     pin_genesis_device_before_cuda_init,
 )
 from unilab.rl import RslRlVecEnvAdapter
+from unilab.rl.algos.appo.resolution import resolve_appo_runtime
 from unilab.training import (
     algo_config_dict,
     build_run_dir_name,
@@ -38,11 +40,12 @@ from unilab.training import (
 )
 from unilab.training.experiment import ExperimentTracker
 from unilab.training.onnx_export import export_policy_onnx, verify_policy_onnx
-from unilab.utils.checkpoint import resolve_appo_checkpoint_path
-from unilab.utils.seed import apply_configured_training_seed
+from unilab.training.seed import apply_configured_training_seed
+from unilab.training.tensor_runtime import select_sim_carrier_device
 from unilab.visualization.interactive_playback import (
-    RslRlPlaybackConfig,
+    PlaybackConfig,
     create_appo_playback_session,
+    default_device,
     normalize_checkpoint_value,
 )
 from unilab.visualization.playback import camera_cfg_from_training
@@ -58,6 +61,15 @@ def _is_cuda_device(device: str | None) -> bool:
     """Return whether a device alias names CUDA (indexed or unindexed)."""
 
     return device is not None and str(device).strip().lower().split(":", 1)[0] == "cuda"
+
+
+def _str_checkpoint_tuple(
+    resolved: tuple[Path | None, Path | None],
+) -> tuple[str | None, str | None]:
+    return (
+        str(resolved[0]) if resolved[0] is not None else None,
+        str(resolved[1]) if resolved[1] is not None else None,
+    )
 
 
 def _env_carrier_device(
@@ -100,12 +112,10 @@ def build_appo_runner_kwargs(
         str(cfg.training.sim_backend),
         learner_device=_env_carrier_device(cfg, collector_device),
     )
-    routed_env_cfg_override = apply_manager_torch_device_override(
+    routed_env_cfg_override = apply_sim_carrier_device_override(
         routed_env_cfg_override,
         str(cfg.training.sim_backend),
-        collector_tensor_device=str(
-            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
-        ),
+        sim_carrier_device=select_sim_carrier_device(cfg),
         learner_device=_env_carrier_device(cfg, collector_device),
     )
 
@@ -128,26 +138,25 @@ def build_appo_runner_kwargs(
         runner_kwargs["replay_queue_size"] = cfg.training.replay_queue_size
     load_run = OmegaConf.select(cfg, "algo.load_run", default="-1")
     if _training_resume_requested(load_run):
-        resume_path, _ = resolve_appo_checkpoint_path(
-            os.path.join(_get_log_root(cfg), cfg.training.task_name),
+        resume_path, _ = checkpoint_utils.resolve_checkpoint_path(
+            get_log_root(Path.cwd(), cfg) / str(cfg.training.task_name),
             str(load_run),
         )
         if resume_path is None:
             raise FileNotFoundError(f"Could not resolve APPO resume checkpoint: {load_run}")
-        runner_kwargs["resume_path"] = resume_path
+        runner_kwargs["resume_path"] = str(resume_path)
 
     nan_guard_cfg = resolve_nan_guard_cfg(cfg.training)
     if nan_guard_cfg is not None:
         runner_kwargs["nan_guard_cfg"] = nan_guard_cfg
-        from unilab.training.tensor_runtime_hooks import build_tensor_nan_guard_factory
+        from unilab.training.tensor_runtime_hooks import tensor_nan_guard_factory
 
-        runner_kwargs["nan_guard_factory"] = build_tensor_nan_guard_factory()
+        runner_kwargs["nan_guard_factory"] = tensor_nan_guard_factory
     return runner_kwargs
 
 
 def apply_appo_runtime_flags(
     rl_cfg: dict[str, Any],
-    cfg: DictConfig,
     *,
     training_enabled: bool,
 ) -> None:
@@ -156,70 +165,6 @@ def apply_appo_runtime_flags(
         return
     if not training_enabled:
         algorithm_cfg["enable_compile"] = False
-
-
-def run_motrix_play_loop(
-    env,
-    actor,
-    device: str,
-    play_env_num: int,
-    num_steps: int | None = None,
-) -> None:
-    if env.state is None:
-        env.init_state()
-
-    with torch.inference_mode():
-        env.run_playback(
-            num_steps=num_steps,
-            initialize=lambda: _motrix_playback_obs(
-                env.reset(torch.arange(play_env_num, dtype=torch.int64, device=env.device))
-            ),
-            step=lambda obs: _motrix_playback_step(
-                env=env,
-                actor=actor,
-                device=device,
-                play_env_num=play_env_num,
-                obs=obs,
-            ),
-        )
-
-
-def _motrix_playback_obs(state: Any) -> torch.Tensor:
-    """Extract the actor observation tensor from a TorchEnv reset result."""
-    obs = state[0].obs if hasattr(state[0], "obs") else state[0]["obs"]
-    if not isinstance(obs, torch.Tensor):
-        raise TypeError(
-            f"APPO playback reset observation must be a tensor, got {type(obs).__name__}"
-        )
-    return obs
-
-
-def _motrix_playback_step(
-    *,
-    env: Any,
-    actor: Callable[[Any], Any],
-    device: str,
-    play_env_num: int,
-    obs: Any,
-) -> torch.Tensor:
-    """Run one APPO policy step and return the next actor observation tensor."""
-    from tensordict import TensorDict
-
-    if not isinstance(obs, torch.Tensor):
-        raise TypeError(
-            f"APPO playback step observation must be a tensor, got {type(obs).__name__}"
-        )
-    action = actor(
-        TensorDict(
-            {"policy": obs.to(device=device, dtype=torch.float32)},
-            batch_size=play_env_num,
-        )
-    ).to(device=env.device, dtype=torch.float32)
-    return _motrix_playback_obs((env.step(action.contiguous()).obs, None))
-
-
-def _get_log_root(cfg: DictConfig) -> str:
-    return str(get_log_root(Path.cwd(), cfg))
 
 
 def play_appo(
@@ -249,24 +194,21 @@ def play_appo(
     if resolve_checkpoint_path is not None:
         load_path, load_path_dir = resolve_checkpoint_path(cfg)
     else:
-        log_root = _get_log_root(cfg)
-        base_log_dir = os.path.join(log_root, cfg.training.task_name)
-        load_path, load_path_dir = resolve_appo_checkpoint_path(base_log_dir, cfg.algo.load_run)
+        base_log_dir = get_log_root(Path.cwd(), cfg) / str(cfg.training.task_name)
+        resolved_path, resolved_dir = checkpoint_utils.resolve_checkpoint_path(
+            base_log_dir, cfg.algo.load_run
+        )
+        load_path = str(resolved_path) if resolved_path is not None else None
+        load_path_dir = str(resolved_dir) if resolved_dir is not None else None
 
     if not load_path or not os.path.exists(load_path):
         print(f"Could not find run to load. load_path={load_path}")
         return None
 
-    device = cfg.training.device or (
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps"
-        if torch.backends.mps.is_available()
-        else "cpu"
-    )
+    device = cfg.training.device or default_device(torch)
     print(f"Using device for play: {device}")
 
-    playback_cfg = RslRlPlaybackConfig(
+    playback_cfg = PlaybackConfig(
         task=str(cfg.training.task_name),
         load_run=str(cfg.algo.load_run),
         checkpoint=normalize_checkpoint_value(
@@ -285,16 +227,14 @@ def play_appo(
     if bound_device is not None:
         device = bound_device
     play_env_cfg_override = apply_backend_env_device_override(
-        BackendAdapter(cfg, root_dir=Path.cwd(), algo_name="appo").build_play_env_cfg_override(),
+        EnvConfigAdapter(cfg, root_dir=Path.cwd(), algo_name="appo").build_play_env_cfg_override(),
         str(cfg.training.sim_backend),
         learner_device=device,
     )
-    play_env_cfg_override = apply_manager_torch_device_override(
+    play_env_cfg_override = apply_sim_carrier_device_override(
         play_env_cfg_override,
         str(cfg.training.sim_backend),
-        collector_tensor_device=str(
-            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
-        ),
+        sim_carrier_device=select_sim_carrier_device(cfg),
         learner_device=device,
     )
     session, _policy_obs_mode, _checkpoint_path = create_appo_playback_session(
@@ -388,12 +328,12 @@ def main(cfg: DictConfig) -> None:
 
     # Convert algo config to plain dict for APPORunner / RSL-RL internals
     rl_cfg = algo_config_dict(cfg)
-    apply_appo_runtime_flags(rl_cfg, cfg, training_enabled=not cfg.training.play_only)
+    apply_appo_runtime_flags(rl_cfg, training_enabled=not cfg.training.play_only)
     appo_runtime = resolve_appo_runtime(rl_cfg, default_play_fn=play_appo)
 
     if cfg.training.log_dir is None:
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        log_root = _get_log_root(cfg)
+        log_root = str(get_log_root(Path.cwd(), cfg))
         log_dir = os.path.join(
             log_root,
             cfg.training.task_name,
@@ -406,13 +346,7 @@ def main(cfg: DictConfig) -> None:
     if collector_device == "gpu":
         collector_device = "mps" if torch.backends.mps.is_available() else "cuda"
 
-    learner_device = cfg.training.device or (
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps"
-        if torch.backends.mps.is_available()
-        else "cpu"
-    )
+    learner_device = cfg.training.device or default_device(torch)
     if pinned_device is not None:
         # The process was pinned to its requested GPU; use the in-process
         # index for both learner and collector.
@@ -431,19 +365,22 @@ def main(cfg: DictConfig) -> None:
             collector_device = bound_device
 
     env_cfg_override = apply_backend_env_device_override(
-        BackendAdapter(cfg, root_dir=Path.cwd(), algo_name="appo").build_task_env_cfg_override(),
+        EnvConfigAdapter(cfg, root_dir=Path.cwd(), algo_name="appo").build_task_env_cfg_override(),
         str(cfg.training.sim_backend),
         learner_device=_env_carrier_device(cfg, collector_device, runner_device=learner_device),
     )
-    env_cfg_override = apply_manager_torch_device_override(
+    env_cfg_override = apply_sim_carrier_device_override(
         env_cfg_override,
         str(cfg.training.sim_backend),
-        collector_tensor_device=str(
-            OmegaConf.select(cfg, "training.collector_tensor_device", default="cpu")
-        ),
+        sim_carrier_device=select_sim_carrier_device(cfg),
         learner_device=_env_carrier_device(cfg, collector_device, runner_device=learner_device),
     )
     seed_info = apply_configured_training_seed(cfg, torch_runtime=True, cuda=True)
+    resolved_sim_carrier = (
+        canonicalize_sim_carrier_device(env_cfg_override.get("sim_carrier_device"))
+        if str(cfg.training.sim_backend) == "mujoco"
+        else None
+    )
 
     tracker = None
     if not cfg.training.play_only:
@@ -456,7 +393,34 @@ def main(cfg: DictConfig) -> None:
             training_cfg=cfg.training,
             full_cfg=cfg,
             device=learner_device,
+            configured_device=str(cfg.training.device or "auto"),
             collector_device=collector_device,
+            device_resolution={
+                "learner": {
+                    "configured": str(cfg.training.device or "auto"),
+                    "resolved": str(learner_device),
+                },
+                **(
+                    {
+                        "collector": {
+                            "configured": str(cfg.training.collector_device or "auto"),
+                            "resolved": str(collector_device),
+                        }
+                    }
+                    if collector_device is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "sim_carrier": {
+                            "configured": select_sim_carrier_device(cfg),
+                            "resolved": resolved_sim_carrier,
+                        }
+                    }
+                    if resolved_sim_carrier is not None
+                    else {}
+                ),
+            },
             seed_info=seed_info,
         )
         tracker.start()
@@ -493,9 +457,11 @@ def main(cfg: DictConfig) -> None:
                 cfg,
                 rl_cfg,
                 root_dir=Path.cwd(),
-                resolve_checkpoint_path=lambda current_cfg: resolve_appo_checkpoint_path(
-                    os.path.join(_get_log_root(current_cfg), current_cfg.training.task_name),
-                    current_cfg.algo.load_run,
+                resolve_checkpoint_path=lambda current_cfg: _str_checkpoint_tuple(
+                    checkpoint_utils.resolve_checkpoint_path(
+                        get_log_root(Path.cwd(), current_cfg) / str(current_cfg.training.task_name),
+                        current_cfg.algo.load_run,
+                    )
                 ),
             )
             if tracker is not None:

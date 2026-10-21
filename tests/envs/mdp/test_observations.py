@@ -9,13 +9,20 @@ from typing import Any, cast
 import numpy as np
 import pytest
 import torch
-from unisim.backend.base import SimBackend
+from unisim.backend.base import (
+    SimBackend,
+    TensorDataPlane,
+    TensorExecution,
+    TensorLifecycleCapabilities,
+    TensorProcessTopology,
+)
 
-from unilab.base.entity import EntityCfg, EntityScene
+from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadSpec
 from unilab.envs import mdp
 from unilab.managers import ObservationGroupCfg, ObservationManager, ObservationTermCfg
-from unilab.managers._types import ManagerBasedRlEnv
+from unilab.managers.rng import ManagerRng
 from unilab.managers.scene_entity_config import SceneEntityCfg
+from unilab.managers.types import ManagerBasedRlEnv
 
 
 class _Backend:
@@ -29,6 +36,26 @@ class _Backend:
             "gyro": np.asarray([[0.1, 0.2, 0.3], [-0.1, -0.2, -0.3]], dtype=np.float32),
             "upvector": np.asarray([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0]], dtype=np.float32),
         }
+        self.sensor_values.update(
+            {
+                "track_pos_w_base": torch.from_numpy(np.zeros((2, 3), dtype=np.float32)),
+                "track_quat_w_base": torch.from_numpy(
+                    np.asarray(
+                        [
+                            [1.0, 0.0, 0.0, 0.0],
+                            [np.sqrt(0.5), np.sqrt(0.5), 0.0, 0.0],
+                        ],
+                        dtype=np.float32,
+                    )
+                ),
+                "track_linvel_w_base": torch.from_numpy(
+                    np.asarray([[0.5, 0.25, 0.0], [-0.5, -0.25, 0.1]], dtype=np.float32)
+                ),
+                "track_angvel_w_base": torch.from_numpy(
+                    np.asarray([[0.1, 0.2, 0.3], [-0.1, -0.2, -0.3]], dtype=np.float32)
+                ),
+            }
+        )
         self.joint_names = ("hip", "knee", "ankle")
         self.dof_pos = np.asarray(
             [[0.4, 0.1, -0.2], [0.0, 0.3, 0.7]],
@@ -43,8 +70,12 @@ class _Backend:
         self.body_quat[0, 0, 0] = 1.0
         half = np.sqrt(0.5)
         self.body_quat[1, 0] = [half, half, 0.0, 0.0]
-        self.body_lin_vel_w = np.zeros((2, 1, 3), dtype=np.float32)
-        self.body_ang_vel_w = np.zeros((2, 1, 3), dtype=np.float32)
+        self.body_lin_vel_w = np.asarray(
+            [[[0.5, 0.25, 0.0]], [[-0.5, -0.25, 0.1]]], dtype=np.float32
+        )
+        self.body_ang_vel_w = np.asarray(
+            [[[0.1, 0.2, 0.3]], [[-0.1, -0.2, -0.3]]], dtype=np.float32
+        )
         self.body_lin_vel_b = np.asarray(
             [[[0.5, 0.25, 0.0]], [[-0.5, -0.25, 0.1]]], dtype=np.float32
         )
@@ -52,10 +83,37 @@ class _Backend:
             [[[0.1, 0.2, 0.3]], [[-0.1, -0.2, -0.3]]], dtype=np.float32
         )
 
+    def get_tensor_capabilities(self):
+        return TensorLifecycleCapabilities(
+            execution=TensorExecution.DEVICE_RESIDENT,
+            state_views=True,
+            state_fields=frozenset(("qpos", "qvel")),
+            sensor_views=True,
+            process_topology=TensorProcessTopology.IN_PROCESS,
+            data_plane=TensorDataPlane.DIRECT,
+            stream_event_ownership="caller owns the Torch stream",
+            torch_devices=("cpu",),
+        )
+
+    def get_state_views(self, names, device=None):
+        return {
+            "qpos": torch.as_tensor(self.dof_pos, dtype=torch.float32, device=device),
+            "qvel": torch.as_tensor(self.dof_vel, dtype=torch.float32, device=device),
+        }
+
+    def get_sensor_view(self, name, device=None):
+        return torch.as_tensor(self.sensor_values[name], dtype=torch.float32, device=device)
+
     def get_joint_dof_pos_indices(self, names) -> np.ndarray:
         return np.asarray([self.joint_names.index(name) for name in names], dtype=np.int32)
 
     def get_joint_dof_vel_indices(self, names) -> np.ndarray:
+        return self.get_joint_dof_pos_indices(names)
+
+    def get_joint_state_qpos_indices(self, names) -> np.ndarray:
+        return self.get_joint_dof_pos_indices(names)
+
+    def get_joint_state_qvel_indices(self, names) -> np.ndarray:
         return self.get_joint_dof_pos_indices(names)
 
     def get_body_ids(self, names) -> np.ndarray:
@@ -115,7 +173,7 @@ class _Backend:
 
 class _ActionManager:
     def __init__(self) -> None:
-        self.action = np.arange(6, dtype=np.float32).reshape(2, 3)
+        self.action = torch.arange(6, dtype=torch.float32).reshape(2, 3)
         self._terms = {
             "legs": SimpleNamespace(raw_action=self.action[:, [0, 2]]),
         }
@@ -126,9 +184,9 @@ class _ActionManager:
 
 class _CommandManager:
     def __init__(self) -> None:
-        self.command = np.asarray([[1.0, 0.0, 0.2], [0.5, -0.1, -0.2]], dtype=np.float32)
+        self.command = torch.tensor([[1.0, 0.0, 0.2], [0.5, -0.1, -0.2]])
 
-    def get_command(self, name: str) -> np.ndarray:
+    def get_command(self, name: str) -> torch.Tensor:
         if name != "twist":
             raise KeyError(name)
         return self.command
@@ -148,6 +206,7 @@ def _env() -> tuple[ManagerBasedRlEnv, _Backend]:
             "robot": EntityCfg(
                 root_body_name="base",
                 joint_names=backend.joint_names,
+                body_names=("base",),
             )
         },
         cast(SimBackend, backend),
@@ -159,14 +218,32 @@ def _env() -> tuple[ManagerBasedRlEnv, _Backend]:
             scene=scene,
             action_manager=_ActionManager(),
             command_manager=_CommandManager(),
-            rng=np.random.default_rng(4),
+            device=torch.device("cpu"),
+            rng=ManagerRng.seeded(4),
         ),
     )
+    env.scene.read_plan = scene_plan = env.scene.compile_tensor_reads(
+        env.device,
+        (
+            SceneTensorReadSpec(entity="robot", body_names=("base",)),
+            SceneTensorReadSpec(entity="robot", sensor_names=("gyro", "upvector")),
+        ),
+    )
+    scene_plan.refresh()
     return env, backend
 
 
 def _tensor_observation(env: ManagerBasedRlEnv) -> torch.Tensor:
     return torch.asarray([[0.1], [-0.1]], dtype=torch.float32, device=env.device)
+
+
+def _world_to_body_reference(quat: np.ndarray, vector: np.ndarray) -> torch.Tensor:
+    quat_t = torch.from_numpy(quat)
+    vector_t = torch.from_numpy(vector)
+    conjugate = torch.cat((quat_t[:, 0:1], -quat_t[:, 1:4]), dim=-1)
+    xyz = conjugate[:, 1:4]
+    cross = torch.linalg.cross(xyz, vector_t, dim=-1)
+    return vector_t + 2.0 * conjugate[:, 0:1] * cross + 2.0 * torch.linalg.cross(xyz, cross, dim=-1)
 
 
 def _host_observation(env: ManagerBasedRlEnv) -> np.ndarray:
@@ -179,8 +256,14 @@ def test_root_joint_action_and_command_terms_match_numpy_contract() -> None:
     robot = cast(Any, env.scene["robot"])
     robot.data.encoder_bias[:] = [[0.01, 0.02, 0.03], [-0.01, -0.02, -0.03]]
 
-    np.testing.assert_array_equal(mdp.base_lin_vel(env), backend.body_lin_vel_b[:, 0])
-    np.testing.assert_array_equal(mdp.base_ang_vel(env), backend.body_ang_vel_b[:, 0])
+    torch.testing.assert_close(
+        mdp.base_lin_vel(env),
+        _world_to_body_reference(backend.body_quat[:, 0], backend.body_lin_vel_w[:, 0]),
+    )
+    torch.testing.assert_close(
+        mdp.base_ang_vel(env),
+        _world_to_body_reference(backend.body_quat[:, 0], backend.body_ang_vel_w[:, 0]),
+    )
     np.testing.assert_allclose(
         mdp.projected_gravity(env),
         [[0.0, 0.0, -1.0], [0.0, -1.0, 0.0]],
@@ -193,6 +276,7 @@ def test_root_joint_action_and_command_terms_match_numpy_contract() -> None:
     np.testing.assert_allclose(
         mdp.joint_pos_rel(env, biased=True),
         backend.dof_pos + robot.data.encoder_bias - [0.1, 0.2, 0.3],
+        atol=1e-6,
     )
     np.testing.assert_array_equal(mdp.joint_vel_rel(env), backend.dof_vel)
     np.testing.assert_array_equal(mdp.last_action(env), env.action_manager.action)
@@ -279,7 +363,7 @@ def test_named_sensor_terms_bind_once_and_only_read_cached_views() -> None:
     manager = _sensor_manager(env)
 
     assert manager.group_obs_dim == {"policy": (6,)}
-    assert backend.sensor_calls == {"bind": 2, "single": 2, "batch": 4}
+    assert backend.sensor_calls == {"bind": 2, "batch": 4}
 
     first = manager.compute_group("policy")
     second = manager.compute_group("policy")
@@ -290,7 +374,7 @@ def test_named_sensor_terms_bind_once_and_only_read_cached_views() -> None:
     )
     np.testing.assert_array_equal(first, expected)
     np.testing.assert_array_equal(second, expected)
-    assert backend.sensor_calls == {"bind": 2, "single": 2, "batch": 8}
+    assert backend.sensor_calls == {"bind": 2, "batch": 4}
 
     gyro_term = manager.get_term_cfg("policy", "gyro").func
     gravity_term = manager.get_term_cfg("policy", "gravity").func
@@ -302,52 +386,39 @@ def test_named_sensor_terms_bind_once_and_only_read_cached_views() -> None:
 def test_cuda_manager_names_every_non_tensor_observation_term() -> None:
     env, _ = _env()
     cast(Any, env).device = torch.device("cuda", index=torch.cuda.current_device())
-    manager = ObservationManager(
-        {
-            "policy": ObservationGroupCfg(
-                terms={
-                    "torch_sensor": ObservationTermCfg(
-                        func=_tensor_observation,
-                    ),
-                    "host_sensor": ObservationTermCfg(func=_host_observation),
-                    "another_host_sensor": ObservationTermCfg(func=_host_observation),
-                }
-            )
-        },
-        env,
-    )
-
-    with pytest.raises(TypeError) as error:
-        manager.compute_group("policy")
-
-    message = str(error.value)
-    assert "CUDA runtime device cuda" in message
-    assert "terms ['host_sensor', 'another_host_sensor'] returned NumPy observations" in message
-    assert "tensor-native" in message
+    cast(Any, env).rng = ManagerRng.seeded(4, device=cast(Any, env).device)
+    with pytest.raises(TypeError, match="expected torch.Tensor"):
+        ObservationManager(
+            {
+                "policy": ObservationGroupCfg(
+                    terms={
+                        "torch_sensor": ObservationTermCfg(
+                            func=_tensor_observation,
+                        ),
+                        "host_sensor": ObservationTermCfg(func=_host_observation),
+                        "another_host_sensor": ObservationTermCfg(func=_host_observation),
+                    }
+                )
+            },
+            env,
+        )
 
 
-def test_cpu_manager_remains_compatible_with_mixed_carrier_observations() -> None:
+def test_cpu_manager_rejects_numpy_observation_carriers() -> None:
     env, _ = _env()
     cast(Any, env).device = torch.device("cpu")
-    manager = ObservationManager(
-        {
-            "policy": ObservationGroupCfg(
-                terms={
-                    "torch_sensor": ObservationTermCfg(func=_tensor_observation),
-                    "host_sensor": ObservationTermCfg(func=_host_observation),
-                }
-            )
-        },
-        env,
-    )
-
-    result = manager.compute_group("policy")
-
-    assert isinstance(result, torch.Tensor)
-    np.testing.assert_allclose(
-        result.detach().cpu().numpy(),
-        [[0.1, 1.0], [-0.1, 2.0]],
-    )
+    with pytest.raises(TypeError, match="expected torch.Tensor"):
+        ObservationManager(
+            {
+                "policy": ObservationGroupCfg(
+                    terms={
+                        "torch_sensor": ObservationTermCfg(func=_tensor_observation),
+                        "host_sensor": ObservationTermCfg(func=_host_observation),
+                    }
+                )
+            },
+            env,
+        )
 
 
 @pytest.mark.parametrize(
@@ -422,6 +493,8 @@ def test_named_sensor_runtime_drift_reports_term_and_backend() -> None:
         env,
     )
     backend.sensor_values["gyro"] = np.full((2, 3), np.nan, dtype=np.float32)
+    env.scene.read_plan.invalidate()
+    env.scene.read_plan.refresh()
 
     with pytest.raises(ValueError, match="builtin_sensor.*gyro.*backend 'fake'.*NaN or Inf"):
         manager.compute_group("policy")
@@ -462,7 +535,7 @@ def test_missing_entity_capability_fails_instead_of_returning_zeros() -> None:
             command_manager=_CommandManager(),
         ),
     )
-    with pytest.raises(NotImplementedError, match="projected gravity.*not materialized"):
+    with pytest.raises(NotImplementedError, match="requires the Manager packed Torch read plan"):
         mdp.projected_gravity(env)
 
 
@@ -516,7 +589,11 @@ def test_imu_misaligned_terms_share_one_per_env_constant_quaternion() -> None:
     gyro_rot, gravity_rot = policy[:, :3], policy[:, 3:]
 
     # The critic group keeps the true (unrotated) values.
-    np.testing.assert_array_equal(gyro_raw, backend.body_ang_vel_b[:, 0])
+    assert isinstance(gyro_raw, torch.Tensor)
+    expected_body_ang_vel = _world_to_body_reference(
+        backend.body_quat[:, 0], backend.body_ang_vel_w[:, 0]
+    )
+    torch.testing.assert_close(gyro_raw, expected_body_ang_vel)
     np.testing.assert_allclose(gravity_raw, [[0.0, 0.0, -1.0], [0.0, -1.0, 0.0]], atol=1e-6)
 
     # A rotation preserves vector norms...
@@ -546,7 +623,7 @@ def test_imu_misalignment_is_constant_across_calls_and_episode_resets() -> None:
 
     first = manager.compute_group("policy")
     second = manager.compute_group("policy")
-    manager.reset(np.arange(env.num_envs))
+    manager.reset(torch.ones(env.num_envs, dtype=torch.bool, device=env.device))
     after_reset = manager.compute_group("policy")
 
     assert isinstance(first, torch.Tensor)
@@ -564,13 +641,25 @@ def test_imu_misalignment_reproducible_for_same_env_seed() -> None:
     np.testing.assert_array_equal(obs_a, obs_b)
 
 
+def test_imu_misalignment_fails_closed_without_rng() -> None:
+    env, _ = _env()
+    cast(Any, env).rng = None
+
+    with pytest.raises(RuntimeError, match="Manager-owned Torch generator"):
+        _imu_misalignment_manager(env, max_angle_deg=6.0)
+
+
 def test_imu_misalignment_zero_angle_is_identity() -> None:
     env, backend = _env()
 
     policy = _imu_misalignment_manager(env, max_angle_deg=0.0).compute_group("policy")
 
     assert isinstance(policy, torch.Tensor)
-    np.testing.assert_array_equal(policy[:, :3], backend.body_ang_vel_b[:, 0])
+    assert isinstance(policy, torch.Tensor)
+    torch.testing.assert_close(
+        policy[:, :3],
+        _world_to_body_reference(backend.body_quat[:, 0], backend.body_ang_vel_w[:, 0]),
+    )
     np.testing.assert_allclose(policy[:, 3:], [[0.0, 0.0, -1.0], [0.0, -1.0, 0.0]], atol=1e-6)
 
 

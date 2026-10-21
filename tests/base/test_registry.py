@@ -44,7 +44,7 @@ class _TestEnvA(TorchEnv):
         from unittest.mock import MagicMock
 
         backend = MagicMock(spec=SimBackend)
-        backend.tensor_execution.return_value = TensorExecution.HOST_BRIDGE
+        backend.get_tensor_execution.return_value = TensorExecution.HOST_BRIDGE
         backend.get_tensor_capabilities.return_value = TensorLifecycleCapabilities(
             execution=TensorExecution.HOST_BRIDGE,
             state_fields=frozenset({"qpos", "qvel"}),
@@ -91,11 +91,16 @@ class _TestEnvA(TorchEnv):
     def update_state(self, state):
         return state
 
-    def reset(self, env_indices=None):
-        rows = self._normalize_reset_indices(env_indices)
+    def reset(self, reset_mask=None):
+        if reset_mask is not None and (
+            reset_mask.shape != (self.num_envs,)
+            or reset_mask.dtype != torch.bool
+            or reset_mask.device != self.device
+        ):
+            raise ValueError("registry test reset requires a full-width bool mask")
         return (
             {
-                name: torch.zeros((rows.numel(), dim), device=self.device)
+                name: torch.zeros((self.num_envs, dim), device=self.device)
                 for name, dim in self.obs_groups_spec.items()
             },
             {},
@@ -259,16 +264,15 @@ def test_register_env_invalid_backend_raises():
 
 
 @pytest.mark.parametrize("backend", ["isaacgym", "isaacsim"])
-def test_register_env_rejects_shelved_backend(backend):
-    """Shelved adapters fail closed instead of registering a runtime path."""
-    _name = "_TestShelvedBackendEnv"
+def test_register_env_accepts_explicit_isaac_backend(backend):
+    """External-worker adapters register only through an explicit owner choice."""
+    _name = f"_TestIsaacBackendEnv_{backend}"
     if not registry_mod.contains(_name):
         registry_mod.register_env_config(_name, _TestCfgA)
-    with pytest.raises(
-        ValueError,
-        match=r"temporarily out of the tensor-only Manager runtime scope",
-    ):
-        registry_mod.register_env(_name, _TestEnvA, backend)
+        registry_mod.register_env(_name, _TestEnvA, "mujoco")
+
+    assert registry_mod.register_env(_name, _TestEnvA, backend) is _TestEnvA
+    assert registry_mod.find_available_sim_backend(_name) == "mujoco"
 
 
 def test_default_backend_order_is_tensor_manager_scope():
@@ -284,7 +288,7 @@ def test_default_backend_order_is_tensor_manager_scope():
 
 def test_drake_is_registered_without_changing_default_backend_order():
     """Drake is explicit-select only; absent owners still reject it."""
-    assert "drake" in registry_mod._TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS
+    assert "drake" in registry_mod._SUPPORTED_SIM_BACKENDS
     assert "drake" not in registry_mod._DEFAULT_SIM_BACKEND_ORDER
     assert "drake" not in registry_mod._envs[_TEST_ENV_A].env_factory_dict
 
@@ -383,11 +387,6 @@ def test_make_unsupported_backend_raises():
     """make() with an unsupported backend name raises ValueError."""
     with pytest.raises(ValueError, match="does not support simulation backend"):
         registry_mod.make(_TEST_ENV_A, sim_backend="not_a_backend")
-
-
-def test_make_rejects_shelved_backend_registration():
-    with pytest.raises(ValueError, match="temporarily out of the tensor-only"):
-        registry_mod.register_env(_TEST_ENV_A, lambda *args, **kwargs: None, "isaacgym")
 
 
 def test_make_no_env_factory_raises():

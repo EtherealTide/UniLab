@@ -37,13 +37,13 @@ if str(ROOT_DIR) not in sys.path:
 import hydra
 from omegaconf import DictConfig
 
-from unilab.scripts.play_interactive import _build_play_args
+from unilab.scripts.play_interactive import build_play_args
 from unilab.scripts.play_viser import play_viser
 
 
 @hydra.main(version_base="1.3", config_path="../src/unilab/conf/ppo", config_name="config")
 def main(cfg: DictConfig) -> None:
-    play_viser(_build_play_args(cfg, algo="ppo"), cfg, algo="ppo")
+    play_viser(build_play_args(cfg, algo="ppo"), cfg, algo="ppo")
 
 
 if __name__ == "__main__":

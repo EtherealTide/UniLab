@@ -15,10 +15,15 @@ import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
+from unisim.backend.base import TensorExecution, validate_torch_device
+from unisim.support import TensorPlatformProfile, get_tensor_platform_profiles
+
+from unilab.process_context import visible_cuda_entries
+
 # These backends consume an explicit integer device id while materializing
 # their simulator.  MuJoCo/Motrix/Drake run CPU-authoritative physics; their
 # optional accelerator Manager buffers are selected separately through
-# ``manager_torch_device``.
+# ``env.sim_carrier_device``.
 BACKEND_ENV_DEVICE_FIELDS: dict[str, str] = {
     "isaacgym": "isaacgym_device_id",
     "isaacsim": "isaacsim_device_id",
@@ -27,24 +32,17 @@ BACKEND_ENV_DEVICE_FIELDS: dict[str, str] = {
 
 
 # Newton consumes an explicit ``cuda:N`` device string (``newton_device``)
-# instead of an integer id.  uni_rl's collector-side process binding is
-# injection-based: it binds through the caller-supplied ``bind_device``
-# callable and fails closed when none is injected.  UniLab injects
-# ``bind_backend_process_device_for_backend`` (which covers mjwarp and
-# newton); the env override additionally forwards the rank-local device
-# string so spawn collectors can pass it to the Newton adapter.
+# instead of an integer id.  The RL runtime's collector-side process binding
+# is injection-based: the spawned collector applies the caller-supplied
+# backend-device configurer and skips binding when none is injected.  UniLab
+# injects ``configure_backend_process_device``; the env override additionally
+# forwards the rank-local device string so spawn collectors can pass it to
+# the Newton adapter.
 BACKEND_ENV_DEVICE_STR_FIELDS: dict[str, str] = {
     "newton": "newton_device",
 }
 
-# Isaac's simulator runs in a dedicated worker, but the host learner owns the
-# CUDA IPC arena.  Its Torch current device must therefore agree with the
-# integer payload sent to that worker before construction.
 _EXTERNAL_CUDA_IPC_BACKENDS = {"isaacgym", "isaacsim"}
-
-# MuJoCo is the scoped HOST_BRIDGE backend whose training collector may explicitly
-# request accelerator Torch carriers across its packed boundary.
-_COLLECTOR_TENSOR_BACKENDS = {"mujoco"}
 
 
 # Set once ``bind_genesis_process_device`` has pinned CUDA_VISIBLE_DEVICES for
@@ -60,6 +58,16 @@ def _normalize_backend(backend_type: str) -> str:
     if not isinstance(backend_type, str) or not backend_type.strip():
         raise ValueError(f"backend_type must be a non-empty string, got {backend_type!r}")
     return backend_type.strip().lower()
+
+
+def _host_bridge_profile(backend_type: str) -> TensorPlatformProfile | None:
+    """Return the public HOST_BRIDGE capability profile for a backend."""
+
+    backend = _normalize_backend(backend_type)
+    profile = get_tensor_platform_profiles().get(backend)
+    if profile is None or profile.execution is not TensorExecution.HOST_BRIDGE:
+        return None
+    return profile
 
 
 def _cuda_device_index(device: str | None) -> int | None:
@@ -98,23 +106,6 @@ def _cuda_device_index(device: str | None) -> int | None:
     return index
 
 
-def rank_local_visible_cuda_entries(
-    current_visible_devices: str | None = None,
-) -> tuple[str, ...]:
-    """Return opaque rank-local CUDA visibility entries before Torch init."""
-    raw = (
-        os.environ.get("CUDA_VISIBLE_DEVICES")
-        if current_visible_devices is None
-        else current_visible_devices
-    )
-    if raw is None:
-        return ()
-    entries = tuple(entry.strip() for entry in raw.split(",") if entry.strip())
-    if entries == ("-1",):
-        return ()
-    return entries
-
-
 def resolve_backend_env_device_id(
     backend_type: str,
     *,
@@ -132,7 +123,7 @@ def resolve_backend_env_device_id(
     if field is None:
         return None
 
-    visible_entries = rank_local_visible_cuda_entries()
+    visible_entries = visible_cuda_entries()
     if len(visible_entries) == 1:
         return 0
     if visible_entries:
@@ -175,52 +166,133 @@ def apply_backend_env_device_override(
     return result
 
 
-def apply_manager_torch_device_override(
+def apply_sim_carrier_device_override(
     env_cfg_override: Mapping[str, Any] | None,
     backend_type: str,
     *,
-    collector_tensor_device: str | None = None,
+    sim_carrier_device: str | None = None,
     learner_device: str | None = None,
 ) -> dict[str, Any]:
     """Return an env override selecting optional HOST_BRIDGE Torch carriers.
 
-    The input mapping is never mutated. ``collector_tensor_device`` is the explicit
-    training contract: ``cpu`` remains on CPU and unindexed ``cuda`` is resolved to
-    the current device by the environment. The legacy ``learner_device`` argument is
-    used only by callers without a composed training configuration.
+    The input mapping is never mutated. ``training.sim_carrier_device`` is the
+    explicit training contract: ``cpu`` remains on CPU and unindexed ``cuda`` is
+    resolved to the current device by the environment. ``auto`` follows the learner
+    device: a CUDA learner routes the rank-local (indexed) learner device string,
+    while a CPU learner routes CPU and a torch.mps learner retains the owner/default
+    CPU placement. Eligibility comes from the public SDK-free backend capability
+    inventory: only a ``HOST_BRIDGE`` backend may route this key, and the requested
+    device family/index must be in its declared ``torch_devices``. ``auto`` is a
+    no-op for backends outside that scope and when no learner device is known. The
+    ``learner_device`` argument is the fallback for callers that do not compose a
+    training configuration.
     """
 
     result = dict(env_cfg_override) if env_cfg_override is not None else {}
-    backend = _normalize_backend(backend_type)
-    if collector_tensor_device is not None:
-        device = str(collector_tensor_device).strip().lower()
-        if device not in {"cpu", "cuda"}:
+    if "manager_torch_device" in result:
+        raise ValueError(
+            "env.manager_torch_device was removed; use env.sim_carrier_device "
+            "(accepted values: cpu, cuda, or cuda:<index>)"
+        )
+    profile = _host_bridge_profile(backend_type)
+    if sim_carrier_device is not None:
+        device = str(sim_carrier_device).strip().lower()
+        if device not in {"auto", "cpu", "cuda"}:
             raise ValueError(
-                "training.collector_tensor_device must be 'cpu' or 'cuda'; "
-                f"got {collector_tensor_device!r}"
+                "training.sim_carrier_device must be 'auto', 'cpu', or 'cuda'; "
+                f"got {sim_carrier_device!r}"
             )
-        if backend not in _COLLECTOR_TENSOR_BACKENDS:
+        if profile is None:
             if device == "cuda":
                 raise ValueError(
-                    "training.collector_tensor_device=cuda is supported only for "
-                    f"the MuJoCo HOST_BRIDGE backend; got {backend_type!r}"
+                    "training.sim_carrier_device=cuda requires a HOST_BRIDGE "
+                    "backend that declares CUDA Torch carriers; got "
+                    f"{backend_type!r}"
                 )
             return result
-        result["manager_torch_device"] = device
+        if device == "auto":
+            return _apply_sim_carrier_device_auto(result, learner_device, profile=profile)
+        try:
+            validate_torch_device(
+                profile.torch_devices, device, label="training.sim_carrier_device"
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"training.sim_carrier_device={device!r} is not supported by "
+                f"backend {backend_type!r}: {exc}"
+            ) from exc
+        result["sim_carrier_device"] = device
         return result
 
-    if backend not in _COLLECTOR_TENSOR_BACKENDS:
+    if profile is None:
         return result
+    return _apply_sim_carrier_device_auto(result, learner_device, profile=profile)
+
+
+def _apply_sim_carrier_device_auto(
+    result: dict[str, Any],
+    learner_device: str | None,
+    *,
+    profile: TensorPlatformProfile,
+) -> dict[str, Any]:
+    """Resolve the ``auto`` carrier request from the learner device.
+
+    A CUDA learner routes its rank-local (indexed) device string verbatim, a CPU
+    learner routes CPU, and a torch.mps learner retains the existing CPU mapping.
+    ``None`` leaves the mapping unchanged for callers that do not know the learner
+    device yet.
+    """
+
     if learner_device is None:
         return result
     device = str(learner_device).strip()
-    if not device or device.lower() == "cpu":
-        result["manager_torch_device"] = "cpu"
+    if device.lower() == "mps":
         return result
-    if device.split(":", 1)[0].lower() != "cuda":
+    if device.lower() == "cpu":
+        result["sim_carrier_device"] = "cpu"
         return result
-    result["manager_torch_device"] = device
+    if not device or device.split(":", 1)[0].lower() != "cuda":
+        result["sim_carrier_device"] = "cpu"
+        return result
+    try:
+        validate_torch_device(profile.torch_devices, device, label="training.sim_carrier_device")
+    except ValueError as exc:
+        raise ValueError(
+            "training.sim_carrier_device=auto resolved to "
+            f"{device!r}, which is not supported by the backend capability "
+            f"declaration {tuple(profile.torch_devices)!r}"
+        ) from exc
+    result["sim_carrier_device"] = device
     return result
+
+
+def canonicalize_sim_carrier_device(requested_device: str | None) -> str:
+    """Return the concrete public-manager carrier device for a request."""
+    import torch
+
+    if requested_device is None:
+        return "cpu"
+    try:
+        device = torch.device(str(requested_device).strip())
+    except (RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"sim_carrier_device is not a valid Torch device: {requested_device!r}"
+        ) from exc
+    if device.type != "cuda":
+        if device.type != "cpu":
+            raise ValueError(f"sim_carrier_device must be cpu or cuda; got {requested_device!r}")
+        return "cpu"
+    if not torch.cuda.is_available():
+        raise ValueError(
+            f"sim_carrier_device {requested_device!r} requires CUDA, but CUDA is unavailable"
+        )
+    index = device.index if device.index is not None else int(torch.cuda.current_device())
+    if index >= int(torch.cuda.device_count()):
+        raise ValueError(
+            f"sim_carrier_device index {index} is out of range; "
+            f"torch.cuda.device_count()={torch.cuda.device_count()}"
+        )
+    return f"cuda:{index}"
 
 
 def resolve_backend_process_device(backend_type: str, learner_device: str | None) -> str | None:
@@ -303,15 +375,16 @@ def configure_backend_process_device(
             resolved,
             backend_device_id=backend_device_id,
         )
-    return bind_backend_process_device_for_backend(backend_type, resolved)
+    return bind_backend_process_device(backend_type, resolved)
 
 
-def bind_backend_process_device_for_backend(backend_type: str, resolved: str) -> str | None:
+def bind_backend_process_device(backend_type: str, resolved: str) -> str | None:
     """Bind one backend's process-global accelerator device.
 
     This top-level callable is intentionally backend-aware and lazy.  It can
-    be wrapped with :func:`functools.partial` and injected into uni_rl's
-    spawn-based collectors while remaining pickleable by module reference.
+    be wrapped with :func:`functools.partial` and injected into the RL
+    runtime's spawn-based collectors while remaining pickleable by module
+    reference.
     """
     backend = _normalize_backend(backend_type)
     if backend == "newton":
@@ -323,17 +396,6 @@ def bind_backend_process_device_for_backend(backend_type: str, resolved: str) ->
 
         return cast(str | None, bind_mjwarp_process_device(resolved))
     return None
-
-
-def bind_backend_process_device(resolved: str) -> str | None:
-    """Bind a resolved backend process device in the current process.
-
-    Top-level on purpose: uni_rl's off-policy collectors receive this as the
-    injected ``backend_device_binder`` and pickle it by reference into
-    spawn-based subprocesses. The mjwarp import stays lazy so the binder is
-    importable without the ``mjwarp`` extra installed.
-    """
-    return bind_backend_process_device_for_backend("mjwarp", resolved)
 
 
 def _pin_cuda_visible_devices(index: int) -> None:
@@ -451,14 +513,13 @@ def _reset_genesis_device_pin_for_tests() -> None:
 
 __all__ = [
     "BACKEND_ENV_DEVICE_FIELDS",
+    "canonicalize_sim_carrier_device",
     "apply_backend_env_device_override",
-    "apply_manager_torch_device_override",
+    "apply_sim_carrier_device_override",
     "bind_backend_process_device",
-    "bind_backend_process_device_for_backend",
     "bind_genesis_process_device",
     "configure_backend_process_device",
     "pin_genesis_device_before_cuda_init",
-    "rank_local_visible_cuda_entries",
     "resolve_backend_env_device_id",
     "resolve_backend_process_device",
 ]

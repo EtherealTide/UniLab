@@ -9,7 +9,7 @@
 # fields below. Solver/constraint-cone/iterations stay at Genesis defaults:
 # the MJCF option block does not declare them and MuJoCo's implicit defaults
 # (PGS solver, pyramidal cone) have no Genesis equivalent. Unlike the
-# isaacgym owner (events.pd_gains: null), the public Genesis tensor selected
+# shelved Isaac owner (events.pd_gains: null), the public Genesis tensor selected
 # reset does not support randomization, so unsupported host reset terms are
 # explicitly disabled rather than falling back. Playback uses Genesis native
 # rendering: with a display, play_render_mode=auto opens the interactive
@@ -73,10 +73,10 @@ env:
       command_name: twist
   events:
     reset_scene_to_default:
-      func: unilab.envs.mdp.reset_scene_to_default_tensor
+      func: unilab.envs.mdp.skip_scene_reset
     reset_root_state_uniform:
-      func: unilab.envs.mdp.reset_root_state_uniform_tensor
-    # Genesis' public tensor selected reset does not support randomization.
+      func: unilab.envs.mdp.reset_root_state_uniform_fused
+    # Genesis' public tensor mask reset does not support randomization.
     pd_gains: null
   terminations:
     tilt: null

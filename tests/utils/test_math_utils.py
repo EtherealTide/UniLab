@@ -1,15 +1,16 @@
-"""Tests for quaternion helpers in unilab.utils.rotation."""
+"""Tests for quaternion helpers in the base-owned host rotation boundary."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from unilab.utils.rotation import (
+from unilab.base.rotation import (
     np_matrix_first_two_cols_from_quat,
     np_matrix_from_quat,
     np_quat_angular_velocity,
     np_quat_apply,
     np_quat_apply_batched,
+    np_quat_apply_inverse,
     np_quat_apply_inverse_batched,
     np_quat_ensure_continuity,
     np_quat_error_magnitude,
@@ -21,7 +22,6 @@ from unilab.utils.rotation import (
     np_quat_mul_batched,
     np_quat_to_axis_angle,
     np_subtract_anchor_frame_transforms,
-    np_subtract_frame_transforms,
 )
 
 
@@ -228,12 +228,15 @@ def test_anchor_frame_transform_matches_flattened_path() -> None:
 
     anchor_pos_tiled = np.tile(anchor_pos, (1, num_bodies)).reshape(num_envs * num_bodies, 3)
     anchor_quat_tiled = np.tile(anchor_quat, (1, num_bodies)).reshape(num_envs * num_bodies, 4)
-    expected_pos, expected_quat = np_subtract_frame_transforms(
-        anchor_pos_tiled,
-        anchor_quat_tiled,
-        body_pos.reshape(num_envs * num_bodies, 3),
-        body_quat.reshape(num_envs * num_bodies, 4),
-    )
+    flattened_pos = body_pos.reshape(num_envs * num_bodies, 3) - anchor_pos_tiled
+    expected_pos = np.empty_like(flattened_pos)
+    for row, (quaternion, vector) in enumerate(zip(anchor_quat_tiled, flattened_pos)):
+        expected_pos[row] = np_quat_apply_inverse(quaternion, vector)
+    expected_pos = expected_pos.reshape(num_envs, num_bodies, 3)
+    anchor_inverse = anchor_quat_tiled * np.array([1.0, -1.0, -1.0, -1.0])
+    expected_quat = np_quat_mul_batched(
+        anchor_inverse, body_quat.reshape(num_envs * num_bodies, 4)
+    ).reshape(num_envs, num_bodies, 4)
 
     actual_pos, actual_quat = np_subtract_anchor_frame_transforms(
         anchor_pos,
@@ -242,5 +245,5 @@ def test_anchor_frame_transform_matches_flattened_path() -> None:
         body_quat,
     )
 
-    np.testing.assert_allclose(actual_pos, expected_pos.reshape(num_envs, num_bodies, 3))
+    np.testing.assert_allclose(actual_pos, expected_pos)
     np.testing.assert_allclose(actual_quat, expected_quat.reshape(num_envs, num_bodies, 4))

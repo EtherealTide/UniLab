@@ -7,20 +7,24 @@ from collections import defaultdict
 
 import pytest
 import torch
-import uni_rl.ipc.dp_launcher as dp_launcher
-from uni_rl.ipc.dp_launcher import UNILAB_DP_LOG_DIR, UNILAB_DP_RANK, UNILAB_DP_WORLD_SIZE
-from uni_rl.ipc.dp_sync import DpParameterSync
 
+import unilab.rl.runtime.distributed.affinity as affinity
 from tests.algos.test_offpolicy_double_buffer_runner import (
     _fake_env_factory,
     _FakeRunner,
     _offpolicy,
     _offpolicy_cfg,
 )
+from unilab.rl.runtime.distributed.context import (
+    UNILAB_DP_LOG_DIR,
+    UNILAB_DP_RANK,
+    UNILAB_DP_WORLD_SIZE,
+)
+from unilab.rl.runtime.distributed.sync import DpParameterSync
 
 
 def _bare_runner():
-    from uni_rl.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
+    from unilab.rl.runtime.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
 
     return object.__new__(DoubleBufferOffPolicyRunner)
 
@@ -36,7 +40,7 @@ class _SyncLearner:
     def set_gradient_sync(self, sync) -> None:
         self.gradient_sync = sync
 
-    def dp_initial_sync_tensors(self) -> dict[str, torch.Tensor]:
+    def dp_initial_sync(self) -> dict[str, torch.Tensor]:
         return self.tensors
 
 
@@ -130,12 +134,12 @@ def test_dp_init_broadcast_is_a_noop_without_dp_sync():
 
 def test_learner_without_initial_sync_tensors_fails_with_type_error():
     runner = _runner_with(_NoSyncLearner(), _FakeDpSync())
-    with pytest.raises(TypeError, match="dp_initial_sync_tensors"):
+    with pytest.raises(TypeError, match="dp_initial_sync"):
         runner._dp_init_broadcast()
 
 
 def test_close_restores_terminal_and_ipc_before_destroying_process_group(monkeypatch):
-    from uni_rl.offpolicy.runner import OffPolicyRunner
+    from unilab.rl.runtime.offpolicy.runner import OffPolicyRunner
 
     events: list[str] = []
 
@@ -153,7 +157,7 @@ def test_close_restores_terminal_and_ipc_before_destroying_process_group(monkeyp
 
 
 def test_close_still_destroys_process_group_when_local_cleanup_fails(monkeypatch):
-    from uni_rl.offpolicy.runner import OffPolicyRunner
+    from unilab.rl.runtime.offpolicy.runner import OffPolicyRunner
 
     dp_sync = _FakeDpSync()
     runner = _runner_with(_SyncLearner(), dp_sync)
@@ -170,7 +174,7 @@ def test_close_still_destroys_process_group_when_local_cleanup_fails(monkeypatch
 
 
 def test_log_statistics_mean_scalars_and_sum_concurrent_throughput():
-    from uni_rl.logging import OffPolicyLogger
+    from unilab.rl.logging import OffPolicyLogger
 
     dp_sync = _FakeDpSync()
     runner = _runner_with(_SyncLearner(), dp_sync)
@@ -300,7 +304,7 @@ def test_only_rank_zero_persists_checkpoint(tmp_path):
 
 def test_learn_source_orders_sync_around_collector_and_logging():
     """Startup broadcast precedes collection; timing is consumed after updates."""
-    from uni_rl.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
+    from unilab.rl.runtime.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
 
     # Shutdown diagnostics wrap the public entrypoint; ordering guarantees live
     # in the implementation that ``learn`` invokes.
@@ -317,7 +321,7 @@ def test_learn_source_orders_sync_around_collector_and_logging():
 
 
 def test_sac_initial_sync_tensors_return_live_references():
-    from uni_rl.algos.sac.learner import SACLearner
+    from unilab.rl.algos.sac.learner import SACLearner
 
     learner = SACLearner(
         obs_dim=4,
@@ -332,7 +336,7 @@ def test_sac_initial_sync_tensors_return_live_references():
         use_autotune=False,
         max_grad_norm=0.0,
     )
-    tensors = learner.dp_initial_sync_tensors()
+    tensors = learner.dp_initial_sync()
 
     for prefix, module in (
         ("actor", learner.actor),
@@ -356,7 +360,7 @@ def test_sac_initial_sync_tensors_return_live_references():
 
 
 def test_sac_syncs_each_optimizer_gradient_before_step():
-    from uni_rl.algos.sac.learner import SACLearner
+    from unilab.rl.algos.sac.learner import SACLearner
 
     learner = SACLearner(
         obs_dim=4,
@@ -404,11 +408,9 @@ def _build_sac_runner_with_dp_fakes(monkeypatch: pytest.MonkeyPatch, overrides: 
     module = _offpolicy()
     cfg = _offpolicy_cfg(overrides)
     monkeypatch.setattr(module.os, "cpu_count", lambda: 128)
-    monkeypatch.setattr(
-        dp_launcher.os, "sched_getaffinity", lambda _: set(range(128)), raising=False
-    )
+    monkeypatch.setattr(affinity.os, "sched_getaffinity", lambda _: set(range(128)), raising=False)
 
-    import uni_rl.algos.sac.double_buffer as owner_module
+    import unilab.rl.algos.sac.double_buffer as owner_module
 
     class _Learner:
         def __init__(self, *args, **kwargs):
@@ -464,9 +466,7 @@ def test_build_runner_multi_gpu_rank0_requires_log_dir(monkeypatch: pytest.Monke
     monkeypatch.delenv(UNILAB_DP_LOG_DIR, raising=False)
     monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
     monkeypatch.setattr(module.os, "cpu_count", lambda: 128)
-    monkeypatch.setattr(
-        dp_launcher.os, "sched_getaffinity", lambda _: set(range(128)), raising=False
-    )
+    monkeypatch.setattr(affinity.os, "sched_getaffinity", lambda _: set(range(128)), raising=False)
     with pytest.raises(ValueError, match="log_dir"):
         module.build_runner("sac", cfg)
 
@@ -475,7 +475,7 @@ def test_build_runner_multi_gpu_rank0_requires_log_dir(monkeypatch: pytest.Monke
 
 
 def test_flash_sac_initial_sync_tensors_return_live_references():
-    from uni_rl.algos.flash_sac.learner import FlashSACLearner
+    from unilab.rl.algos.flash_sac.learner import FlashSACLearner
 
     learner = FlashSACLearner(
         obs_dim=4,
@@ -488,7 +488,7 @@ def test_flash_sac_initial_sync_tensors_return_live_references():
         critic_num_blocks=1,
         num_atoms=3,
     )
-    tensors = learner.dp_initial_sync_tensors()
+    tensors = learner.dp_initial_sync()
 
     for prefix, module in (
         ("actor", learner.actor),
@@ -522,7 +522,7 @@ def test_flash_sac_initial_sync_tensors_return_live_references():
 
 
 def test_flash_sac_syncs_each_optimizer_gradient_before_step():
-    from uni_rl.algos.flash_sac.learner import FlashSACLearner
+    from unilab.rl.algos.flash_sac.learner import FlashSACLearner
 
     learner = FlashSACLearner(
         obs_dim=4,
@@ -570,11 +570,9 @@ def _build_flashsac_runner_with_dp_fakes(monkeypatch: pytest.MonkeyPatch, overri
     module = _offpolicy()
     cfg = _offpolicy_cfg(overrides, algo="flashsac")
     monkeypatch.setattr(module.os, "cpu_count", lambda: 128)
-    monkeypatch.setattr(
-        dp_launcher.os, "sched_getaffinity", lambda _: set(range(128)), raising=False
-    )
+    monkeypatch.setattr(affinity.os, "sched_getaffinity", lambda _: set(range(128)), raising=False)
 
-    import uni_rl.algos.flash_sac.double_buffer as flash_module
+    import unilab.rl.algos.flash_sac.double_buffer as flash_module
 
     monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
 
@@ -600,7 +598,7 @@ def test_build_runner_multi_gpu_constructs_dp_sync_for_flashsac_rank0(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "uni_rl.ipc.dp_launcher._discover_physical_cpu_groups",
+        "unilab.rl.runtime.distributed.affinity.discover_physical_cpu_groups",
         lambda _: [[core, core + 64] for core in range(64)],
     )
     monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
@@ -619,7 +617,7 @@ def test_build_runner_multi_gpu_constructs_dp_sync_for_flashsac_rank0(
 
 def test_build_runner_multi_gpu_flashsac_spawned_rank(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
-        "uni_rl.ipc.dp_launcher._discover_physical_cpu_groups",
+        "unilab.rl.runtime.distributed.affinity.discover_physical_cpu_groups",
         lambda _: [[core, core + 64] for core in range(64)],
     )
     monkeypatch.setenv(UNILAB_DP_RANK, "1")

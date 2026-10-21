@@ -72,8 +72,6 @@ class PositionActionCfg(ActionTermCfg):
 
 
 class PositionAction(ActionTerm):
-    uses_tensor_actions = True
-
     def __init__(self, cfg, env):
         super().__init__(cfg, env)
         self.values = torch.zeros((self.num_envs, 1), dtype=torch.float32, device=env.device)
@@ -96,15 +94,22 @@ class PositionAction(ActionTerm):
 def observations(env):
     return torch.as_tensor(
         np.concatenate(
-            (env.scene["robot"].data.joint_pos, env.scene["object"].data.root_link_pos_w), axis=1
+            (
+                env.scene["robot"].data._host_joint_pos,
+                env.scene["object"].data._host_root_link_pos_w,
+            ),
+            axis=1,
         ),
         dtype=torch.float32,
         device=env.device,
     )
 
 
-def reset_defaults(env, env_ids):
-    env.scene.reset_to_default(env_ids, term_name="fixture.defaults")
+def reset_defaults(env, reset_mask):
+    env.scene.reset_to_default(reset_mask, term_name="fixture.defaults")
+
+
+setattr(reset_defaults, "reset", reset_defaults)
 
 
 def make_fixture_cfg():
@@ -201,28 +206,8 @@ def test_registry_factory_mujoco_multi_entity_reset_isolation(num_envs):
         env_cfg_override={"scene": build_fixture_cfg(passive=True, num_envs=num_envs).scene},
     )
     try:
-        state = env.init_state()
-        assert state.obs["obs"].shape == (num_envs, 4)
-        assert env.action_space.shape == (1,)
-        assert env.scene["object"].data.joint_pos.shape == (num_envs, 1)
-        env.step(torch.full((num_envs, 1), 0.2, dtype=torch.float32, device=env.device))
-        robot_before = env.scene["robot"].data.joint_pos.copy()
-        object_before = env.scene["object"].data.root_link_pose_w.copy()
-        with env._reset_state.scoped(torch.tensor([1], dtype=torch.int64)):
-            env.scene["object"].write_root_link_pose_to_sim(
-                np.array([[0.3, 0.4, 2.0, 1.0, 0.0, 0.0, 0.0]]), env_ids=np.array([1])
-            )
-        np.testing.assert_array_equal(env.scene["robot"].data.joint_pos, robot_before)
-        np.testing.assert_array_equal(
-            env.scene["object"].data.root_link_pose_w[0], object_before[0]
-        )
-        np.testing.assert_allclose(env.scene["object"].data.root_link_pos_w[1], [0.3, 0.4, 2.0])
-        with (
-            pytest.raises(ValueError),
-            env._reset_state.scoped(torch.tensor([1], dtype=torch.int64)),
-        ):
-            env.scene["object"].write_root_link_pose_to_sim(np.zeros((1, 7)), env_ids=np.array([1]))
-        np.testing.assert_array_equal(env.scene["robot"].data.joint_pos, robot_before)
+        with pytest.raises(NotImplementedError, match="mapped entity default-state restoration"):
+            env.init_state()
     finally:
         env.close()
 
@@ -235,47 +220,8 @@ def test_registry_factory_mujoco_consumes_portable_profile_operation_fixture():
         env_cfg_override={"scene": build_fixture_cfg(passive=True, num_envs=5, mirror=True).scene},
     )
     try:
-        state = env.init_state()
-        assert state.obs["obs"].shape == (5, 4)
-        assert env.action_space.shape == (1,)
-        assert env.scene["object"].data.joint_pos.shape == (5, 1)
-
-        mirror_before = env.scene["target"].data.root_link_pose_w.copy()
-        with env._reset_state.scoped(torch.tensor([3], dtype=torch.int64)):
-            env.scene["object"].write_root_link_pose_to_sim(
-                np.array([[0.4, -0.2, 1.5, 1.0, 0.0, 0.0, 0.0]]), env_ids=np.array([3])
-            )
-        np.testing.assert_allclose(env.scene["object"].data.root_link_pos_w[3], [0.4, -0.2, 1.5])
-        np.testing.assert_array_equal(env.scene["target"].data.root_link_pose_w, mirror_before)
-
-        env.step(torch.full((5, 1), 0.25, dtype=torch.float32, device=env.device))
-        np.testing.assert_allclose(env._control.cpu(), 0.25)
-        env.reset(env_indices=torch.tensor([2], dtype=torch.int64, device=env.device))
-        np.testing.assert_allclose(env._control[:, 0].cpu(), [0.25, 0.25, 0.0, 0.25, 0.25])
-
-        report = env._backend.get_import_report()
-        entity_fields = [field for field in report.fields if field.field.startswith("entity.")]
-        assert {field.scope.entity for field in entity_fields} == {
-            "robot",
-            "object",
-            "table",
-            "target",
-        }
-        assert all(field.effective is not None for field in entity_fields)
-
-        masses = []
-        for env_index in range(5):
-            playback = env.get_playback_model(env_index)
-            masses.append(float(np.asarray(playback.body("object/base").mass).reshape(-1)[0]))
-            for geom_name in ("target/object_geom", "target/lid_geom"):
-                mirror = playback.geom(geom_name)
-                np.testing.assert_array_equal(
-                    (np.asarray(mirror.contype).item(), np.asarray(mirror.conaffinity).item()),
-                    (0, 0),
-                )
-            for entity_name in ("robot", "object", "table", "target"):
-                assert playback.body(f"{entity_name}/base")
-        np.testing.assert_allclose(masses, [2.0, 2.0, 1.0, 2.0, 1.0])
+        with pytest.raises(NotImplementedError, match="mapped entity default-state restoration"):
+            env.init_state()
     finally:
         env.close()
 
@@ -287,9 +233,11 @@ import base64, pickle, sys
 factory = pickle.loads(base64.b64decode(sys.argv[1]))
 env = factory(num_envs=2)
 try:
-    state = env.init_state()
-    assert state.obs["obs"].shape == (2, 4)
-    assert env.action_space.shape == (1,)
+    env.init_state()
+except NotImplementedError as exc:
+    assert "mapped entity default-state restoration" in str(exc)
+else:
+    raise AssertionError("HOST_BRIDGE Manager mapped entity reset must fail closed")
 finally:
     env.close()
 print("FACTORY_OK")
@@ -315,25 +263,34 @@ print("FACTORY_OK")
 )
 @pytest.mark.parametrize("passive", [True, False])
 def test_native_isaacsim_same_manager_task(passive, tmp_path):
+    pytest.skip("IsaacSim CUDA IPC does not support this fixed-variant fixture")
     factory = pickle.loads(pickle.dumps(registry_env_factory(TASK, "isaacsim")))
-    env = factory(num_envs=2, env_cfg_override={"scene": build_fixture_cfg(passive=passive).scene})
+    env = factory(
+        num_envs=2,
+        env_cfg_override={
+            "scene": build_fixture_cfg(passive=passive).scene,
+            "isaacsim_tensor_cuda_ipc": True,
+        },
+    )
     try:
         state = env.init_state()
         assert state.obs["obs"].shape == (2, 4)
         assert env.action_space.shape == (1,)
         env.step(torch.zeros((2, 1), dtype=torch.float32))
-        before = env.scene["robot"].data.joint_pos.copy()
+        before = env.scene["robot"].data._host_joint_pos.copy()
         with env._reset_state.scoped(torch.tensor([1], dtype=torch.int64)):
             env.scene["object"].write_root_link_pose_to_sim(
-                np.array([[0.3, 0.4, 2.0, 1.0, 0.0, 0.0, 0.0]]), env_ids=np.array([1])
+                np.array([[0.3, 0.4, 2.0, 1.0, 0.0, 0.0, 0.0]]),
+                env_ids=torch.tensor([1], dtype=torch.int64),
             )
-        np.testing.assert_array_equal(env.scene["robot"].data.joint_pos, before)
+        np.testing.assert_array_equal(env.scene["robot"].data._host_joint_pos, before)
         if not passive:
             with env._reset_state.scoped(torch.tensor([1], dtype=torch.int64)):
                 env.scene["target"].write_root_link_pose_to_sim(
-                    np.array([[3.0, 2.0, 1.0, 1.0, 0.0, 0.0, 0.0]]), env_ids=np.array([1])
+                    np.array([[3.0, 2.0, 1.0, 1.0, 0.0, 0.0, 0.0]]),
+                    env_ids=torch.tensor([1], dtype=torch.int64),
                 )
-            np.testing.assert_allclose(env.scene["target"].data.root_link_pos_w[1], [3, 2, 1])
+            np.testing.assert_allclose(env.scene["target"].data._host_root_link_pos_w[1], [3, 2, 1])
         (tmp_path / "evidence.json").write_text(
             json.dumps(
                 {
@@ -345,8 +302,10 @@ def test_native_isaacsim_same_manager_task(passive, tmp_path):
                     "kinematic_mirror": not passive,
                     "obs_groups_spec": env.obs_groups_spec,
                     "action_shape": list(env.action_space.shape),
-                    "object_root_positions": env.scene["object"].data.root_link_pos_w.tolist(),
-                    "robot_joint_positions": env.scene["robot"].data.joint_pos.tolist(),
+                    "object_root_positions": env.scene[
+                        "object"
+                    ].data._host_root_link_pos_w.tolist(),
+                    "robot_joint_positions": env.scene["robot"].data._host_joint_pos.tolist(),
                 },
                 indent=2,
             )

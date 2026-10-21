@@ -67,9 +67,12 @@ training:
   wandb_notes: null
   wandb_mode: null
   sim_backend: mujoco
-  # Explicit MuJoCo HOST_BRIDGE Manager carrier family. CPU remains the default
-  # even when learner or collector selection resolves to CUDA.
-  collector_tensor_device: cpu
+  # HOST_BRIDGE Manager carrier family follows backend capability
+  # declarations. 'auto' follows the learner device (CUDA learner -> CUDA
+  # carrier; CPU learner -> CPU; torch.mps learner keeps the owner CPU
+  # placement). Explicit 'cpu'/'cuda' wins over 'auto' and fails closed
+  # when the backend does not declare the device.
+  sim_carrier_device: auto
   nan_guard:
     enabled: true
     buffer_size: 100

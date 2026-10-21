@@ -10,7 +10,7 @@ import torch
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 @dataclass(kw_only=True)
@@ -29,6 +29,14 @@ class ResetOwnerCfg(ManagerTermBaseCfg):
     owns_command_reset: bool = True
     owns_action_reset: bool = True
     owns_observation_reset: bool = True
+    """If True, the owner replaces ``ObservationManager.reset`` for the selected
+    rows. The bypass does not cover manager-owned temporal state: delay/history
+    buffers are not cleared, so reset rows keep their previous episode's delay
+    lag, step counter, and phase schedule (nothing is resampled), and the
+    observation cache is not invalidated — a ``compute(update_history=False)``
+    caller between the reset and the next step reads pre-reset values. Owners
+    enabling this bypass must reset that temporal state themselves (see the
+    publicly exported ``CircularBuffer``/``DelayBuffer``)."""
     owns_metric_reset: bool = True
 
 
@@ -41,16 +49,12 @@ class ResetOwner(ManagerTermBase):
         self.cfg = cfg
         super().__init__(env)
 
-    def reset(self, env_ids: torch.Tensor | slice | None) -> None:
-        """Execute the declared selected-reset ownership in Manager lifecycle."""
+    def reset_transaction(self, env_ids: torch.Tensor) -> dict[str, float]:
+        """Execute reset ownership for the selected envs before commit."""
         raise NotImplementedError(type(self).__name__)
 
-    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
-        """Execute reset ownership that must stage writes before commit."""
-        raise NotImplementedError(type(self).__name__)
-
-    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
-        """Execute reset ownership after the reset transaction commits."""
+    def reset_committed(self, env_ids: torch.Tensor) -> dict[str, float]:
+        """Execute reset ownership for the selected envs after commit."""
         raise NotImplementedError(type(self).__name__)
 
 
@@ -92,17 +96,13 @@ class ResetOwnerManager:
         except KeyError as exc:
             raise KeyError(f"Reset owner '{name}' is not configured") from exc
 
-    def reset(self, env_ids: torch.Tensor | slice | None) -> None:
-        for term in self._terms.values():
-            term.reset(env_ids)
-
-    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+    def reset_transaction(self, env_ids: torch.Tensor) -> dict[str, float]:
         extras: dict[str, float] = {}
         for term in self._terms.values():
             extras.update(term.reset_transaction(env_ids))
         return extras
 
-    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+    def reset_committed(self, env_ids: torch.Tensor) -> dict[str, float]:
         extras: dict[str, float] = {}
         for term in self._terms.values():
             extras.update(term.reset_committed(env_ids))
@@ -129,14 +129,11 @@ class NullResetOwnerManager:
     def get_term(self, name: str) -> None:
         raise KeyError(f"Reset owner '{name}' is not configured")
 
-    def reset(self, env_ids: torch.Tensor | slice | None) -> None:
-        del env_ids
-
-    def reset_transaction(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+    def reset_transaction(self, env_ids: torch.Tensor) -> dict[str, float]:
         del env_ids
         return {}
 
-    def reset_committed(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+    def reset_committed(self, env_ids: torch.Tensor) -> dict[str, float]:
         del env_ids
         return {}
 

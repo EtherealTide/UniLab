@@ -24,12 +24,8 @@ SUPPORTED_SIMS = (
     "motrix",
     "superdex",
     "drake",
-)
-# Adapters retained by UniSim but outside the scoped tensor Manager runtime
-# during issue #1811. They must remain unroutable through public CLI.
-_SHELVED_SIMS = (
-    "isaacgym",
     "isaacsim",
+    "isaacgym",
 )
 SUPPORTED_RENDER_MODES = ("auto", "interactive", "record", "viser", "none")
 OFFPOLICY_ALGOS = {"sac", "flashsac"}
@@ -44,7 +40,7 @@ MUJOCO_VIEWER_PHYSICS_SIMS = frozenset({"mujoco", "mjwarp"})
 # playback contract the viser viewer renders from (they expose native
 # renderers instead). Supporting viser there requires upstream unisim
 # capability work, so these sims fail closed with an actionable message.
-VISER_UNSUPPORTED_SIMS = frozenset({"genesis", "isaacgym", "isaacsim"})
+VISER_UNSUPPORTED_SIMS = frozenset({"genesis"})
 RESERVED_OVERRIDE_KEYS = {
     "algo",
     "task",
@@ -159,6 +155,24 @@ def _check_runtime_requirements(algo: str, sim: str) -> None:
             "`pip install unilab[motrix]` (or `uv sync --extra motrix` in a source "
             "checkout)."
         )
+    if sim == "isaacsim":
+        from unisim.backend.isaacsim.dependencies import isaacsim_runtime_available
+
+        if not isaacsim_runtime_available():
+            raise SystemExit(
+                "sim=isaacsim requires the external Python 3.11 IsaacSim/IsaacLab worker. "
+                "Run scripts/tools/setup_isaacsim_env.sh and set "
+                "UNISIM_ISAACSIM_HOME when using a non-default install root."
+            )
+    if sim == "isaacgym":
+        from unisim.backend.isaacgym.dependencies import isaacgym_runtime_available
+
+        if not isaacgym_runtime_available():
+            raise SystemExit(
+                "sim=isaacgym requires the external Python 3.8 IsaacGym Preview 4 worker. "
+                "Run scripts/tools/setup_isaacgym_env.sh and set "
+                "UNISIM_ISAACGYM_HOME when using a non-default install root."
+            )
     if sim == "superdex":
         from unisim.backend.superdex.dependencies import superdex_dependencies_available
 
@@ -187,19 +201,6 @@ def _check_runtime_requirements(algo: str, sim: str) -> None:
             )
 
 
-def _override_bool(overrides: Sequence[str], key: str) -> bool | None:
-    selected: bool | None = None
-    for override in overrides:
-        if _override_key(override) != key or "=" not in override:
-            continue
-        value = override.split("=", 1)[1].strip().lower()
-        if value in {"true", "1", "yes", "on"}:
-            selected = True
-        elif value in {"false", "0", "no", "off"}:
-            selected = False
-    return selected
-
-
 def _override_value(overrides: Sequence[str], key: str) -> str | None:
     selected: str | None = None
     for override in overrides:
@@ -207,13 +208,6 @@ def _override_value(overrides: Sequence[str], key: str) -> str | None:
             continue
         selected = override.split("=", 1)[1].strip()
     return selected
-
-
-def _python_executable_for_route(mode: str, sim: str, overrides: Sequence[str]) -> str:
-    del mode, sim, overrides
-    if platform.system() != "Darwin":
-        return sys.executable
-    return sys.executable
 
 
 def _mujoco_package_dir() -> Path:
@@ -365,9 +359,8 @@ def _uses_viser_play(
     """Return whether eval should use the browser-based viser viewer script.
 
     Any physics owner whose backend declares physics-state playback is
-    routable; :data:`VISER_UNSUPPORTED_SIMS` sims are rejected earlier with a
-    targeted message, and the viewer itself fails closed on the runtime
-    capability check.
+    routable; unsupported sims are rejected with a targeted message, and the
+    viewer itself fails closed on the runtime capability check.
     """
     del sim  # routing is sim-agnostic; capability gating happens at runtime
     if mode != "eval" or algo not in INTERACTIVE_PLAY_ALGOS:
@@ -503,7 +496,8 @@ def build_command(
                 raise SystemExit("Use either --load-run or algo.load_run=..., not both.")
             generated.append(f"algo.load_run={load_run}")
 
-    executable = _python_executable_for_route(mode, sim, (*generated, *overrides))
+    del mode, sim
+    executable = sys.executable
     if use_interactive_play and platform.system() == "Darwin":
         executable = _interactive_mujoco_executable()
     if use_viewer_play:

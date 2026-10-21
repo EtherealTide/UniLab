@@ -15,6 +15,11 @@ Usage:
     # CUDA tensor backends are opt-in and require their extras:
     uv run --extra mjwarp scripts/benchmark/rl/benchmark_offpolicy_collector_active.py \
         --cases flashsac/g1_motion_tracking/mjwarp
+    # Owner profiles extend the case to <algo>/<task>/<sim>/<profile>; the owner
+    # config becomes task/<task>/<sim>_<profile>.yaml while the sim segment keeps
+    # selecting the backend (and its dependency check):
+    uv run --extra mjwarp scripts/benchmark/rl/benchmark_offpolicy_collector_active.py \
+        --cases flashsac/g1_motion_tracking/mjwarp/<profile>
     uv run --extra genesis scripts/benchmark/rl/benchmark_offpolicy_collector_active.py \
         --cases flashsac/g1_motion_tracking/genesis
     uv run scripts/benchmark/rl/benchmark_offpolicy_collector_active.py --num-envs 1024 --measure-steps 100
@@ -25,16 +30,19 @@ from __future__ import annotations
 import argparse
 import csv
 import gc
+import hashlib
 import json
 import os
 import platform
 import re
+import shlex
 import subprocess
 import sys
 import time
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
 from pathlib import Path
 from statistics import mean, median, pstdev
@@ -44,7 +52,7 @@ import numpy as np
 import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
 if str(ROOT_DIR) not in sys.path:
@@ -72,6 +80,13 @@ BENCHMARK_BACKENDS = ("mujoco",)
 OPTIONAL_BACKENDS = ("mjwarp", "genesis")
 DEFAULT_COLLECTOR_CPU_THREADS = 8
 COLLECTOR_CPU_THREADS_ENV = "UNILAB_COLLECTOR_TORCH_THREADS"
+FIXATION_PACKAGE_NAMES = (
+    "unilab",
+    "unisim-core",
+    "torch",
+    "mujoco-warp",
+    "warp-lang",
+)
 COLLECTOR_PHASES = (
     "env_step_ms",
     "replay_ms",
@@ -204,6 +219,13 @@ ENV_STEP_TIMING_KEYS = (
     "set_state_reset_forward_ms",
     "set_state_host_cache_refresh_ms",
     "set_state_internal_gap_ms",
+    # mjwarp set_state_tensor (device-resident tensor reset) internals. Only the
+    # mjwarp tensor path reports them; other backends/cases keep 0.0 columns via
+    # the RESET_DONE_DETAIL_TIMING_KEYS whitelist in backend_timing.py.
+    "set_state_tensor_model_update_ms",
+    "set_state_tensor_mask_ms",
+    "set_state_tensor_commit_forward_ms",
+    "set_state_tensor_host_cache_refresh_ms",
 )
 ENV_STEP_COUNT_KEYS = (
     "reset_done_count",
@@ -211,6 +233,7 @@ ENV_STEP_COUNT_KEYS = (
     "reset_done_command_term_count",
     "reset_done_manager_reset_count",
     "reset_done_observation_term_count",
+    "reset_done_sampler_dispatch_count",
     "reset_done_sampler_host_transfer_count",
 )
 ENV_STEP_SAMPLE_KEYS = (*ENV_STEP_TIMING_KEYS, *ENV_STEP_COUNT_KEYS)
@@ -300,6 +323,13 @@ ENV_STEP_TIMING_CSV_FIELDS = (
     ("set_state_reset_forward_ms", "set_state_reset_forward_ms"),
     ("set_state_host_cache_refresh_ms", "set_state_host_cache_refresh_ms"),
     ("set_state_internal_gap_ms", "set_state_internal_gap_ms"),
+    ("set_state_tensor_model_update_ms", "set_state_tensor_model_update_ms"),
+    ("set_state_tensor_mask_ms", "set_state_tensor_mask_ms"),
+    ("set_state_tensor_commit_forward_ms", "set_state_tensor_commit_forward_ms"),
+    (
+        "set_state_tensor_host_cache_refresh_ms",
+        "set_state_tensor_host_cache_refresh_ms",
+    ),
 )
 
 
@@ -319,6 +349,19 @@ class CollectorCase:
     critic_dim: int
     action_dim: int
     env_steps_per_sync: int
+    # Exact environment shape and term-set fixation for Gate UP evidence.
+    seed: int = 0
+    env_seed: int | None = None
+    observation_groups: dict[str, list[str]] = field(default_factory=dict)
+    reward_terms: list[str] = field(default_factory=list)
+    command_terms: list[str] = field(default_factory=list)
+    termination_terms: list[str] = field(default_factory=list)
+    action_terms: list[str] = field(default_factory=list)
+    event_terms: dict[str, list[str]] = field(default_factory=dict)
+    curriculum_terms: list[str] = field(default_factory=list)
+    metric_terms: list[str] = field(default_factory=list)
+    recorder_terms: list[str] = field(default_factory=list)
+    resolved_config_sha256: str = ""
 
 
 @dataclass
@@ -355,16 +398,23 @@ class CollectorResult:
     env_step_overhead_ms_per_vector_step: TimingStats | None = None
     # System-wide CPU utilization (%) over the measured window. NaN if unknown.
     cpu_util_pct: float = float("nan")
-    # NumPy random time measured inside collector env.step() only. This is an
-    # optional benchmark-side monkeypatch used for RNG/noise-buffer profiling.
+    # Legacy NumPy random time measured inside collector env.step() only. The
+    # Manager training RNG is Torch-owned; this remains useful for cold terrain
+    # and external NumPy leaves during benchmark windows.
     numpy_random_ms_per_vector_step: TimingStats | None = None
     numpy_random_calls_per_vector_step: TimingStats | None = None
     # Public backend runtime diagnostics, captured after construction and before
-    # the measured window. They make CUDA graph fallbacks visible in cross-host
-    # A/B reports instead of requiring private backend inspection.
+    # the measured window, make execution-mode changes visible in cross-host A/B
+    # reports instead of requiring private backend inspection.
     backend_runtime_diagnostics: dict[str, dict[str, bool | str | None]] = field(
         default_factory=dict
     )
+    # Public bounded-ingress ordering evidence collected after the active window.
+    replay_ingress_diagnostics: dict[str, int | float] = field(default_factory=dict)
+    # Context-only actor forward time; actions used by the measured collector
+    # remain pre-generated and inference is outside the environment step.
+    policy_inference_context: TimingStats | None = None
+    policy_inference_context_evidence: dict[str, Any] = field(default_factory=dict)
 
 
 def _stats(samples_ms: list[float]) -> TimingStats:
@@ -444,28 +494,15 @@ def _cleanup() -> None:
 class _NumpyRandomProfiler:
     """Measure selected NumPy RNG calls inside a benchmark window.
 
-    Legacy ``np.random`` module functions are patched directly. NumPy's
-    built-in Generator type is immutable, so an optional ``bind_generator``
-    proxy provides equivalent timing for an environment-owned Generator during
-    measured steps; every delegated call and state accessor still uses the
-    original generator.
+    Legacy ``np.random`` module functions are patched directly. The Manager
+    training RNG is Torch-owned and is intentionally not proxied by this tool.
     """
-
-    GENERATOR_PROFILE_METHODS = (
-        "random",
-        "uniform",
-        "integers",
-        "normal",
-        "standard_normal",
-        "choice",
-    )
 
     def __init__(self) -> None:
         self.enabled = False
         self.step_ms = 0.0
         self.step_calls = 0
         self._originals: dict[tuple[type, str], Any] = {}
-        self._generator: np.random.Generator | None = None
 
     def install(self) -> None:
         if self._originals:
@@ -482,60 +519,6 @@ class _NumpyRandomProfiler:
             setattr(owner, name, original)
         self._originals.clear()
         self.enabled = False
-        self._generator = None
-
-    def bind_generator(self, generator: Any) -> Any:
-        """Return a timing proxy for one env-owned NumPy Generator."""
-        if not isinstance(generator, np.random.Generator):
-            raise TypeError(f"expected np.random.Generator, got {type(generator).__name__}")
-        if self._generator is not None and self._generator is not generator:
-            raise RuntimeError("NumpyRandomProfiler already owns a different Generator")
-        self._generator = generator
-        profiler = self
-
-        class _GeneratorProxy:
-            def __getattr__(self, name: str) -> Any:
-                return getattr(profiler._require_generator(), name)
-
-            def random(self, *args: Any, **kwargs: Any) -> Any:
-                return profiler._timed_generator("random", *args, **kwargs)
-
-            def uniform(self, *args: Any, **kwargs: Any) -> Any:
-                return profiler._timed_generator("uniform", *args, **kwargs)
-
-            def integers(self, *args: Any, **kwargs: Any) -> Any:
-                return profiler._timed_generator("integers", *args, **kwargs)
-
-            def normal(self, *args: Any, **kwargs: Any) -> Any:
-                return profiler._timed_generator("normal", *args, **kwargs)
-
-            def standard_normal(self, *args: Any, **kwargs: Any) -> Any:
-                return profiler._timed_generator("standard_normal", *args, **kwargs)
-
-            def choice(self, *args: Any, **kwargs: Any) -> Any:
-                return profiler._timed_generator("choice", *args, **kwargs)
-
-        return _GeneratorProxy()
-
-    def restore_generator(self) -> Any:
-        generator = self._generator
-        self._generator = None
-        return generator
-
-    def _require_generator(self) -> np.random.Generator:
-        if self._generator is None:
-            raise RuntimeError("Generator proxy was used before bind_generator()")
-        return self._generator
-
-    def _timed_generator(self, name: str, *args: Any, **kwargs: Any) -> Any:
-        if not self.enabled:
-            return getattr(self._require_generator(), name)(*args, **kwargs)
-        started = time.perf_counter_ns()
-        try:
-            return getattr(self._require_generator(), name)(*args, **kwargs)
-        finally:
-            self.step_ms += (time.perf_counter_ns() - started) / 1e6
-            self.step_calls += 1
 
     def begin_step(self) -> None:
         self.step_ms = 0.0
@@ -592,17 +575,22 @@ def _runtime_sim_backend(sim: str) -> str:
     return sim
 
 
+def _owner_task_name(sim: str, profile: str | None = None) -> str:
+    owner_sim = _runtime_sim_backend(sim)
+    return f"{owner_sim}_{profile}" if profile else owner_sim
+
+
 def _compose_offpolicy_cfg(
     algo: str,
     task: str,
     sim: str,
+    profile: str | None = None,
     *,
     num_envs: int | None = None,
     extra_overrides: list[str] | None = None,
 ) -> DictConfig:
-    owner_sim = _runtime_sim_backend(sim)
     overrides = [
-        f"task={task}/{owner_sim}",
+        f"task={task}/{_owner_task_name(sim, profile)}",
         "hydra.run.dir=.",
         "hydra.output_subdir=null",
         "hydra/job_logging=disabled",
@@ -620,7 +608,7 @@ def _compose_offpolicy_cfg(
         return compose(config_name="config", overrides=overrides)
 
 
-def _owner_config_path(algo: str, task: str, sim: str) -> Path:
+def _owner_config_path(algo: str, task: str, sim: str, profile: str | None = None) -> Path:
     return (
         ROOT_DIR
         / "src"
@@ -629,11 +617,14 @@ def _owner_config_path(algo: str, task: str, sim: str) -> Path:
         / algo
         / "task"
         / task
-        / f"{_runtime_sim_backend(sim)}.yaml"
+        / f"{_owner_task_name(sim, profile)}.yaml"
     )
 
 
 def _discover_cases(*, algos: list[str], sim: str) -> list[str]:
+    # Discovery covers the plain <sim>.yaml owners only; profiled owners
+    # (<sim>_<profile>.yaml) are opt-in via explicit <algo>/<task>/<sim>/<profile>
+    # cases so `--cases auto` keeps its historical scope.
     cases: list[str] = []
     owner_sim = _runtime_sim_backend(sim)
     for algo in algos:
@@ -680,14 +671,15 @@ def _default_case_specs(backends: Sequence[str]) -> list[str]:
     return [f"{template}/{backend}" for backend in backends for template in DEFAULT_CASE_TEMPLATES]
 
 
-def _parse_case(spec: str) -> tuple[str, str, str]:
+def _parse_case(spec: str) -> tuple[str, str, str, str | None]:
     parts = [part for part in spec.split("/") if part]
-    if len(parts) != 3:
-        raise ValueError(f"case must use <algo>/<task>/<sim>, got {spec!r}")
-    algo, task, sim = parts
+    if len(parts) not in (3, 4):
+        raise ValueError(f"case must use <algo>/<task>/<sim>[/<profile>], got {spec!r}")
+    algo, task, sim = parts[:3]
+    profile = parts[3] if len(parts) == 4 else None
     if algo not in DEFAULT_ALGOS:
         raise ValueError(f"unsupported off-policy algo {algo!r}; expected one of {DEFAULT_ALGOS}")
-    return algo, task, _runtime_sim_backend(sim)
+    return algo, task, _runtime_sim_backend(sim), profile
 
 
 def _resolve_case_specs(
@@ -721,6 +713,7 @@ def _build_case(
     task: str,
     sim: str,
     variant: str,
+    env: Any,
     replay_capacity_steps: int,
     obs_dim: int,
     critic_dim: int,
@@ -728,6 +721,13 @@ def _build_case(
 ) -> CollectorCase:
     num_envs = int(cfg.algo.num_envs)
     capacity_steps = max(1, int(replay_capacity_steps))
+    events = cfg.env.events if hasattr(cfg.env, "events") else {}
+    event_terms = (
+        {str(mode): [str(name) for name in names] for mode, names in events.items()}
+        if isinstance(events, dict)
+        else {}
+    )
+    resolved_config_yaml = OmegaConf.to_yaml(cfg)
     return CollectorCase(
         algo=algo,
         task=task,
@@ -743,6 +743,25 @@ def _build_case(
         critic_dim=int(critic_dim),
         action_dim=int(action_dim),
         env_steps_per_sync=int(cfg.training.env_steps_per_sync),
+        seed=int(cfg.algo.seed),
+        env_seed=(
+            int(cfg.env.seed)
+            if OmegaConf.select(cfg, "env.seed", default=None) is not None
+            else None
+        ),
+        observation_groups={
+            str(group): [str(term) for term in terms]
+            for group, terms in env.observation_manager.active_terms.items()
+        },
+        reward_terms=[str(name) for name in env.reward_manager.active_terms],
+        command_terms=[str(name) for name in env.command_manager.active_terms],
+        termination_terms=[str(name) for name in env.termination_manager.active_terms],
+        action_terms=[str(name) for name in env.action_manager.active_terms],
+        event_terms=event_terms,
+        curriculum_terms=[str(name) for name in env.curriculum_manager.active_terms],
+        metric_terms=[str(name) for name in env.metrics_manager.active_terms],
+        recorder_terms=[str(name) for name in env.recorder_manager.active_terms],
+        resolved_config_sha256=hashlib.sha256(resolved_config_yaml.encode()).hexdigest(),
     )
 
 
@@ -751,9 +770,8 @@ def _make_env(
     *,
     env_cfg_override: dict[str, Any] | None,
 ):
-    from uni_rl.utils.observations import get_obs_dims
-
     from unilab.base.config_adapter import create_env
+    from unilab.rl.contracts.observations import get_obs_dims
 
     env = create_env(cfg, num_envs=int(cfg.algo.num_envs), env_cfg_override=env_cfg_override)
     if env.state is None:
@@ -767,6 +785,70 @@ def _make_env(
     return env, int(obs_dim), int(critic_dim), action_dim
 
 
+def _build_context_actor(cfg: DictConfig, obs_dim: int, action_dim: int, device: torch.device):
+    """Build the owner actor shape without training or learner state."""
+    from unilab.rl.algos.common.actor_factory import build_actor
+
+    if str(cfg.algo.algo) == "flashsac":
+        return build_actor(
+            "flashsac",
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            actor_hidden_dim=int(cfg.algo.actor_hidden_dim),
+            use_layer_norm=bool(cfg.algo.use_layer_norm),
+            device=device,
+            actor_num_blocks=int(cfg.algo.algo_params.actor_num_blocks),
+            actor_noise_zeta_mu=float(cfg.algo.algo_params.actor_noise_zeta_mu),
+            actor_noise_zeta_max=int(cfg.algo.algo_params.actor_noise_zeta_max),
+        )
+    return build_actor(
+        "sac",
+        obs_dim=obs_dim,
+        action_dim=action_dim,
+        actor_hidden_dim=int(cfg.algo.actor_hidden_dim),
+        use_layer_norm=bool(cfg.algo.use_layer_norm),
+        device=device,
+    )
+
+
+def _measure_policy_inference_context(
+    cfg: DictConfig,
+    *,
+    obs_dim: int,
+    action_dim: int,
+    device: torch.device,
+    num_env_rows: int,
+    warmup_steps: int,
+    measure_steps: int,
+) -> tuple[TimingStats, dict[str, Any]]:
+    """Measure an untrained actor forward for context only."""
+    if warmup_steps < 0 or measure_steps <= 0 or num_env_rows <= 0:
+        raise ValueError("policy context requires non-negative warmup and positive measurements")
+    actor = _build_context_actor(cfg, obs_dim, action_dim, device)
+    observations = torch.zeros((num_env_rows, obs_dim), dtype=torch.float32, device=device)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    samples: list[float] = []
+    total = warmup_steps + measure_steps
+    for index in range(total):
+        started = time.perf_counter_ns()
+        if str(cfg.algo.algo) == "flashsac":
+            actor(observations, training=False)
+        else:
+            actor(observations)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        elapsed_ms = (time.perf_counter_ns() - started) / 1.0e6
+        if index >= warmup_steps:
+            samples.append(elapsed_ms)
+    return _stats(samples), {
+        "method": "untrained_owner_actor_forward",
+        "trained": False,
+        "batch_rows": num_env_rows,
+        "synchronized": device.type == "cuda",
+    }
+
+
 def _run_active_window_case(
     case: CollectorCase,
     *,
@@ -775,9 +857,12 @@ def _run_active_window_case(
     measure_steps: int,
     profile_numpy_random: bool = False,
     tail_steps: int = DEFAULT_TAIL_STEPS,
+    policy_inference_context: TimingStats | None = None,
+    policy_inference_context_evidence: dict[str, Any] | None = None,
 ) -> CollectorResult:
-    from uni_rl.ipc.replay_buffer import ReplayBuffer
-    from uni_rl.utils.observations import split_obs_dict
+    from unilab.rl.contracts.observations import split_obs_dict
+    from unilab.rl.runtime.ipc.replay_buffer import ReplayBuffer
+    from unilab.rl.runtime.offpolicy.worker import timeout_bootstrap_mask
 
     replay_buffer = ReplayBuffer(
         capacity=case.replay_capacity_rows,
@@ -825,20 +910,16 @@ def _run_active_window_case(
 
     if random_profiler is not None:
         random_profiler.install()
-        owner_rng = getattr(env, "rng", None)
-        if owner_rng is not None:
-            if not isinstance(owner_rng, np.random.Generator):
-                raise TypeError(
-                    "profile-numpy-random expected env.rng to be np.random.Generator, "
-                    f"got {type(owner_rng).__name__}"
-                )
-            env.rng = random_profiler.bind_generator(owner_rng)
+        if hasattr(env, "rng"):
+            raise TypeError(
+                "profile-numpy-random no longer binds environment RNG; Manager "
+                "training randomness is Torch-owned"
+            )
     try:
         for step_idx in range(total_steps):
             record = step_idx >= warmup_steps
             if record and cpu_probe_start is None:
                 cpu_probe_start = _read_cpu_times()  # begin measured-window CPU sampling
-
             phase_start_ns = time.perf_counter_ns()
             if random_profiler is not None and record:
                 random_profiler.begin_step()
@@ -881,7 +962,9 @@ def _run_active_window_case(
             phase_start_ns = time.perf_counter_ns()
             next_obs, next_critic = split_obs_dict(state.obs)
             rewards = state.reward
-            truncated = state.truncated.to(torch.float32)
+            # Mirror the collector write boundary: the replay `truncated`
+            # column stores the timeout-bootstrap eligibility mask.
+            truncated = timeout_bootstrap_mask(state.terminated, state.truncated)
             combined_dones = (state.terminated | state.truncated).to(torch.float32)
             terminal_mask = combined_dones > 0.5
             terminal_obs = (
@@ -906,6 +989,7 @@ def _run_active_window_case(
                 critic=critic,
                 next_critic=next_critic,
                 terminal_next_critic=terminal_critic,
+                completion=state.info.get("completion"),
             )
             ingress = replay_buffer.take_published_ingress()
             if ingress is None:
@@ -954,9 +1038,6 @@ def _run_active_window_case(
                         env_step_timing_samples.setdefault(key, []).append(value)
     finally:
         if random_profiler is not None:
-            original_rng = random_profiler.restore_generator()
-            if original_rng is not None:
-                env.rng = original_rng
             random_profiler.uninstall()
 
     # Measured-window system CPU utilization (see cpu_probe_start comment).
@@ -978,6 +1059,7 @@ def _run_active_window_case(
         for key, stat in phase_stats.items()
     }
 
+    replay_ingress_diagnostics = replay_buffer.ingress_diagnostics()
     del replay_buffer
     _cleanup()
     physics_stats = _stats(aux_samples["physics_ms"]) if aux_samples["physics_ms"] else None
@@ -1009,6 +1091,9 @@ def _run_active_window_case(
             _stats(numpy_random_call_samples) if numpy_random_call_samples else None
         ),
         backend_runtime_diagnostics=backend_runtime_diagnostics,
+        replay_ingress_diagnostics=replay_ingress_diagnostics,
+        policy_inference_context=policy_inference_context,
+        policy_inference_context_evidence=policy_inference_context_evidence or {},
     )
 
 
@@ -1024,12 +1109,12 @@ def _build_and_run_case(
     variant: str = "default",
     profile_numpy_random: bool = False,
 ) -> CollectorResult:
-    from unilab.base.config_adapter import BackendAdapter
+    from unilab.base.config_adapter import EnvConfigAdapter
     from unilab.training import ensure_registries
-    from unilab.utils.seed import apply_training_seed
+    from unilab.training.seed import apply_training_seed
 
-    algo, task, sim = _parse_case(spec)
-    owner_path = _owner_config_path(algo, task, sim)
+    algo, task, sim, profile = _parse_case(spec)
+    owner_path = _owner_config_path(algo, task, sim, profile)
     if not owner_path.is_file():
         raise FileNotFoundError(f"missing owner config for case {spec}: {owner_path}")
 
@@ -1037,6 +1122,7 @@ def _build_and_run_case(
         algo,
         task,
         sim,
+        profile,
         num_envs=num_envs,
         extra_overrides=extra_overrides,
     )
@@ -1044,7 +1130,7 @@ def _build_and_run_case(
     # Mirror the real collector subprocess CPU budget for env/replay work.
     _configure_collector_cpu_threads()
     apply_training_seed(int(cfg.algo.seed), torch_runtime=True, cuda=True)
-    env_cfg_override = BackendAdapter(
+    env_cfg_override = EnvConfigAdapter(
         cfg,
         root_dir=ROOT_DIR,
         algo_name=algo,
@@ -1056,12 +1142,22 @@ def _build_and_run_case(
             cfg,
             env_cfg_override=env_cfg_override,
         )
+        policy_context, policy_context_evidence = _measure_policy_inference_context(
+            cfg,
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            device=env.device,
+            num_env_rows=int(cfg.algo.num_envs),
+            warmup_steps=min(10, max(1, int(warmup_steps))),
+            measure_steps=max(10, int(measure_steps)),
+        )
         case = _build_case(
             cfg,
             algo=algo,
             task=task,
             sim=sim,
             variant=variant,
+            env=env,
             replay_capacity_steps=replay_capacity_steps,
             obs_dim=obs_dim,
             critic_dim=critic_dim,
@@ -1074,6 +1170,8 @@ def _build_and_run_case(
             measure_steps=measure_steps,
             profile_numpy_random=profile_numpy_random,
             tail_steps=tail_steps,
+            policy_inference_context=policy_context,
+            policy_inference_context_evidence=policy_context_evidence,
         )
     finally:
         if env is not None:
@@ -1092,6 +1190,68 @@ def _result_to_dict(result: CollectorResult) -> dict[str, Any]:
     # physics_ms_per_vector_step / cpu_util_pct are handled by asdict (None /
     # nested dict / float), so no special-casing needed beyond what asdict does.
     return data
+
+
+def _package_versions() -> dict[str, str]:
+    values: dict[str, str] = {}
+    for name in FIXATION_PACKAGE_NAMES:
+        try:
+            values[name] = version(name)
+        except PackageNotFoundError:
+            values[name] = "not-installed"
+    return values
+
+
+def _git_fixation() -> dict[str, str | bool | None]:
+    def git(*arguments: str) -> str:
+        return _run_text_command(["git", "-C", str(ROOT_DIR), *arguments])
+
+    return {
+        "branch": git("branch", "--show-current") or None,
+        "commit": git("rev-parse", "HEAD") or None,
+        "dirty": bool(git("status", "--porcelain")),
+    }
+
+
+def _runtime_fixation() -> dict[str, Any]:
+    fixation: dict[str, Any] = {
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "host": platform.node(),
+        "kernel": platform.release(),
+        "package_versions": _package_versions(),
+        "git": _git_fixation(),
+        "torch_cuda": torch.version.cuda,
+        "torch_cudnn": torch.backends.cudnn.version()
+        if torch.backends.cudnn.is_available()
+        else None,
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+    }
+    if torch.cuda.is_available():
+        index = torch.cuda.current_device()
+        uuid = getattr(torch.cuda.get_device_properties(index), "uuid", None)
+        if uuid is None:
+            raise RuntimeError("CUDA benchmarking requires a public GPU UUID receipt")
+        gpu_uuid = f"GPU-{uuid}"
+        driver_version = _run_text_command(
+            [
+                "nvidia-smi",
+                f"--id={gpu_uuid}",
+                "--query-gpu=driver_version",
+                "--format=csv,noheader",
+            ]
+        )
+        if not driver_version:
+            raise RuntimeError("CUDA benchmarking requires a GPU driver-version receipt")
+        fixation.update(
+            {
+                "gpu_name": torch.cuda.get_device_name(index),
+                "gpu_index": index,
+                "gpu_uuid": gpu_uuid,
+                "gpu_driver_version": driver_version,
+            }
+        )
+    return fixation
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -1131,6 +1291,7 @@ def _write_csv(path: Path, results: list[CollectorResult]) -> None:
         "env_step_overhead_pct",
         *(f"{field_name[:-3]}_pct" for _, field_name in ENV_STEP_TIMING_CSV_FIELDS),
         "cpu_util_pct",
+        "policy_inference_context_ms",
     ]
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -1211,6 +1372,11 @@ def _write_csv(path: Path, results: list[CollectorResult]) -> None:
                 )
             row["cpu_util_pct"] = (
                 result.cpu_util_pct if result.cpu_util_pct == result.cpu_util_pct else ""
+            )
+            row["policy_inference_context_ms"] = (
+                result.policy_inference_context.mean_ms
+                if result.policy_inference_context is not None
+                else ""
             )
             writer.writerow(row)
 
@@ -1642,6 +1808,13 @@ _SET_STATE_MJWARP_KEYS = (
     ("set_state_internal_gap_ms", "Gap"),
 )
 
+_SET_STATE_MJWARP_TENSOR_KEYS = (
+    ("set_state_tensor_model_update_ms", "Model update"),
+    ("set_state_tensor_mask_ms", "Tensor mask"),
+    ("set_state_tensor_commit_forward_ms", "Commit forward"),
+    ("set_state_tensor_host_cache_refresh_ms", "Tensor host cache"),
+)
+
 
 def _format_set_state_detail_table(results: list[CollectorResult]) -> str:
     """Backend set-state sub-timing table for adapter-defined keys.
@@ -1723,6 +1896,35 @@ def _format_set_state_mjwarp_table(results: list[CollectorResult]) -> str:
                 result.case.runtime_sim_backend,
                 _format_env_step_timing(result, "dr_reset_set_state_ms"),
                 *(_format_set_state_sub_ms(result, key) for key, _ in _SET_STATE_MJWARP_KEYS),
+            )
+        )
+    return _format_table(headers, rows)
+
+
+def _format_set_state_mjwarp_tensor_table(results: list[CollectorResult]) -> str:
+    """Backend set_state_tensor sub-timing table (mjwarp tensor keyset)."""
+    headers = (
+        "Algo",
+        "Task",
+        "Backend",
+        "Set state ms (%env, %active)",
+        *(label for _, label in _SET_STATE_MJWARP_TENSOR_KEYS),
+    )
+    rows = []
+    for result in results:
+        env_step = result.phase_ms_per_vector_step.get("env_step_ms")
+        if env_step is None:
+            continue
+        rows.append(
+            (
+                result.case.algo,
+                result.case.task,
+                result.case.runtime_sim_backend,
+                _format_env_step_timing(result, "dr_reset_set_state_ms"),
+                *(
+                    _format_set_state_sub_ms(result, key)
+                    for key, _ in _SET_STATE_MJWARP_TENSOR_KEYS
+                ),
             )
         )
     return _format_table(headers, rows)
@@ -2083,10 +2285,11 @@ def main() -> int:
     specs = _resolve_case_specs(args.cases, algos_arg=args.algos, backends=backends)
     if not specs:
         raise SystemExit("No benchmark cases resolved.")
-    # Explicit <algo>/<task>/<sim> cases bypass --backend, so check optional
-    # backend deps per resolved case as well.
+    # Explicit <algo>/<task>/<sim>[/<profile>] cases bypass --backend, so check
+    # optional backend deps per resolved case as well (profile never changes the
+    # backend selection — the sim segment does).
     for spec in specs:
-        _, _, spec_sim = _parse_case(spec)
+        _, _, spec_sim, _ = _parse_case(spec)
         if spec_sim in OPTIONAL_BACKENDS:
             _check_optional_backend_deps(spec_sim)
 
@@ -2140,6 +2343,7 @@ def main() -> int:
             "terminal-contract handling, replay writes, and collector-side bookkeeping."
         ),
         "device": hardware_info,
+        "command": ("uv run " + shlex.join([str(Path(__file__).resolve()), *sys.argv[1:]])),
         "args": {
             "cases": args.cases,
             "algos": args.algos,
@@ -2156,6 +2360,7 @@ def main() -> int:
             "repeat_variant_blocks": args.repeat_variant_blocks,
             "profile_numpy_random": args.profile_numpy_random,
         },
+        "fixation": _runtime_fixation(),
         "results": [_result_to_dict(result) for result in results],
         "errors": errors,
     }
@@ -2202,6 +2407,8 @@ def main() -> int:
         print(_format_set_state_mujoco_table(results))
         print("\nBackend set_state detail — mjwarp keyset:")
         print(_format_set_state_mjwarp_table(results))
+        print("\nBackend set_state_tensor detail — mjwarp tensor keyset:")
+        print(_format_set_state_mjwarp_tensor_table(results))
     else:
         print("No successful benchmark cases.")
     return 0 if not errors else 1

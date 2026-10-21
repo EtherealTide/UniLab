@@ -12,10 +12,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 from unisim.backend.base import (
-    BackendRootStateLayout,
-    BackendTerrainSpawnData,
+    RootStateLayout,
     SimBackend,
+    TerrainSpawnData,
 )
 
 from unilab.assets import ASSETS_ROOT_PATH
@@ -41,10 +42,7 @@ _TASK_SOURCE_ROOTS = (
     SRC_ROOT / "unilab" / "envs",
     SRC_ROOT / "unilab" / "tasks",
 )
-_TERRAIN_CONSUMER_PATHS = (
-    Path("locomotion/common/rough_manager_terms.py"),
-    Path("locomotion/common/terrain_spawn.py"),
-)
+_TERRAIN_CONSUMER_PATHS: tuple[Path, ...] = ()
 
 NUM_ENVS = 2
 SIM_DT = 0.005
@@ -169,6 +167,10 @@ def _create_backend_for_test(backend_type: str, *args, **kwargs):
     return create_backend(backend_type, *args, **kwargs)
 
 
+def _skip_raw_scalar_isaacsim_fixture() -> None:
+    pytest.skip("IsaacSim tensor lifecycle requires its mapped G1 owner fixture")
+
+
 def test_backend_classes_are_only_instantiated_through_create_backend() -> None:
     offenders: list[str] = []
     for path in sorted(SRC_ROOT.rglob("*.py")):
@@ -197,7 +199,7 @@ def test_terrain_spawn_contract_is_read_only_and_defaults_to_unsupported() -> No
     def sample_height(xy: np.ndarray) -> np.ndarray:
         return np.zeros(np.asarray(xy).shape[:-1], dtype=np.float64)
 
-    data = BackendTerrainSpawnData(origins, sample_height=sample_height)
+    data = TerrainSpawnData(origins, sample_height=sample_height)
 
     assert SimBackend.get_terrain_spawn_data(object()) is None  # type: ignore[arg-type]
     assert data.sample_height is sample_height
@@ -207,9 +209,9 @@ def test_terrain_spawn_contract_is_read_only_and_defaults_to_unsupported() -> No
     assert np.all(data.terrain_origins >= 0.0)
 
     with pytest.raises(ValueError, match="terrain_origins must have shape"):
-        BackendTerrainSpawnData(np.zeros((2, 3), dtype=np.float64))
+        TerrainSpawnData(np.zeros((2, 3), dtype=np.float64))
     with pytest.raises(TypeError, match="sample_height must be callable"):
-        BackendTerrainSpawnData(
+        TerrainSpawnData(
             np.zeros((1, 1, 3), dtype=np.float64),
             sample_height=object(),  # type: ignore[arg-type]
         )
@@ -246,12 +248,14 @@ def test_root_state_layout_metadata_fails_closed(
     match: str,
 ) -> None:
     with pytest.raises(error, match=match):
-        BackendRootStateLayout(qpos_indices, qvel_indices)
+        RootStateLayout(qpos_indices, qvel_indices)
 
 
 @pytest.mark.parametrize("backend_type", _BACKEND_PARAMS)
 def test_actuation_metadata_contract(backend_type: str) -> None:
     _require_backend(backend_type)
+    if backend_type == "isaacsim":
+        _skip_raw_scalar_isaacsim_fixture()
 
     backend = _create_backend_for_test(
         backend_type,
@@ -261,19 +265,21 @@ def test_actuation_metadata_contract(backend_type: str) -> None:
         base_name="pelvis",
     )
     backend.materialize()
+    tensor_device = torch.device("cuda") if backend_type == "isaacgym" else torch.device("cpu")
 
     actuator_names = backend.get_actuator_names()
     target_joint_names = backend.get_actuator_joint_names()
     default_dof_pos = backend.get_default_dof_pos()
     reset_qpos_ids = backend.get_joint_state_qpos_indices(target_joint_names)
     reset_qvel_ids = backend.get_joint_state_qvel_indices(target_joint_names)
+    current_qpos = backend.get_state_views(("qpos",))["qpos"].detach().cpu().numpy()
 
     assert len(actuator_names) == backend.num_actuators
     assert len(set(actuator_names)) == len(actuator_names)
     assert all(actuator_names)
     assert len(target_joint_names) == backend.num_actuators
     assert all(target_joint_names)
-    assert default_dof_pos.shape == backend.get_dof_pos().shape[1:]
+    assert default_dof_pos.shape == current_qpos[:, reset_qpos_ids].shape[1:]
     assert np.issubdtype(default_dof_pos.dtype, np.floating)
     assert np.isfinite(default_dof_pos).all()
     assert reset_qpos_ids.shape == (backend.num_actuators,)
@@ -284,7 +290,7 @@ def test_actuation_metadata_contract(backend_type: str) -> None:
     assert np.unique(reset_qvel_ids).size == reset_qvel_ids.size
     assert np.all((reset_qpos_ids >= 0) & (reset_qpos_ids < backend.get_default_qpos().size))
     assert np.all((reset_qvel_ids >= 0) & (reset_qvel_ids < backend.get_init_qvel().size))
-    np.testing.assert_allclose(default_dof_pos, backend.get_dof_pos()[0], atol=1e-6)
+    np.testing.assert_allclose(default_dof_pos, current_qpos[0, reset_qpos_ids], atol=1e-6)
 
     qpos = np.broadcast_to(
         backend.get_default_qpos(), (NUM_ENVS, backend.get_default_qpos().size)
@@ -292,18 +298,44 @@ def test_actuation_metadata_contract(backend_type: str) -> None:
     qvel = np.broadcast_to(backend.get_init_qvel(), (NUM_ENVS, backend.get_init_qvel().size)).copy()
     expected_joint_pos = np.broadcast_to(default_dof_pos + 0.01, (NUM_ENVS, default_dof_pos.size))
     qpos[:, reset_qpos_ids] = expected_joint_pos
-    backend.set_state(np.arange(NUM_ENVS, dtype=np.int32), qpos, qvel)
-    np.testing.assert_allclose(backend.get_dof_pos(), expected_joint_pos, atol=1e-5)
+    backend.set_state_tensor(
+        torch.arange(NUM_ENVS, dtype=torch.int64, device=tensor_device),
+        torch.from_numpy(qpos.astype(np.float32, copy=False)).to(tensor_device),
+        torch.from_numpy(qvel.astype(np.float32, copy=False)).to(tensor_device),
+    )
+    joint_pos = backend.get_state_views(("qpos",))["qpos"].detach().cpu().numpy()
+    np.testing.assert_allclose(joint_pos[:, reset_qpos_ids], expected_joint_pos, atol=1e-5)
 
     detached = default_dof_pos.copy()
     default_dof_pos[:] = np.nan
     np.testing.assert_array_equal(backend.get_default_dof_pos(), detached)
 
 
-@pytest.mark.parametrize("backend_type", _BACKEND_PARAMS)
+@pytest.mark.parametrize(
+    "backend_type",
+    [
+        pytest.param("mujoco", id="mujoco"),
+        pytest.param(
+            "motrix",
+            id="motrix",
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason="unisim-core 1.7.24 leaks a native RuntimeError for missing sensors (unisim#384)",
+            ),
+        ),
+        pytest.param("drake", id="drake"),
+        pytest.param("mjwarp", id="mjwarp", marks=pytest.mark.slow),
+        pytest.param("isaacgym", id="isaacgym", marks=pytest.mark.slow),
+        pytest.param("genesis", id="genesis", marks=pytest.mark.slow),
+        pytest.param("isaacsim", id="isaacsim", marks=pytest.mark.slow),
+        pytest.param("newton", id="newton", marks=pytest.mark.slow),
+    ],
+)
 def test_named_sensor_view_contract(backend_type: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """All available adapters expose the same ordered, finite sensor view."""
     _require_backend(backend_type)
+    if backend_type == "isaacsim":
+        _skip_raw_scalar_isaacsim_fixture()
 
     backend = _create_backend_for_test(
         backend_type,
@@ -313,7 +345,11 @@ def test_named_sensor_view_contract(backend_type: str, monkeypatch: pytest.Monke
         base_name="pelvis",
     )
     backend.materialize()
-    names = ("pelvis_gyro", "pelvis_local_linvel")
+    names = (
+        ("torso_gyro", "pelvis_local_linvel")
+        if backend_type == "isaacgym"
+        else ("pelvis_gyro", "pelvis_local_linvel")
+    )
 
     view = backend.bind_sensor_data(names)
     assert view.backend_type == backend.backend_type
@@ -323,12 +359,13 @@ def test_named_sensor_view_contract(backend_type: str, monkeypatch: pytest.Monke
     values = view.read()
     assert values.shape == (NUM_ENVS, 6)
     assert np.isfinite(values).all()
-    np.testing.assert_allclose(values, backend.get_sensor_data_batch(names))
+    sensor_values = [backend.get_sensor_view(name).detach().cpu().numpy() for name in names]
+    np.testing.assert_allclose(values, np.concatenate(sensor_values, axis=1))
 
     def fail_if_public_batch_getter_is_used(*_args, **_kwargs):
         raise AssertionError("materialized sensor view called the public batch getter")
 
-    monkeypatch.setattr(backend, "get_sensor_data_batch", fail_if_public_batch_getter_is_used)
+    monkeypatch.setattr(backend, "get_sensor_view", fail_if_public_batch_getter_is_used)
     np.testing.assert_allclose(view.read(), values)
 
     with pytest.raises((KeyError, ValueError), match="missing_sensor|Missing|missing"):
@@ -357,7 +394,7 @@ def test_root_state_layout_contract(backend_type: str) -> None:
         return
 
     layout = backend.get_root_state_layout("pelvis")
-    assert isinstance(layout, BackendRootStateLayout)
+    assert isinstance(layout, RootStateLayout)
     qpos_indices = np.asarray(layout.qpos_indices)
     qvel_indices = np.asarray(layout.qvel_indices)
     assert qpos_indices.shape == (7,)
@@ -389,14 +426,14 @@ def test_root_qvel_body_angular_contract_reads_back_world_velocity(backend_type:
     qpos[0, qpos_indices[3:7]] = [half_sqrt, 0.0, 0.0, half_sqrt]
     qvel[0, qvel_indices[3:6]] = [0.0, -1.0, 0.0]
 
-    backend.set_state(np.array([0], dtype=np.int32), qpos, qvel)
-
-    root_body_id = backend.get_body_ids(["pelvis"])
-    np.testing.assert_allclose(
-        backend.get_body_ang_vel_w(root_body_id)[0, 0],
-        [1.0, 0.0, 0.0],
-        atol=2e-6,
+    backend.set_state_tensor(
+        torch.tensor([0], dtype=torch.int64),
+        torch.from_numpy(qpos.astype(np.float32, copy=False)),
+        torch.from_numpy(qvel.astype(np.float32, copy=False)),
     )
+
+    angular_velocity = backend.get_sensor_view("track_angvel_w_pelvis").detach().cpu().numpy()
+    np.testing.assert_allclose(angular_velocity[0], [1.0, 0.0, 0.0], atol=2e-6)
 
 
 def test_mujoco_root_layout_resolves_a_nonfirst_free_joint(tmp_path: Path) -> None:
@@ -469,8 +506,10 @@ def test_terrain_spawn_consumers_do_not_probe_private_backend_capabilities() -> 
 
 
 @pytest.mark.parametrize("backend_type", _BACKEND_PARAMS)
-def test_legacy_contract_step_set_state_and_state_reads(backend_type: str) -> None:
+def test_tensor_contract_step_set_state_and_state_reads(backend_type: str) -> None:
     _require_backend(backend_type)
+    if backend_type == "isaacsim":
+        _skip_raw_scalar_isaacsim_fixture()
 
     backend = _create_backend_for_test(
         backend_type,
@@ -478,26 +517,35 @@ def test_legacy_contract_step_set_state_and_state_reads(backend_type: str) -> No
         NUM_ENVS,
         SIM_DT,
         base_name="pelvis",
+        add_body_sensors=True,
     )
     backend.materialize()
+    tensor_device = torch.device("cuda") if backend_type == "isaacgym" else torch.device("cpu")
 
     assert backend.num_envs == NUM_ENVS
     assert backend.num_actuators > 0
     assert backend.get_terrain_spawn_data() is None
 
-    backend.step(np.zeros((NUM_ENVS, backend.num_actuators)), nsteps=2)
+    backend.step_tensor(
+        torch.zeros((NUM_ENVS, backend.num_actuators), dtype=torch.float32, device=tensor_device),
+        nsteps=2,
+    )
 
     default_qpos = np.asarray(backend.get_default_qpos())
     qpos = np.broadcast_to(default_qpos, (NUM_ENVS, default_qpos.shape[0])).copy()
     target_xyz = np.array([1.0, 2.0, 0.8])
     qpos[:, :3] = target_xyz
     qvel = np.zeros((NUM_ENVS, len(backend.get_init_qvel())))
-    backend.set_state(np.arange(NUM_ENVS, dtype=np.int32), qpos, qvel)
-
-    np.testing.assert_allclose(
-        backend.get_base_pos(), np.tile(target_xyz, (NUM_ENVS, 1)), atol=1e-4
+    backend.set_state_tensor(
+        torch.arange(NUM_ENVS, dtype=torch.int64, device=tensor_device),
+        torch.from_numpy(qpos.astype(np.float32, copy=False)).to(tensor_device),
+        torch.from_numpy(qvel.astype(np.float32, copy=False)).to(tensor_device),
     )
-    np.testing.assert_allclose(np.linalg.norm(backend.get_base_quat(), axis=-1), 1.0, atol=1e-5)
+
+    positions = backend.get_sensor_view("track_pos_w_pelvis").detach().cpu().numpy()
+    quaternions = backend.get_sensor_view("track_quat_w_pelvis").detach().cpu().numpy()
+    np.testing.assert_allclose(positions, np.tile(target_xyz, (NUM_ENVS, 1)), atol=1e-4)
+    np.testing.assert_allclose(np.linalg.norm(quaternions, axis=-1), 1.0, atol=1e-5)
 
 
 @pytest.mark.slow
@@ -527,17 +575,27 @@ def test_isaacgym_position_hold_is_stable() -> None:
         default_dof_pos = backend.get_default_dof_pos()
         qpos = np.broadcast_to(default_qpos, (NUM_ENVS, default_qpos.shape[0])).copy()
         qvel = np.zeros((NUM_ENVS, len(backend.get_init_qvel())), dtype=np.float32)
-        backend.set_state(np.arange(NUM_ENVS, dtype=np.int32), qpos, qvel)
+        rows = torch.arange(NUM_ENVS, dtype=torch.int64, device="cuda")
+        backend.set_state_tensor(
+            rows,
+            torch.from_numpy(qpos).to(device=rows.device),
+            torch.from_numpy(qvel).to(device=rows.device),
+        )
         ctrl = np.broadcast_to(default_dof_pos, (NUM_ENVS, backend.num_actuators)).copy()
         # 0.2s of sim time (ctrl_dt=0.02, 3 substeps per control step). The
         # failure signature is immediate and large (wrist dof at -0.85 rad
         # within 3 substeps when self-collision is on); normal PD gravity sag
         # stays below ~0.15 rad in this window.
+        joint_qpos_ids = backend.get_joint_state_qpos_indices(backend.get_actuator_joint_names())
         for _ in range(10):
-            backend.step(ctrl.astype(np.float32), nsteps=3)
-        drift = np.abs(backend.get_dof_pos() - default_dof_pos).max()
+            backend.step_tensor(
+                torch.from_numpy(ctrl.astype(np.float32)).to(device=rows.device),
+                nsteps=3,
+            )
+        current_qpos = backend.get_state_views(("qpos",))["qpos"].detach().cpu().numpy()
+        drift = np.abs(current_qpos[:, joint_qpos_ids] - default_dof_pos).max()
         assert drift < 0.3, f"dof drift under position hold: {drift}"
-        base_z = backend.get_base_pos()[:, 2]
+        base_z = current_qpos[:, 2]
         np.testing.assert_allclose(
             base_z,
             default_qpos[2],
@@ -568,14 +626,16 @@ def test_isaacgym_native_camera_capture_renders_scene() -> None:
     )
     backend.materialize()
     try:
-        backend.init_renderer(headless=True, capture=True, width=320, height=240)
-        backend.step(np.zeros((NUM_ENVS, backend.num_actuators), dtype=np.float32))
+        backend.bind_renderer(headless=True, capture=True, width=320, height=240)
+        backend.step_tensor(
+            torch.zeros((NUM_ENVS, backend.num_actuators), dtype=torch.float32, device="cuda")
+        )
         frame = backend.capture_video_frame()
         assert frame.shape == (240, 320, 3)
         assert frame.dtype == np.uint8
         assert np.unique(frame).size > 8, "camera frame looks blank"
         # A second init with the same config is a no-op and keeps capturing.
-        backend.init_renderer(headless=True, capture=True, width=320, height=240)
+        backend.bind_renderer(headless=True, capture=True, width=320, height=240)
         assert backend.capture_video_frame().shape == (240, 320, 3)
     finally:
         backend.close()
@@ -602,12 +662,12 @@ def test_genesis_native_camera_capture_renders_scene() -> None:
         base_name="pelvis",
     )
     backend.materialize()
-    backend.init_renderer(headless=True, capture=True, width=320, height=240)
+    backend.bind_renderer(headless=True, capture=True, width=320, height=240)
     backend.step(np.zeros((NUM_ENVS, backend.num_actuators), dtype=np.float32))
     frame = backend.capture_video_frame()
     assert frame.shape == (240, 320, 3)
     assert frame.dtype == np.uint8
     assert np.unique(frame).size > 8, "camera frame looks blank"
     # A second init with the same config is a no-op and keeps capturing.
-    backend.init_renderer(headless=True, capture=True, width=320, height=240)
+    backend.bind_renderer(headless=True, capture=True, width=320, height=240)
     assert backend.capture_video_frame().shape == (240, 320, 3)

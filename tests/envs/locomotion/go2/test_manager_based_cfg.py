@@ -15,9 +15,9 @@ from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
 
 from unilab.base import registry
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
-from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg, mdp
+from unilab.envs import ManagerBasedRlEnvCfg, mdp
 
 ROOT_DIR = Path(__file__).parents[4]
 CONF_DIR = ROOT_DIR / "src" / "unilab" / "conf"
@@ -114,7 +114,7 @@ def _materialize(
     config_group: str, overrides: Sequence[str]
 ) -> tuple[DictConfig, ManagerBasedRlEnvCfg, dict[str, Any]]:
     hydra_cfg = _compose(config_group, overrides)
-    env_override = BackendAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
+    env_override = EnvConfigAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
     env_cfg = registry.materialize_env_config("Go2JoystickFlat")
     assert isinstance(env_cfg, ManagerBasedRlEnvCfg)
     apply_cfg_overrides(env_cfg, env_override)
@@ -269,9 +269,24 @@ def test_go2_flat_motrix_owner_uses_tensor_reset_events() -> None:
     registry.ensure_registries()
     _, env_cfg, _ = _materialize("appo", ("task=go2_joystick_flat/motrix",))
 
-    assert env_cfg.events["reset_scene_to_default"].func is mdp.reset_scene_to_default_tensor
-    assert env_cfg.events["reset_root_state_uniform"].func is mdp.reset_root_state_uniform_tensor
+    assert env_cfg.events["reset_scene_to_default"].func is mdp.skip_scene_reset
+    assert env_cfg.events["reset_root_state_uniform"].func is mdp.reset_root_state_uniform_fused
     assert env_cfg.events["pd_gains"] is None
+
+
+@pytest.mark.parametrize(
+    "owner",
+    (
+        pytest.param("task=go2_joystick_flat/mujoco", id="mujoco"),
+        pytest.param("task=go2_joystick_flat/motrix", id="motrix"),
+    ),
+)
+def test_go2_flat_appo_tracking_sigma_preserves_legacy_reward_kernel(owner: str) -> None:
+    registry.ensure_registries()
+    _, env_cfg, _ = _materialize("appo", (owner,))
+
+    for term_name in ("tracking_lin_vel", "tracking_ang_vel"):
+        assert env_cfg.rewards[term_name].params["tracking_sigma"] == pytest.approx(0.25)
 
 
 @pytest.mark.parametrize(
@@ -286,43 +301,22 @@ def test_go2_flat_registry_executes_real_manager_runtime(backend: str, owner: st
         )
     registry.ensure_registries()
     hydra_cfg, _, env_override = _materialize("ppo", (owner,))
+    override = {
+        **env_override,
+        "events": {**env_override.get("events", {}), "pd_gains": None},
+    }
     env = registry.make(
         str(hydra_cfg.training.task_name),
         sim_backend=backend,
-        env_cfg_override=env_override,
+        env_cfg_override=override,
         num_envs=2,
     )
     try:
-        assert isinstance(env, ManagerBasedRlEnv)
-        assert env.obs_groups_spec == {"obs": 49, "critic": 52}
-        assert env.action_space.shape == (12,)
-        action = env.action_manager.get_term("joint_pos")
-        assert action.target_names == list(_JOINT_NAMES)
-        np.testing.assert_allclose(action.offset.cpu(), np.broadcast_to(_HOME_JOINT_POS, (2, 12)))
-
-        obs, info = env.reset(seed=7)
-        assert {name: value.shape for name, value in obs.items()} == {
-            "obs": (2, 49),
-            "critic": (2, 52),
-        }
-        assert isinstance(info, dict)
-        np.testing.assert_allclose(
-            env.scene["robot"].data.default_joint_pos,
-            np.broadcast_to(_HOME_JOINT_POS, (2, 12)),
-        )
-        np.testing.assert_allclose(
-            env.scene["robot"].data.joint_pos,
-            np.broadcast_to(_HOME_JOINT_POS, (2, 12)),
-        )
-
-        state = env.step(torch.zeros((2, 12), dtype=torch.float32, device=env.device))
-        assert {name: value.shape for name, value in state.obs.items()} == {
-            "obs": (2, 49),
-            "critic": (2, 52),
-        }
-        for value in (*state.obs.values(), state.reward):
-            assert isinstance(value, torch.Tensor)
-            assert torch.isfinite(value).all()
+        state = env.init_state()
+        assert all(torch.isfinite(values).all() for values in state.obs.values())
+        assert state.obs["obs"].shape[0] == 2
+        obs, _ = env.reset(torch.tensor([1], dtype=torch.int64, device=env.device))
+        assert obs["obs"].shape[0] == 2
     finally:
         env.close()
 

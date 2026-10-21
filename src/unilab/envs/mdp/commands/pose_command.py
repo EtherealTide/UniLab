@@ -1,9 +1,9 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681),
 # src/mjlab_microduck/tasks/mdp.py command terms.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy and the public ManagerBasedRlEnv contract;
+# Modified by UniLab for the public ManagerBasedRlEnv contract;
 # licensed under Apache-2.0.
-"""Generic pose and posture command terms for Manager-Based tasks."""
+"""Generic pose and posture command terms for the Torch-first Manager runtime."""
 
 from __future__ import annotations
 
@@ -12,18 +12,17 @@ from dataclasses import dataclass
 from numbers import Real
 from typing import TYPE_CHECKING
 
-import numpy as np
 import torch
 
-from unilab.dtype_config import get_global_dtype
 from unilab.managers.command_manager import CommandTerm, CommandTermCfg
+from unilab.managers.rng import ManagerRng
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 def _real(value: object, *, label: str, minimum: float | None = None) -> float:
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+    if isinstance(value, bool) or not isinstance(value, Real):
         raise TypeError(f"{label} must be a real number")
     result = float(value)
     if not math.isfinite(result):
@@ -69,7 +68,7 @@ class UniformPoseCommand(CommandTerm):
             raise ValueError("UniformPoseCommandCfg zero_command_prob must be within [0, 1]")
         self._zero_command_prob = probability
         super().__init__(cfg, env)
-        self._command = np.zeros((self.num_envs, len(ranges)), dtype=get_global_dtype())
+        self._command = torch.zeros((self.num_envs, len(ranges)), dtype=torch.float32)
 
     @staticmethod
     def _validated_ranges(ranges: object) -> tuple[tuple[float, float], ...]:
@@ -81,16 +80,13 @@ class UniformPoseCommand(CommandTerm):
         )
 
     @property
-    def command(self) -> np.ndarray:
+    def command(self) -> torch.Tensor:
         return self._command
 
-    def _update_metrics(self, env_ids: torch.Tensor | None = None) -> None:
-        del env_ids
+    def _update_metrics(self) -> None:
+        pass
 
-    def _resample_command(self, env_ids: torch.Tensor) -> None:
-        if len(env_ids) == 0:
-            return
-        host_ids = env_ids.detach().cpu().numpy()
+    def _resample_command(self, reset_mask: torch.Tensor) -> None:
         ranges = self._validated_ranges(self.cfg.ranges)
         if len(ranges) != self._command.shape[1]:
             raise ValueError(
@@ -98,20 +94,27 @@ class UniformPoseCommand(CommandTerm):
                 f"{self._command.shape[1]} to {len(ranges)}; curricula may only "
                 "change per-axis bounds"
             )
-        for column, (lower, upper) in enumerate(ranges):
-            self._command[host_ids, column] = self._host_uniform(lower, upper, env_ids.numel())
+        samples = torch.stack(
+            tuple(self._host_uniform(lower, upper, self.num_envs) for lower, upper in ranges),
+            dim=1,
+        )
+        expanded = reset_mask[:, None]
+        self._command.copy_(torch.where(expanded, samples, self._command))
         if self._zero_command_prob > 0.0:
-            zero = self._host_uniform(0.0, 1.0, env_ids.numel()) < self._zero_command_prob
-            self._command[host_ids[zero]] = 0.0
+            zero = self._host_uniform(0.0, 1.0, self.num_envs) < self._zero_command_prob
+            zeros = torch.zeros_like(self._command)
+            self._command.copy_(torch.where((reset_mask & zero)[:, None], zeros, self._command))
 
-    def _host_uniform(self, lower: float, upper: float, count: int) -> np.ndarray:
-        rng_owner = getattr(self._env, "torch_rng", None)
-        if rng_owner is not None:
-            return rng_owner.uniform(lower, upper, (count,), dtype=torch.float32).cpu().numpy()
-        return self._env.rng.uniform(lower, upper, count)
+    def _host_uniform(self, lower: float, upper: float, count: int) -> torch.Tensor:
+        rng_owner = getattr(self._env, "rng", None)
+        if not isinstance(rng_owner, ManagerRng):
+            raise RuntimeError(
+                "UniformPoseCommand sampling requires the Manager-owned Torch generator"
+            )
+        return rng_owner.uniform(lower, upper, (count,), dtype=torch.float32)
 
-    def _update_command(self, env_ids: torch.Tensor | None) -> None:
-        del env_ids
+    def _update_command(self) -> None:
+        pass
 
 
 __all__ = ["UniformPoseCommand", "UniformPoseCommandCfg"]

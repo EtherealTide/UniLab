@@ -46,15 +46,16 @@ during issue #1811.
 Choose one core setup path:
 
 ```bash
-# Full default setup: MuJoCo + uni_rl, with shell completion.
+# Full default setup: MuJoCo backend, with shell completion.
 make setup
 ```
 
-`make setup` runs `uv sync --extra mujoco --extra uni_rl` and installs shell
-completion. If `make` is unavailable, run the matching commands directly:
+`make setup` syncs the default environment (MuJoCo backend and the built-in
+RL stack) and installs shell completion. If `make` is unavailable, run the
+matching commands directly:
 
 ```bash
-uv sync --extra mujoco --extra uni_rl
+uv sync --extra mujoco
 uv run --no-sync unilab-complete install
 ```
 
@@ -155,19 +156,19 @@ verification commands:
 
 ## Algorithm Extras
 
-PPO training and playback run directly on `rsl-rl-lib`, which the base package
-installs. The optional `uni_rl` extra adds the `uni_rl` runtime
-(`unilab-rl`), required only for APPO, the off-policy algorithms (SAC),
-and multi-GPU data-parallel PPO launches (`CUDA_VISIBLE_DEVICES` with more than
-one entry):
+No algorithm extra is required. The full RL stack ships inside the `unilab`
+distribution itself under `src/unilab/rl/`: PPO runs directly on
+`rsl-rl-lib`, and the APPO, off-policy (SAC / FlashSAC), and multi-GPU
+data-parallel runtimes are included in the base install. The former
+`unilab-rl` package is merged into this repository (issue #2372, decision in
+{doc}`/adr/ADR-0016-rl-reintegration-into-unilab-rl`).
 
-```bash
-uv sync --extra uni_rl
-# or, from PyPI:
-pip install unilab[uni_rl]
-```
+The legacy `uni_rl` extra has been removed. Do not pass it to `uv sync` or
+`pip install`; the RL stack is included with the base distribution.
 
-`make setup` already includes this extra.
+If your code imports `uni_rl` directly, see
+{doc}`../3-deployment/3-framework_migration/7-from_unilab_rl` for the
+`uni_rl.*` → `unilab.rl.*` migration mapping.
 
 ## Switching The Local MuJoCo Version
 
@@ -242,13 +243,15 @@ ROCm notes:
 - If you installed ROCm wheels manually while retaining the default project
   profile, use `uv run --no-sync` (or `UV_NO_SYNC=1 make ...`) for validation;
   automatic synchronization would reinstall that profile's CUDA wheels.
-- With ROCm PyTorch and an available GPU, a `HOST_BRIDGE` backend accepting
-  `cuda` buffers can use the current GPU for Manager/TorchEnv tensors when
-  MuJoCo training explicitly sets `training.collector_tensor_device=cuda`.
-  The direct environment and training default remain CPU. MuJoCo physics stays
-  on CPU; packed transfers connect it to explicitly requested GPU observations,
-  actions, rewards, and resets. CUDA-only physics backends remain unsupported
-  on ROCm. See
+- With ROCm PyTorch and an available GPU, a `HOST_BRIDGE` backend declaring
+  and accepting `cuda` buffers uses the current GPU for Manager/TorchEnv
+  tensors whenever the training learner resolves to CUDA: the default
+  `training.sim_carrier_device=auto` follows the learner device, and an
+  explicit `training.sim_carrier_device=cuda` forces the same routing for
+  other learner devices. Direct environment construction remains CPU.
+  Host-bridge physics stays on CPU; packed transfers connect it to the GPU
+  observations, actions, rewards, and resets. CUDA-only physics backends remain
+  unsupported on ROCm. See
   {doc}`/adr/ADR-0012-sole-tensor-manager-and-scoped-backends`.
 - When installing from PyPI instead of a source checkout, `make sync-rocm` does
   not apply. Install the torch build validated by the repository from the
@@ -275,7 +278,7 @@ For a local package mirror, set the uv index before syncing:
 
 ```bash
 export UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-uv sync --extra mujoco --extra uni_rl \
+uv sync --extra mujoco \
   --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 

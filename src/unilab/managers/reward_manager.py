@@ -5,19 +5,20 @@
 
 from __future__ import annotations
 
+import math
 import time
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-import numpy as np
 import torch
 from prettytable import PrettyTable
 
+from unilab.base.reset_selectors import resolve_reset_env_ids
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
 
 if TYPE_CHECKING:
-    from unilab.managers._types import DebugVisualizer, ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 @dataclass(kw_only=True)
@@ -53,9 +54,8 @@ class RewardManager(ManagerBase):
           the unscaled reward rate (raw_value * weight)
 
       ``step_reward_extras()`` exposes the latest ``compute()`` call's per-term
-      means as ``reward/<term>`` log entries (weighted, pre-dt rate), matching
-      the legacy envs' per-step reward log contract consumed by training
-      runners.
+      means as ``reward/<term>`` log entries (weighted, pre-dt rate). This is
+      the per-step reward log contract consumed by training runners.
     """
 
     _env: ManagerBasedRlEnv
@@ -79,6 +79,16 @@ class RewardManager(ManagerBase):
         self._step_reward = torch.zeros(
             (self.num_envs, len(self._term_names)), dtype=torch.float32, device=self._device
         )
+        self._term_reward_scratch = torch.empty_like(self._reward_buf)
+        self._packed_reward_scratch = torch.empty_like(self._reward_buf)
+        self._term_step_scratch = torch.empty_like(self._reward_buf)
+        self._packed_step_scratch = torch.empty_like(self._reward_buf)
+        self._finite_value_scratch = torch.empty_like(self._reward_buf)
+        self._finite_scratch = torch.empty_like(self._reward_buf, dtype=torch.bool)
+        self._step_reward_mean_scratch = torch.empty(
+            (len(self._term_names),), dtype=torch.float32, device=self._device
+        )
+        self._finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
 
     def __str__(self) -> str:
         msg = f"<RewardManager> contains {len(self._term_names)} active terms.\n"
@@ -104,10 +114,16 @@ class RewardManager(ManagerBase):
     # Methods.
 
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
-        if env_ids is None:
-            env_ids = slice(None)
+        """Clear stateful reward terms for the selected environment rows."""
+        ids = resolve_reset_env_ids(
+            env_ids, num_envs=self.num_envs, device=self._device, owner="RewardManager.reset"
+        )
         for term_cfg in self._class_term_cfgs:
-            term_cfg.func.reset(env_ids=env_ids)
+            if not callable(getattr(term_cfg.func, "reset", None)):
+                raise NotImplementedError(
+                    "RewardManager stateful term does not define the reset boundary"
+                )
+            term_cfg.func.reset(ids)
         return {}
 
     def compute(self, dt: float) -> torch.Tensor:
@@ -116,7 +132,7 @@ class RewardManager(ManagerBase):
             timing = {}
             self.last_step_timing_ms = timing
         timing.clear()
-        if not np.isfinite(dt) or (self._scale_by_dt and dt <= 0.0):
+        if not math.isfinite(dt) or (self._scale_by_dt and dt <= 0.0):
             raise ValueError(f"RewardManager received invalid dt {dt}.")
         reset_started = time.perf_counter()
         self._reward_buf[:] = 0.0
@@ -141,14 +157,21 @@ class RewardManager(ManagerBase):
             if term_timing is not None:
                 term_timing.clear()
             dispatch_started = time.perf_counter()
-            value = self._compute_term(name, term_cfg, validate=False)
+            value = self._compute_term(name, term_cfg)
             dispatch_ms += time.perf_counter() - dispatch_started
             if term_timing is not None:
                 timing.update(term_timing)
             aggregation_started = time.perf_counter()
-            weighted = value * float(term_cfg.weight) * scale
+            weighted = self._term_reward_scratch
+            torch.mul(
+                value,
+                float(term_cfg.weight) * scale,
+                out=weighted,
+            )
             self._reward_buf += weighted
-            self._step_reward[:, term_idx] = weighted / scale
+            step_value = self._term_step_scratch
+            torch.div(weighted, scale, out=step_value)
+            self._step_reward[:, term_idx] = step_value
             aggregation_ms += time.perf_counter() - aggregation_started
         for term_idx, term_cfg in enumerate(self._term_cfgs):
             if not term_cfg.reward_pack_names:
@@ -183,12 +206,24 @@ class RewardManager(ManagerBase):
             for offset, packed_name in enumerate(term_cfg.reward_pack_names):
                 target_idx = self._term_names.index(packed_name)
                 target_cfg = self._term_cfgs[target_idx]
-                weighted = packed[:, offset] * float(target_cfg.weight) * scale
+                weighted = self._packed_reward_scratch
+                torch.mul(
+                    packed[:, offset],
+                    float(target_cfg.weight) * scale,
+                    out=weighted,
+                )
                 self._reward_buf += weighted
-                self._step_reward[:, target_idx] = weighted / scale
+                step_value = self._packed_step_scratch
+                torch.div(weighted, scale, out=step_value)
+                self._step_reward[:, target_idx] = step_value
             aggregation_ms += time.perf_counter() - aggregation_started
         finite_started = time.perf_counter()
-        finite = bool(torch.isfinite(self._reward_buf).all())
+        finite_value = self._finite_value_scratch
+        torch.sub(self._reward_buf, self._reward_buf, out=finite_value)
+        finite = self._finite_scratch
+        torch.eq(finite_value, 0.0, out=finite)
+        torch.all(finite, out=self._finite_valid)
+        finite = bool(self._finite_valid)
         finite_ms = time.perf_counter() - finite_started
         if not finite:
             finite = torch.isfinite(self._step_reward)
@@ -214,8 +249,8 @@ class RewardManager(ManagerBase):
         """Per-term log entries of the latest ``compute()`` call.
 
         Returns ``reward/<term>`` -> mean weighted reward rate across envs
-        (raw_value * weight, before dt scaling), mirroring the legacy envs'
-        per-step reward log format.
+        (raw_value * weight, before dt scaling) — the per-step reward log
+        format consumed by training runners.
         """
         if not self._term_names:
             return {}
@@ -238,7 +273,12 @@ class RewardManager(ManagerBase):
         """Latest per-term weighted means on the Manager device."""
         if not self._term_names:
             return torch.empty(0, dtype=torch.float32, device=self._device)
-        return self._step_reward.mean(dim=0)
+        return torch.mean(self._step_reward, dim=0, out=self._step_reward_mean_scratch)
+
+    @property
+    def step_rewards(self) -> torch.Tensor:
+        """Latest full-width per-term weighted rewards on the Manager device."""
+        return self._step_reward
 
     def get_active_iterable_terms(self, env_idx: int) -> list[tuple[str, list[float]]]:
         terms = []
@@ -256,7 +296,7 @@ class RewardManager(ManagerBase):
             if term_cfg is None:
                 print(f"term: {term_name} set to None, skipping...")
                 continue
-            if not np.isfinite(term_cfg.weight):
+            if not math.isfinite(term_cfg.weight):
                 raise ValueError(
                     f"RewardManager term '{term_name}' has non-finite weight {term_cfg.weight}."
                 )
@@ -266,45 +306,28 @@ class RewardManager(ManagerBase):
             if hasattr(term_cfg.func, "reset") and callable(term_cfg.func.reset):
                 self._class_term_cfgs.append(term_cfg)
 
-    def _compute_term(
-        self, name: str, term_cfg: RewardTermCfg, *, validate: bool = True
-    ) -> torch.Tensor:
+    def _compute_term(self, name: str, term_cfg: RewardTermCfg) -> torch.Tensor:
         value = term_cfg.func(self._env, **term_cfg.params)
-        if isinstance(value, torch.Tensor):
-            if value.dtype != torch.float32:
-                raise TypeError(
-                    f"RewardManager term '{name}' returned dtype {value.dtype}, expected float32."
-                )
-            if value.device != self._device:
-                raise ValueError(
-                    f"RewardManager term '{name}' returned device {value.device}, "
-                    f"expected {self._device}."
-                )
-            if getattr(term_cfg.func, "returns_transient_tensor", False):
-                result = value
-            else:
-                result = value.clone()
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(
+                f"RewardManager term '{name}' must return torch.Tensor, got {type(value).__name__}."
+            )
+        if value.dtype != torch.float32:
+            raise TypeError(
+                f"RewardManager term '{name}' returned dtype {value.dtype}, expected float32."
+            )
+        if value.device != self._device:
+            raise ValueError(
+                f"RewardManager term '{name}' returned device {value.device}, "
+                f"expected {self._device}."
+            )
+        if getattr(term_cfg.func, "returns_transient_tensor", False):
+            result = value
         else:
-            host = np.array(value, dtype=np.float32, order="C", copy=True)
-            result = torch.from_numpy(host).to(device=self._device)
+            result = value.clone()
         if result.shape != (self.num_envs,):
             raise ValueError(
                 f"RewardManager term '{name}' returned shape {tuple(result.shape)}; "
                 f"expected ({self.num_envs},)."
             )
-        if validate and not bool(torch.isfinite(result).all()):
-            has_nan = bool(torch.isnan(result).any())
-            has_inf = bool(torch.isinf(result).any())
-            invalid_kind = "NaN/Inf" if has_nan and has_inf else "NaN" if has_nan else "Inf"
-            invalid_rows = torch.nonzero(~torch.isfinite(result)).flatten()[:10]
-            raise ValueError(
-                f"RewardManager term '{name}' returned {invalid_kind} for "
-                f"environments {invalid_rows.tolist()}."
-            )
         return result
-
-    @staticmethod
-    def _log_mean(values: torch.Tensor) -> float:
-        if values.numel() == 0:
-            return 0.0
-        return float(values.mean().item())

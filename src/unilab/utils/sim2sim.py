@@ -20,7 +20,6 @@ ALLOWLIST: list[str] = [
     "env.scene",
     "training.play_steps",
     "env.noise_config",
-    "env.commands.vel_limit",
 ]
 
 WARNING_LIST: list[str] = [
@@ -29,7 +28,6 @@ WARNING_LIST: list[str] = [
     "reward.max_tilt_deg",
     "reward.min_base_height",
     "env.control_config.simulate_action_latency",
-    "env.ctrl_dt",
 ]
 
 DENYLIST: list[str] = [
@@ -44,6 +42,8 @@ DENYLIST: list[str] = [
     "algo.actor.obs_normalization",
     "algo.critic.obs_normalization",
     "algo.obs_normalization",
+    "env.ctrl_dt",
+    "env.commands.vel_limit",
     "env.commands.motion.params.sampling_mode",
 ]
 
@@ -51,31 +51,29 @@ SNAPSHOT_FIELDS: list[str] = DENYLIST + WARNING_LIST
 
 ENV_STRUCTURAL_DENYLIST: list[str] = [path for path in DENYLIST if path.startswith("env.")]
 
-LEGACY_PATH_ALIASES: dict[str, str] = {
-    "env.sampling_mode": "env.commands.motion.params.sampling_mode",
-    # Pre-native-schema PPO owner keys (legacy `policy:` block / flat toggle).
-    "algo.policy.actor_hidden_dims": "algo.actor.hidden_dims",
-    "algo.policy.critic_hidden_dims": "algo.critic.hidden_dims",
-    # The legacy flat toggle drove both actor and critic normalization; the
-    # actor-side field carries the check for old snapshots.
-    "algo.empirical_normalization": "algo.actor.obs_normalization",
-}
-_CANONICAL_PATH_FALLBACKS: dict[str, str] = {
-    canonical: legacy for legacy, canonical in LEGACY_PATH_ALIASES.items()
-}
+_MINIMUM_SUPPORTED_FORMAT = (
+    "Minimum supported format: a run_config.json whose 'contract_snapshot' is a "
+    "mapping keyed by the canonical contract paths (the snapshot schema written "
+    "by training runs on the UniLab 1.3.5 baseline). Older runs, legacy snapshot "
+    "keys, and damaged files are not migrated or aliased; they are rejected.\n"
+    "Recovery: retrain the policy with the current UniLab version so the run "
+    "writes a supported snapshot (checkpoint weights themselves are unchanged), "
+    "or play with no source run (source_run_dir=None) to explicitly skip the "
+    "contract check."
+)
+
+
+def _unsupported_snapshot(run_dir: Path, reason: str) -> CrossBackendIncompatibleError:
+    return CrossBackendIncompatibleError(
+        f"Unsupported sim2sim source run: {reason}\n"
+        f"Source run: {run_dir}\n"
+        f"{_MINIMUM_SUPPORTED_FORMAT}"
+    )
 
 
 def _select(cfg: Any, path: str) -> Any:
     """Return the effective value at a dotted path (or ``None`` if absent)."""
     return OmegaConf.select(cfg, path)
-
-
-def _select_contract(cfg: Any, path: str) -> Any:
-    value = _select(cfg, path)
-    if value is not None:
-        return value
-    legacy_path = _CANONICAL_PATH_FALLBACKS.get(path)
-    return None if legacy_path is None else _select(cfg, legacy_path)
 
 
 def _to_plain(value: Any) -> Any:
@@ -89,7 +87,7 @@ def extract_contract_snapshot(full_cfg: DictConfig) -> dict[str, Any]:
     cfg: Any = full_cfg if OmegaConf.is_config(full_cfg) else OmegaConf.create(full_cfg)
     snapshot: dict[str, Any] = {}
     for path in SNAPSHOT_FIELDS:
-        value = _select_contract(cfg, path)
+        value = _select(cfg, path)
         if value is None:
             continue
         snapshot[path] = _to_plain(value)
@@ -138,20 +136,28 @@ def _asymmetric_line(path: str, present_value: Any, *, source_present: bool) -> 
     )
 
 
-def _read_snapshot(run_dir: Path) -> dict[str, Any] | None:
-    """Read ``contract_snapshot`` from ``run_dir/run_config.json`` (``None`` if absent)."""
+def _read_snapshot(run_dir: Path) -> dict[str, Any]:
+    """Read the canonical ``contract_snapshot`` mapping from a source run, failing closed.
+
+    Raises :class:`CrossBackendIncompatibleError` when ``run_config.json`` is
+    missing, is not valid JSON, is not a top-level mapping, or has no mapping
+    ``contract_snapshot``. Historical ``run_config.json`` files are immutable
+    inputs: nothing here repairs, rewrites, or migrates them.
+    """
     path = run_dir / "run_config.json"
     if not path.is_file():
-        return None
+        raise _unsupported_snapshot(run_dir, f"{path} does not exist.")
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    except (OSError, ValueError) as exc:
+        raise _unsupported_snapshot(run_dir, f"{path} is not valid JSON ({exc}).") from exc
     if not isinstance(parsed, dict):
-        return None
-    snapshot = parsed.get("contract_snapshot")
+        raise _unsupported_snapshot(run_dir, f"{path} top level is not a JSON object.")
+    if "contract_snapshot" not in parsed:
+        raise _unsupported_snapshot(run_dir, f"{path} has no 'contract_snapshot' field.")
+    snapshot = parsed["contract_snapshot"]
     if not isinstance(snapshot, dict):
-        return None
+        raise _unsupported_snapshot(run_dir, f"{path} 'contract_snapshot' is not a mapping.")
     return snapshot
 
 
@@ -164,10 +170,13 @@ def resolve_sim2sim_config(
 ) -> DictConfig | None:
     """Validate a target play config against the source training contract.
 
-    Returns ``None`` if ``source_run_dir`` is ``None``; otherwise returns ``target_cfg``
-    unchanged (never mutated). Raises :class:`CrossBackendIncompatibleError` under
-    ``strict`` when any DENYLIST field differs, including asymmetric presence for
-    :data:`ENV_STRUCTURAL_DENYLIST` paths.
+    Returns ``None`` if ``source_run_dir`` is ``None`` (an explicit "no source
+    run" play); otherwise returns ``target_cfg`` unchanged (never mutated).
+    Raises :class:`CrossBackendIncompatibleError` under ``strict`` when any
+    DENYLIST field differs, including asymmetric presence for
+    :data:`ENV_STRUCTURAL_DENYLIST` paths. A source run whose contract snapshot
+    is missing, malformed, or uses keys outside the current schema fails closed
+    with the same error regardless of ``strict``.
     """
     if source_run_dir is None:
         print("[sim2sim] no source run dir; skipping cross-backend contract check")
@@ -175,21 +184,20 @@ def resolve_sim2sim_config(
 
     run_dir = Path(source_run_dir)
     snapshot = _read_snapshot(run_dir)
-    if snapshot is None:
-        print(
-            f"[sim2sim] {run_dir}/run_config.json has no contract_snapshot "
-            "(old run); skipping cross-backend enforcement"
+
+    unknown_paths = sorted(set(snapshot) - set(SNAPSHOT_FIELDS))
+    if unknown_paths:
+        raise _unsupported_snapshot(
+            run_dir,
+            "contract_snapshot contains keys outside the current contract schema: "
+            + ", ".join(unknown_paths)
+            + ". Retired legacy keys and snapshots from other versions are not "
+            "resolved or skipped.",
         )
-        return target_cfg
 
     denials: list[str] = []
-    canonical_snapshot: dict[str, Any] = {}
-    for raw_path, source_value in snapshot.items():
-        path = LEGACY_PATH_ALIASES.get(raw_path, raw_path)
-        canonical_snapshot[path] = source_value
-
-    for path, source_value in canonical_snapshot.items():
-        target_value = _select_contract(target_cfg, path)
+    for path, source_value in snapshot.items():
+        target_value = _select(target_cfg, path)
         if target_value is None:
             if path in ENV_STRUCTURAL_DENYLIST:
                 denials.append(_asymmetric_line(path, source_value, source_present=True))
@@ -203,9 +211,9 @@ def resolve_sim2sim_config(
             print(f"[sim2sim] WARNING override {line}")
 
     for path in ENV_STRUCTURAL_DENYLIST:
-        if path in canonical_snapshot:
+        if path in snapshot:
             continue
-        target_value = _select_contract(target_cfg, path)
+        target_value = _select(target_cfg, path)
         if target_value is not None:
             denials.append(_asymmetric_line(path, target_value, source_present=False))
 

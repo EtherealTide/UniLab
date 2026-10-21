@@ -8,16 +8,16 @@ from typing import Any, Optional
 import gymnasium as gym
 import numpy as np
 from unisim.backend.base import (
-    BackendPlayRenderPlan,
     CameraCfg,
     DebugOverlayGetter,
     DebugPrimitive,
+    PlayRenderPlan,
 )
 
 from .scene import SceneCfg
 from .variants import FixedModelVariantCatalogCfg
 
-OnPlaybackFrameFn = Callable[[int, np.ndarray], "np.ndarray | None"]
+PlaybackFrameCallback = Callable[[int, np.ndarray], "np.ndarray | None"]
 
 
 @dataclass(frozen=True)
@@ -64,10 +64,9 @@ class EnvCfg:
     # ``cpu_ids[i]`` pins MuJoCo BatchEnvPool worker thread ``i`` to one CPU,
     # and likewise pins MotrixSim's shared worker pool to the listed cores
     # (worker ``i`` takes ``cpu_ids[i % len(cpu_ids)]``); env construction
-    # also confines the owning process to the same block and sizes Numba's
-    # parallel pool to ``len(cpu_ids)`` so host-side post-step compute stays
-    # inside the rank's partition. ``None`` keeps the default OS scheduling
-    # behavior.
+    # also confines the owning process and its already-running native threads
+    # to the same block so host-side post-step compute stays inside the rank's
+    # partition. ``None`` keeps the default OS scheduling behavior.
     cpu_ids: Optional[list[int]] = None
     # ``mjwarp`` owns contact/constraint storage independently from MuJoCo.
     # Keep its capacity knobs explicit in the task owner configuration so a
@@ -81,9 +80,7 @@ class EnvCfg:
     newton_njmax: Optional[int] = None
     newton_capacity_check_steps: int = 1
     newton_use_cuda_graph: bool = True
-    # ``isaacgym`` runs physics in a Python 3.8 worker subprocess (Preview 4 is
-    # EOL and incompatible with the main environment). ``None`` keeps the
-    # backend defaults (device 0, generous handshake/step timeout).
+    # IsaacGym Preview 4 runs in an external Python 3.8 worker.
     isaacgym_device_id: Optional[int] = None
     isaacgym_worker_timeout_s: Optional[float] = None
     # ``genesis`` owns one process-wide GPU session.  The explicit device id
@@ -98,41 +95,19 @@ class EnvCfg:
     genesis_constraint_solver: Optional[str] = None
     genesis_friction_cone: Optional[str] = None
     genesis_solver_iterations: Optional[int] = None
-    # ``isaacsim`` runs IsaacLab/PhysX in a dedicated Python 3.11 worker.
-    # Keep its knobs separate from IsaacGym because the two runtimes have
-    # incompatible interpreters and installation roots.  The render intent is
-    # populated only by play/eval config materialization; training leaves it
-    # unset so the worker stays on the cheap headless experience.
+    # IsaacSim/IsaacLab runs in an external Python 3.11 worker. CUDA IPC and
+    # material sharing are explicit because released UniSim versions may not
+    # understand these constructor options.
     isaacsim_device_id: Optional[int] = None
     isaacsim_worker_timeout_s: Optional[float] = None
     isaacsim_render_mode: Optional[str] = None
     isaacsim_render_width: int = 1280
     isaacsim_render_height: int = 720
-    # Opt in to the external-worker CUDA IPC tensor lifecycle.  The default
-    # remains false so legacy NumPy shared-memory behavior is unchanged until a
-    # task owner explicitly negotiates the candidate tensor contract.
     isaacsim_tensor_cuda_ipc: bool = False
-    # Opt-in PhysX material sharing for large scenes.  Equal initial sliding
-    # friction values share a material and reset-time friction DR is disabled
-    # at capability negotiation.  Keep this false when complete per-geom/per-env
-    # friction DR is required.
     isaacsim_share_friction_materials: bool = False
-    # ``isaacsim`` PhysX solver overrides, forwarded to UniSim's bounded,
-    # readback-validated PhysxSolverConfig (unilabsim/unisim#251, #259).
-    # ``None`` keeps the PhysX scene defaults; the backend validates each
-    # override and compares it against the engine readback fail-closed.
-    isaacsim_solver_position_iteration_count: Optional[int] = None
-    isaacsim_solver_velocity_iteration_count: Optional[int] = None
-    isaacsim_bounce_threshold_velocity: Optional[float] = None
-    isaacsim_contact_offset: Optional[float] = None
-    isaacsim_rest_offset: Optional[float] = None
-    isaacsim_max_depenetration_velocity: Optional[float] = None
-    # GPU rigid contact/patch stream buffer capacities (unilabsim/unisim#292).
-    # They are PhysX carb settings with no USD attribute, so the backend
-    # reports the authored value instead of an engine readback; the IsaacLab
-    # defaults overflow at large environment counts (patch buffer overflow).
-    isaacsim_gpu_max_rigid_contact_count: Optional[int] = None
-    isaacsim_gpu_max_rigid_patch_count: Optional[int] = None
+    # Mapped IsaacSim scenes may need a grid wider than the worker default when
+    # an owner uses a large task-local support surface. ``None`` keeps 2 m.
+    isaacsim_env_spacing: Optional[float] = None
 
     @property
     def max_episode_steps(self) -> Optional[int]:
@@ -283,65 +258,47 @@ class EnvCfg:
             mode = str(self.isaacsim_render_mode).strip().lower()
             if mode not in {"auto", "interactive", "record", "none"}:
                 raise ValueError(
-                    "isaacsim_render_mode must be one of auto, interactive, record, none, or None; "
-                    f"got {self.isaacsim_render_mode!r}"
+                    "isaacsim_render_mode must be one of auto, interactive, record, "
+                    f"none, or None; got {self.isaacsim_render_mode!r}"
                 )
-            self.isaacsim_render_mode = mode
-        for name, value in (
-            ("isaacsim_render_width", self.isaacsim_render_width),
-            ("isaacsim_render_height", self.isaacsim_render_height),
+        if (
+            isinstance(self.isaacsim_render_width, bool)
+            or not isinstance(self.isaacsim_render_width, int)
+            or self.isaacsim_render_width <= 0
         ):
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ValueError(f"{name} must be a positive integer, got {value!r}")
+            raise ValueError(
+                "isaacsim_render_width must be a positive integer, "
+                f"got {self.isaacsim_render_width!r}"
+            )
+        if (
+            isinstance(self.isaacsim_render_height, bool)
+            or not isinstance(self.isaacsim_render_height, int)
+            or self.isaacsim_render_height <= 0
+        ):
+            raise ValueError(
+                "isaacsim_render_height must be a positive integer, "
+                f"got {self.isaacsim_render_height!r}"
+            )
         if not isinstance(self.isaacsim_tensor_cuda_ipc, bool):
             raise ValueError(
-                f"isaacsim_tensor_cuda_ipc must be a boolean, got {self.isaacsim_tensor_cuda_ipc!r}"
+                f"isaacsim_tensor_cuda_ipc must be bool, got {self.isaacsim_tensor_cuda_ipc!r}"
             )
         if not isinstance(self.isaacsim_share_friction_materials, bool):
             raise ValueError(
-                "isaacsim_share_friction_materials must be a boolean, got "
-                f"{self.isaacsim_share_friction_materials!r}"
+                "isaacsim_share_friction_materials must be bool, "
+                f"got {self.isaacsim_share_friction_materials!r}"
             )
-        # PhysX accepts zero velocity iterations (its scene minimum is 0) but
-        # requires at least one position iteration; mirror UniSim's
-        # PhysxSolverConfig bounds here so owner configs fail fast.
-        for name, value, minimum in (
-            (
-                "isaacsim_solver_position_iteration_count",
-                self.isaacsim_solver_position_iteration_count,
-                1,
-            ),
-            (
-                "isaacsim_solver_velocity_iteration_count",
-                self.isaacsim_solver_velocity_iteration_count,
-                0,
-            ),
-            (
-                "isaacsim_gpu_max_rigid_contact_count",
-                self.isaacsim_gpu_max_rigid_contact_count,
-                1,
-            ),
-            (
-                "isaacsim_gpu_max_rigid_patch_count",
-                self.isaacsim_gpu_max_rigid_patch_count,
-                1,
-            ),
-        ):
-            if value is not None and (
-                isinstance(value, bool) or not isinstance(value, int) or value < minimum
+        if self.isaacsim_env_spacing is not None:
+            spacing = self.isaacsim_env_spacing
+            if (
+                isinstance(spacing, bool)
+                or not isinstance(spacing, (int, float))
+                or not np.isfinite(spacing)
+                or float(spacing) <= 0.0
             ):
-                raise ValueError(f"{name} must be an integer >= {minimum} or None, got {value!r}")
-        for name in (
-            "isaacsim_bounce_threshold_velocity",
-            "isaacsim_contact_offset",
-            "isaacsim_rest_offset",
-            "isaacsim_max_depenetration_velocity",
-        ):
-            value = getattr(self, name)
-            if value is not None and (
-                not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0
-            ):
-                raise ValueError(f"{name} must be a non-negative number or None, got {value!r}")
+                raise ValueError(
+                    f"isaacsim_env_spacing must be a finite positive number, got {spacing!r}"
+                )
         if self.cpu_ids is not None:
             ids = list(self.cpu_ids)
             if not ids:
@@ -367,7 +324,7 @@ class ABEnv(abc.ABC):
         play_render_mode: str | None,
         play_steps: int | None,
         output_video: str | PathLike[str] | None,
-    ) -> BackendPlayRenderPlan:
+    ) -> PlayRenderPlan:
         """Resolve high-level playback mode through the backend contract."""
         raise NotImplementedError(
             f"{self.__class__.__name__} does not define playback render mode semantics"
@@ -387,7 +344,7 @@ class ABEnv(abc.ABC):
         frame_state_getter: Callable[[], np.ndarray] | None = None,
         camera_kwargs: CameraCfg | Mapping[str, Any] | None = None,
         debug_overlay_getter: DebugOverlayGetter | None = None,
-        on_frame: OnPlaybackFrameFn | None = None,
+        on_frame: PlaybackFrameCallback | None = None,
     ) -> str | None:
         """Execute playback through the backend contract.
 
@@ -412,8 +369,8 @@ class ABEnv(abc.ABC):
         frame_state_getter: Callable[[], np.ndarray] | None = None,
         camera_kwargs: CameraCfg | Mapping[str, Any] | None = None,
         debug_overlay_getter: DebugOverlayGetter | None = None,
-        on_frame: OnPlaybackFrameFn | None = None,
-        on_plan: Callable[[BackendPlayRenderPlan], None] | None = None,
+        on_frame: PlaybackFrameCallback | None = None,
+        on_plan: Callable[[PlayRenderPlan], None] | None = None,
     ) -> str | None:
         """Resolve configured playback mode and execute it through the backend contract.
 
@@ -423,6 +380,12 @@ class ABEnv(abc.ABC):
         ``supports_interactive_debug_overlay`` — when the backend lacks it the
         getter is dropped with a warning so interactive playback still runs
         without overlays.
+
+        ``camera_kwargs`` is a record/offline camera profile.  Some native
+        interactive viewers (for example the Isaac family) fail closed when
+        they receive one because the user owns the camera in the window; in
+        that case the profile is dropped with a warning and playback retried
+        without it, so interactive playback still runs.
         """
         plan = self.resolve_play_render_plan(
             play_render_mode=play_render_mode,
@@ -441,7 +404,7 @@ class ABEnv(abc.ABC):
                     stacklevel=2,
                 )
                 debug_overlay_getter = None
-        return self.run_playback(
+        playback_kwargs: dict[str, Any] = dict(
             initialize=initialize,
             step=step,
             num_steps=plan.num_steps,
@@ -451,10 +414,25 @@ class ABEnv(abc.ABC):
             headless=plan.headless,
             record_video=plan.record_video,
             frame_state_getter=frame_state_getter,
-            camera_kwargs=camera_kwargs,
             debug_overlay_getter=debug_overlay_getter,
             on_frame=on_frame,
         )
+        try:
+            return self.run_playback(camera_kwargs=camera_kwargs, **playback_kwargs)
+        except NotImplementedError as exc:
+            if (
+                plan.mode != "interactive"
+                or camera_kwargs is None
+                or "camera_kwargs" not in str(exc)
+            ):
+                raise
+            warnings.warn(
+                f"{self.__class__.__name__} backend does not apply camera_kwargs to its "
+                "native interactive viewer; dropping the camera profile for this "
+                "interactive playback (adjust the view in the viewer window)",
+                stacklevel=2,
+            )
+            return self.run_playback(camera_kwargs=None, **playback_kwargs)
 
     @property
     @abc.abstractmethod
@@ -498,9 +476,8 @@ class ABEnv(abc.ABC):
     def step(self, actions: Any) -> Any:
         """Step the environment with owner-declared action carrier.
 
-        The abstract base stays runtime-neutral during the staged NumPy-to-Torch
-        migration. Concrete owners validate the declared carrier; the final
-        Torch-only lifecycle accepts only Torch tensors.
+        The abstract base stays runtime-neutral. Concrete owners validate the
+        declared carrier; the Torch lifecycle accepts Torch tensors.
         """
 
     @abc.abstractmethod
@@ -532,12 +509,6 @@ class ABEnv(abc.ABC):
         """
         raise NotImplementedError(
             f"{self.__class__.__name__} does not support render(mode={mode!r})"
-        )
-
-    def render_play_frame(self) -> None:
-        """Render one frame through the env-facing interactive playback contract."""
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support native interactive playback"
         )
 
     def capture_play_video_frame(self) -> np.ndarray:

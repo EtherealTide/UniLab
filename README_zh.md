@@ -77,15 +77,23 @@ Windows、macOS、CUDA、ROCm、XPU、可选后端和无头渲染的说明，请
 ## 训练与评估
 
 ```bash
-# 使用 Motrix 训练并回放一个任务。
-uv run train --algo ppo --task go2_joystick_flat --sim motrix
-uv run eval --algo ppo --task go2_joystick_flat --sim motrix --load-run -1
-
-# 使用另一个已有配置的后端，保持同样的任务入口。
-uv run train --algo ppo --task go2_joystick_flat --sim mujoco
-
-# Replay-based off-policy 路径。
+# 使用 MuJoCo 训练并回放 g1平地行走 任务
 uv run train --algo sac --task g1_walk_flat --sim mujoco
+uv run eval --algo sac --task g1_walk_flat --sim mujoco --render-mode viser
+
+# sim2sim
+#   motrixsim
+uv run --extra motrix eval --algo sac --task g1_walk_flat --sim motrix --render-mode interactive --load-run -1
+#   newton
+uv run --extra newton eval --algo sac --task g1_walk_flat --sim newton --load-run -1
+#   isaacgym
+bash scripts/tools/setup_isaacgym_env.sh
+uv run eval --algo sac --task g1_walk_flat --sim isaacgym --load-run -1
+
+
+# 使用 mjwarp 训练并用 genesis 物理 回放 g1动作跟踪 任务
+uv run --extra mjwarp train --algo flashsac --task g1_motion_tracking --sim mjwarp
+uv run --extra genesis eval --algo flashsac --task g1_motion_tracking --sim genesis --load-run -1
 ```
 
 这些 flag 会让 algorithm、task 和 simulator 选择保持可见。续训、W&B、Hydra override、
@@ -138,8 +146,9 @@ recipe，同时消费同一套 task、backend 和 RL contract。目前的下游�
 ```
 
 UniLab 以 [Apache License 2.0](LICENSE) 发布。独立的
-[UniSim](https://github.com/unilabsim/unisim) 与
-[UniLab RL](https://github.com/unilabsim/unilab_rl) 仓库包含各自的发布和引用信息。
+[UniSim](https://github.com/unilabsim/unisim) 仓库包含各自的发布和引用信息。
+RL 栈（算法、异步 runtime、训练日志）内置在本仓库的 `src/unilab/rl/` 中；它并自原
+[unilab_rl](https://github.com/unilabsim/unilab_rl) 仓库，该仓库保留为历史出处。
 
 ## 致谢
 

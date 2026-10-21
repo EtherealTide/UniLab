@@ -13,16 +13,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
-import numpy as np
 import torch
 
-from unilab.dtype_config import get_global_dtype
 from unilab.managers.manager_base import ManagerTermBaseCfg
 
-from .manager_terms import SensorTermBase, _command, _real, _state
+from .manager_terms import SensorTermBase, require_command, require_real
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
+
+
+def _torch_values(values: torch.Tensor) -> torch.Tensor:
+    return values.to(dtype=torch.float32)
 
 
 class _Vec3SensorTerm(SensorTermBase):
@@ -43,28 +45,19 @@ class _Vec3SensorTerm(SensorTermBase):
                 f"{self._sensor.dimensions} on backend '{self._sensor.backend_type}'"
             )
 
-    def _read_sensor(self, env: ManagerBasedRlEnv) -> np.ndarray:
-        return _state(
-            self.name,
-            f"sensor '{self._sensor_name}'",
-            self._read(self._sensor, self.name),
-            (env.num_envs, 3),
-        )
-
     @property
     def tensor_sensor_names(self) -> tuple[str, ...]:
         return (self._sensor_name,)
 
-    def _read_sensor_tensor(self, env: ManagerBasedRlEnv) -> np.ndarray | torch.Tensor:
-        read_plan = getattr(env.scene, "_tensor_read_plan", None)
-        if read_plan is None:
-            return self._read_sensor(env)
+    def _read_sensor_tensor(self, env: ManagerBasedRlEnv) -> torch.Tensor:
+        read_plan = getattr(env.scene, "read_plan", None)
+        owner_sensors = set(getattr(read_plan, "sensor_names", {}).get("robot", ()))
+        if read_plan is None or not set(self.tensor_sensor_names).issubset(owner_sensors):
+            raise NotImplementedError(
+                f"Manager term '{self.name}' requires its named sensors "
+                f"{self.tensor_sensor_names} in the packed Torch read plan"
+            )
         entity = env.scene["robot"]
-        compiled = set(read_plan.sensor_names.get("robot", ()))
-        if read_plan.device.type == "cuda" and not set(self.tensor_sensor_names).issubset(compiled):
-            # Narrow device-resident adapters may publish only their audited
-            # scalar subset. Keep the validated host/cache reader for the rest.
-            return self._read_sensor(env)
         values = read_plan.sensor_tensor_views(entity, self.tensor_sensor_names).values[
             self._sensor_name
         ]
@@ -83,7 +76,7 @@ class _CommandTrackingTerm(_Vec3SensorTerm):
 
     def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
-        self._sigma = _real(
+        self._sigma = require_real(
             self.name,
             "tracking_sigma",
             cfg.params.get("tracking_sigma", 0.25),
@@ -91,75 +84,59 @@ class _CommandTrackingTerm(_Vec3SensorTerm):
             strict_minimum=True,
         )
         self._command_name = cfg.params.get("command_name", "twist")
-        _command(env, self.name, self._command_name)  # Fail closed at construction.
+        require_command(env, self.name, self._command_name)  # Fail closed at construction.
 
 
 class track_lin_vel(_CommandTrackingTerm):
     """Exponential reward for tracking commanded xy linear velocity."""
 
-    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray | torch.Tensor:
+    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
         linvel = self._read_sensor_tensor(env)
-        command = _command(env, self.name, self._command_name)
-        if isinstance(linvel, torch.Tensor):
-            command_torch = torch.as_tensor(command, device=linvel.device, dtype=linvel.dtype)
-            error = torch.sum(torch.square(command_torch[:, :2] - linvel[:, :2]), dim=1)
-            return torch.exp(-error / self._sigma).to(dtype=torch.float32)
-        error = np.sum(np.square(command[:, :2] - linvel[:, :2]), axis=1)
-        return np.asarray(np.exp(-error / self._sigma), dtype=get_global_dtype())
+        command = require_command(env, self.name, self._command_name)
+        linvel_tensor = _torch_values(linvel)
+        command_tensor = command.to(device=linvel_tensor.device, dtype=linvel_tensor.dtype)
+        error = (command_tensor[:, :2] - linvel_tensor[:, :2]).square().sum(dim=1)
+        return torch.exp(-error / self._sigma)
 
 
 class track_ang_vel(_CommandTrackingTerm):
     """Exponential reward for tracking commanded yaw angular velocity."""
 
-    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray | torch.Tensor:
+    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
         gyro = self._read_sensor_tensor(env)
-        command = _command(env, self.name, self._command_name)
-        if isinstance(gyro, torch.Tensor):
-            command_torch = torch.as_tensor(command, device=gyro.device, dtype=gyro.dtype)
-            error = torch.square(command_torch[:, 2] - gyro[:, 2])
-            return torch.exp(-error / self._sigma).to(dtype=torch.float32)
-        error = np.square(command[:, 2] - gyro[:, 2])
-        return np.asarray(np.exp(-error / self._sigma), dtype=get_global_dtype())
+        command = require_command(env, self.name, self._command_name)
+        gyro_tensor = _torch_values(gyro)
+        command_tensor = command.to(device=gyro_tensor.device, dtype=gyro_tensor.dtype)
+        error = (command_tensor[:, 2] - gyro_tensor[:, 2]).square()
+        return torch.exp(-error / self._sigma)
 
 
 class lin_vel_z(_Vec3SensorTerm):
     """Penalty for vertical (z) linear velocity."""
 
-    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray | torch.Tensor:
+    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
         values = self._read_sensor_tensor(env)[:, 2]
-        if isinstance(values, torch.Tensor):
-            return torch.square(values).to(dtype=torch.float32)
-        return _tensor_square_sum(values)
+        return _torch_values(values).square()
 
 
 class ang_vel_xy(_Vec3SensorTerm):
     """Penalty for roll/pitch angular velocity."""
 
-    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray | torch.Tensor:
+    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
-        return _tensor_square_sum(self._read_sensor_tensor(env)[:, :2], axis=1)
+        return _torch_values(self._read_sensor_tensor(env)[:, :2]).square().sum(dim=1)
 
 
 class orientation(_Vec3SensorTerm):
     """Penalty for deviation from upright (horizontal upvector components)."""
 
-    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> np.ndarray | torch.Tensor:
+    def __call__(self, env: ManagerBasedRlEnv, **params: Any) -> torch.Tensor:
         del params
         upvector = self._read_sensor_tensor(env)
-        return _tensor_square_sum(upvector[:, :2], axis=1)
-
-
-def _tensor_square_sum(
-    values: np.ndarray | torch.Tensor, *, axis: int | None = None
-) -> np.ndarray | torch.Tensor:
-    if isinstance(values, torch.Tensor):
-        return torch.sum(torch.square(values), dim=axis).to(dtype=torch.float32)
-    if axis is None:
-        return np.asarray(np.square(values), dtype=get_global_dtype())
-    return np.asarray(np.sum(np.square(values), axis=axis), dtype=get_global_dtype())
+        return _torch_values(upvector[:, :2]).square().sum(dim=1)
 
 
 __all__ = [

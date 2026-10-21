@@ -15,12 +15,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, TypedDict
 
-import numpy as np
 import torch
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
     from unilab.managers.curriculum_manager import CurriculumTermCfg
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 # Stage schemas.
@@ -112,6 +111,13 @@ def _validate_stages(
             )
 
 
+def _loggable_scalar(value: Any) -> bool:
+    """Whether a curriculum field is a scalar that the logger can publish."""
+    if isinstance(value, torch.Tensor):
+        return bool(value.numel() == 1)
+    return isinstance(value, (int, float, bool))
+
+
 def _apply_stages(
     term_cfg: Any,
     step_counter: int,
@@ -137,12 +143,12 @@ def _apply_stages(
     result: dict[str, Any] = {}
     for key in logged_fields:
         value = getattr(term_cfg, key)
-        if isinstance(value, (int, float, bool, np.number)):
+        if _loggable_scalar(value):
             result[key] = value
     term_params = getattr(term_cfg, "params", {})
     for key in logged_params:
         value = term_params[key]
-        if isinstance(value, (int, float, bool, np.number)):
+        if _loggable_scalar(value):
             result[key] = value
     return result
 

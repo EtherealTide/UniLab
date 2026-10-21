@@ -2,18 +2,14 @@ from pathlib import Path
 
 import unilab.utils
 
-ALLOWED_UTILS_API = {"get_default_device", "to_numpy", "to_torch"}
+ALLOWED_UTILS_API = {"get_default_device"}
 ALLOWED_UTILS_MODULES = {
     "__init__",
     "checkpoint",
     "device",
-    "geometry",
     "nan_viz",
     "reward",
-    "rotation",
-    "seed",
     "sim2sim",
-    "tensor",
 }
 
 

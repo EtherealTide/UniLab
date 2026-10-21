@@ -135,23 +135,40 @@ def test_appo_motrix_task_configs_load(task, tmp_path):
     ("algo", "task"),
     [
         ("sac", "g1_walk_flat/mujoco"),
+        ("sac", "g1_walk_flat/mjwarp"),
     ],
 )
-def test_offpolicy_task_configs_load(algo, task):
-    """Off-policy task configs can start training with supported MuJoCo owners."""
+@pytest.mark.skipif(torch.cuda.device_count() == 0, reason="off-policy health smoke requires CUDA")
+def test_offpolicy_task_configs_load(algo, task, tmp_path):
+    """Off-policy smoke must complete and preserve basic training health."""
+    # The mujoco row exercises the auto collector-tensor default itself: the
+    # learner resolves to CUDA and the probe-based placement resolves CUDA
+    # inference transport with no explicit overrides.
     result = subprocess.run(
         [
             sys.executable,
             f"src/unilab/scripts/train_{algo}.py",
             f"task={task}",
             "algo.max_iterations=1",
+            "algo.save_interval=100",
             "training.no_play=true",
+            "training.export_onnx=false",
+            "training.wandb_mode=disabled",
+            f"training.log_root={tmp_path}",
         ],
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=240,
     )
     assert result.returncode == 0, f"Off-policy {algo} {task} failed:\n{result.stderr}"
+
+    summaries = list(tmp_path.glob("G1WalkFlat/*/run_summary.json"))
+    assert len(summaries) == 1, summaries
+    summary = json.loads(summaries[0].read_text(encoding="utf-8"))
+    assert summary["status"] == "completed"
+    assert summary["completed_iterations"] == 1
+    assert summary["mean_episode_length"] > 3, summary
+    assert summary["final_mean_reward"] > 1.0, summary
 
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires >=2 CUDA devices")

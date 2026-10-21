@@ -48,7 +48,7 @@ class FixedModelVariantCatalogCfg:
         _validate_catalog(self)
 
 
-def _build_fixed_variant_plan(
+def build_fixed_variant_plan(
     catalog: FixedModelVariantCatalogCfg,
     num_envs: int,
 ) -> FixedVariantPlan:
@@ -86,7 +86,7 @@ def _build_fixed_variant_plan(
     )
 
 
-def _require_fixed_variant_support(
+def require_fixed_variant_support(
     capabilities: DomainRandomizationCapabilities,
     plan: FixedVariantPlan,
 ) -> None:
@@ -143,4 +143,6 @@ def _string_tuple(values: object, name: str) -> tuple[str, ...]:
 __all__ = [
     "FixedModelVariantCatalogCfg",
     "FixedModelVariantCfg",
+    "build_fixed_variant_plan",
+    "require_fixed_variant_support",
 ]

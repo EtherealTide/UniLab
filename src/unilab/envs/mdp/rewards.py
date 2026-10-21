@@ -1,50 +1,56 @@
 # Derived from mujocolab/mjlab v1.6.0 (0fb8a681),
 # src/mjlab/envs/mdp/rewards.py and src/mjlab/tasks/velocity/mdp/rewards.py.
 # Copyright 2025, The mjlab Developers.
-# Modified by UniLab for NumPy and the base-owned entity facade; Apache-2.0.
+# Modified by UniLab for Torch and the base-owned entity facade; Apache-2.0.
 """Community-style reward terms for the Manager runtime."""
 
 from __future__ import annotations
 
+import math
 import re
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-import numpy as np
 import torch
 
+from unilab.envs.mdp.observations import (
+    joint_view,
+    quat_apply_inverse,
+    require_read_plan,
+    root_body_view,
+    world_to_body_vector,
+)
 from unilab.managers.manager_base import ManagerTermBase, ManagerTermBaseCfg
 from unilab.managers.scene_entity_config import SceneEntityCfg
-from unilab.utils.rotation import np_quat_apply_inverse
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
 
 def _positive_std(term_name: str, std: float) -> float:
-    if isinstance(std, bool) or not isinstance(std, (int, float, np.number)):
+    if isinstance(std, bool) or not isinstance(std, (int, float)):
         raise TypeError(f"{term_name} std must be a real number")
     value = float(std)
-    if not np.isfinite(value) or value <= 0.0:
+    if not math.isfinite(value) or value <= 0.0:
         raise ValueError(f"{term_name} std must be finite and positive")
     return value
 
 
 def _nonnegative_threshold(term_name: str, name: str, value: float) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float, np.number)):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{term_name} {name} must be a real number")
     result = float(value)
-    if not np.isfinite(result) or result < 0.0:
+    if not math.isfinite(result) or result < 0.0:
         raise ValueError(f"{term_name} {name} must be finite and non-negative")
     return result
 
 
 def _resolve_std_dict(
     term_name: str, param: str, data: object, joint_names: list[str]
-) -> np.ndarray:
+) -> tuple[float, ...]:
     """Resolve a ``{regex: std}`` mapping into one positive std per joint name.
 
     Mirrors mjlab ``resolve_matching_names_values`` with ``preserve_order=False``:
@@ -76,10 +82,10 @@ def _resolve_std_dict(
     unmatched = [pattern for pattern in data if pattern not in matched_patterns]
     if unmatched:
         raise ValueError(f"{term_name} {param} patterns matched no joints: {unmatched}")
-    return np.asarray(values, dtype=np.float64)
+    return tuple(values)
 
 
-def _command(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray:
+def _command(env: ManagerBasedRlEnv, command_name: str) -> Any:
     try:
         command = env.command_manager.get_command(command_name)
     except KeyError as exc:
@@ -89,72 +95,71 @@ def _command(env: ManagerBasedRlEnv, command_name: str) -> np.ndarray:
     return command
 
 
-def is_alive(env: ManagerBasedRlEnv) -> np.ndarray:
+def _reward(values: Any) -> torch.Tensor:
+    """Publish a reward computation on the Torch float32 carrier."""
+    return torch.as_tensor(values, dtype=torch.float32)
+
+
+def is_alive(env: ManagerBasedRlEnv) -> torch.Tensor:
     """Reward environments that have not reached a non-timeout termination."""
-    if isinstance(env.termination_manager.terminated, torch.Tensor):
-        return (~env.termination_manager.terminated).to(torch.float32)
-    return np.logical_not(env.termination_manager.terminated).astype(np.float32, copy=False)
+    return (~env.termination_manager.terminated).to(torch.float32)
 
 
-def is_terminated(env: ManagerBasedRlEnv) -> np.ndarray:
+def is_terminated(env: ManagerBasedRlEnv) -> torch.Tensor:
     """Return one for non-timeout terminations."""
-    if isinstance(env.termination_manager.terminated, torch.Tensor):
-        return env.termination_manager.terminated.to(torch.float32)
-    return env.termination_manager.terminated.astype(np.float32, copy=False)
+    return env.termination_manager.terminated.to(torch.float32)
 
 
 def root_height(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
+) -> torch.Tensor:
     """Return the world-frame root height as a scalar reward or metric term."""
-    asset = cast("Entity", env.scene[asset_cfg.name])
-    return np.asarray(asset.data.root_link_pos_w[:, 2])
+    _, view = root_body_view(env, asset_cfg, "root_height")
+    return _reward(view.pos_w[:, 0, 2])
 
 
 def joint_vel_l2(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
+) -> torch.Tensor:
     """Penalize selected joint velocities with an L2-squared kernel."""
-    asset = cast("Entity", env.scene[asset_cfg.name])
-    return np.sum(np.square(asset.data.joint_vel[:, asset_cfg.joint_ids]), axis=1)
+    joint_vel = joint_view(env, asset_cfg, "joint_vel_l2").joint_vel[:, asset_cfg.joint_ids]
+    return torch.sum(torch.square(joint_vel), dim=1)
 
 
-def action_rate_l2(env: ManagerBasedRlEnv) -> np.ndarray | torch.Tensor:
+def action_rate_l2(env: ManagerBasedRlEnv) -> torch.Tensor:
     """Penalize the first difference of raw policy actions."""
     delta = env.action_manager.action - env.action_manager.prev_action
-    if isinstance(delta, torch.Tensor):
-        return torch.sum(torch.square(delta), dim=1)
-    return np.sum(np.square(delta), axis=1)
+    return torch.sum(torch.square(delta), dim=1)
 
 
-def action_acc_l2(env: ManagerBasedRlEnv) -> np.ndarray | torch.Tensor:
+def action_acc_l2(env: ManagerBasedRlEnv) -> torch.Tensor:
     """Penalize the second difference of raw policy actions."""
     action_acc = (
         env.action_manager.action
         - 2.0 * env.action_manager.prev_action
         + env.action_manager.prev_prev_action
     )
-    if isinstance(action_acc, torch.Tensor):
-        return torch.sum(torch.square(action_acc), dim=1)
-    return np.sum(np.square(action_acc), axis=1)
+    return torch.sum(torch.square(action_acc), dim=1)
 
 
 def flat_orientation_l2(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
+) -> torch.Tensor:
     """Penalize non-flat base orientation."""
-    asset = cast("Entity", env.scene[asset_cfg.name])
-    return np.sum(np.square(asset.data.projected_gravity_b[:, :2]), axis=1)
+    asset, view = root_body_view(env, asset_cfg, "flat_orientation_l2")
+    gravity_w = asset.data.gravity_vec_w(getattr(env, "device", torch.device("cpu")))[0]
+    gravity = quat_apply_inverse(view.quat_w[:, 0, :], gravity_w.expand((view.quat_w.shape[0], 3)))
+    return torch.sum(torch.square(gravity[:, :2]), dim=1)
 
 
 def upright(
     env: ManagerBasedRlEnv,
     std: float,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
+) -> torch.Tensor:
     """Gaussian reward for keeping one selected body upright (mjlab ``upright``).
 
     The reward is ``exp(-||pg_xy||^2 / std^2)`` where ``pg`` is the world
@@ -163,15 +168,26 @@ def upright(
     """
     scale = _positive_std("upright", std)
     asset = cast("Entity", env.scene[asset_cfg.name])
-    body_quat_w = asset.data.body_link_quat_w[:, asset_cfg.body_ids, :]
+    selected_names = _selected_body_names(asset, asset_cfg)
+    body_quat_w = require_read_plan(env, "upright").body_tensor_view(asset, selected_names).quat_w
     if body_quat_w.shape != (env.num_envs, 1, 4):
         raise ValueError(
             f"upright requires exactly one body; received state shape {body_quat_w.shape}"
         )
-    gravity = np.asarray(asset.data.gravity_vec_w)
-    projected_gravity_b = np_quat_apply_inverse(body_quat_w[:, 0, :], gravity)
-    xy_squared = np.sum(np.square(projected_gravity_b[:, :2]), axis=1)
-    return np.exp(-xy_squared / scale**2)
+    quat = torch.as_tensor(
+        body_quat_w[:, 0, :],
+        dtype=torch.float32,
+        device=getattr(env, "device", torch.device("cpu")),
+    )
+    gravity = asset.data.gravity_vec_w(getattr(env, "device", torch.device("cpu")))[0]
+    gravity = gravity.expand((quat.shape[0], 3))
+    quat_w, quat_xyz = quat[:, 0:1], quat[:, 1:4]
+    cross = 2.0 * torch.linalg.cross(quat_xyz.expand_as(gravity), gravity, dim=-1)
+    projected_gravity_b = gravity - (
+        quat_w * cross + torch.linalg.cross(quat_xyz.expand(gravity.shape), cross, dim=-1)
+    )
+    xy_squared = torch.sum(torch.square(projected_gravity_b[:, :2]), dim=1)
+    return torch.exp(-xy_squared / scale**2)
 
 
 def track_linear_velocity(
@@ -179,15 +195,18 @@ def track_linear_velocity(
     std: float,
     command_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
+) -> torch.Tensor:
     """Reward commanded base linear velocity, assuming commanded z is zero."""
     scale = _positive_std("track_linear_velocity", std)
-    asset = cast("Entity", env.scene[asset_cfg.name])
+    _, view = root_body_view(env, asset_cfg, "track_linear_velocity")
     command = _command(env, command_name)
-    actual = asset.data.root_link_lin_vel_b
-    xy_error = np.sum(np.square(command[:, :2] - actual[:, :2]), axis=1)
-    z_error = np.square(actual[:, 2])
-    return np.exp(-(xy_error + z_error) / scale**2)
+    actual = world_to_body_vector(view.quat_w[:, 0, :], view.lin_vel_w[:, 0, :])
+    command_t = torch.as_tensor(
+        command, dtype=torch.float32, device=getattr(env, "device", torch.device("cpu"))
+    )
+    xy_error = torch.sum(torch.square(command_t[:, :2] - actual[:, :2]), dim=1)
+    z_error = torch.square(actual[:, 2])
+    return torch.exp(-(xy_error + z_error) / scale**2)
 
 
 def track_angular_velocity(
@@ -195,43 +214,56 @@ def track_angular_velocity(
     std: float,
     command_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
+) -> torch.Tensor:
     """Reward commanded yaw rate while keeping roll/pitch rates near zero."""
     scale = _positive_std("track_angular_velocity", std)
-    asset = cast("Entity", env.scene[asset_cfg.name])
+    _, view = root_body_view(env, asset_cfg, "track_angular_velocity")
     command = _command(env, command_name)
-    actual = asset.data.root_link_ang_vel_b
-    z_error = np.square(command[:, 2] - actual[:, 2])
-    xy_error = np.sum(np.square(actual[:, :2]), axis=1)
-    return np.exp(-(z_error + xy_error) / scale**2)
+    actual = world_to_body_vector(view.quat_w[:, 0, :], view.ang_vel_w[:, 0, :])
+    command_t = torch.as_tensor(
+        command, dtype=torch.float32, device=getattr(env, "device", torch.device("cpu"))
+    )
+    z_error = torch.square(command_t[:, 2] - actual[:, 2])
+    xy_error = torch.sum(torch.square(actual[:, :2]), dim=1)
+    return torch.exp(-(z_error + xy_error) / scale**2)
 
 
 def body_angular_velocity_penalty(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
+) -> torch.Tensor:
     """Penalize roll/pitch angular velocity of one selected body."""
     asset = cast("Entity", env.scene[asset_cfg.name])
-    ang_vel = asset.data.body_link_ang_vel_w[:, asset_cfg.body_ids, :]
+    selected_names = _selected_body_names(asset, asset_cfg)
+    ang_vel = (
+        require_read_plan(env, "body_angular_velocity_penalty")
+        .body_tensor_view(asset, selected_names)
+        .ang_vel_w
+    )
     if ang_vel.shape != (env.num_envs, 1, 3):
         raise ValueError(
             "body_angular_velocity_penalty requires exactly one body; "
             f"received state shape {ang_vel.shape}"
         )
-    return np.sum(np.square(ang_vel[:, 0, :2]), axis=1)
+    velocity = torch.as_tensor(
+        ang_vel[:, 0, :2], dtype=torch.float32, device=getattr(env, "device", torch.device("cpu"))
+    )
+    return torch.sum(torch.square(velocity), dim=1)
 
 
 def joint_pos_limits(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> np.ndarray:
+) -> torch.Tensor:
     """Penalize joint positions if they cross the soft limits."""
-    asset = cast("Entity", env.scene[asset_cfg.name])
-    limits = np.asarray(asset.data.soft_joint_pos_limits)[asset_cfg.joint_ids]
-    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
-    out_of_limits = -np.clip(joint_pos - limits[:, 0], min=None, max=0.0)
-    out_of_limits += np.clip(joint_pos - limits[:, 1], min=0.0, max=None)
-    return np.sum(out_of_limits, axis=1)
+    asset = env.scene[asset_cfg.name]
+    limits = asset.data.soft_joint_pos_limits(getattr(env, "device", torch.device("cpu")))[
+        asset_cfg.joint_ids
+    ]
+    joint_pos = joint_view(env, asset_cfg, "joint_pos_limits").joint_pos[:, asset_cfg.joint_ids]
+    lower_violation = torch.clamp_min(limits[None, :, 0] - joint_pos, 0.0)
+    upper_violation = torch.clamp_min(joint_pos - limits[None, :, 1], 0.0)
+    return torch.sum(lower_violation + upper_violation, dim=1)
 
 
 def _selected_joint_names(asset: Entity, asset_cfg: SceneEntityCfg) -> list[str]:
@@ -240,6 +272,12 @@ def _selected_joint_names(asset: Entity, asset_cfg: SceneEntityCfg) -> list[str]
     if isinstance(asset_cfg.joint_names, str):
         return [asset_cfg.joint_names]
     return list(asset_cfg.joint_names)
+
+
+def _selected_body_names(asset: Entity, asset_cfg: SceneEntityCfg) -> tuple[str, ...]:
+    body_ids = asset_cfg.body_ids
+    indices = range(len(asset.body_names)) if isinstance(body_ids, slice) else body_ids
+    return tuple(asset.body_names[int(index)] for index in indices)
 
 
 class posture(ManagerTermBase):
@@ -264,15 +302,23 @@ class posture(ManagerTermBase):
         self._std = _resolve_std_dict(
             self.name, "std", cfg.params.get("std"), _selected_joint_names(asset, asset_cfg)
         )
-        self._default_joint_pos = np.asarray(asset.data.default_joint_pos)
+        self._default_joint_pos = asset.data.default_joint_pos(
+            getattr(env, "device", torch.device("cpu"))
+        )
+        self._std = torch.tensor(
+            self._std, dtype=torch.float32, device=getattr(env, "device", torch.device("cpu"))
+        )
 
-    def __call__(self, env: ManagerBasedRlEnv, **params: object) -> np.ndarray:
+    def __call__(self, env: ManagerBasedRlEnv, **params: object) -> torch.Tensor:
         del params
-        asset = cast("Entity", env.scene[self._asset_cfg.name])
-        current = asset.data.joint_pos[:, self._asset_cfg.joint_ids]
+        current = torch.as_tensor(
+            joint_view(env, self._asset_cfg, self.name).joint_pos[:, self._asset_cfg.joint_ids],
+            dtype=torch.float32,
+            device=getattr(env, "device", torch.device("cpu")),
+        )
         desired = self._default_joint_pos[:, self._asset_cfg.joint_ids]
-        error_squared = np.square(current - desired)
-        return np.exp(-np.mean(error_squared / np.square(self._std), axis=1))
+        error_squared = torch.square(current - desired)
+        return torch.exp(-torch.mean(error_squared / torch.square(self._std), dim=1))
 
 
 class variable_posture(ManagerTermBase):
@@ -306,13 +352,13 @@ class variable_posture(ManagerTermBase):
         asset = cast("Entity", env.scene[asset_cfg.name])
         joint_names = _selected_joint_names(asset, asset_cfg)
         self._asset_cfg = asset_cfg
-        self._std_standing = _resolve_std_dict(
+        std_standing = _resolve_std_dict(
             self.name, "std_standing", cfg.params.get("std_standing"), joint_names
         )
-        self._std_walking = _resolve_std_dict(
+        std_walking = _resolve_std_dict(
             self.name, "std_walking", cfg.params.get("std_walking"), joint_names
         )
-        self._std_running = _resolve_std_dict(
+        std_running = _resolve_std_dict(
             self.name, "std_running", cfg.params.get("std_running"), joint_names
         )
         command_name = cfg.params.get("command_name")
@@ -330,14 +376,23 @@ class variable_posture(ManagerTermBase):
                 f"{self.name} walking_threshold must be below running_threshold, got "
                 f"{self._walking_threshold} >= {self._running_threshold}"
             )
-        self._default_joint_pos = np.asarray(asset.data.default_joint_pos)
+        self._default_joint_pos = asset.data.default_joint_pos(
+            getattr(env, "device", torch.device("cpu"))
+        )
+        device = getattr(env, "device", torch.device("cpu"))
+        self._std_standing = torch.tensor(std_standing, dtype=torch.float32, device=device)
+        self._std_walking = torch.tensor(std_walking, dtype=torch.float32, device=device)
+        self._std_running = torch.tensor(std_running, dtype=torch.float32, device=device)
 
-    def __call__(self, env: ManagerBasedRlEnv, **params: object) -> np.ndarray:
+    def __call__(self, env: ManagerBasedRlEnv, **params: object) -> torch.Tensor:
         del params
-        asset = cast("Entity", env.scene[self._asset_cfg.name])
-        command = _command(env, self._command_name)
-        linear_speed = np.linalg.norm(command[:, :2], axis=1)
-        total_speed = linear_speed + np.abs(command[:, 2])
+        command = torch.as_tensor(
+            _command(env, self._command_name),
+            dtype=torch.float32,
+            device=getattr(env, "device", torch.device("cpu")),
+        )
+        linear_speed = torch.linalg.vector_norm(command[:, :2], dim=1)
+        total_speed = linear_speed + torch.abs(command[:, 2])
         standing = total_speed < self._walking_threshold
         running = total_speed >= self._running_threshold
         walking = ~(standing | running)
@@ -346,10 +401,12 @@ class variable_posture(ManagerTermBase):
             + self._std_walking[None, :] * walking[:, None]
             + self._std_running[None, :] * running[:, None]
         )
-        current = asset.data.joint_pos[:, self._asset_cfg.joint_ids]
+        current = joint_view(env, self._asset_cfg, self.name).joint_pos[
+            :, self._asset_cfg.joint_ids
+        ]
         desired = self._default_joint_pos[:, self._asset_cfg.joint_ids]
-        error_squared = np.square(current - desired)
-        return np.exp(-np.mean(error_squared / np.square(std), axis=1))
+        error_squared = torch.square(current - desired)
+        return torch.exp(-torch.mean(error_squared / torch.square(std), dim=1))
 
 
 __all__ = [

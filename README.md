@@ -84,15 +84,23 @@ and [quick demo guide](https://unilabsim.github.io/UniLab-doc/en/1-getting_start
 ## Train and evaluate
 
 ```bash
-# Train and replay one task with Motrix.
-uv run train --algo ppo --task go2_joystick_flat --sim motrix
-uv run eval --algo ppo --task go2_joystick_flat --sim motrix --load-run -1
-
-# Use the same task-facing command with another configured backend.
-uv run train --algo ppo --task go2_joystick_flat --sim mujoco
-
-# Replay-based off-policy path.
+# Train the g1 flat-walking task with MuJoCo and replay it.
 uv run train --algo sac --task g1_walk_flat --sim mujoco
+uv run eval --algo sac --task g1_walk_flat --sim mujoco --render-mode viser
+
+# sim2sim
+#   motrixsim
+uv run --extra motrix eval --algo sac --task g1_walk_flat --sim motrix --render-mode interactive --load-run -1
+#   newton
+uv run --extra newton eval --algo sac --task g1_walk_flat --sim newton --load-run -1
+#   isaacgym
+bash scripts/tools/setup_isaacgym_env.sh
+uv run eval --algo sac --task g1_walk_flat --sim isaacgym --load-run -1
+
+
+# Train the g1 motion-tracking task with mjwarp and replay it with Genesis physics.
+uv run --extra mjwarp train --algo flashsac --task g1_motion_tracking --sim mjwarp
+uv run --extra genesis eval --algo flashsac --task g1_motion_tracking --sim genesis --load-run -1
 ```
 
 The flags keep algorithm, task, and simulator choices visible. Resume, W&B,
@@ -148,9 +156,11 @@ For development and contribution workflows, see the
 ```
 
 UniLab is released under the [Apache License 2.0](LICENSE). See the
-independent [UniSim](https://github.com/unilabsim/unisim) and
-[UniLab RL](https://github.com/unilabsim/unilab_rl) repositories for their
-own release and citation information.
+independent [UniSim](https://github.com/unilabsim/unisim) repository for its
+own release and citation information. The RL stack (algorithms, async runtime,
+training logging) ships inside this repository under `src/unilab/rl/`; it was
+merged from the former [unilab_rl](https://github.com/unilabsim/unilab_rl)
+repository, which is kept for historical reference.
 
 ## Acknowledgments
 

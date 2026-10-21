@@ -67,8 +67,6 @@ DEFAULT_OUTPUT_JSON = (
 )
 DEFAULT_TASK = "g1_motion_tracking"
 DEFAULT_SIM = "mujoco"
-LEGACY_DEFAULT_TASK = "g1_walk_flat"
-KNOWN_SIMS = ("mujoco", "mjwarp")
 DEFAULT_GPU_COUNTS = "1,2,4,8"
 DEFAULT_CAPACITY_MULTIPLIERS = "0.25,0.5,1.0"
 FLOAT_BYTES = 4
@@ -234,18 +232,9 @@ def _owner_config_exists(task: str, sim: str) -> bool:
     return _owner_config_path(task, sim).is_file()
 
 
-def _compose_offpolicy_cfg(task: str = DEFAULT_TASK, sim: str | None = None) -> DictConfig:
-    if sim is None:
-        if task in KNOWN_SIMS:
-            task_name = LEGACY_DEFAULT_TASK
-            sim_name = task
-        else:
-            task_name = task
-            sim_name = DEFAULT_SIM
-    else:
-        task_name = task
-        sim_name = sim
-
+def _compose_offpolicy_cfg(task: str = DEFAULT_TASK, sim: str = DEFAULT_SIM) -> DictConfig:
+    task_name = task
+    sim_name = sim
     owner_config = _owner_config_path(task_name, sim_name)
     if not owner_config.is_file():
         raise FileNotFoundError(
@@ -265,13 +254,12 @@ def _compose_offpolicy_cfg(task: str = DEFAULT_TASK, sim: str | None = None) -> 
 
 
 def _resolve_env_shape(cfg: DictConfig) -> ReplayShape:
-    from uni_rl.utils.observations import get_obs_dims
-
-    from unilab.base.config_adapter import BackendAdapter, create_env
+    from unilab.base.config_adapter import EnvConfigAdapter, create_env
+    from unilab.rl.contracts.observations import get_obs_dims
     from unilab.training import ensure_registries
 
     ensure_registries()
-    env_cfg_override = BackendAdapter(
+    env_cfg_override = EnvConfigAdapter(
         cfg,
         root_dir=ROOT_DIR,
         algo_name="sac",
@@ -292,7 +280,7 @@ def _resolve_env_shape(cfg: DictConfig) -> ReplayShape:
 def _build_case(
     cfg: DictConfig,
     *,
-    task: str = LEGACY_DEFAULT_TASK,
+    task: str = DEFAULT_TASK,
     sim: str = DEFAULT_SIM,
     shape: ReplayShape,
 ) -> BenchmarkCase:

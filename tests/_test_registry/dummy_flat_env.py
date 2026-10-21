@@ -40,7 +40,7 @@ class _DummyCfg(EnvCfg):
 def _dummy_backend() -> MagicMock:
     backend = MagicMock(spec=SimBackend)
     backend.backend_type = "mujoco"
-    backend.tensor_execution.return_value = TensorExecution.HOST_BRIDGE
+    backend.get_tensor_execution.return_value = TensorExecution.HOST_BRIDGE
     backend.get_tensor_capabilities.return_value = TensorLifecycleCapabilities(
         execution=TensorExecution.HOST_BRIDGE,
         state_fields=frozenset({"qpos", "qvel"}),

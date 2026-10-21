@@ -5155,7 +5155,7 @@ wheels = [
 
 [[package]]
 name = "unilab"
-version = "1.3.3"
+version = "1.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "etils", version = "1.13.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -5168,9 +5168,9 @@ dependencies = [
     { name = "lark" },
     { name = "mediapy" },
     { name = "ninja", marker = "sys_platform == 'linux'" },
-    { name = "numba" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "omegaconf" },
     { name = "onnxruntime", version = "1.19.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "onnxruntime", version = "1.24.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "packaging" },
@@ -5220,9 +5220,6 @@ newton = [
 superdex = [
     { name = "unisim-core", extra = ["superdex"], marker = "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
-uni-rl = [
-    { name = "unilab-rl" },
-]
 
 [package.dev-dependencies]
 dev = [
@@ -5231,7 +5228,6 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
-    { name = "unilab-rl" },
 ]
 
 [package.metadata]
@@ -5255,8 +5251,8 @@ requires-dist = [
     { name = "mujoco-warp", marker = "extra == 'newton'", specifier = "==3.11.0" },
     { name = "newton", marker = "extra == 'newton'", specifier = "==1.5.1" },
     { name = "ninja", marker = "sys_platform == 'linux'" },
-    { name = "numba", specifier = ">=0.67" },
     { name = "numpy" },
+    { name = "omegaconf" },
     { name = "onnxruntime", marker = "python_full_version < '3.11'", specifier = "<1.20" },
     { name = "onnxruntime", marker = "python_full_version >= '3.11'", specifier = ">=1.20" },
     { name = "packaging" },
@@ -5272,16 +5268,15 @@ requires-dist = [
     { name = "tqdm" },
     { name = "trimesh", specifier = ">=3.21.7" },
     { name = "typing-extensions" },
-    { name = "unilab-rl", marker = "extra == 'uni-rl'", specifier = "==1.4.11" },
-    { name = "unisim-core", specifier = ">=1.7.13" },
-    { name = "unisim-core", extras = ["motrix"], marker = "extra == 'motrix'", specifier = ">=1.7.13" },
-    { name = "unisim-core", extras = ["superdex"], marker = "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'superdex'", specifier = ">=1.7.13" },
+    { name = "unisim-core", specifier = "==2.0.0" },
+    { name = "unisim-core", extras = ["motrix"], marker = "extra == 'motrix'", specifier = "==2.0.0" },
+    { name = "unisim-core", extras = ["superdex"], marker = "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'superdex'", specifier = "==2.0.0" },
     { name = "viser", specifier = ">=1.0.26" },
-    { name = "wandb" },
+    { name = "wandb", specifier = ">=0.22.3" },
     { name = "warp-lang", marker = "extra == 'mjwarp'", specifier = "==1.16.0" },
     { name = "warp-lang", marker = "extra == 'newton'", specifier = "==1.16.0" },
 ]
-provides-extras = ["drake", "mujoco", "mjwarp", "newton", "motrix", "genesis", "uni-rl", "superdex"]
+provides-extras = ["drake", "mujoco", "mjwarp", "newton", "motrix", "genesis", "superdex"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -5290,41 +5285,17 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
-    { name = "unilab-rl", specifier = "==1.4.11" },
-]
-
-[[package]]
-name = "unilab-rl"
-version = "1.4.11"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "hydra-core" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "omegaconf" },
-    { name = "packaging" },
-    { name = "rich" },
-    { name = "rsl-rl-lib" },
-    { name = "tensorboard" },
-    { name = "tensordict" },
-    { name = "torch", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
-    { name = "torch", version = "2.14.0+cu130", source = { registry = "https://download-r2.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "wandb" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/06/05/0dea6bd6a984e80b0710d8a97c473cf86a109c3206aa72d8760aac33a929/unilab_rl-1.4.11.tar.gz", hash = "sha256:f895d763ee1b9d0f3782ef284e8d49014557511aff45ccc512f1e9fe987461a8", size = 186804, upload-time = "2026-10-09T15:04:33.316Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ad/e0/ad6d320e8b1d227d5a0dacff884aa0e8915268e3a811aea831ec646cb5e1/unilab_rl-1.4.11-py3-none-any.whl", hash = "sha256:b1359caa4d28ec5cd02ec46fee5466c867a66e031a758695362cb216ce2ed095", size = 223243, upload-time = "2026-10-09T15:04:31.845Z" },
 ]
 
 [[package]]
 name = "unisim-core"
-version = "1.7.13"
+version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ab/d2/41bbd993b33be92d116da0d55e0d8e1e85c6cb0a3522624b745696168775/unisim_core-1.7.13.tar.gz", hash = "sha256:11a734a2cefc4225f95a7d39b4415e59e63ca88501bfdcd1515e2097705a0381", size = 650721, upload-time = "2026-10-09T16:17:40.269Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/02/31/efd18f294adb88640f86d9b333f7420aee7b95bf9ba3f5327e695ed911c3/unisim_core-2.0.0.tar.gz", hash = "sha256:7b939f002ab3377197851f763044083acee954dbbb4b7ba5f200728707d2b5c7", size = 697960, upload-time = "2026-10-19T16:46:54.03Z" }
 
 [package.optional-dependencies]
 motrix = [

@@ -1,0 +1,320 @@
+from __future__ import annotations
+
+import shutil
+
+import pytest
+
+from unilab.rl.runtime.ipc.inference_ring import estimate_inference_ring_bytes
+from unilab.rl.runtime.ipc.memory_budget import (
+    CUDA_INFERENCE_EVENT_RESERVE_BYTES,
+    CUDA_INFERENCE_MIN_OVERHEAD_BYTES,
+    CUDA_INFERENCE_TIMING_EVENT_COUNT,
+    estimate_cuda_inference_ipc_bytes,
+    estimate_cuda_tensor_runtime_bytes,
+    estimate_host_offpolicy_bytes,
+    raise_if_cuda_memory_over_budget,
+    raise_if_shared_memory_over_budget,
+)
+
+
+def _tensor_runtime_budget(*, collector_tensor_native: bool) -> dict[str, int | str]:
+    return estimate_cuda_tensor_runtime_bytes(
+        num_envs=2,
+        replay_buffer_n=4,
+        obs_dim=4,
+        action_dim=2,
+        critic_dim=5,
+        inference_obs_dim=4,
+        sample_count=8,
+        inference_slot_capacity=1,
+        replay_ingress_depth=2,
+        replay_ingress_slot_rows=2,
+        collector_tensor_native=collector_tensor_native,
+    )
+
+
+def test_offpolicy_memory_budget_notes_native_exclusions() -> None:
+    estimate = estimate_host_offpolicy_bytes(
+        num_envs=5120,
+        replay_buffer_n=1024,
+        obs_dim=98,
+        action_dim=29,
+        critic_dim=101,
+    )
+
+    breakdown = str(estimate["breakdown"])
+    assert "MuJoCo BatchEnvPool" in breakdown
+    assert "CUDA pinned/shared" in breakdown
+    assert "driver memory" in breakdown
+
+
+def test_device_replay_host_budget_is_independent_of_replay_capacity() -> None:
+    estimates = [
+        estimate_host_offpolicy_bytes(
+            num_envs=10,
+            replay_buffer_n=replay_buffer_n,
+            obs_dim=2,
+            action_dim=1,
+            critic_dim=3,
+            ingress_depth=2,
+        )
+        for replay_buffer_n in (4, 4000)
+    ]
+
+    assert estimates[0]["replay_buffer"] == 0
+    assert estimates[0]["bounded_ingress_slots"] > 0
+    assert estimates[0]["total"] == estimates[1]["total"]
+    assert "authoritative on the learner device" in str(estimates[0]["breakdown"])
+
+
+def test_device_replay_host_budget_excludes_gpu_collector_ingress() -> None:
+    estimate = estimate_host_offpolicy_bytes(
+        num_envs=2,
+        replay_buffer_n=4,
+        obs_dim=4,
+        action_dim=2,
+        critic_dim=5,
+        ingress_depth=2,
+        ingress_on_device=True,
+    )
+
+    assert estimate["bounded_ingress_slots"] == 0
+    assert estimate["total"] == 0
+    assert "device-resident" in str(estimate["breakdown"])
+
+
+def test_host_replay_budget_uses_effective_ingress_slot_rows() -> None:
+    default_rows = estimate_host_offpolicy_bytes(
+        num_envs=4,
+        replay_buffer_n=8,
+        obs_dim=4,
+        action_dim=2,
+        critic_dim=5,
+        ingress_depth=2,
+    )
+    custom_rows = estimate_host_offpolicy_bytes(
+        num_envs=4,
+        replay_buffer_n=8,
+        obs_dim=4,
+        action_dim=2,
+        critic_dim=5,
+        ingress_depth=2,
+        ingress_slot_rows=1,
+    )
+
+    assert default_rows["ingress_slot_rows"] == 4
+    assert custom_rows["ingress_slot_rows"] == 1
+    assert custom_rows["bounded_ingress_slots"] * 4 == default_rows["bounded_ingress_slots"]
+    assert "1 rows" in str(custom_rows["breakdown"])
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "1", 1.0, 5])
+def test_host_replay_budget_rejects_invalid_ingress_slot_rows(value: object) -> None:
+    with pytest.raises(ValueError, match="ingress_slot_rows"):
+        estimate_host_offpolicy_bytes(
+            num_envs=4,
+            replay_buffer_n=8,
+            obs_dim=4,
+            action_dim=2,
+            critic_dim=5,
+            ingress_slot_rows=value,
+        )
+
+
+def test_host_budget_includes_cpu_inference_ring_storage() -> None:
+    estimate = estimate_host_offpolicy_bytes(
+        num_envs=2,
+        replay_buffer_n=4,
+        obs_dim=4,
+        action_dim=2,
+        critic_dim=5,
+        ingress_depth=2,
+        inference_ring_bytes=168,
+    )
+
+    assert estimate["inference_ring"] == 168
+    assert estimate["total"] == estimate["bounded_ingress_slots"] + 168
+    assert "Inference ring" in str(estimate["breakdown"])
+    assert estimate_inference_ring_bytes(2, 4, 2, capacity=3) == 168
+
+
+def test_cuda_inference_budget_accounts_for_all_startup_categories() -> None:
+    persistent_scratch = 2 * (2 * 4 + 2 * 4)
+    estimate = estimate_cuda_inference_ipc_bytes(
+        2,
+        4,
+        2,
+        capacity=3,
+        ring_on_device=True,
+        persistent_exploration_scratch=persistent_scratch,
+    )
+    exact = 168 + 2 * 4 * 4 + 2 * 4 + 2 * 2 * 4 + persistent_scratch
+
+    assert estimate["ring_storage"] == 168
+    assert estimate["observation_scratch"] == 32
+    assert estimate["done_scratch"] == 8
+    assert estimate["action_output"] == 16
+    assert estimate["persistent_exploration_scratch"] == persistent_scratch
+    assert estimate["ipc_event_count"] == 9
+    assert estimate["timing_event_count"] == CUDA_INFERENCE_TIMING_EVENT_COUNT
+    assert estimate["cuda_event_count"] == 11
+    assert estimate["cuda_events"] == 11 * CUDA_INFERENCE_EVENT_RESERVE_BYTES
+    assert estimate["conservative_overhead"] == CUDA_INFERENCE_MIN_OVERHEAD_BYTES
+    assert estimate["total"] == exact + estimate["cuda_events"] + estimate["conservative_overhead"]
+    assert "CUDA inference IPC budget" in str(estimate["breakdown"])
+
+    cpu_ring = estimate_cuda_inference_ipc_bytes(
+        2,
+        4,
+        2,
+        capacity=3,
+        ring_on_device=False,
+    )
+    assert cpu_ring["ring_storage"] == 0
+    assert cpu_ring["ipc_event_count"] == 0
+    assert cpu_ring["cuda_events"] == (
+        CUDA_INFERENCE_TIMING_EVENT_COUNT * CUDA_INFERENCE_EVENT_RESERVE_BYTES
+    )
+
+
+def test_cuda_budget_threshold_and_actionable_error() -> None:
+    estimate = estimate_cuda_inference_ipc_bytes(2, 4, 2, capacity=3, ring_on_device=True)
+
+    raise_if_cuda_memory_over_budget(
+        estimate,
+        label="Off-policy (sac)",
+        available_bytes=int(estimate["total"]) * 10,
+        threshold=0.8,
+    )
+
+    with pytest.raises(MemoryError) as excinfo:
+        raise_if_cuda_memory_over_budget(
+            estimate,
+            label="Off-policy (sac)",
+            available_bytes=int(estimate["total"]),
+            threshold=0.8,
+        )
+
+    message = str(excinfo.value)
+    assert "Off-policy (sac)" in message
+    assert "conservative CUDA inference IPC budget" in message
+    assert "80% limit" in message
+    assert "device free" in message
+    assert "training.inference_slot_capacity" in message
+    assert "Inference ring storage" in message
+
+
+def test_cuda_tensor_runtime_budget_combines_inference_and_replay() -> None:
+    native = _tensor_runtime_budget(collector_tensor_native=True)
+    host_bridge = _tensor_runtime_budget(collector_tensor_native=False)
+    row_width = 23
+    replay_storage = 4 * 2 * row_width * 4
+    learner_batches = 2 * 8 * row_width * 4
+    native_ingress = 2 * 2 * row_width * 4
+
+    assert native["replay_storage"] == replay_storage
+    assert native["learner_batch_slots"] == learner_batches
+    assert native["replay_ingress"] == native_ingress
+    assert host_bridge["replay_ingress"] == 0
+    assert native["total"] > int(native["inference_total"])
+    assert "CUDA tensor-runtime budget" in str(native["breakdown"])
+    assert "before any tensor-runtime allocation" in str(native["breakdown"])
+
+
+def test_cuda_tensor_runtime_budget_scales_with_dimensions() -> None:
+    baseline = _tensor_runtime_budget(collector_tensor_native=True)
+    changed = estimate_cuda_tensor_runtime_bytes(
+        num_envs=2,
+        replay_buffer_n=4,
+        obs_dim=5,
+        action_dim=2,
+        critic_dim=6,
+        inference_obs_dim=6,
+        sample_count=16,
+        inference_slot_capacity=1,
+        replay_ingress_depth=2,
+        replay_ingress_slot_rows=2,
+        collector_tensor_native=True,
+    )
+
+    assert changed["replay_row_width"] == 27
+    assert changed["replay_storage"] == 4 * 2 * 27 * 4
+    assert changed["learner_batch_slots"] == 2 * 16 * 27 * 4
+    assert changed["replay_ingress"] == 2 * 2 * 27 * 4
+    assert changed["replay_storage"] > baseline["replay_storage"]
+    assert changed["learner_batch_slots"] > baseline["learner_batch_slots"]
+    assert changed["replay_ingress"] > baseline["replay_ingress"]
+    assert changed["inference_total"] > baseline["inference_total"]
+
+
+def test_cuda_tensor_runtime_budget_rejects_invalid_dimensions() -> None:
+    with pytest.raises(ValueError, match="no greater than num_envs"):
+        estimate_cuda_tensor_runtime_bytes(
+            num_envs=2,
+            replay_buffer_n=4,
+            obs_dim=4,
+            action_dim=2,
+            critic_dim=5,
+            inference_obs_dim=4,
+            sample_count=8,
+            inference_slot_capacity=1,
+            replay_ingress_depth=2,
+            replay_ingress_slot_rows=3,
+            collector_tensor_native=True,
+        )
+
+
+@pytest.mark.parametrize("depth", [0, -1, True, "2", 1.0])
+def test_cuda_tensor_runtime_budget_rejects_invalid_ingress_depth(depth: object) -> None:
+    with pytest.raises((TypeError, ValueError), match="dimensions must be"):
+        estimate_cuda_tensor_runtime_bytes(
+            num_envs=2,
+            replay_buffer_n=4,
+            obs_dim=4,
+            action_dim=2,
+            critic_dim=5,
+            inference_obs_dim=4,
+            sample_count=8,
+            inference_slot_capacity=1,
+            replay_ingress_depth=depth,
+            replay_ingress_slot_rows=2,
+            collector_tensor_native=True,
+        )
+
+
+def test_shared_memory_budget_unknown_available_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: (_ for _ in ()).throw(OSError()))
+    estimate = {"total": 1024, "breakdown": "test"}
+
+    raise_if_shared_memory_over_budget(estimate, label="test", path="/missing-shm")
+
+
+def test_shared_memory_budget_allows_within_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Usage:
+        free = 100 * 1024
+
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: _Usage())
+    estimate = {"total": 80 * 1024, "breakdown": "test"}
+
+    raise_if_shared_memory_over_budget(estimate, label="test", threshold=0.8)
+
+
+def test_shared_memory_budget_raises_before_over_allocating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Usage:
+        free = 100 * 1024
+
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: _Usage())
+    estimate = {"total": 81 * 1024, "breakdown": "test"}
+
+    with pytest.raises(MemoryError) as excinfo:
+        raise_if_shared_memory_over_budget(estimate, label="Off-policy (sac)", threshold=0.8)
+
+    message = str(excinfo.value)
+    assert "Off-policy (sac)" in message
+    assert "/dev/shm" in message
+    assert "estimated" in message
+    assert "available" in message
+    assert "algo.num_envs" in message
+    assert "algo.replay_buffer_n" in message

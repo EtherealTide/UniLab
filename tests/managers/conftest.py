@@ -9,6 +9,8 @@ import numpy as np
 import pytest
 import torch
 
+from unilab.managers.rng import ManagerRng
+
 
 class FakeEntity:
     def __init__(self) -> None:
@@ -41,17 +43,21 @@ class FakeEntity:
 
 
 class FakeEnv:
-    def __init__(self, seed: int = 7, num_envs: int = 4) -> None:
+    def __init__(
+        self, seed: int = 7, num_envs: int = 4, device: str | torch.device = "cpu"
+    ) -> None:
         self.num_envs = num_envs
-        self.rng = np.random.default_rng(seed)
+        self.rng = ManagerRng.seeded(seed, device=device)
+        self.device = self.rng.device
         self.scene = {"robot": FakeEntity()}
         self.max_episode_length_s = 2.0
-        self.value = np.arange(num_envs, dtype=np.float32)
-        self.obs = torch.arange(num_envs * 2, dtype=torch.float32).reshape(num_envs, 2)
+        self.value = torch.arange(num_envs, dtype=torch.float32, device=self.device)
+        self.obs = torch.arange(num_envs * 2, dtype=torch.float32, device=self.device).reshape(
+            num_envs, 2
+        )
         self.calls: list[tuple[str, np.ndarray | None]] = []
         self.obs_buf: dict[str, torch.Tensor] = {}
-        self.reset_buf = np.zeros(num_envs, dtype=np.bool_)
-        self.device = torch.device("cpu")
+        self.reset_buf = torch.zeros(num_envs, dtype=torch.bool, device=self.device)
 
 
 @pytest.fixture

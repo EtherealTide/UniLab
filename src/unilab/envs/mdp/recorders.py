@@ -9,7 +9,7 @@ import torch
 from unilab.managers.recorder_manager import RecorderTerm, RecorderTermCfg
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 class LifecycleCounterRecorder(RecorderTerm):
@@ -17,15 +17,15 @@ class LifecycleCounterRecorder(RecorderTerm):
 
     def __init__(self, cfg: RecorderTermCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
-        self.pre_reset_count = 0
-        self.post_reset_count = 0
+        self.pre_reset_count = torch.zeros((), dtype=torch.int64)
+        self.post_reset_count = torch.zeros((), dtype=torch.int64)
         self.post_step_count = 0
 
     def record_pre_reset(self, env_ids: torch.Tensor) -> None:
-        self.pre_reset_count += int(len(env_ids))
+        self.pre_reset_count += env_ids.numel()
 
     def record_post_reset(self, env_ids: torch.Tensor) -> None:
-        self.post_reset_count += int(len(env_ids))
+        self.post_reset_count += env_ids.numel()
 
     def record_post_step(self) -> None:
         self.post_step_count += 1

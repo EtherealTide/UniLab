@@ -28,10 +28,10 @@ env:
   render_spacing: 2.0
   events:
     reset_scene_to_default:
-      func: unilab.envs.mdp.reset_scene_to_default_tensor
+      func: unilab.envs.mdp.skip_scene_reset
     reset_root_state_uniform:
-      func: unilab.envs.mdp.reset_root_state_uniform_tensor
-    # Legacy mjwarp owners disable kp/kd and armature randomization.
+      func: unilab.envs.mdp.reset_root_state_uniform_fused
+    # kp/kd and armature randomization stay disabled, matching the tuned walk baseline.
     pd_gains: null
 reward:
   penalty_action_rate:

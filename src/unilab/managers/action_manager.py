@@ -12,10 +12,11 @@ from typing import TYPE_CHECKING, Any, ClassVar, Sequence
 import torch
 from prettytable import PrettyTable
 
+from unilab.base.reset_selectors import resolve_reset_env_ids
 from unilab.managers.manager_base import ManagerBase, ManagerTermBase
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 
 @dataclass(kw_only=True)
@@ -55,19 +56,25 @@ class ActionTerm(ManagerTermBase):
     backend step. State-feedback terms must override this declaration with ``True``.
     """
 
-    uses_tensor_actions: ClassVar[bool] = True
-    """Whether this term consumes raw actions as Torch tensors.
-
-    The tensor-only Manager runtime requires this declaration to remain true.
-    """
-
     uses_tensor_state_packet: ClassVar[bool] = False
     """Whether ``apply_actions`` consumes the current packed tensor state packet."""
+
+    # Contract invariant: raw actions are Torch tensors. ``process_actions`` and
+    # the public ``raw_action`` carrier do not provide a NumPy fallback.
 
     def __init__(self, cfg: ActionTermCfg, env: ManagerBasedRlEnv):
         self.cfg = cfg
         super().__init__(env)
         self._entity = self._env.scene[self.cfg.entity_name]
+        self._action_finite_valid = torch.ones(
+            (), dtype=torch.bool, device=getattr(env, "device", torch.device("cpu"))
+        )
+
+    def publish_validation_verdict(self) -> None:
+        """Fail closed on the latest action-slice finite verdict."""
+        if bool(self._action_finite_valid):
+            return
+        raise ValueError(f"{type(self).__name__} received NaN or Inf actions")
 
     @property
     @abc.abstractmethod
@@ -80,6 +87,10 @@ class ActionTerm(ManagerTermBase):
 
     @abc.abstractmethod
     def apply_actions(self) -> None:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
         raise NotImplementedError
 
     @property
@@ -107,6 +118,7 @@ class ActionManager(ManagerBase):
         )
         self._prev_action = torch.zeros_like(self._action)
         self._prev_prev_action = torch.zeros_like(self._action)
+        self._action_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
 
     def __str__(self) -> str:
         msg = f"<ActionManager> contains {len(self._term_names)} active terms.\n"
@@ -149,6 +161,14 @@ class ActionManager(ManagerBase):
         scale/offset. Shape: ``(num_envs, total_action_dim)``."""
         return self._prev_prev_action
 
+    def record_public_action_finite(self, action: torch.Tensor) -> None:
+        """Record the public full-width action verdict without publication."""
+        self._action_finite_valid.copy_(torch.isfinite(action).all())
+
+    def process_public_action(self, action: torch.Tensor) -> None:
+        """Process an action whose full-width verdict was already recorded."""
+        self.process_action(action, reuse_recorded_verdict=True)
+
     @property
     def active_terms(self) -> list[str]:
         return self._term_names
@@ -169,30 +189,29 @@ class ActionManager(ManagerBase):
         return self._terms[name]
 
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
-        if env_ids is None:
-            env_ids = slice(None)
         self.clear_action_state(env_ids)
         return {}
 
     def clear_action_state(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        """Clear selected manager and term action state without logging.
+        """Clear manager and term action state for the selected envs without logging.
 
         Reset owners consume this boundary when they own the action reset pass.
-        It preserves the exact generic reset state mutation while leaving the
-        ordinary reset extras contract to the caller.
+        Manager-owned histories are cleared for the selected rows. Each action
+        term receives the resolved ``env_ids``.
         """
-        if env_ids is None:
-            env_ids = slice(None)
-        # Reset action history.
-        selector = self._reset_selector(env_ids)
-        self._prev_action[selector] = 0.0
-        self._prev_prev_action[selector] = 0.0
-        self._action[selector] = 0.0
-        # Reset action terms.
+        env_ids = resolve_reset_env_ids(
+            env_ids,
+            num_envs=self.num_envs,
+            device=self._device,
+            owner="ActionManager.clear_action_state",
+        )
+        self._prev_action[env_ids] = 0.0
+        self._prev_prev_action[env_ids] = 0.0
+        self._action[env_ids] = 0.0
         for term in self._terms.values():
-            term.reset(env_ids=env_ids)
+            term.reset(env_ids)
 
-    def process_action(self, action: torch.Tensor) -> None:
+    def process_action(self, action: torch.Tensor, *, reuse_recorded_verdict: bool = False) -> None:
         """Store the raw policy output and route slices to each action term.
 
         Called once per policy step. The raw action tensor is saved into the
@@ -216,7 +235,12 @@ class ActionManager(ManagerBase):
             raise ValueError(
                 f"ActionManager action device must be {self._device}, received {action.device}"
             )
-        if not bool(torch.isfinite(action).all()):
+        if reuse_recorded_verdict:
+            valid = self._action_finite_valid
+        else:
+            valid = torch.isfinite(action).all()
+            self._action_finite_valid.copy_(valid)
+        if not bool(valid):
             raise ValueError("ActionManager received an action containing NaN or Inf.")
         # Shift history: prev_prev ← prev ← current ← new.
         self._prev_prev_action[:] = self._prev_action
@@ -234,26 +258,6 @@ class ActionManager(ManagerBase):
             except (TypeError, ValueError, NotImplementedError) as exc:
                 raise type(exc)(f"ActionManager term '{name}': {exc}") from exc
             idx += term.action_dim
-
-    def _reset_selector(self, env_ids: torch.Tensor | slice) -> torch.Tensor | slice:
-        if env_ids is None:
-            return slice(None)
-        if isinstance(env_ids, slice):
-            return env_ids
-        if (
-            not isinstance(env_ids, torch.Tensor)
-            or env_ids.ndim != 1
-            or env_ids.dtype
-            not in {
-                torch.int32,
-                torch.int64,
-            }
-        ):
-            raise TypeError("ActionManager reset rows must be one-dimensional integers")
-        rows = env_ids.to(self._device)
-        if rows.numel() and (rows.min() < 0 or rows.max() >= self.num_envs):
-            raise IndexError(f"ActionManager reset rows out of range: {rows.tolist()}")
-        return rows.to(torch.int64)
 
     def apply_action(self) -> None:
         """Write processed actions to entity actuator targets.
@@ -302,17 +306,10 @@ class ActionManager(ManagerBase):
                     f"'{term_name}' requires_substep_state_feedback must be bool, "
                     f"got {type(feedback).__name__}."
                 )
-            uses_tensor_actions = term.uses_tensor_actions
-            if not isinstance(uses_tensor_actions, bool):
+            if not isinstance(term.raw_action, torch.Tensor):
                 raise TypeError(
-                    "ActionManager term "
-                    f"'{term_name}' uses_tensor_actions must be bool, got "
-                    f"{type(uses_tensor_actions).__name__}."
-                )
-            if not uses_tensor_actions:
-                raise TypeError(
-                    "ActionManager requires tensor action terms; legacy NumPy action "
-                    f"term '{term_name}' is unsupported"
+                    "ActionManager requires tensor raw actions; term "
+                    f"'{term_name}' returned {type(term.raw_action).__name__}"
                 )
             self._term_names.append(term_name)
             self._terms[term_name] = term

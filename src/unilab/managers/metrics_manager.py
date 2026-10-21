@@ -12,10 +12,11 @@ from typing import TYPE_CHECKING, Literal, Sequence
 import torch
 from prettytable import PrettyTable
 
+from unilab.base.reset_selectors import resolve_reset_env_ids
 from unilab.managers.manager_base import ManagerBase, ManagerTermBaseCfg
 
 if TYPE_CHECKING:
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers.types import ManagerBasedRlEnv
 
 REDUCE_OPTIONS = ("last", "max", "mean", "sum")
 
@@ -123,52 +124,58 @@ class MetricsManager(ManagerBase):
 
     # Methods.
 
+    def clear_episode_state(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        """Clear episode accumulators without publishing summaries.
+
+        Reset owners consume this boundary when they own metric reset. Generic
+        reset behavior remains publication followed by this state clear.
+        """
+        ids = resolve_reset_env_ids(
+            env_ids,
+            num_envs=self.num_envs,
+            device=self._device,
+            owner="MetricsManager.clear_episode_state",
+        )
+        self._clear_episode_state(ids)
+
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
-        if env_ids is None:
-            env_ids = slice(None)
-        extras = {}
-        mask = self._reset_mask(env_ids)
-        counts = self._step_count[mask].to(torch.float32)
-        # Avoid division by zero for envs that haven't stepped.
+        """Publish episode summaries and clear state for the selected rows."""
+        ids = resolve_reset_env_ids(
+            env_ids, num_envs=self.num_envs, device=self._device, owner="MetricsManager.reset"
+        )
+        extras: dict[str, float] = {}
+        counts = self._step_count[ids].to(torch.float32)
         safe_counts = torch.clamp(counts, min=1.0)
         for idx, key in enumerate(self._episode_sums):
             reduce = self._term_cfgs[idx].reduce
             if reduce == "max":
-                values = self._episode_max[key][mask]
+                values = self._episode_max[key][ids]
                 extras["Episode_Metrics/" + key] = self._log_mean(values)
-
             elif reduce == "last":
-                extras["Episode_Metrics/" + key] = self._log_mean(self._step_values[mask, idx])
-
+                extras["Episode_Metrics/" + key] = self._log_mean(self._step_values[ids, idx])
             elif reduce == "sum":
-                extras["Episode_Metrics/" + key] = self._log_mean(self._episode_sums[key][mask])
-
+                extras["Episode_Metrics/" + key] = self._log_mean(self._episode_sums[key][ids])
             else:
-                values = self._episode_sums[key][mask] / safe_counts
+                values = self._episode_sums[key][ids] / safe_counts
                 extras["Episode_Metrics/" + key] = self._log_mean(values)
-
-        self.clear_episode_state(env_ids)
+        self._clear_episode_state(ids)
         return extras
 
-    def clear_episode_state(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        """Clear selected episode accumulators without publishing summaries.
-
-        Reset owners consume this boundary when they own metric reset. Generic
-        reset behavior remains publication followed by this same selected-row
-        state clear.
-        """
-        if env_ids is None:
-            env_ids = slice(None)
-        mask = self._reset_mask(env_ids)
+    def _clear_episode_state(self, env_ids: torch.Tensor) -> None:
+        """Clear episode accumulators for the selected rows."""
         for key in self._episode_sums:
-            self._episode_sums[key].masked_fill_(mask, 0.0)
+            self._episode_sums[key][env_ids] = 0.0
             if key in self._episode_max:
-                self._episode_max[key].masked_fill_(mask, float("-inf"))
-        self._step_count.masked_fill_(mask, 0)
+                self._episode_max[key][env_ids] = float("-inf")
+        self._step_count[env_ids] = 0
         for buf in self._substep_accum:
-            buf.masked_fill_(mask, 0.0)
+            buf[env_ids] = 0.0
         for term_cfg in self._class_term_cfgs:
-            term_cfg.func.reset(env_ids=env_ids)
+            if not callable(getattr(term_cfg.func, "reset", None)):
+                raise NotImplementedError(
+                    "MetricsManager stateful term does not define the reset boundary"
+                )
+            term_cfg.func.reset(env_ids)
 
     def compute_substep(self) -> None:
         """Accumulate per-substep metric values inside the decimation loop.
@@ -253,29 +260,6 @@ class MetricsManager(ManagerBase):
             raise ValueError(f"MetricsManager term '{name}' returned non-finite values.")
         return result
 
-    def _reset_mask(self, env_ids: torch.Tensor | slice) -> torch.Tensor:
-        if env_ids is None:
-            return torch.ones(self.num_envs, dtype=torch.bool, device=self._device)
-        if isinstance(env_ids, slice):
-            indices = torch.arange(self.num_envs, dtype=torch.int64, device=self._device)[env_ids]
-            mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
-            return mask.index_fill(0, indices, True)
-        if (
-            not isinstance(env_ids, torch.Tensor)
-            or env_ids.ndim != 1
-            or env_ids.dtype
-            not in {
-                torch.int32,
-                torch.int64,
-            }
-        ):
-            raise TypeError("MetricsManager reset rows must be one-dimensional integers")
-        rows = env_ids.to(self._device)
-        if rows.numel() and (rows.min() < 0 or rows.max() >= self.num_envs):
-            raise IndexError(f"MetricsManager reset rows out of range: {rows.tolist()}")
-        mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self._device)
-        return mask.index_fill(0, rows.to(torch.int64), True)
-
     @staticmethod
     def _log_mean(values: torch.Tensor) -> float:
         if values.numel() == 0:
@@ -299,8 +283,12 @@ class NullMetricsManager:
     def get_active_iterable_terms(self, env_idx: int) -> Sequence[tuple[str, Sequence[float]]]:
         return []
 
-    def reset(self, env_ids: torch.Tensor | None = None) -> dict[str, float]:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> dict[str, float]:
+        del env_ids
         return {}
+
+    def clear_episode_state(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        del env_ids
 
     def compute_substep(self) -> None:
         pass

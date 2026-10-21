@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 import pytest
 from unisim.dr.types import (
+    INTERVAL_TERM_BODY_FORCE,
     RESET_TERM_BODY_IPOS,
     RESET_TERM_BODY_MASS,
     RESET_TERM_GEOM_FRICTION,
@@ -13,7 +14,7 @@ from unisim.dr.types import (
     RESET_TERM_KD,
     RESET_TERM_KP,
     IntervalRandomizationPlan,
-    ResetRandomizationPayload,
+    IntervalTermOp,
 )
 
 from unilab.base.scene import SceneCfg
@@ -244,8 +245,8 @@ def _install_fake_motrix(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         scene_mod,
-        "_materialize_motrix_scene_with_sensor_names",
-        lambda **kwargs: (fake_model, ()),
+        "materialize_scene_with_sensor_inventory",
+        lambda **kwargs: (fake_model, (), ()),
     )
     # These tests exercise override caches and terrain plumbing with a fake
     # native model; unisim-core 1.7.6 validates the whole-MJCF joint order
@@ -294,108 +295,40 @@ def test_motrix_backend_dr_capabilities_include_pd_gains_when_overrides_availabl
     assert RESET_TERM_BODY_IPOS in caps.supported_reset_terms
     assert RESET_TERM_GEOM_FRICTION in caps.supported_reset_terms
     assert RESET_TERM_GRAVITY in caps.supported_reset_terms
-    assert caps.supports_interval_body_force
+    assert caps.supports_interval_term(INTERVAL_TERM_BODY_FORCE)
 
 
-def test_motrix_backend_uses_cached_batch_link_velocities() -> None:
+def test_motrix_body_sensor_views_use_canonical_world_state() -> None:
     import unisim.backend.motrix.backend as mod
 
     backend = object.__new__(mod.MotrixBackend)
+    backend._closed = False
     backend._portable_mode = False
-    backend._link_velocities = np.arange(2 * 3 * 6, dtype=np.float32).reshape(2, 3, 6)
-    backend._link_velocity_cache_valid = True
-
-    body_ids = np.asarray([2, 0], dtype=np.int32)
-
-    np.testing.assert_allclose(
-        backend._get_link_lin_vel_w(body_ids),
-        backend._link_velocities[:, body_ids, :3],
-    )
-    np.testing.assert_allclose(
-        backend._get_link_ang_vel_w(body_ids),
-        backend._link_velocities[:, body_ids, 3:],
+    backend._portable_variant_assignment = None
+    backend._num_envs = 2
+    backend._np_dtype = np.float32
+    backend._model = SimpleNamespace(get_link_index=lambda name: 0 if name == "base" else None)
+    backend._host_get_body_state_w = lambda _body_ids: (
+        np.asarray([[[1.0, 2.0, 3.0]], [[4.0, 5.0, 6.0]]], dtype=np.float32),
+        np.asarray([[[1.0, 0.0, 0.0, 0.0]], [[0.0, 1.0, 0.0, 0.0]]], dtype=np.float32),
+        np.asarray([[[7.0, 8.0, 9.0]], [[10.0, 11.0, 12.0]]], dtype=np.float32),
+        np.asarray([[[13.0, 14.0, 15.0]], [[16.0, 17.0, 18.0]]], dtype=np.float32),
     )
 
-    lin_vel, ang_vel = backend.get_body_vel_w(body_ids)
-    np.testing.assert_allclose(lin_vel, backend._link_velocities[:, body_ids, :3])
-    np.testing.assert_allclose(ang_vel, backend._link_velocities[:, body_ids, 3:])
-
-
-def test_motrix_copy_body_state_routes_fused_read_into_caller_buffers() -> None:
-    import unisim.backend.motrix.backend as mod
-
-    num_envs = 2
-    body_ids = np.asarray([3, 1], dtype=np.int32)
-    shape = (num_envs, len(body_ids), 3)
-    quat_shape = (num_envs, len(body_ids), 4)
-    expected = {
-        "out_pos": np.arange(np.prod(shape), dtype=np.float32).reshape(shape),
-        "out_quat": np.arange(np.prod(quat_shape), dtype=np.float32).reshape(quat_shape),
-        "out_linvel": (100 + np.arange(np.prod(shape), dtype=np.float32)).reshape(shape),
-        "out_angvel": (200 + np.arange(np.prod(shape), dtype=np.float32)).reshape(shape),
+    views = {
+        name: backend.get_sensor_view(name).numpy()
+        for name in (
+            "track_pos_w_base",
+            "track_quat_w_base",
+            "track_linvel_w_base",
+            "track_angvel_w_base",
+        )
     }
-    calls: dict[str, object] = {}
-    sentinel_data = object()
 
-    class _StubModel:
-        def get_link_states(self, data, *, indices, quat_order, **buffers):
-            calls["data"] = data
-            calls["indices"] = list(indices)
-            calls["quat_order"] = quat_order
-            for name, buffer in buffers.items():
-                buffer[...] = expected[name]
-
-    backend = object.__new__(mod.MotrixBackend)
-    backend._portable_mode = False
-    backend._model = _StubModel()
-    backend._data = sentinel_data
-
-    out_pos = np.empty(shape, dtype=np.float32)
-    out_quat = np.empty(quat_shape, dtype=np.float32)
-    out_lin_vel = np.empty(shape, dtype=np.float32)
-    out_ang_vel = np.empty(shape, dtype=np.float32)
-
-    result = backend.copy_body_state_w(
-        body_ids,
-        out_pos,
-        out_quat,
-        out_lin_vel,
-        out_ang_vel,
-    )
-
-    assert result[0] is out_pos
-    assert result[1] is out_quat
-    assert result[2] is out_lin_vel
-    assert result[3] is out_ang_vel
-    # The float32 C-contiguous buffers are written natively in place.
-    assert calls["data"] is sentinel_data
-    assert calls["indices"] == body_ids.tolist()
-    assert calls["quat_order"] == "wxyz"
-    np.testing.assert_array_equal(out_pos, expected["out_pos"])
-    np.testing.assert_array_equal(out_quat, expected["out_quat"])
-    np.testing.assert_array_equal(out_lin_vel, expected["out_linvel"])
-    np.testing.assert_array_equal(out_ang_vel, expected["out_angvel"])
-
-
-def test_motrix_backend_get_body_pose_w_slices_cached_poses_once() -> None:
-    import unisim.backend.motrix.backend as mod
-
-    backend = object.__new__(mod.MotrixBackend)
-    backend._portable_mode = False
-    backend._link_poses = np.asarray(
-        [
-            [
-                [1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 0.4],
-                [4.0, 5.0, 6.0, 0.5, 0.6, 0.7, 0.8],
-            ]
-        ],
-        dtype=np.float32,
-    )
-
-    pos, quat = backend.get_body_pose_w(np.asarray([1], dtype=np.int32))
-
-    np.testing.assert_allclose(pos, [[[4.0, 5.0, 6.0]]])
-    np.testing.assert_allclose(quat, [[[0.8, 0.5, 0.6, 0.7]]])
+    np.testing.assert_allclose(views["track_pos_w_base"], [[1, 2, 3], [4, 5, 6]])
+    np.testing.assert_allclose(views["track_quat_w_base"], [[1, 0, 0, 0], [0, 1, 0, 0]])
+    np.testing.assert_allclose(views["track_linvel_w_base"], [[7, 8, 9], [10, 11, 12]])
+    np.testing.assert_allclose(views["track_angvel_w_base"], [[13, 14, 15], [16, 17, 18]])
 
 
 def test_motrix_root_layout_uses_selected_body_floating_base_indices() -> None:
@@ -457,16 +390,16 @@ def test_motrix_backend_applies_body_mass_and_ipos_reset_payload() -> None:
     backend._apply_reset_randomization(
         object(),
         np.asarray([0, 1], dtype=np.int32),
-        ResetRandomizationPayload(
-            body_mass=np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64),
-            body_ipos=np.asarray(
+        {
+            RESET_TERM_BODY_MASS: np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64),
+            RESET_TERM_BODY_IPOS: np.asarray(
                 [
                     [[0.0, 0.1, 0.2], [0.3, 0.4, 0.5]],
                     [[0.6, 0.7, 0.8], [0.9, 1.0, 1.1]],
                 ],
                 dtype=np.float64,
             ),
-        ),
+        },
     )
 
     np.testing.assert_allclose(link0.mass_override, [1.0, 3.0])
@@ -494,15 +427,15 @@ def test_motrix_backend_applies_geom_friction_reset_payload() -> None:
     backend._apply_reset_randomization(
         object(),
         np.asarray([0, 1], dtype=np.int32),
-        ResetRandomizationPayload(
-            geom_friction=np.asarray(
+        {
+            RESET_TERM_GEOM_FRICTION: np.asarray(
                 [
                     [[1.0, 0.1, 0.01], [2.0, 0.2, 0.02]],
                     [[3.0, 0.3, 0.03], [4.0, 0.4, 0.04]],
                 ],
                 dtype=np.float64,
             ),
-        ),
+        },
     )
 
     np.testing.assert_allclose(geom0.friction_override, [[1.0, 0.1, 0.01], [3.0, 0.3, 0.03]])
@@ -557,9 +490,9 @@ def test_motrix_backend_applies_gravity_reset_payload() -> None:
     backend._apply_reset_randomization(
         object(),
         np.asarray([0, 1], dtype=np.int32),
-        ResetRandomizationPayload(
-            gravity=np.asarray([[0.0, 0.0, -8.0], [1.0, 2.0, -3.0]], dtype=np.float64),
-        ),
+        {
+            RESET_TERM_GRAVITY: np.asarray([[0.0, 0.0, -8.0], [1.0, 2.0, -3.0]], dtype=np.float64),
+        },
     )
 
     assert fake_model.gravity_override is not None
@@ -581,8 +514,13 @@ def test_motrix_backend_interval_body_force_uses_link_external_force_delta() -> 
 
     backend.apply_interval_randomization(
         IntervalRandomizationPlan(
-            body_ids=np.asarray([0], dtype=np.int32),
-            body_force=np.asarray([[[1.0, 2.0, 3.0]], [[4.0, 5.0, 6.0]]], dtype=np.float64),
+            ops=(
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_FORCE,
+                    np.asarray([[[1.0, 2.0, 3.0]], [[4.0, 5.0, 6.0]]], dtype=np.float64),
+                    body_ids=np.asarray([0], dtype=np.int32),
+                ),
+            )
         )
     )
     backend.apply_body_force(
@@ -654,7 +592,7 @@ def test_motrix_backend_creates_terrain_scanner(monkeypatch, tmp_path) -> None:
     backend._num_envs = 2
     offsets = np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float64)
 
-    scanner = backend.create_hfield_scanner(
+    scanner = backend.bind_height_scanner(
         hfield_geom_id=0,
         offsets=offsets,
         frame_body_id=0,
@@ -686,7 +624,7 @@ def test_motrix_backend_hfield_sampling_can_return_clearance(monkeypatch, tmp_pa
         SceneCfg(model_file="source.xml"), num_envs=1, sim_dt=0.01, base_name="base"
     )
 
-    scanner = backend.create_hfield_scanner(
+    scanner = backend.bind_height_scanner(
         hfield_geom_id=0,
         offsets=np.asarray([[1.0, 0.0]], dtype=np.float64),
         frame_body_id=0,
@@ -711,7 +649,7 @@ def test_motrix_backend_hfield_sampling_uses_terrain_scanner_output_contract(
         dtype=np.float64,
     )
 
-    scanner = backend.create_hfield_scanner(
+    scanner = backend.bind_height_scanner(
         hfield_geom_id=0,
         offsets=np.asarray([[1.0, 0.0]], dtype=np.float64),
         frame_body_id=0,

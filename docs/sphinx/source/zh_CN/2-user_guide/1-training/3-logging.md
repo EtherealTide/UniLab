@@ -7,7 +7,7 @@ backend 保留每个 iteration 未经时间平滑的值。
 
 本文先说明所有算法共用的日志目录和 Manager-Based reward 指标契约，再详细说明
 SAC / FlashSAC 与 APPO 共用的 off-policy 终端视图。持久化 backend tag
-遵循 `uni_rl.logging.metric_schema` 持有的 canonical schema：毫秒计时字段以
+遵循 `unilab.rl.logging.metric_schema` 持有的 canonical schema：毫秒计时字段以
 `_ms` 结尾，而 `Perf/learning_time`、`Perf/collection_time` 与
 `Perf/iteration_time` 单位为秒。少数终端字段（`Other`、各阶段百分比、collector
 cycle 合计、`Rows/s`）是在内存中为显示推导的值，有意不持久化。
@@ -129,14 +129,14 @@ APPO 出现。
 
 三项 inference 明细应近似组成 `Inference`；计时调用之间的 Python 开销可能造成小差值。
 `Replay H2D Submit` 则与 learner 主时间线重叠：CUDA 由
-`replay_gpu_resident_sync` daemon 提交 non-blocking copy，MPS 从已有 learner 调用推进。
+`replay_device_sync` daemon 提交 non-blocking copy，MPS 从已有 learner 调用推进。
 要看 GPU copy / gather 的真实异步执行区间，应启用 trace，而不是把 submit wall time 当作
 额外的 iteration 占比。
 
 ### 旧 run 的 tag 对照
 
 历史 TensorBoard event 不会被重写。unilab-rl 1.4.1 及以后的 run 使用下列
-canonical tag（权威定义：`uni_rl.logging.metric_schema`，完整迁移表见 unilab_rl
+canonical tag（权威定义：`unilab.rl.logging.metric_schema`，完整迁移表见原 unilab_rl
 仓库的 `docs/metrics.md`）；打开旧 run 时仍会看到已退役的旧名：
 
 | 旧 tag | 新 tag | 说明 |
@@ -167,7 +167,7 @@ schema-v1 canonical tag；`metric_schema_version` 缺失或不支持时直接失
 ### Schema 版本与兼容策略
 
 Metric 元数据与 runtime manifest 是两个独立版本命名空间。生产端权威定义位于
-`uni_rl.logging.metric_schema` 与 `uni_rl.logging.runtime_manifest_schema`：
+`unilab.rl.logging.metric_schema` 与 `unilab.rl.logging.runtime_manifest_schema`：
 
 | 命名空间 | 当前值 | 存储位置 |
 | --- | ---: | --- |
@@ -187,6 +187,13 @@ replay-ingress 计数/耗时，以及存在该预算时的 CUDA inference IPC ev
 `replay_ingress.high_water_occupancy` 的窗口语义不同：inference 最大值是相对上一次
 成功发布的 collector report，replay-ingress high-water 是整个 run 的累计高水位。
 未列入稳定契约的字段（包括 `runtime_manifest.shutdown`）在 v1 中都是实验性诊断。
+`runtime_manifest.backend_diagnostics` 就是这样一项诊断：由
+`TorchEnv.get_backend_runtime_diagnostics()` 序列化的物理 backend tensor runtime
+快照（每项优化的 `requested`/`enabled`/`disable_reason`，包括 CUDA graph 状态）；
+runtime manifest schema 在该 section 存在时会 fail-closed 校验，但其内容仍归
+producer 所有。PPO 路径没有 runtime manifest，因此其训练脚本把同样的 payload 作为
+顶层 `backend_diagnostics` 字段写入 `run_summary.json`。payload 形状与故障排查见
+{doc}`7-tensor_runtime_production`。
 
 Soak artifact `0.3.0` 顶层新增两个异常 shutdown 字段。通过时
 `failure_classification` 必须为 `null`，且 `shutdown.classification` 必须是
@@ -279,7 +286,7 @@ sequenceDiagram
         L-->>C: Collector Release / response(t)
     end
 
-    par Collector tick t
+    par Collector 迭代 t
         C->>C: Env Step(t)
         C->>D: Replay Write(t)
         C->>I: Inference Request(t+1)

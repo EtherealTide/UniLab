@@ -2,7 +2,7 @@
 
 SAC and FlashSAC resolve their spawn-facing tensor-runtime settings
 before probing the environment or constructing a learner. The owner YAML values
-are collected into one bounded `TensorRuntimeSettings` object and passed to the
+are collected into one bounded `RuntimeSettings` object and passed to the
 off-policy runner. Invalid values, unsupported bounds, and impossible memory
 combinations therefore fail before collector or learner processes are launched.
 
@@ -27,6 +27,61 @@ string `mps`. The G1 Motion Tracking / MJWarp owner intentionally overrides only
 `collector_metrics_interval` to `100`; all other tensor-runtime defaults remain
 as listed above.
 
+## Device semantics and resolution
+
+Device-related settings are separated by the layer that consumes them:
+
+| Configuration key | Effective layer | Valid values |
+| --- | --- | --- |
+| `training.sim_carrier_device` | Training assembly routes it to the environment | `auto`, `cpu`, or unindexed `cuda` |
+| `env.sim_carrier_device` | Manager public tensors for a MuJoCo HOST_BRIDGE | `cpu`, `cuda`, or `cuda:<index>` |
+| `training.inference_transport` | Off-policy IPC placement | `host`, `cuda`, or `null` (auto) |
+| `training.device` | Learner and rank-local process selection | Concrete Torch device label |
+
+The training key is the only user-facing carrier request. `auto` follows the
+resolved learner device: CUDA routes the rank-local indexed device, CPU routes
+CPU, and torch.mps (Metal Performance Shaders) retains the owner/default CPU
+placement. Explicit `cpu` or `cuda` wins over `auto`. `cuda` is concrete and
+never maps to MPS; a CUDA request on a host without CUDA fails closed.
+
+Carrier routing is capability-driven: MuJoCo, Motrix, Drake, and SuperDex
+declare in-process packed `HOST_BRIDGE` transfer plans with `cpu`/`cuda`
+carriers. Other backends ignore `auto`/`cpu`, but a `cuda` request fails
+closed. A request outside the selected backend's declared `torch_devices`
+also fails closed. `run_config.json` retains the composed configuration and
+records `run.resolved_devices` with each configured-to-resolved mapping;
+startup logs print the same mapping.
+
+Removed keys fail closed with a migration error: use `training.sim_carrier_device`
+instead of `training.collector_tensor_device`, `env.sim_carrier_device` instead
+of `manager_torch_device`, and the resolved learner device instead of
+`env.tensor_runtime_device`.
+
+Migration note: a CUDA learner with the default `auto` presents CUDA tensors
+through the packed host bridge and resolves CUDA inference transport. Each
+collector process then holds one additional CUDA context on the learner GPU
+(see {doc}`7-tensor_runtime_production`). Pin
+`training.sim_carrier_device=cpu` to keep the CPU carrier.
+
+For off-policy inference, `host` names the transport boundary rather than a
+complete learner topology: observations and actions use the CPU inference ring,
+while the learner itself may be CPU or Apple MPS. This spelling serves pure CPU
+tests and the macOS MPS host-boundary cell. `cuda` follows Torch device-type
+semantics and covers both NVIDIA CUDA and AMD ROCm. It does not relax separate
+platform gates: CUDA-only tensor backends still fail closed on ROCm/HIP, and
+`training.cuda_process_sharing` remains available only to the NVIDIA-specific
+CUDA MPS daemon and native H2D implementation. The removed `cpu` spelling fails
+closed; use `host`.
+
+The word “worker” is likewise layer-specific:
+
+| Term | Meaning |
+| --- | --- |
+| Collector worker | APPO or off-policy process that steps environments and publishes rollouts |
+| Backend worker | Backend-owned external simulator process (for example Isaac) |
+| torchrun rank | Distributed learner rank launched by the PPO multi-GPU launcher |
+| Backend process device | Process-global accelerator binding, not a Manager carrier key |
+
 ## Replay ingress tradeoffs
 
 The default `replay_ingress_slot_rows: null` resolves to `algo.num_envs` and
@@ -48,19 +103,24 @@ the replay-ingress counters and shutdown schema.
 
 ## Random number generation
 
-The generic Manager seam remains NumPy-owned: `ManagerBasedRlEnv.rng` is an
-`np.random.Generator`, and existing seeded streams stay unchanged. Narrow
-device-resident owners may instead own a `unilab.managers.TorchManagerRng`.
-This adapter wraps one explicit CPU or CUDA `torch.Generator`, validates seeds
-and unsupported sampling semantics, and returns tensors on that generator's
-device. It is not a NumPy bitstream-compatibility layer.
+The Manager environment owns a `unilab.managers.ManagerRng` as its sole
+training-runtime RNG. This adapter wraps one explicit CPU or CUDA
+`torch.Generator`, validates seeds and unsupported sampling semantics, and
+returns tensors on that generator's device. It is not a NumPy
+bitstream-compatibility layer. The training-entry seed contract seeds global
+Python and Torch RNGs only; it no longer mutates the legacy global NumPy RNG.
 
-The scoped G1 Motion Tracking / FlashSAC owner uses a CUDA `TorchManagerRng` for
+The scoped G1 Motion Tracking / FlashSAC owner uses a CUDA `ManagerRng` for
 observation corruption, adaptive/mixed motion sampling, and selected-row reset.
 A/B evaluation therefore compares reproducibility and distributions under the
 same integer seed, not bitwise NumPy trajectories. Use an explicit `env.seed`
-for deterministic runs; `algo.seed` seeds the training run's global Python,
-NumPy, and Torch RNGs but does not replace that owner-local generator seed.
+for deterministic runs; `algo.seed` seeds the training run's global Python and
+Torch RNGs but does not replace that owner-local generator seed.
+
+`ManagerRng.get_state()` returns the generator's CPU state tensor and
+`set_state()` restores it. The exact generator state remains the authoritative
+reproducibility payload; an owner that restores or audits RNG records that
+state tensor. The runtime keeps no per-transition version accounting.
 
 ## Runtime evidence
 

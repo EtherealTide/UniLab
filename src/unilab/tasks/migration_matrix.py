@@ -42,11 +42,7 @@ _MOTION_CORE_TASKS = frozenset(
     }
 )
 
-_MOTION_TASKS: frozenset[str] = frozenset()
-
-PRODUCTION_TASK_NAMES = frozenset(
-    _MBA_TASKS | _G1_LOCOMOTION_TASKS | _MOTION_CORE_TASKS | _MOTION_TASKS
-)
+PRODUCTION_TASK_NAMES = frozenset(_MBA_TASKS | _G1_LOCOMOTION_TASKS | _MOTION_CORE_TASKS)
 
 
 def migration_record(task_name: str) -> TaskMigrationRecord:
@@ -82,15 +78,6 @@ def migration_record(task_name: str) -> TaskMigrationRecord:
             "complete",
             "Hydra owner YAML materializes task-owned NumPy motion manager terms on the canonical runtime.",
             "Keep PPO, APPO, and SAC owners aligned with the shared motion manager contract.",
-        )
-    if task_name in _MOTION_TASKS:
-        return TaskMigrationRecord(
-            task_name,
-            "motion_tracking",
-            "Compatible",
-            "complete",
-            "Hydra profile owners specialize the shared NumPy motion managers without a legacy runtime.",
-            "Keep profile scene, motion, observation, reward, and termination declarations aligned.",
         )
     raise KeyError(f"Task '{task_name}' has no #1042 migration-matrix entry")
 

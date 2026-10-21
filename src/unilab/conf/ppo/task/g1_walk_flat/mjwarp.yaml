@@ -1,6 +1,7 @@
 # @package _global_
 # Configured-only mjwarp owner for the unified host contract adapter. Keeps
-# DENYLIST parity with the MuJoCo owner; legacy kp/kd randomization is disabled.
+# DENYLIST parity with the MuJoCo owner; kp/kd randomization stays disabled,
+# matching the tuned walk baseline.
 # Offline record reuses MuJoCo rendering; interactive eval routes through the
 # MuJoCo viewer (mjwarp physics, single env). Native playback and
 # device-resident runtime routing are intentionally absent.
@@ -23,10 +24,10 @@ env:
   mjwarp_njmax: 256
   events:
     reset_scene_to_default:
-      func: unilab.envs.mdp.reset_scene_to_default_tensor
+      func: unilab.envs.mdp.skip_scene_reset
     reset_root_state_uniform:
-      func: unilab.envs.mdp.reset_root_state_uniform_tensor
-    # Legacy mjwarp owners disable kp/kd and armature randomization.
+      func: unilab.envs.mdp.reset_root_state_uniform_fused
+    # kp/kd and armature randomization stay disabled, matching the tuned walk baseline.
     pd_gains: null
 play_profile:
   enabled: true

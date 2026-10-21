@@ -1,15 +1,14 @@
-"""Global dtype configuration for environments."""
+"""Torch dtype owner for UniLab runtime carriers."""
 
 from __future__ import annotations
 
-from typing import Any
+import torch
 
-import numpy as np
+# UniLab's Manager/tensor runtime owns float32 public carriers. Backend tensor
+# specs negotiate any adapter-local storage; they do not mutate this owner.
+GLOBAL_DTYPE = torch.float32
 
-# Global dtype for all environment computations
-GLOBAL_DTYPE = np.float32
 
-
-def get_global_dtype() -> np.dtype[Any]:
-    """Get the global dtype for environment computations."""
-    return np.dtype(GLOBAL_DTYPE)
+def get_global_dtype() -> torch.dtype:
+    """Get the authoritative Torch dtype for environment runtime carriers."""
+    return GLOBAL_DTYPE

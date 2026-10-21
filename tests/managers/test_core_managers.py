@@ -29,7 +29,7 @@ from .conftest import FakeEnv
 class DummyAction(ActionTerm):
     def __init__(self, cfg: DummyActionCfg, env: FakeEnv):
         super().__init__(cfg, env)
-        self._raw = np.zeros((env.num_envs, cfg.dim), dtype=np.float32)
+        self._raw = torch.zeros((env.num_envs, cfg.dim), dtype=torch.float32)
         self.applied = 0
         self.reset_ids: np.ndarray | slice | None = None
         self.input_types: list[type] = []
@@ -39,17 +39,17 @@ class DummyAction(ActionTerm):
         return self._raw.shape[1]
 
     @property
-    def raw_action(self) -> np.ndarray:
+    def raw_action(self) -> torch.Tensor:
         return self._raw
 
     def process_actions(self, actions: torch.Tensor) -> None:
         self.input_types.append(type(actions))
-        self._raw[:] = actions.detach().cpu().numpy()
+        self._raw.copy_(actions)
 
     def apply_actions(self) -> None:
         self.applied += 1
 
-    def reset(self, env_ids: np.ndarray | slice | None) -> None:
+    def reset(self, env_ids: torch.Tensor | slice | None) -> None:
         self.reset_ids = env_ids
         self._raw[env_ids] = 0.0
 
@@ -95,7 +95,7 @@ def test_action_split_history_apply_and_partial_reset(fake_env: FakeEnv) -> None
     )
     torch.testing.assert_close(manager.prev_action, first)
     torch.testing.assert_close(manager.action, second)
-    np.testing.assert_array_equal(manager.get_term("legs").raw_action, second[:, :2])
+    torch.testing.assert_close(manager.get_term("legs").raw_action, second[:, :2])
     manager.apply_action()
     assert manager.get_term("legs").applied == 1
     manager.reset(torch.tensor([1, 3], dtype=torch.int64))
@@ -122,16 +122,6 @@ def test_action_feedback_declaration_must_be_bool(
     monkeypatch.setattr(DummyAction, "requires_substep_state_feedback", "yes")
 
     with pytest.raises(TypeError, match="requires_substep_state_feedback must be bool"):
-        ActionManager({"invalid": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
-
-
-def test_tensor_action_declaration_must_be_bool(
-    fake_env: FakeEnv,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(DummyAction, "uses_tensor_actions", "yes")
-
-    with pytest.raises(TypeError, match="uses_tensor_actions must be bool"):
         ActionManager({"invalid": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
 
 
@@ -184,22 +174,31 @@ def test_action_manager_routes_tensor_terms_only(fake_env: FakeEnv) -> None:
     assert manager.get_term("tensor").input_types == [torch.Tensor]
 
 
-def test_action_manager_rejects_declared_numpy_action_terms(
+def test_action_manager_rejects_non_tensor_raw_action_carrier(
     fake_env: FakeEnv, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(DummyAction, "uses_tensor_actions", False)
-    with pytest.raises(TypeError, match="requires tensor action terms"):
-        ActionManager({"legacy": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
+    original_raw_action = DummyAction.raw_action
+
+    @property
+    def numpy_raw_action(self: DummyAction) -> np.ndarray:
+        return np.zeros((self._raw.shape[0], self.action_dim), dtype=np.float32)
+
+    monkeypatch.setattr(DummyAction, "raw_action", numpy_raw_action)
+    try:
+        with pytest.raises(TypeError, match="requires tensor raw actions"):
+            ActionManager({"non_tensor": DummyActionCfg(entity_name="robot", dim=1)}, fake_env)
+    finally:
+        monkeypatch.setattr(DummyAction, "raw_action", original_raw_action)
 
 
 class StatefulReward:
     def __init__(self, cfg: RewardTermCfg, env: FakeEnv):
         self.reset_ids = None
 
-    def __call__(self, env: FakeEnv) -> np.ndarray:
-        return env.value.copy()
+    def __call__(self, env: FakeEnv) -> torch.Tensor:
+        return env.value.clone()
 
-    def reset(self, env_ids: np.ndarray | slice | None) -> None:
+    def reset(self, env_ids: torch.Tensor | slice | None) -> None:
         self.reset_ids = env_ids
 
 
@@ -209,20 +208,20 @@ def test_reward_dt_scaling_reset_and_config_immutability(fake_env: FakeEnv) -> N
     reward = manager.compute(dt=0.25)
     assert isinstance(reward, torch.Tensor)
     assert reward.device.type == "cpu"
-    torch.testing.assert_close(reward, torch.tensor(fake_env.value * 0.5))
+    torch.testing.assert_close(reward, fake_env.value * 0.5)
     assert manager.get_active_iterable_terms(2) == [("stateful", [4.0])]
-    reset_ids = np.array([1, 2])
+    reset_ids = torch.tensor([1, 2], dtype=torch.int64)
     extras = manager.reset(reset_ids)
     assert extras == {}
     assert not any(key.startswith("Episode_Reward/") for key in extras)
-    assert manager.get_term_cfg("stateful").func.reset_ids is reset_ids
+    torch.testing.assert_close(manager.get_term_cfg("stateful").func.reset_ids, reset_ids)
     assert cfg["stateful"].func is StatefulReward
     assert isinstance(manager.get_term_cfg("stateful").func, StatefulReward)
 
 
 def test_reward_step_extras_report_per_term_weighted_rates(fake_env: FakeEnv) -> None:
-    def ones(env: FakeEnv) -> np.ndarray:
-        return np.ones(env.num_envs, dtype=np.float32)
+    def ones(env: FakeEnv) -> torch.Tensor:
+        return torch.ones(env.num_envs, dtype=torch.float32)
 
     cfg = {
         "pos": RewardTermCfg(func=ones, weight=2.0),
@@ -236,8 +235,24 @@ def test_reward_step_extras_report_per_term_weighted_rates(fake_env: FakeEnv) ->
     assert set(extras) == {"reward/pos", "reward/neg", "reward/zero"}
     # Weighted reward rate (raw_value * weight), not scaled by dt.
     assert extras["reward/pos"] == pytest.approx(2.0)
-    assert extras["reward/neg"] == pytest.approx(float(np.mean(fake_env.value)) * -0.5)
+    assert extras["reward/neg"] == pytest.approx(float(fake_env.value.mean()) * -0.5)
     assert extras["reward/zero"] == 0.0
+
+
+def test_reward_step_rewards_preserve_full_width_weighted_rates(fake_env: FakeEnv) -> None:
+    values = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32)
+
+    def value(env: FakeEnv) -> torch.Tensor:
+        return values
+
+    manager = RewardManager(
+        {"value": RewardTermCfg(func=value, weight=2.0)},
+        fake_env,
+        scale_by_dt=False,
+    )
+    manager.compute(dt=1.0)
+
+    torch.testing.assert_close(manager.step_rewards, (values * 2.0).reshape(4, 1))
 
 
 def test_reward_pack_supplies_outputs_without_duplicate_execution(fake_env: FakeEnv) -> None:
@@ -275,6 +290,32 @@ def test_reward_pack_supplies_outputs_without_duplicate_execution(fake_env: Fake
     assert calls == ["packed"]
 
 
+def test_reward_aggregation_recomputes_weighted_values(fake_env: FakeEnv) -> None:
+    manager = RewardManager(
+        {
+            "left": RewardTermCfg(func=lambda env: torch.ones(env.num_envs), weight=2.0),
+            "right": RewardTermCfg(func=lambda env: env.value, weight=-1.0),
+        },
+        fake_env,
+        scale_by_dt=False,
+    )
+
+    first = manager.compute(dt=1.0)
+    torch.testing.assert_close(first, 2.0 - fake_env.value)
+    torch.testing.assert_close(
+        manager.step_reward_means, torch.tensor([2.0, -float(fake_env.value.mean())])
+    )
+
+    # The returned reward is an internal view; the observable contract is that
+    # the next compute reflects the new inputs exactly.
+    fake_env.value = fake_env.value + 1.0
+    second = manager.compute(dt=1.0)
+    torch.testing.assert_close(second, 2.0 - fake_env.value)
+    torch.testing.assert_close(
+        manager.step_reward_means, torch.tensor([2.0, -float(fake_env.value.mean())])
+    )
+
+
 def test_reward_pack_rejects_invalid_output_width(fake_env: FakeEnv) -> None:
     manager = RewardManager(
         {
@@ -294,8 +335,8 @@ def test_reward_pack_rejects_invalid_output_width(fake_env: FakeEnv) -> None:
 
 @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
 def test_reward_nonfinite_is_an_error(fake_env: FakeEnv, bad: float) -> None:
-    def reward(env: FakeEnv) -> np.ndarray:
-        value = np.ones(env.num_envs, dtype=np.float32)
+    def reward(env: FakeEnv) -> torch.Tensor:
+        value = torch.ones(env.num_envs, dtype=torch.float32)
         value[2] = bad
         return value
 
@@ -305,8 +346,8 @@ def test_reward_nonfinite_is_an_error(fake_env: FakeEnv, bad: float) -> None:
 
 
 def test_reward_compute_publishes_phase_attribution(fake_env: FakeEnv) -> None:
-    def ones(env: FakeEnv) -> np.ndarray:
-        return np.ones(env.num_envs, dtype=np.float32)
+    def ones(env: FakeEnv) -> torch.Tensor:
+        return torch.ones(env.num_envs, dtype=torch.float32)
 
     manager = RewardManager(
         {"value": RewardTermCfg(func=ones, weight=1.0)},
@@ -378,39 +419,87 @@ def test_tensor_manager_terms_require_declared_dtype(fake_env: FakeEnv) -> None:
 
 def test_reward_and_termination_shape_validation(fake_env: FakeEnv) -> None:
     reward = RewardManager(
-        {"bad": RewardTermCfg(func=lambda env: np.zeros((env.num_envs, 1)), weight=1.0)},
+        {
+            "bad": RewardTermCfg(
+                func=lambda env: torch.zeros((env.num_envs, 1), dtype=torch.float32), weight=1.0
+            )
+        },
         fake_env,
     )
     with pytest.raises(ValueError, match=r"expected \(4,\)"):
         reward.compute(0.1)
 
     termination = TerminationManager(
-        {"bad": TerminationTermCfg(func=lambda env: np.zeros(env.num_envs))}, fake_env
+        {"bad": TerminationTermCfg(func=lambda env: torch.zeros(env.num_envs, dtype=torch.uint8))},
+        fake_env,
     )
     with pytest.raises(TypeError, match="expected bool"):
         termination.compute()
 
 
+def test_reward_and_termination_reject_numpy_carriers(fake_env: FakeEnv) -> None:
+    reward = RewardManager(
+        {"bad": RewardTermCfg(func=lambda env: np.ones(env.num_envs), weight=1.0)},
+        fake_env,
+    )
+    termination = TerminationManager(
+        {"bad": TerminationTermCfg(func=lambda env: np.ones(env.num_envs, dtype=np.bool_))},
+        fake_env,
+    )
+
+    with pytest.raises(TypeError, match="must return torch.Tensor"):
+        reward.compute(0.02)
+    with pytest.raises(TypeError, match="must return torch.Tensor"):
+        termination.compute()
+
+
 def test_termination_splits_timeouts_and_failures(fake_env: FakeEnv) -> None:
-    timeout = np.array([True, False, False, True])
-    failure = np.array([False, True, False, True])
+    timeout = torch.tensor([True, False, False, True])
+    failure = torch.tensor([False, True, False, True])
     manager = TerminationManager(
         {
-            "timeout": TerminationTermCfg(func=lambda env: timeout.copy(), time_out=True),
-            "failure": TerminationTermCfg(func=lambda env: failure.copy()),
+            "timeout": TerminationTermCfg(func=lambda env: timeout.clone(), time_out=True),
+            "failure": TerminationTermCfg(func=lambda env: failure.clone()),
         },
         fake_env,
     )
     dones = manager.compute()
     assert isinstance(dones, torch.Tensor)
     assert dones.dtype == torch.bool
-    torch.testing.assert_close(dones, torch.from_numpy(timeout | failure))
-    torch.testing.assert_close(manager.time_outs, torch.from_numpy(timeout))
-    torch.testing.assert_close(manager.terminated, torch.from_numpy(failure))
+    torch.testing.assert_close(dones, timeout | failure)
+    torch.testing.assert_close(manager.time_outs, timeout)
+    torch.testing.assert_close(manager.terminated, failure)
     assert manager.reset(torch.tensor([0, 1], dtype=torch.int64)) == {
         "Episode_Termination/timeout": 1,
         "Episode_Termination/failure": 1,
     }
+
+
+def test_termination_aggregation_recomputes_correct_values(fake_env: FakeEnv) -> None:
+    timeout = torch.tensor([True, False, False, True])
+    failure = torch.tensor([False, True, False, True])
+    manager = TerminationManager(
+        {
+            "timeout": TerminationTermCfg(func=lambda env: timeout.clone(), time_out=True),
+            "failure": TerminationTermCfg(func=lambda env: failure.clone()),
+        },
+        fake_env,
+    )
+
+    first = manager.compute()
+    torch.testing.assert_close(first, timeout | failure)
+    torch.testing.assert_close(manager.get_term("timeout"), timeout)
+    torch.testing.assert_close(manager.get_term("failure"), failure)
+
+    # The returned dones are an internal view; the observable contract is that
+    # the next compute reflects the new inputs exactly.
+    failure[1] = False
+    failure[2] = True
+    second = manager.compute()
+    torch.testing.assert_close(second, timeout | failure)
+    torch.testing.assert_close(manager.get_term("failure"), failure)
+    torch.testing.assert_close(manager.time_outs, timeout)
+    torch.testing.assert_close(manager.terminated, failure)
 
 
 def test_transient_tensor_termination_opt_in_preserves_manager_buffers(
@@ -441,16 +530,70 @@ def test_transient_tensor_termination_opt_in_preserves_manager_buffers(
     torch.testing.assert_close(manager.terminated, original)
 
 
+def test_termination_terms_own_their_returned_carrier(fake_env: FakeEnv) -> None:
+    class Failure:
+        output: torch.Tensor | None = None
+
+        def __init__(self, cfg: TerminationTermCfg, env: FakeEnv):
+            del cfg, env
+
+        def __call__(self, env: FakeEnv) -> torch.Tensor:
+            del env
+            self.output = torch.tensor([False, True, False, True])
+            return self.output
+
+    manager = TerminationManager(
+        {"failure": TerminationTermCfg(func=Failure)},
+        fake_env,
+    )
+    failure = manager.get_term_cfg("failure").func
+
+    manager.compute()
+    assert failure.output is not None
+    assert manager.get_term("failure") is not failure.output
+
+    failure.output.logical_not_()
+
+    # A non-transient term owns the returned full-width carrier. The manager
+    # publishes it into persistent aggregation buffers and remains immune to
+    # later owner mutation.
+    torch.testing.assert_close(
+        manager._term_dones["failure"], torch.tensor([False, True, False, True])
+    )
+
+
+def test_termination_aggregation_publishes_time_outs_through_owner_scratch(
+    fake_env: FakeEnv,
+) -> None:
+    scratch = torch.zeros(fake_env.num_envs, dtype=torch.bool)
+    setattr(fake_env, "time_out_scratch", scratch)
+    flags = torch.ones(fake_env.num_envs, dtype=torch.bool)
+    manager = TerminationManager(
+        {"timeout": TerminationTermCfg(func=lambda env: flags.clone(), time_out=True)},
+        fake_env,
+    )
+
+    first = manager.compute()
+    # The env-owned scratch is the manager's time-out publication carrier.
+    assert manager.time_outs is scratch
+    torch.testing.assert_close(first, torch.ones_like(first))
+
+    flags[:] = False
+    second = manager.compute()
+    torch.testing.assert_close(second, torch.zeros_like(second))
+    torch.testing.assert_close(manager.time_outs, torch.zeros_like(manager.time_outs))
+
+
 def test_curriculum_and_null_semantics(fake_env: FakeEnv) -> None:
-    def update(env: FakeEnv, env_ids: np.ndarray | slice) -> dict[str, float]:
+    def update(env: FakeEnv, env_ids: slice) -> dict[str, float]:
         return {"difficulty": 3.0}
 
     manager = CurriculumManager({"terrain": CurriculumTermCfg(func=update)}, fake_env)
-    manager.compute(np.array([1, 2]))
-    assert manager.reset()["Curriculum/terrain/difficulty"] == 3.0
+    manager.compute()
+    assert manager.reset(None)["Curriculum/terrain/difficulty"] == 3.0
     null = NullCurriculumManager()
     assert null.active_terms == []
-    assert null.reset() == {}
+    assert null.reset(None) == {}
 
     bad = CurriculumManager({"bad": CurriculumTermCfg(func=lambda env, env_ids: np.nan)}, fake_env)
     with pytest.raises(ValueError, match="CurriculumManager term 'bad'"):

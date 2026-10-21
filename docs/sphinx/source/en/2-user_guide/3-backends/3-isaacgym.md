@@ -1,6 +1,9 @@
 # IsaacGym Backend
 
-> **IsaacGym is temporarily shelved.** This adapter is outside the tensor-only Manager runtime during #1811 and is not a production support claim. The train/eval CLI rejects it until new capability, parity, and support-matrix evidence is provided.
+> **IsaacGym is an explicit external-worker owner.** It requires the isolated
+> Python 3.8 Preview 4 runtime and is never selected as an implicit fallback
+> backend. The generated support matrix is the source for task/algorithm
+> evidence.
 
 
 IsaacGym (NVIDIA Preview 4) is an end-of-life GPU physics simulator from NVIDIA
@@ -10,9 +13,9 @@ external, standalone Python 3.8 environment located purely via environment
 variables, with no machine-local paths written into the repository.
 
 Current status: `IsaacGymBackend` (a subprocess backend whose physics runs in
-the external Python 3.8 worker) is implemented and registered; `g1_walk_flat`
-ships isaacgym owner configs
-(`src/unilab/conf/{ppo,sac}/task/g1_walk_flat/isaacgym.yaml`), and the cross-backend
+the external Python 3.8 worker) is implemented and registered; SAC
+`g1_walk_flat` ships the isaacgym owner
+(`src/unilab/conf/sac/task/g1_walk_flat/isaacgym.yaml`), and the cross-backend
 contract audit (`scripts/audit_sim2sim_contracts.py`) covers the
 mujoco/isaacgym pair. Playback rendering uses IsaacGym's native rendering
 (viewer + camera sensor); both interactive and video-recording modes work
@@ -43,10 +46,12 @@ parameter is parsed from the XML rather than read from the importer.
   self-collision entirely is the ecosystem-standard approximation and a
   superset of the exclusions. Models that rely on self-contact are not
   faithfully reproduced.
-- **Joint limits**: the importer drops them, so PhysX applies no joint stops;
-  `get_joint_range()` still reports the XML values. Joint `armature` and
-  `frictionloss` (resolved through MJCF default classes) are applied to the
-  PhysX dofs.
+- **Joint limits**: the importer drops native joint stops. The worker carries
+  the host-scanned XML bounds and clamps every position target to them;
+  `get_joint_range()` reports the same source values. This restores the
+  commanded boundary but is not a native hard-stop emulation, and dynamics can
+  still overshoot under external momentum. Joint `armature` and `frictionloss`
+  (resolved through MJCF default classes) are applied to the PhysX dofs.
 - **Fixed model variants**: `env.fixed_model_variants` is realized by
   actor-level asset selection. Each complete MJCF source is loaded once and
   every environment's actor is created from its immutable assignment row;
@@ -76,7 +81,6 @@ scripts/tools/setup_isaacgym_env.sh
 
 The script installs everything under `$HOME/.cache/unisim/isaacgym` by default;
 override the install root with the `UNISIM_ISAACGYM_HOME` environment variable.
-The former `UNILAB_ISAACGYM_HOME` name remains accepted as a migration fallback.
 The tarball is downloaded automatically to
 `$UNISIM_ISAACGYM_HOME/IsaacGym_Preview_4_Package.tar.gz`; on offline machines,
 pass a pre-downloaded package with `--tarball <path>`. The script is
@@ -124,7 +128,7 @@ SAC:
 uv run train --algo sac --task g1_walk_flat --sim isaacgym
 
 # PPO
-uv run train --algo ppo --task g1_walk_flat --sim isaacgym
+uv run train --algo sac --task g1_walk_flat --sim isaacgym
 ```
 
 Playback rendering is provided natively by IsaacGym: the interactive mode

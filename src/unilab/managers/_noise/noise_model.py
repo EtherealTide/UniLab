@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-import numpy as np
 import torch
 from typing_extensions import override
 
@@ -20,14 +19,12 @@ class NoiseModel:
         self,
         noise_model_cfg: noise_cfg.NoiseModelCfg,
         num_envs: int,
-        rng: np.random.Generator | None = None,
         *,
-        torch_rng: torch.Generator | None = None,
+        torch_rng: torch.Generator,
         device: torch.device | str | None = None,
     ):
         self._noise_model_cfg = noise_model_cfg
         self._num_envs = num_envs
-        self._rng = rng
         self._torch_rng = torch_rng
         self._device = torch.device(device) if device is not None else torch.device("cpu")
 
@@ -35,15 +32,16 @@ class NoiseModel:
         if not hasattr(noise_model_cfg, "noise_cfg") or noise_model_cfg.noise_cfg is None:
             raise ValueError("NoiseModelCfg must have a valid noise_cfg")
 
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        """Reset noise model state. Override in subclasses if needed."""
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        """Reset noise model state through the fixed-width mask."""
+        del reset_mask
 
     def __call__(self, data: torch.Tensor) -> torch.Tensor:
         """Apply noise to input data on its existing device."""
         assert self._noise_model_cfg.noise_cfg is not None
         return cast(
             "torch.Tensor",
-            self._noise_model_cfg.noise_cfg.apply(data, rng=self._rng, torch_rng=self._torch_rng),
+            self._noise_model_cfg.noise_cfg.apply(data, torch_rng=self._torch_rng),
         )
 
 
@@ -55,12 +53,11 @@ class NoiseModelWithAdditiveBias(NoiseModel):
         self,
         noise_model_cfg: noise_cfg.NoiseModelWithAdditiveBiasCfg,
         num_envs: int,
-        rng: np.random.Generator | None = None,
         *,
-        torch_rng: torch.Generator | None = None,
+        torch_rng: torch.Generator,
         device: torch.device | str | None = None,
     ):
-        super().__init__(noise_model_cfg, num_envs, rng, torch_rng=torch_rng, device=device)
+        super().__init__(noise_model_cfg, num_envs, torch_rng=torch_rng, device=device)
 
         # Validate bias configuration.
         if not hasattr(noise_model_cfg, "bias_noise_cfg") or noise_model_cfg.bias_noise_cfg is None:
@@ -75,13 +72,23 @@ class NoiseModelWithAdditiveBias(NoiseModel):
         self._bias_initialized = False
 
     @override
-    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
-        """Reset bias values for specified environments."""
-        indices = slice(None) if env_ids is None else env_ids
-        replacement = self._bias_noise_cfg.apply(
-            self._bias[indices], rng=self._rng, torch_rng=self._torch_rng
+    def reset(self, reset_mask: torch.Tensor) -> None:
+        """Reset bias values for only selected rows."""
+        if (
+            not isinstance(reset_mask, torch.Tensor)
+            or reset_mask.shape != (self._num_envs,)
+            or reset_mask.dtype != torch.bool
+            or reset_mask.device != self._device
+        ):
+            raise ValueError(
+                f"NoiseModel reset mask must have shape {(self._num_envs,)}, "
+                f"bool dtype, and device {self._device}"
+            )
+        replacement = cast(
+            "torch.Tensor", self._bias_noise_cfg.apply(self._bias, torch_rng=self._torch_rng)
         )
-        self._bias[indices] = cast("torch.Tensor", replacement)
+        selected = reset_mask.reshape((self._num_envs, *([1] * (self._bias.ndim - 1))))
+        self._bias.copy_(torch.where(selected, replacement, self._bias))
 
     def _initial_bias(self, data: torch.Tensor) -> torch.Tensor:
         shape = tuple(data.shape)
@@ -101,7 +108,7 @@ class NoiseModelWithAdditiveBias(NoiseModel):
                 )
             self._bias = self._initial_bias(data)
             self._bias_initialized = True
-            self.reset()
+            self.reset(torch.ones(self._num_envs, dtype=torch.bool, device=self._device))
         elif tuple(self._bias.shape) != tuple(data.shape) and self._sample_bias_per_component:
             raise ValueError(
                 f"NoiseModel observation shape changed from {tuple(self._bias.shape)} "

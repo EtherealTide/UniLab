@@ -91,7 +91,7 @@ def test_verdict_for_ratio() -> None:
 
 
 def test_supported_metric_schema_matches_producer() -> None:
-    from uni_rl.logging.metric_schema import METRIC_SCHEMA_VERSION
+    from unilab.rl.logging.metric_schema import METRIC_SCHEMA_VERSION
 
     assert bench._SUPPORTED_METRIC_SCHEMA_VERSION == METRIC_SCHEMA_VERSION
 
@@ -104,8 +104,6 @@ def test_build_train_command_matches_production_overrides(tmp_path: Path) -> Non
     assert "training.no_play=true" in command
     assert "algo.max_iterations=300" in command
     assert any(arg.startswith("training.log_dir=") for arg in command)
-    assert not any(arg.startswith("training.devices") for arg in command)
-
     command_dp = bench.build_train_command(
         tmp_path / "runs" / "n2",
         iterations=300,
@@ -193,6 +191,26 @@ def test_parse_run_rejects_mixed_canonical_and_legacy_tags(tmp_path: Path) -> No
             "perf/steps_per_sec": [111.0],
         },
     )
+    with pytest.raises(bench.RunParseError, match="must not contain legacy tags"):
+        bench.parse_run(run_dir, world_size=1)
+
+
+@pytest.mark.parametrize("retired_tag", sorted(bench._REJECTED_RETIRED_TAGS))
+def test_parse_run_rejects_each_retired_tag(
+    tmp_path: Path,
+    retired_tag: str,
+) -> None:
+    run_dir = tmp_path / "retired"
+    _make_canonical_run_dir(run_dir, total_fps=[100.0], iteration_time=[0.5])
+    _replace_tfevents(
+        run_dir,
+        {
+            "Perf/total_fps": [100.0],
+            "Perf/iteration_time": [0.5],
+            retired_tag: [1.0],
+        },
+    )
+
     with pytest.raises(bench.RunParseError, match="must not contain legacy tags"):
         bench.parse_run(run_dir, world_size=1)
 

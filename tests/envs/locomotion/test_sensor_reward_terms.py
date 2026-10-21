@@ -8,11 +8,11 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
-from unisim.backend.base import BackendSensorView
+import torch
+from unisim.backend.base import SensorView
 
-from unilab.dtype_config import get_global_dtype
 from unilab.managers import RewardTermCfg
-from unilab.managers._types import ManagerBasedRlEnv
+from unilab.managers.types import ManagerBasedRlEnv
 from unilab.tasks.locomotion.common import manager_terms, sensor_reward_terms
 
 
@@ -20,8 +20,14 @@ class _Scene:
     def __init__(self, values: dict[str, np.ndarray]) -> None:
         self.values = values
         self.bound_names: tuple[str, ...] | None = None
+        self.refresh_tensor_read_plan()
 
-    def bind_sensor_data(self, names) -> BackendSensorView:
+    def __getitem__(self, name: str) -> SimpleNamespace:
+        if name != "robot":
+            raise KeyError(name)
+        return SimpleNamespace()
+
+    def bind_sensor_data(self, names) -> SensorView:
         names = tuple(names)
         self.bound_names = names
         dimensions = tuple(self.values[name].shape[1] for name in names)
@@ -29,16 +35,30 @@ class _Scene:
         def read() -> np.ndarray:
             return np.concatenate([self.values[name] for name in names], axis=1)
 
-        view = BackendSensorView("fake", names, dimensions, 2, read)
+        view = SensorView("fake", names, dimensions, 2, read)
         view.read()  # Mirror SimBackend.bind_sensor_data materialization validation.
         return view
 
+    def refresh_tensor_read_plan(self, device: torch.device = torch.device("cpu")) -> None:
+        values = {
+            name: torch.as_tensor(value, device=device) for name, value in self.values.items()
+        }
+
+        def sensor_tensor_views(entity, names):
+            return SimpleNamespace(values={name: values[name] for name in names})
+
+        self.read_plan = SimpleNamespace(
+            device=device,
+            sensor_names={"robot": tuple(self.values)},
+            sensor_tensor_views=sensor_tensor_views,
+        )
+
 
 class _Commands:
-    def __init__(self, command: np.ndarray) -> None:
+    def __init__(self, command: torch.Tensor) -> None:
         self.command = command
 
-    def get_command(self, name: str) -> np.ndarray:
+    def get_command(self, name: str) -> torch.Tensor:
         if name != "twist":
             raise KeyError(name)
         return self.command
@@ -46,7 +66,7 @@ class _Commands:
 
 def _env(
     sensors: dict[str, np.ndarray] | None = None,
-    command: np.ndarray | None = None,
+    command: torch.Tensor | None = None,
 ) -> tuple[ManagerBasedRlEnv, _Scene]:
     scene = _Scene(
         sensors
@@ -57,7 +77,7 @@ def _env(
         }
     )
     if command is None:
-        command = np.array([[0.5, -0.2, 0.3], [-0.1, 0.4, -0.2]], dtype=np.float32)
+        command = torch.tensor([[0.5, -0.2, 0.3], [-0.1, 0.4, -0.2]], dtype=torch.float32)
     env = cast(
         ManagerBasedRlEnv,
         SimpleNamespace(num_envs=2, scene=scene, command_manager=_Commands(command)),
@@ -135,7 +155,8 @@ def test_alive_returns_unconditional_ones() -> None:
     env, _ = _env()
     result = manager_terms.alive(env)
     np.testing.assert_array_equal(result, np.ones(2))
-    assert result.dtype == np.dtype(get_global_dtype())
+    assert result.dtype == torch.float32
+    assert result.device == torch.device("cpu")
 
 
 def test_hot_paths_use_only_cached_runtime_objects() -> None:

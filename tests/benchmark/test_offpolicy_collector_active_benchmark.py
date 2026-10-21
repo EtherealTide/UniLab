@@ -64,10 +64,28 @@ def _make_result(
 
 
 def test_parse_case_requires_algo_task_sim() -> None:
-    assert bench._parse_case("sac/g1_walk_flat/mujoco") == ("sac", "g1_walk_flat", "mujoco")
+    assert bench._parse_case("sac/g1_walk_flat/mujoco") == ("sac", "g1_walk_flat", "mujoco", None)
 
     with pytest.raises(ValueError, match="<algo>/<task>/<sim>"):
         bench._parse_case("g1_walk_flat/mujoco")
+
+
+def test_parse_case_accepts_optional_owner_profile() -> None:
+    assert bench._parse_case("flashsac/g1_motion_tracking/mjwarp/profile") == (
+        "flashsac",
+        "g1_motion_tracking",
+        "mjwarp",
+        "profile",
+    )
+
+    with pytest.raises(ValueError, match=r"<algo>/<task>/<sim>\[/<profile>\]"):
+        bench._parse_case("flashsac/g1_motion_tracking/mjwarp/profile/extra")
+
+
+def test_owner_config_path_builds_profile_owner_name() -> None:
+    profiled = bench._owner_config_path("flashsac", "g1_motion_tracking", "mjwarp", "profile")
+
+    assert profiled.name == "mjwarp_profile.yaml"
 
 
 def test_default_cases_cover_scoped_host_bridge() -> None:
@@ -156,6 +174,50 @@ def test_parse_args_accepts_backend_and_all_backend_modes() -> None:
     assert all_args.all_backends
 
 
+def test_removed_graph_benchmark_clis_are_rejected() -> None:
+    with pytest.raises(SystemExit, match="2"):
+        bench.parse_args(["--env-update-mode", "deferred-eager"])
+    with pytest.raises(SystemExit, match="2"):
+        bench.parse_args(["--env-update-mode", "graph"])
+    with pytest.raises(SystemExit, match="2"):
+        bench.parse_args(["--deferred-validation-boundaries"])
+
+
+def test_package_versions_record_missing_dependencies_without_hiding_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_version(name: str) -> str:
+        if name == "torch":
+            return "2.14.0+cu130"
+        raise bench.PackageNotFoundError(name)
+
+    monkeypatch.setattr(bench, "version", fake_version)
+
+    versions = bench._package_versions()
+
+    assert versions == {name: "not-installed" for name in bench.FIXATION_PACKAGE_NAMES} | {
+        "torch": "2.14.0+cu130"
+    }
+
+
+def test_runtime_fixation_is_serialized_with_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        bench,
+        "_package_versions",
+        lambda: {name: "test-version" for name in bench.FIXATION_PACKAGE_NAMES},
+    )
+    monkeypatch.setattr(
+        bench,
+        "_git_fixation",
+        lambda: {"branch": "test", "commit": "0123456", "dirty": False},
+    )
+    monkeypatch.setattr(bench, "_runtime_fixation", lambda: {"test": True})
+
+    fixation = bench._runtime_fixation()
+
+    assert fixation == {"test": True}
+
+
 def test_hardware_table_includes_cpu_and_memory_details() -> None:
     table = bench._format_hardware_table(
         {
@@ -201,6 +263,25 @@ def test_env_step_breakdown_table_keeps_subparts_separate() -> None:
     assert "0.750 (75.0%, 15.0%)" in table
     assert "0.250 (25.0%, 5.0%)" in table
     assert "0.000000" in table
+
+
+def test_result_records_replay_ingress_ordering_evidence() -> None:
+    result = _make_result(include_env_step_breakdown=True)
+    result.replay_ingress_diagnostics = {
+        "published_sequence": 4,
+        "release_sequence": 4,
+        "dropped_batches": 0,
+        "occupancy": 0,
+    }
+
+    payload = bench._result_to_dict(result)
+
+    assert payload["replay_ingress_diagnostics"] == {
+        "published_sequence": 4,
+        "release_sequence": 4,
+        "dropped_batches": 0,
+        "occupancy": 0,
+    }
 
 
 def test_cpu_util_pct_uses_system_time_delta() -> None:
@@ -269,6 +350,10 @@ def test_write_csv_includes_backend_set_state_sub_timing_columns(tmp_path) -> No
         "set_state_reset_forward_ms",
         "set_state_host_cache_refresh_ms",
         "set_state_internal_gap_ms",
+        "set_state_tensor_model_update_ms",
+        "set_state_tensor_mask_ms",
+        "set_state_tensor_commit_forward_ms",
+        "set_state_tensor_host_cache_refresh_ms",
     )
     for key in expected_keys:
         assert key in header, f"CSV header missing {key!r}"
@@ -347,6 +432,34 @@ def test_format_set_state_mjwarp_table_covers_mjwarp_only_keys() -> None:
     assert "Reset upload" in table
     assert "Reset forward" in table
     assert "Host cache refresh" in table
+    assert "4.000 (50.0%)" in table
+    assert "2.000 (25.0%)" in table
+
+
+def test_format_set_state_mjwarp_tensor_table_covers_tensor_only_keys() -> None:
+    """The mjwarp tensor keyset table exposes the set_state_tensor sub-timings."""
+    result = _make_result(
+        runtime_sim_backend="mjwarp",
+        num_envs=2,
+        throughput=2000.0,
+        include_env_step_breakdown=True,
+    )
+    result.env_step_timing_ms_per_vector_step["dr_reset_set_state_ms"] = bench.TimingStats(
+        [8.0], 8.0, 8.0, 0.0, 8.0, 8.0
+    )
+    result.env_step_timing_ms_per_vector_step["set_state_tensor_commit_forward_ms"] = (
+        bench.TimingStats([4.0], 4.0, 4.0, 0.0, 4.0, 4.0)
+    )
+    result.env_step_timing_ms_per_vector_step["set_state_tensor_model_update_ms"] = (
+        bench.TimingStats([2.0], 2.0, 2.0, 0.0, 2.0, 2.0)
+    )
+
+    table = bench._format_set_state_mjwarp_tensor_table([result])
+
+    assert "Model update" in table
+    assert "Tensor mask" in table
+    assert "Commit forward" in table
+    assert "Tensor host cache" in table
     assert "4.000 (50.0%)" in table
     assert "2.000 (25.0%)" in table
 
@@ -458,6 +571,7 @@ def test_variant_blocks_alternate_labels_without_extending_measurement(monkeypat
         "_write_json",
         lambda path, value: payload.update(value),
     )
+    monkeypatch.setattr(bench, "_runtime_fixation", lambda: {})
 
     argv = [
         "--cases",
@@ -514,19 +628,20 @@ def test_variant_ablation_table_pairs_each_head_with_preceding_base() -> None:
     assert "1.500x" in table
 
 
-def test_numpy_random_profiler_times_generator_bound_calls() -> None:
+def test_numpy_random_profiler_times_legacy_module_calls() -> None:
     import numpy as np
 
     profiler = bench._NumpyRandomProfiler()
-    generator = np.random.default_rng(17)
-    proxy = profiler.bind_generator(generator)
+    original_uniform = np.random.uniform
+    profiler.install()
 
     profiler.begin_step()
-    proxy.uniform(-1.0, 1.0, (2,))
-    proxy.integers(0, 3, (2,))
-    profiler.end_step()
+    try:
+        np.random.uniform(-1.0, 1.0, (2,))
+    finally:
+        profiler.end_step()
+        profiler.uninstall()
 
-    assert profiler.step_calls == 2
+    assert profiler.step_calls == 1
     assert profiler.step_ms >= 0.0
-    assert isinstance(proxy.bit_generator, np.random.BitGenerator)
-    assert profiler.restore_generator() is generator
+    assert np.random.uniform is original_uniform

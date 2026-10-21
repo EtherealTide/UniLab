@@ -12,14 +12,15 @@ import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 
+from unilab.utils.checkpoint import normalize_checkpoint_value
 from unilab.utils.sim2sim import policy_load_dim_guard, resolve_sim2sim_config
 
 LogFn = Callable[[str], None]
 
 
 @dataclass(frozen=True)
-class RslRlPlaybackConfig:
-    """Configuration needed to bootstrap an RSL-RL interactive playback session."""
+class PlaybackConfig:
+    """Configuration needed to bootstrap an interactive playback session."""
 
     task: str
     load_run: str
@@ -76,9 +77,9 @@ class PlayInteractiveArgs:
     sim: str = "mujoco"
 
 
-def build_playback_config(args: Any, *, num_envs: int = 1) -> RslRlPlaybackConfig:
-    """Build an :class:`RslRlPlaybackConfig` from a play-args-like object."""
-    return RslRlPlaybackConfig(
+def build_playback_config(args: Any, *, num_envs: int = 1) -> PlaybackConfig:
+    """Build an :class:`PlaybackConfig` from a play-args-like object."""
+    return PlaybackConfig(
         task=str(args.task),
         load_run=str(args.load_run),
         checkpoint=getattr(args, "checkpoint", None),
@@ -265,12 +266,11 @@ class RslRlPlaybackSession:
                 self.obs = self.obs.float()
             return self.policy(self.obs)
         if self.action_mode == "random":
-            actions = np.random.uniform(
-                action_space.low,
-                action_space.high,
-                size=(self.num_envs, action_dim),
+            low = torch.as_tensor(action_space.low, device=self.device).to(torch.float32)
+            high = torch.as_tensor(action_space.high, device=self.device).to(torch.float32)
+            return low + (high - low) * torch.rand(
+                (self.num_envs, action_dim), device=self.device, dtype=torch.float32
             )
-            return torch.from_numpy(actions).to(self.device).float()
         return torch.zeros(self.num_envs, action_dim, device=self.device)
 
 
@@ -309,8 +309,7 @@ class OffPolicyPlaybackSession:
     def reset(self) -> torch.Tensor:
         if self.env.state is None:
             self.env.init_state()
-        env_indices = torch.arange(self.num_envs, dtype=torch.int64, device=self.env.device)
-        reset_result = self.env.reset(env_indices)
+        reset_result = self.env.reset()
         if not isinstance(reset_result, tuple) or len(reset_result) != 2:
             raise ValueError(f"Unexpected env.reset return format: {type(reset_result)!r}")
         obs_out, _ = reset_result
@@ -370,18 +369,27 @@ def _to_play_tensor(value: Any, *, device: torch.device) -> torch.Tensor:
 
 
 def make_sim2sim_preflight(
-    cfg: Any,
+    cfg: DictConfig,
     *,
     algo_name: str,
-) -> Callable[[str | None], Any] | None:
+) -> Callable[[str | None], Any]:
     """Build a sim2sim contract preflight closure for interactive playback entrypoints.
 
-    Returns ``None`` when no Hydra config is available (legacy non-Hydra path).
-    Old runs without a contract snapshot keep the fallback + warning semantics of
-    :func:`resolve_sim2sim_config`.
+    Requires the composed Hydra config for the playback run; the legacy
+    non-Hydra path (which silently skipped the preflight) has been removed, so
+    a missing or non-Hydra config fails closed. A source run whose contract
+    snapshot is missing, malformed, or uses retired keys also fails closed in
+    :func:`resolve_sim2sim_config`; only an explicit ``None`` source run dir
+    skips the check.
     """
-    if cfg is None:
-        return None
+    if not isinstance(cfg, DictConfig):
+        raise ValueError(
+            "make_sim2sim_preflight requires a composed Hydra config (DictConfig); "
+            "interactive playback no longer supports the legacy non-Hydra path and "
+            "never skips the sim2sim preflight. Compose the owner config with "
+            f"hydra.compose and pass it to the playback entrypoint; got "
+            f"{type(cfg).__name__}."
+        )
 
     def _preflight(source_run_dir: str | None) -> Any:
         return resolve_sim2sim_config(
@@ -392,14 +400,6 @@ def make_sim2sim_preflight(
         )
 
     return _preflight
-
-
-def select_torch_device() -> str:
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
 
 
 def infer_checkpoint_actor_input_dim(ckpt_path: str) -> int | None:
@@ -428,10 +428,10 @@ def _scene_visual_materializer() -> Any:
 
 
 def build_play_backend_adapter(cfg: Any, *, root_dir: str | Path, algo_name: str = "ppo") -> Any:
-    """Build the BackendAdapter used by play entrypoints to derive env cfg overrides."""
-    from unilab.base.config_adapter import BackendAdapter
+    """Build the EnvConfigAdapter used by play entrypoints to derive env cfg overrides."""
+    from unilab.base.config_adapter import EnvConfigAdapter
 
-    return BackendAdapter(
+    return EnvConfigAdapter(
         cfg,
         root_dir=root_dir,
         algo_name=algo_name,
@@ -453,7 +453,7 @@ def available_backends_for_task(task_name: str) -> tuple[str, ...]:
 
 def create_rsl_rl_playback_session(
     *,
-    playback_cfg: RslRlPlaybackConfig,
+    playback_cfg: PlaybackConfig,
     env_factory: Callable[[int], Any],
     algo_config: dict[str, Any],
     root_dir: str | Path,
@@ -481,7 +481,7 @@ def create_rsl_rl_playback_session(
     if policy_obs_dims_getter is None:
         policy_obs_dims_getter = get_policy_obs_dims
 
-    device_name = select_torch_device() if device is None else str(device)
+    device_name = default_device(torch) if device is None else str(device)
     env = env_factory(int(playback_cfg.num_envs))
     if env is None:
         raise RuntimeError("Playback env factory did not return an environment.")
@@ -574,21 +574,10 @@ def create_rsl_rl_playback_session(
     return session, policy_obs_mode, checkpoint_path
 
 
-def normalize_checkpoint_value(value: object) -> str | None:
-    """Normalize a raw checkpoint selector value; sentinel values map to ``None``."""
-    if value is None:
-        return None
-    text = str(value)
-    return None if text in {"", "-1", "None", "null"} else text
-
-
-_normalize_checkpoint_value = normalize_checkpoint_value
-
-
 def _cfg_checkpoint_value(cfg: Any) -> str | None:
     from omegaconf import OmegaConf
 
-    return _normalize_checkpoint_value(OmegaConf.select(cfg, "algo.checkpoint", default=None))
+    return normalize_checkpoint_value(OmegaConf.select(cfg, "algo.checkpoint", default=None))
 
 
 def _resolve_appo_checkpoint_from_cfg(
@@ -597,31 +586,17 @@ def _resolve_appo_checkpoint_from_cfg(
     root_dir: str | Path,
 ) -> tuple[str | None, str | None]:
     from unilab.training import get_log_root
-    from unilab.utils.checkpoint import (
-        resolve_appo_checkpoint_path,
-        resolve_task_checkpoint_path,
+    from unilab.utils.checkpoint import resolve_checkpoint_path
+
+    task_log_root = get_log_root(root_dir, cfg) / str(cfg.training.task_name)
+    selected_path, selected_dir = resolve_checkpoint_path(
+        task_log_root,
+        str(cfg.algo.load_run),
+        checkpoint=_cfg_checkpoint_value(cfg),
     )
-
-    selected_checkpoint = _cfg_checkpoint_value(cfg)
-    if selected_checkpoint is not None:
-        selected_path, selected_dir = resolve_task_checkpoint_path(
-            root_dir,
-            task_name=str(cfg.training.task_name),
-            load_run=str(cfg.algo.load_run),
-            algo_log_name=str(cfg.algo.algo_log_name),
-            checkpoint=selected_checkpoint,
-            log_root=getattr(cfg.training, "log_root", None),
-        )
-        return (
-            str(selected_path) if selected_path is not None else None,
-            str(selected_dir) if selected_dir is not None else None,
-        )
-
-    base_log_dir = get_log_root(root_dir, cfg) / str(cfg.training.task_name)
-    checkpoint_path, checkpoint_dir = resolve_appo_checkpoint_path(base_log_dir, cfg.algo.load_run)
     return (
-        str(checkpoint_path) if checkpoint_path is not None else None,
-        str(checkpoint_dir) if checkpoint_dir is not None else None,
+        str(selected_path) if selected_path is not None else None,
+        str(selected_dir) if selected_dir is not None else None,
     )
 
 
@@ -638,7 +613,8 @@ def _build_appo_actor(
 
     from rsl_rl.utils import resolve_callable
     from tensordict import TensorDict
-    from uni_rl.utils.observations import get_obs_dims
+
+    from unilab.rl.contracts.observations import get_obs_dims
 
     action_shape = env.action_space.shape
     if action_shape is None:
@@ -675,7 +651,7 @@ def _build_appo_actor(
 
 def create_appo_playback_session(
     *,
-    playback_cfg: RslRlPlaybackConfig,
+    playback_cfg: PlaybackConfig,
     cfg: Any,
     rl_cfg: dict[str, Any],
     env_factory: Callable[[int], Any],
@@ -686,7 +662,7 @@ def create_appo_playback_session(
 ) -> tuple[RslRlPlaybackSession, str, str | None]:
     """Create an APPO interactive playback session."""
 
-    device_name = select_torch_device() if device is None else str(device)
+    device_name = default_device(torch) if device is None else str(device)
     env = env_factory(int(playback_cfg.num_envs))
     if env is None:
         raise RuntimeError("Playback env factory did not return an environment.")
@@ -767,20 +743,15 @@ def extract_reset_obs(reset_result):
     raise ValueError(f"Unexpected env.reset return format: {type(reset_result)!r}")
 
 
-def resolve_play_obs_dim(obs_groups_spec: dict[str, int]) -> int:
-    obs_dim, _ = resolve_play_obs_dims(obs_groups_spec)
-    return obs_dim
-
-
 def resolve_play_obs_dims(obs_groups_spec: dict[str, int]) -> tuple[int, int]:
-    from uni_rl.utils.observations import get_obs_dims
+    from unilab.rl.contracts.observations import get_obs_dims
 
     obs_dim, critic_obs_dim = get_obs_dims(obs_groups_spec)
     return int(obs_dim), int(critic_obs_dim)
 
 
 def extract_play_obs(obs_dict: dict[str, torch.Tensor]) -> torch.Tensor:
-    from uni_rl.utils.observations import split_obs_dict
+    from unilab.rl.contracts.observations import split_obs_dict
 
     obs_out, _ = split_obs_dict(obs_dict)
     return obs_out
@@ -804,7 +775,7 @@ def resolve_play_actor_spec(
     if algo_name != "sac":
         return algo_name, {}
 
-    from uni_rl.offpolicy.runtime import resolve_custom_offpolicy_runtime
+    from unilab.rl.runtime.offpolicy.resolution import resolve_custom_offpolicy_runtime
 
     rl_cfg = cast(dict[str, Any], OmegaConf.to_container(cfg.algo, resolve=True))
     custom_runtime = resolve_custom_offpolicy_runtime(rl_cfg)
@@ -819,6 +790,18 @@ def resolve_play_actor_spec(
     return actor_algo_type, actor_kwargs
 
 
+def _flashsac_actor_kwargs(cfg: DictConfig) -> dict[str, Any]:
+    kwargs = {
+        "actor_num_blocks": cfg.algo.algo_params.actor_num_blocks,
+        "actor_noise_zeta_mu": cfg.algo.algo_params.actor_noise_zeta_mu,
+        "actor_noise_zeta_max": cfg.algo.algo_params.actor_noise_zeta_max,
+    }
+    actor_config = cfg.algo.algo_params.get("actor_config")
+    if actor_config is not None:
+        kwargs["actor_config"] = actor_config
+    return kwargs
+
+
 def build_play_actor(
     algo_name: str,
     cfg: DictConfig,
@@ -829,7 +812,7 @@ def build_play_actor(
     device: str,
 ) -> tuple[Any, Any | None, str, dict[str, Any]]:
     """Build the policy actor selected by an off-policy owner config."""
-    from uni_rl.algos.common.actor_factory import build_actor
+    from unilab.rl.algos.common.actor_factory import build_actor
 
     actor_algo_type, actor_kwargs = resolve_play_actor_spec(
         algo_name,
@@ -849,6 +832,7 @@ def build_play_actor(
             **actor_kwargs,
         )
     elif algo_name == "flashsac":
+        build_actor_kwargs = _flashsac_actor_kwargs(cfg)
         actor = build_actor(
             algo_name,
             obs_dim,
@@ -856,12 +840,10 @@ def build_play_actor(
             cfg.algo.actor_hidden_dim,
             cfg.algo.use_layer_norm,
             device,
-            actor_num_blocks=cfg.algo.algo_params.actor_num_blocks,
-            actor_noise_zeta_mu=cfg.algo.algo_params.actor_noise_zeta_mu,
-            actor_noise_zeta_max=cfg.algo.algo_params.actor_noise_zeta_max,
+            **build_actor_kwargs,
         )
         if cfg.algo.obs_normalization:
-            from uni_rl.algos.common.normalization import EmpiricalNormalization
+            from unilab.rl.algos.common.normalization import EmpiricalNormalization
 
             normalizer = EmpiricalNormalization(shape=obs_dim, device=device)
     else:
@@ -871,14 +853,63 @@ def build_play_actor(
     return actor, normalizer, actor_algo_type, actor_kwargs
 
 
+def flashsac_play_actor_semantics(
+    cfg: Any,
+    *,
+    obs_dim: int,
+    action_dim: int,
+    actor: Any | None = None,
+) -> dict[str, Any]:
+    """Recompute the FlashSAC actor semantics payload expected at play time."""
+    from unilab.rl.algos.flash_sac.actor_spec import (
+        FlashSACActorSpec,
+        build_builtin_actor_semantics,
+        build_custom_actor_semantics,
+    )
+
+    actor_config = cfg.algo.algo_params.get("actor_config")
+    if actor_config is not None:
+        transform_id = getattr(actor, "action_transform_id", None)
+        if not isinstance(transform_id, str) or not transform_id:
+            raise TypeError(
+                "Custom FlashSAC play actor must declare a non-empty string 'action_transform_id'"
+            )
+        return build_custom_actor_semantics(
+            FlashSACActorSpec.from_config(actor_config),
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            action_transform_id=transform_id,
+        )
+    return build_builtin_actor_semantics(
+        obs_dim=obs_dim,
+        action_dim=action_dim,
+        num_blocks=int(cfg.algo.algo_params.actor_num_blocks),
+        hidden_dim=int(cfg.algo.actor_hidden_dim),
+        noise_zeta_mu=float(cfg.algo.algo_params.actor_noise_zeta_mu),
+        noise_zeta_max=int(cfg.algo.algo_params.actor_noise_zeta_max),
+    )
+
+
 def load_play_actor(
     algo_name: str,
     actor: Any,
     normalizer: Any | None,
     checkpoint: dict[str, Any],
+    expected_actor_semantics: dict[str, Any] | None = None,
 ) -> None:
-    """Restore an off-policy play actor and its optional observation normalizer."""
-    if algo_name in ("sac", "flashsac"):
+    """Restore an off-policy play actor and its optional observation normalizer.
+
+    For FlashSAC, ``expected_actor_semantics`` enables fail-closed validation
+    of the checkpoint's actor construction/observation/action semantics against
+    the owner config before weights are loaded.
+    """
+    if algo_name == "flashsac":
+        if expected_actor_semantics is not None:
+            from unilab.rl.algos.flash_sac.actor_spec import validate_actor_semantics
+
+            validate_actor_semantics(checkpoint.get("actor_semantics"), expected_actor_semantics)
+        actor.load_state_dict(checkpoint["actor"])
+    elif algo_name == "sac":
         actor.load_state_dict(checkpoint["actor"])
     else:
         raise ValueError(f"Unsupported algo: {algo_name}")
@@ -894,13 +925,13 @@ def build_offpolicy_env_cfg_override(
     root_dir: str | Path,
 ) -> dict[str, Any] | None:
     """Build the task env override for off-policy training."""
-    from unilab.base.config_adapter import BackendAdapter
+    from unilab.base.config_adapter import EnvConfigAdapter
     from unilab.training.common import assert_offpolicy_task_choice_matches_algo
 
     assert_offpolicy_task_choice_matches_algo(cfg, algo_name=algo_name)
     return cast(
         dict[str, Any] | None,
-        BackendAdapter(cfg, root_dir=root_dir, algo_name=algo_name).build_task_env_cfg_override(),
+        EnvConfigAdapter(cfg, root_dir=root_dir, algo_name=algo_name).build_task_env_cfg_override(),
     )
 
 
@@ -916,19 +947,19 @@ def build_offpolicy_play_env_cfg_override(
     renderer must be selected before the worker's Kit ``INIT`` handshake, but
     learner/collector environments must stay on the no-rendering experience.
     """
-    from unilab.base.config_adapter import BackendAdapter
+    from unilab.base.config_adapter import EnvConfigAdapter
     from unilab.training.common import assert_offpolicy_task_choice_matches_algo
 
     assert_offpolicy_task_choice_matches_algo(cfg, algo_name=algo_name)
     return cast(
         dict[str, Any] | None,
-        BackendAdapter(cfg, root_dir=root_dir, algo_name=algo_name).build_play_env_cfg_override(),
+        EnvConfigAdapter(cfg, root_dir=root_dir, algo_name=algo_name).build_play_env_cfg_override(),
     )
 
 
 def create_sac_playback_session(
     *,
-    playback_cfg: RslRlPlaybackConfig,
+    playback_cfg: PlaybackConfig,
     cfg: Any,
     env_factory: Callable[[int], Any],
     root_dir: str | Path,
@@ -940,9 +971,9 @@ def create_sac_playback_session(
 
     import os
 
-    from uni_rl.algos.common.actor_factory import build_actor
-
-    from unilab.utils.checkpoint import resolve_offpolicy_checkpoint_path
+    from unilab.rl.algos.common.actor_factory import build_actor
+    from unilab.training import get_log_root
+    from unilab.utils.checkpoint import resolve_checkpoint_path
 
     device_name = default_device(torch, str(device) if device is not None else None)
     env = env_factory(int(playback_cfg.num_envs))
@@ -962,19 +993,13 @@ def create_sac_playback_session(
         critic_obs_dim=critic_obs_dim,
     )
     if algo_name == "flashsac":
-        actor_kwargs.update(
-            {
-                "actor_num_blocks": cfg.algo.algo_params.actor_num_blocks,
-                "actor_noise_zeta_mu": cfg.algo.algo_params.actor_noise_zeta_mu,
-                "actor_noise_zeta_max": cfg.algo.algo_params.actor_noise_zeta_max,
-            }
-        )
+        actor_kwargs.update(_flashsac_actor_kwargs(cfg))
 
     actor = None
     checkpoint_path: str | None = None
     normalizer = None
     if bool(getattr(cfg.algo, "obs_normalization", False)):
-        from uni_rl.algos.common.normalization import EmpiricalNormalization
+        from unilab.rl.algos.common.normalization import EmpiricalNormalization
 
         normalizer = EmpiricalNormalization(shape=obs_dim, device=session_device)
     if playback_cfg.action_mode == "policy":
@@ -988,12 +1013,29 @@ def create_sac_playback_session(
             **actor_kwargs,
         )
         actor.eval()
-        checkpoint_path, checkpoint_dir = resolve_offpolicy_checkpoint_path(
-            Path(root_dir),
-            cfg.algo.algo_log_name,
-            cfg.training.task_name,
+        algo_log_name = str(cfg.algo.algo_log_name)
+        if playback_cfg.log_root is not None:
+            task_log_root = (
+                get_log_root(
+                    Path(root_dir),
+                    algo_log_name=algo_log_name,
+                    log_root=playback_cfg.log_root,
+                )
+                / playback_cfg.task
+            )
+        else:
+            # Without an explicit log_root the lookup stays on the repo-rooted
+            # ``<root_dir>/logs/<algo>`` tree; the test-only
+            # ``UNILAB_TEST_LOG_ROOT`` override is reserved for cfg-driven
+            # resolution (``training.resolve_configured_checkpoint_path``).
+            task_log_root = (Path(root_dir) / "logs" / algo_log_name).absolute() / playback_cfg.task
+        resolved_path, resolved_dir = resolve_checkpoint_path(
+            task_log_root,
             playback_cfg.load_run,
+            checkpoint=normalize_checkpoint_value(playback_cfg.checkpoint),
         )
+        checkpoint_path = str(resolved_path) if resolved_path is not None else None
+        checkpoint_dir = str(resolved_dir) if resolved_dir is not None else None
         if checkpoint_path is None or not os.path.exists(checkpoint_path):
             log(
                 f"WARNING: no {algo_name} checkpoint found for "
@@ -1008,12 +1050,28 @@ def create_sac_playback_session(
                 strict=bool(getattr(cfg.training, "sim2sim_strict", True)),
             )
             checkpoint = torch.load(checkpoint_path, map_location=session_device, weights_only=True)
+            expected_actor_semantics = (
+                flashsac_play_actor_semantics(
+                    cfg,
+                    obs_dim=obs_dim,
+                    action_dim=action_dim,
+                    actor=actor,
+                )
+                if algo_name == "flashsac"
+                else None
+            )
             with policy_load_dim_guard(
                 env_obs_dim=obs_dim,
                 env_action_dim=action_dim,
                 algo_name=algo_name,
             ):
-                load_play_actor(algo_name, actor, normalizer, checkpoint)
+                load_play_actor(
+                    algo_name,
+                    actor,
+                    normalizer,
+                    checkpoint,
+                    expected_actor_semantics=expected_actor_semantics,
+                )
             log(f"Loading {algo_name} checkpoint: {checkpoint_path}")
 
     log(f"Action mode: {playback_cfg.action_mode}")
@@ -1093,7 +1151,7 @@ __all__ = [
     "PlayInteractiveArgs",
     "PlaybackControls",
     "PlaybackSession",
-    "RslRlPlaybackConfig",
+    "PlaybackConfig",
     "RslRlPlaybackSession",
     "available_backends_for_task",
     "build_play_backend_adapter",
@@ -1101,9 +1159,10 @@ __all__ = [
     "create_appo_playback_session",
     "create_rsl_rl_playback_session",
     "create_sac_playback_session",
+    "default_device",
+    "flashsac_play_actor_semantics",
     "infer_checkpoint_actor_input_dim",
     "make_sim2sim_preflight",
     "normalize_checkpoint_value",
     "prepare_motion_overlay_selection",
-    "select_torch_device",
 ]

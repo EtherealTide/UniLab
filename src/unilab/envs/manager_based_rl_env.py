@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 import gymnasium as gym
-import numpy as np
 import torch
 from unisim.backend.base import (
     DebugOverlayGetter,
@@ -33,14 +32,15 @@ from unilab.base.config_overrides import (
     CONFIG_MAPPING_POLICY_KEY,
     MANAGER_TERM_MAPPING_POLICY,
 )
-from unilab.base.cpu_runtime import apply_env_cpu_runtime
+from unilab.base.cpu_runtime import apply_cpu_confinement
 from unilab.base.entity import EntityCfg, EntityScene, SceneTensorReadPlan, SceneTensorReadSpec
+from unilab.base.reset_selectors import ResetMaskBuffer, resolve_reset_env_ids
 from unilab.base.reset_state import ResetStateTransaction
 from unilab.base.scene import SceneCfg, resolve_scene_default_qpos
 from unilab.base.torch_env import TorchEnv, TorchEnvState
 from unilab.base.variants import (
-    _build_fixed_variant_plan,
-    _require_fixed_variant_support,
+    build_fixed_variant_plan,
+    require_fixed_variant_support,
 )
 from unilab.dtype_config import get_global_dtype
 from unilab.envs import mdp
@@ -53,6 +53,7 @@ from unilab.managers import (
     CurriculumTermCfg,
     EventManager,
     EventTermCfg,
+    ManagerRng,
     MetricsManager,
     MetricsTermCfg,
     NullCommandManager,
@@ -71,68 +72,13 @@ from unilab.managers import (
     RewardTermCfg,
     TerminationManager,
     TerminationTermCfg,
-    TorchManagerRng,
 )
 from unilab.managers.scene_entity_config import SceneEntityCfg
+from unilab.rl.contracts.env import EnvAlgoCapabilities
 
 
-def _supported_device_resident_sensors(backend_type: str) -> frozenset[str]:
-    """Return names a DEVICE_RESIDENT backend must publish.
-
-    The audited default covers an unlisted device-resident adapter. Unsupported
-    declared names must fail closed rather than silently select a host reader.
-    """
-
-    return _DEVICE_RESIDENT_TENSOR_SENSORS.get(
-        backend_type,
-        frozenset({"pelvis_local_linvel", "torso_gyro", "torso_upvector"}),
-    )
-
-
-_DEVICE_RESIDENT_TENSOR_SENSORS: dict[str, frozenset[str]] = {
-    "isaacgym": frozenset({"pelvis_local_linvel", "torso_gyro"}),
-    "mjwarp": frozenset(
-        {
-            "pelvis_local_linvel",
-            "torso_gyro",
-            "torso_upvector",
-            "left_foot_pos",
-            "right_foot_pos",
-            "left_foot_quat",
-            "right_foot_quat",
-            *(f"left_foot_contact_{index}" for index in range(4)),
-            *(f"right_foot_contact_{index}" for index in range(4)),
-        }
-    ),
-    "genesis": frozenset(
-        {
-            "pelvis_local_linvel",
-            "pelvis_gyro",
-            "pelvis_upvector",
-            "torso_gyro",
-            "torso_upvector",
-            "left_foot_pos",
-            "right_foot_pos",
-            "left_foot_quat",
-            "right_foot_quat",
-            *(f"left_foot_contact_{index}" for index in range(4)),
-            *(f"right_foot_contact_{index}" for index in range(4)),
-        }
-    ),
-    "newton": frozenset(
-        {
-            "pelvis_local_linvel",
-            "torso_gyro",
-            "torso_upvector",
-            "left_foot_pos",
-            "right_foot_pos",
-            "left_foot_quat",
-            "right_foot_quat",
-            *(f"left_foot_contact_{index}" for index in range(4)),
-            *(f"right_foot_contact_{index}" for index in range(4)),
-        }
-    ),
-}
+def _finite_real(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def _manager_terms_field() -> Any:
@@ -144,7 +90,7 @@ def _manager_terms_field() -> Any:
 
 @dataclass
 class ManagerBasedRlEnvCfg(EnvCfg):
-    """Configuration for the manager-based NumPy environment.
+    """Configuration for the Manager-Based Torch environment.
 
     Production task owners declare these fields in Hydra. The Registry materializes
     them into this plain typed config on the cold path; Python factories do not mirror
@@ -166,7 +112,7 @@ class ManagerBasedRlEnvCfg(EnvCfg):
     # a training process may request accelerator Torch carriers shared with its
     # learner. This selects public-manager carrier placement only; it is neither a
     # physics-device claim nor a tensor/NumPy runtime compatibility switch.
-    manager_torch_device: str | None = None
+    sim_carrier_device: str | None = None
     seed: int | None = None
     is_finite_horizon: bool = False
     auto_reset: bool = True
@@ -175,51 +121,44 @@ class ManagerBasedRlEnvCfg(EnvCfg):
     critic_observation_group: str | None = None
 
     def validate(self) -> None:
-        if self.manager_torch_device is not None:
-            if (
-                not isinstance(self.manager_torch_device, str)
-                or not self.manager_torch_device.strip()
-            ):
+        if self.sim_carrier_device is not None:
+            if not isinstance(self.sim_carrier_device, str) or not self.sim_carrier_device.strip():
                 raise TypeError(
-                    "ManagerBasedRlEnvCfg manager_torch_device must be 'cpu', "
-                    f"'cuda', or 'cuda:<index>', or None; got {self.manager_torch_device!r}"
+                    "ManagerBasedRlEnvCfg sim_carrier_device must be 'cpu', "
+                    f"'cuda', or 'cuda:<index>', or None; got {self.sim_carrier_device!r}"
                 )
             try:
-                requested_device = torch.device(self.manager_torch_device)
+                requested_device = torch.device(self.sim_carrier_device)
             except (RuntimeError, TypeError, ValueError) as exc:
                 raise ValueError(
-                    "ManagerBasedRlEnvCfg manager_torch_device is not a valid Torch "
-                    f"device: {self.manager_torch_device!r}"
+                    "ManagerBasedRlEnvCfg sim_carrier_device is not a valid Torch "
+                    f"device: {self.sim_carrier_device!r}"
                 ) from exc
             if requested_device.type not in {"cpu", "cuda"}:
                 raise ValueError(
-                    "ManagerBasedRlEnvCfg manager_torch_device must be cpu, cuda, or "
-                    f"None; got {self.manager_torch_device!r}"
+                    "ManagerBasedRlEnvCfg sim_carrier_device must be cpu, cuda, or "
+                    f"None; got {self.sim_carrier_device!r}"
                 )
         for name, value in (("sim_dt", self.sim_dt), ("ctrl_dt", self.ctrl_dt)):
-            if isinstance(value, bool) or not isinstance(value, (int, float, np.number)):
+            if not _finite_real(value):
                 raise TypeError(f"ManagerBasedRlEnvCfg {name} must be a real number")
-            if not np.isfinite(value) or value <= 0.0:
+            if value <= 0.0:
                 raise ValueError(f"ManagerBasedRlEnvCfg {name} must be finite and positive")
         super().validate()
         ratio = self.ctrl_dt / self.sim_dt
-        if not np.isclose(ratio, round(ratio), rtol=0.0, atol=1e-9):
+        if not math.isclose(ratio, round(ratio), rel_tol=0.0, abs_tol=1e-9):
             raise ValueError(
                 "ManagerBasedRlEnvCfg ctrl_dt must be an integer multiple of sim_dt; "
                 f"received ctrl_dt={self.ctrl_dt}, sim_dt={self.sim_dt}"
             )
         if self.max_episode_seconds is None:
             raise ValueError("ManagerBasedRlEnvCfg max_episode_seconds must be finite and positive")
-        if isinstance(self.max_episode_seconds, bool) or not isinstance(
-            self.max_episode_seconds, (int, float, np.number)
-        ):
+        if not _finite_real(self.max_episode_seconds):
             raise TypeError("ManagerBasedRlEnvCfg max_episode_seconds must be a real number")
-        if not np.isfinite(self.max_episode_seconds) or self.max_episode_seconds <= 0.0:
+        if self.max_episode_seconds <= 0.0:
             raise ValueError("ManagerBasedRlEnvCfg max_episode_seconds must be finite and positive")
         if self.seed is not None and (
-            isinstance(self.seed, bool)
-            or not isinstance(self.seed, (int, np.integer))
-            or self.seed < 0
+            isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0
         ):
             raise ValueError("ManagerBasedRlEnvCfg seed must be a non-negative integer or None")
         if self.seed is not None:
@@ -371,13 +310,12 @@ class ManagerBasedRlEnv(TorchEnv):
     curriculum_manager: CurriculumManager | NullCurriculumManager
     metrics_manager: MetricsManager | NullMetricsManager
     recorder_manager: RecorderManager | NullRecorderManager
-    _tensor_read_plan: SceneTensorReadPlan | None
-    _tensor_reset_default_root_state: torch.Tensor | None
     _last_reset_manager_timing_ms: dict[str, float]
-    _tensor_reset_env_origins: torch.Tensor | None
     _tensor_reset_env_origins_nonzero: bool | None
-    _tensor_reset_pose_bounds: torch.Tensor | None
-    _tensor_reset_velocity_bounds: torch.Tensor | None
+    tensor_reset_pose_bounds: torch.Tensor | None
+    tensor_reset_velocity_bounds: torch.Tensor | None
+    tensor_reset_bounds_key: tuple[Any, ...] | None
+    event_term_mask_buffer: ResetMaskBuffer
 
     def __init__(self, cfg: ManagerBasedRlEnvCfg, backend: SimBackend, num_envs: int):
         if not isinstance(cfg, ManagerBasedRlEnvCfg):
@@ -396,24 +334,19 @@ class ManagerBasedRlEnv(TorchEnv):
             )
 
         initial_capabilities = backend.get_tensor_capabilities()
-        runtime_device = self._resolve_runtime_device(
-            initial_capabilities, cfg.manager_torch_device
-        )
+        runtime_device = self._resolve_runtime_device(initial_capabilities, cfg.sim_carrier_device)
         super().__init__(cfg, backend, num_envs, device=runtime_device)
         actual_seed = cfg.seed if cfg.seed is not None else secrets.randbits(63)
         cfg.seed = actual_seed
-        self.rng = np.random.default_rng(actual_seed)
-        self._torch_rng_owner = TorchManagerRng(device=self.device)
-        self.torch_rng = self._torch_rng_owner
-        self._torch_generator = self._torch_rng_owner.generator if self._torch_rng_owner else None
+        self._rng_owner = ManagerRng(device=self.device).manual_seed(actual_seed)
+        self.rng = self._rng_owner
         self._reward_log_names: tuple[str, ...] = ()
         self._reward_log_means = torch.empty(0, dtype=torch.float32, device=self.device)
         self._last_reset_manager_timing_ms = {}
-        self._tensor_reset_default_root_state = None
-        self._tensor_reset_env_origins = None
         self._tensor_reset_env_origins_nonzero = None
-        self._tensor_reset_pose_bounds = None
-        self._tensor_reset_velocity_bounds = None
+        self.tensor_reset_pose_bounds = None
+        self.tensor_reset_velocity_bounds = None
+        self.tensor_reset_bounds_key = None
 
         assert cfg.scene is not None
         default_qpos = resolve_scene_default_qpos(cfg.scene, backend)
@@ -447,8 +380,18 @@ class ManagerBasedRlEnv(TorchEnv):
         self._command_dt = torch.full(
             (num_envs,), self.step_dt, dtype=self._dtype, device=self.device
         )
+        self.time_out_scratch = torch.empty_like(self.reset_buf)
         self._manual_reset_pending = torch.zeros_like(self.reset_buf)
         self._all_env_rows = torch.arange(num_envs, dtype=torch.int64, device=self.device)
+        self._all_env_reset_mask = torch.ones_like(self.reset_buf)
+        # Reusable ids→mask adapters (roadmap #2461): ``_reset_mask_buffer``
+        # backs the reset-transaction entry mask, which stays live across the
+        # whole reset; ``event_term_mask_buffer`` is the short-lived scratch
+        # for tensor-mask event terms dispatched inside the transaction. The
+        # two never alias each other, so term masks cannot clobber the live
+        # transaction mask.
+        self._reset_mask_buffer = ResetMaskBuffer(num_envs, self.device)
+        self.event_term_mask_buffer = ResetMaskBuffer(num_envs, self.device)
         self._has_transition = False
 
         self._load_managers()
@@ -457,9 +400,27 @@ class ManagerBasedRlEnv(TorchEnv):
         self._configure_action_control()
         self.set_autoreset(cfg.auto_reset)
 
-        if "startup" in self.event_manager.available_modes:
-            self.event_manager.apply(mode="startup")
         self._materialize_backend()
+        materialized_capabilities = self._backend.get_tensor_capabilities()
+        if not (
+            materialized_capabilities.packed_reset
+            and materialized_capabilities.device_reset_randomization
+        ):
+            raise NotImplementedError(
+                "backend does not declare the packed_reset capability required "
+                "by the packed reset contract: SimBackend.bind_packed_reset"
+            )
+        self._reset_state.declare_packed_reset_device(self.device)
+        if "startup" in self.event_manager.available_modes:
+            # Startup model-field DR uses the same public set_state transaction
+            # as reset DR. Materialize the backend first: adapters may make the
+            # packed reset boundary and model pools available only there.
+            # This remains a cold-path commit before read-plan binding/reset.
+            with self._reset_state.scoped_startup(self._all_env_rows):
+                self.event_manager.apply(
+                    mode="startup",
+                    env_ids=self._all_env_rows if self.event_manager.uses_startup_rows else None,
+                )
         self._compile_tensor_read_plan()
         self.command_manager.bind_read_phase()
         self._validate_manager_tensor_runtime()
@@ -472,7 +433,7 @@ class ManagerBasedRlEnv(TorchEnv):
         specs.extend(self._task_tensor_state_read_specs())
         specs.extend(self._manager_term_tensor_read_specs())
         specs.extend(self._command_tensor_read_specs())
-        self.scene._tensor_read_plan = (
+        self.scene.read_plan = (
             self.scene.compile_tensor_reads(self.device, specs) if specs else None
         )
 
@@ -521,26 +482,17 @@ class ManagerBasedRlEnv(TorchEnv):
                         self._backend.get_tensor_capabilities().execution
                         is TensorExecution.DEVICE_RESIDENT
                     ):
-                        supported = _supported_device_resident_sensors(self._backend.backend_type)
-                        missing = tuple(
-                            sensor_name
-                            for sensor_name in sensor_names
-                            if sensor_name not in supported
+                        self._require_device_resident_sensors(
+                            tuple(sensor_names),
+                            f"observation term '{group_name}/{name}'",
                         )
-                        if missing:
-                            raise NotImplementedError(
-                                "DEVICE_RESIDENT backend "
-                                f"'{self._backend.backend_type}' does not publish tensor "
-                                f"sensors {missing} required by observation term "
-                                f"'{group_name}/{name}'"
-                            )
                     specs.append(
                         SceneTensorReadSpec(
                             entity=self._observation_tensor_entity(term_cfg),
                             sensor_names=tuple(sensor_names),
                         )
                     )
-                if self.device.type != "cpu" and term_cfg.func in (
+                if term_cfg.func in (
                     mdp.joint_pos_rel,
                     mdp.joint_vel_rel,
                 ):
@@ -580,7 +532,8 @@ class ManagerBasedRlEnv(TorchEnv):
         narrow = (
             self._backend.get_tensor_capabilities().execution is TensorExecution.DEVICE_RESIDENT
         )
-        backend_type = self._backend.backend_type
+        for name, term_cfg in self.event_manager.term_cfgs.items():
+            specs.extend(self._manager_term_body_read_specs("event", name, term_cfg.func))
         for manager_name, manager in (
             ("reward", self.reward_manager),
             ("termination", self.termination_manager),
@@ -592,13 +545,42 @@ class ManagerBasedRlEnv(TorchEnv):
                         name,
                         manager.get_term_cfg(name),
                         narrow=narrow,
-                        backend_type=backend_type,
                     )
                 )
-                if manager_name == "termination":
-                    term = manager.get_term_cfg(name).func
-                    specs.extend(self._manager_term_body_read_specs(manager_name, name, term))
+                term = manager.get_term_cfg(name).func
+                specs.extend(self._manager_term_body_read_specs(manager_name, name, term))
+                if term in (
+                    mdp.bad_orientation,
+                    mdp.flat_orientation_l2,
+                    mdp.root_height,
+                    mdp.track_linear_velocity,
+                    mdp.track_angular_velocity,
+                    mdp.root_height_below_minimum,
+                    mdp.nan_detection,
+                ):
+                    entity_name = self._manager_term_entity_name(manager, name)
+                    specs.append(
+                        SceneTensorReadSpec(
+                            entity=entity_name,
+                            body_names=(self._term_root_body_name(entity_name),),
+                        )
+                    )
         return specs
+
+    def _term_root_body_name(self, entity_name: str) -> str:
+        entity = self.scene[entity_name]
+        root_body_name = getattr(entity, "root_body_name", None)
+        if not isinstance(root_body_name, str) or not root_body_name:
+            raise TypeError(
+                "ManagerBasedRlEnv tensor root-state term for entity "
+                f"'{entity_name}' requires a declared root_body_name"
+            )
+        return root_body_name
+
+    @staticmethod
+    def _manager_term_entity_name(manager: RewardManager | TerminationManager, name: str) -> str:
+        asset_cfg = manager.get_term_cfg(name).params.get("asset_cfg")
+        return asset_cfg.name if isinstance(asset_cfg, SceneEntityCfg) else "robot"
 
     def _task_tensor_state_read_specs(self) -> list[SceneTensorReadSpec]:
         """Collect explicit task-owned state-only packed reads."""
@@ -665,6 +647,11 @@ class ManagerBasedRlEnv(TorchEnv):
         params = getattr(getattr(term, "cfg", None), "params", {})
         entity_name = params.get("entity_name") if isinstance(params, dict) else None
         if not isinstance(entity_name, str) or not entity_name:
+            asset_cfg = params.get("asset_cfg") if isinstance(params, dict) else None
+            entity_name = getattr(asset_cfg, "name", None)
+        if not isinstance(entity_name, str) or not entity_name:
+            entity_name = getattr(term, "entity_name", None)
+        if not isinstance(entity_name, str) or not entity_name:
             entity_name = "robot"
         return [SceneTensorReadSpec(entity=entity_name, body_names=tuple(body_names))]
 
@@ -715,14 +702,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 )
             names = tuple(sensor_names)
             if narrow:
-                allowed = _supported_device_resident_sensors(self._backend.backend_type)
-                missing = tuple(name for name in names if name not in allowed)
-                if missing:
-                    raise NotImplementedError(
-                        "DEVICE_RESIDENT backend "
-                        f"'{self._backend.backend_type}' does not publish tensor "
-                        f"sensors {missing} required by command term '{name}'"
-                    )
+                self._require_device_resident_sensors(names, f"command term '{name}'")
             elif capabilities.packed_host_bridge:
                 # Only HOST_BRIDGE packs need backend-local aliases. Device-
                 # resident plans consume the term's canonical semantic names.
@@ -741,6 +721,47 @@ class ManagerBasedRlEnv(TorchEnv):
                 )
             )
         return specs
+
+    def _published_device_resident_sensors(self) -> frozenset[str] | None:
+        """Return the backend-declared named sensor namespace when it exists."""
+        try:
+            return frozenset(self._backend.get_sensor_names())
+        except (AttributeError, NotImplementedError, KeyError, ValueError, RuntimeError):
+            return None
+
+    def _require_device_resident_sensors(
+        self, sensor_names: tuple[str, ...], term_label: str
+    ) -> None:
+        """Fail closed on tensor sensors a DEVICE_RESIDENT backend does not publish.
+
+        Validation consumes the backend-declared named sensor namespace. A
+        backend that cannot declare one is probed through the public cold-path
+        sensor binding instead, so unsupported declared names never silently
+        select a host reader.
+        """
+        backend = self._backend
+        declared = self._published_device_resident_sensors()
+        if declared is not None:
+            missing = tuple(name for name in sensor_names if name not in declared)
+        else:
+            unpublished: list[str] = []
+            for name in sensor_names:
+                try:
+                    backend.bind_sensor_data((name,))
+                except (KeyError, ValueError):
+                    unpublished.append(name)
+                except (TypeError, NotImplementedError, AttributeError) as exc:
+                    raise type(exc)(
+                        "Manager DEVICE_RESIDENT sensor negotiation on backend "
+                        f"'{backend.backend_type}': {exc}"
+                    ) from exc
+            missing = tuple(unpublished)
+        if missing:
+            raise NotImplementedError(
+                "DEVICE_RESIDENT backend "
+                f"'{backend.backend_type}' does not publish tensor "
+                f"sensors {missing} required by {term_label}"
+            )
 
     def _resolve_host_bridge_sensor_names(
         self,
@@ -791,8 +812,16 @@ class ManagerBasedRlEnv(TorchEnv):
         available: set[str] = set()
         for name in names:
             try:
-                self._backend.get_sensor_data(name)
-            except KeyError:
+                self._backend.bind_sensor_data((name,))
+            except (KeyError, RuntimeError) as exc:
+                missing_sensor = isinstance(exc, RuntimeError) and str(exc) == (
+                    f"sensor '{name}' not found"
+                )
+                if not isinstance(exc, KeyError) and not missing_sensor:
+                    raise type(exc)(
+                        "Manager packed sensor negotiation on backend "
+                        f"'{self._backend.backend_type}': {exc}"
+                    ) from exc
                 continue
             except (TypeError, ValueError, NotImplementedError, AttributeError) as exc:
                 raise type(exc)(
@@ -802,14 +831,13 @@ class ManagerBasedRlEnv(TorchEnv):
             available.add(name)
         return available
 
-    @staticmethod
     def _term_tensor_read_specs(
+        self,
         manager_name: str,
         term_name: str,
-        term_cfg: RewardTermCfg | TerminationTermCfg,
+        term_cfg: EventTermCfg | RewardTermCfg | TerminationTermCfg,
         *,
         narrow: bool = False,
-        backend_type: str = "",
     ) -> list[SceneTensorReadSpec]:
         sensor_names = getattr(term_cfg.func, "tensor_sensor_names", None)
         if sensor_names is None:
@@ -825,37 +853,10 @@ class ManagerBasedRlEnv(TorchEnv):
                 f"{sensor_names!r}"
             )
         if narrow:
-            missing = tuple(
-                name
-                for name in sensor_names
-                if name not in _supported_device_resident_sensors(backend_type)
+            self._require_device_resident_sensors(
+                tuple(sensor_names), f"{manager_name} term '{term_name}'"
             )
-            if missing:
-                raise NotImplementedError(
-                    f"DEVICE_RESIDENT backend '{backend_type}' does not publish tensor "
-                    f"sensors {missing} required by {manager_name} term '{term_name}'"
-                )
         return [SceneTensorReadSpec(entity="robot", sensor_names=tuple(sensor_names))]
-
-    def _warm_external_cuda_ipc_views(self) -> None:
-        """Materialize IsaacGym's post-step view aliases before Manager reads."""
-
-        # IsaacGym's worker CUDA IPC projection does not publish rigid-body
-        # state during its reset stale window. The public selected-reset path
-        # therefore performs one untimed zero-control tensor step after commit,
-        # matching the documented phase-local benchmark warm-up, before Manager
-        # observation terms read the stable views.
-        if self._backend.backend_type != "isaacgym" or self.device.type != "cuda":
-            return
-        try:
-            self._backend.step_tensor(
-                torch.zeros_like(self._control), nsteps=self._cfg.sim_substeps
-            )
-        except (AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
-            raise RuntimeError(
-                "ManagerBasedRlEnv could not materialize IsaacGym CUDA IPC sensor "
-                f"views after reset: {exc}"
-            ) from exc
 
     def _initial_backend_control(self) -> torch.Tensor:
         """Return mapped-scene initial control without assuming a ctrl state view."""
@@ -914,7 +915,14 @@ class ManagerBasedRlEnv(TorchEnv):
         """
 
         if capabilities.execution is TensorExecution.DEVICE_RESIDENT:
-            return torch.device("cuda", index=torch.cuda.current_device())
+            cuda_devices = [name for name in capabilities.torch_devices if name.startswith("cuda")]
+            requested_name = (
+                cuda_devices[0] if cuda_devices else next(iter(capabilities.torch_devices), "cpu")
+            )
+            requested_device = torch.device(str(requested_name))
+            if requested_device == torch.device("cuda"):
+                return torch.device("cuda", index=torch.cuda.current_device())
+            return requested_device
         if capabilities.execution is not TensorExecution.HOST_BRIDGE:
             raise ValueError(
                 "TorchEnv got a non-tensor backend capability "
@@ -972,10 +980,10 @@ class ManagerBasedRlEnv(TorchEnv):
     @property
     def action_space(self) -> gym.Space:
         return gym.spaces.Box(
-            low=-np.inf,
-            high=np.inf,
+            low=-float("inf"),
+            high=float("inf"),
             shape=(self.action_manager.total_action_dim,),
-            dtype=get_global_dtype(),
+            dtype="float32",
         )
 
     @property
@@ -1126,16 +1134,16 @@ class ManagerBasedRlEnv(TorchEnv):
         """Return the contiguous authoritative Torch control tensor."""
         return self._control
 
-    def _manager_tensor(
-        self, values: np.ndarray | torch.Tensor, *, dtype: torch.dtype
-    ) -> torch.Tensor:
+    def _manager_tensor(self, values: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor:
         """Publish one completed Manager result on the public Torch carrier."""
-        if isinstance(values, torch.Tensor):
-            if values.device == self.device and values.dtype == dtype and values.is_contiguous():
-                return values
-            return values.to(device=self.device, dtype=dtype, copy=True)
-        host = np.array(values, order="C", copy=True)
-        return torch.from_numpy(host).to(device=self.device, dtype=dtype, copy=True)
+        if not isinstance(values, torch.Tensor):
+            raise TypeError(
+                f"ManagerBasedRlEnv public results must be torch.Tensor, "
+                f"got {type(values).__name__}"
+            )
+        if values.device == self.device and values.dtype == dtype and values.is_contiguous():
+            return values
+        return values.to(device=self.device, dtype=dtype, copy=True)
 
     def _initial_episode_steps(self) -> torch.Tensor:
         max_steps = self._cfg.max_episode_steps
@@ -1146,9 +1154,9 @@ class ManagerBasedRlEnv(TorchEnv):
                 "ManagerBasedRlEnv randomized initial episode counters require "
                 f"max_episode_steps > 1; got {max_steps}"
             )
-        return torch.from_numpy(
-            self.rng.integers(0, max_steps, size=self.num_envs, dtype=np.int64)
-        ).to(device=self.device, dtype=torch.int64)
+        return self.rng.integers(0, max_steps, self.num_envs, dtype=torch.int64).to(
+            device=self.device, dtype=torch.int64
+        )
 
     def init_state(self) -> TorchEnvState:
         state = super().init_state()
@@ -1176,7 +1184,7 @@ class ManagerBasedRlEnv(TorchEnv):
                 "when auto_reset=False"
             )
         state = super().step(actions)
-        state.info["log"].update(self.publish_reward_log())
+        self._publish_reward_components(state)
         if not self._autoreset:
             self._manual_reset_pending.logical_or_(state.terminated | state.truncated)
         self.recorder_manager.record_post_step()
@@ -1184,14 +1192,14 @@ class ManagerBasedRlEnv(TorchEnv):
 
     def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:
         del state
-        read_plan = self.scene._tensor_read_plan
+        read_plan = self.scene.read_plan
         if read_plan is not None and self.action_manager.uses_tensor_state_packet:
             # State-feedback action terms consume the current packet before
             # physics. Ordinary feed-forward terms match mjlab's ordering:
             # process control from the previous state boundary, then refresh
             # state once after physics.
             read_plan.refresh()
-        self.action_manager.process_action(actions)
+        self.action_manager.process_public_action(actions)
         self._sim_step_counter += self._cfg.sim_substeps
         self.action_manager.apply_action()
         return self._control_to_backend_boundary()
@@ -1205,7 +1213,7 @@ class ManagerBasedRlEnv(TorchEnv):
         boundary_started = time.perf_counter()
         self.scene._invalidate_state_reads()
         with self.scene._scoped_state_reads():
-            read_plan = self.scene._tensor_read_plan
+            read_plan = self.scene.read_plan
             if read_plan is not None and not read_plan.ready:
                 read_plan.refresh()
             boundary_ms = (time.perf_counter() - boundary_started) * 1000.0
@@ -1222,13 +1230,13 @@ class ManagerBasedRlEnv(TorchEnv):
         state.info["log"] = log
         self.extras = state.info
 
-        self.episode_length_buf.copy_(state.info["steps"]).add_(1)
         self.common_step_counter = self.step_counter + 1
         self._sim_step_counter = self.common_step_counter * self._cfg.sim_substeps
         timing["update_state_prelude_ms"] = (time.perf_counter_ns() - prelude_started_ns) / 1.0e6
 
         termination_compute_started = time.perf_counter()
-        self.termination_manager.compute()
+        self._advance_episode_steps(state.info["steps"])
+        self._compute_termination_and_reset_flags()
         termination_compute_ms = (time.perf_counter() - termination_compute_started) * 1000.0
         termination_timing = getattr(self.termination_manager, "last_step_timing_ms", {})
         timing.update(termination_timing)
@@ -1240,19 +1248,10 @@ class ManagerBasedRlEnv(TorchEnv):
         timing["update_state_termination_ms"] = (time.perf_counter() - phase_started) * 1000.0
         timing["update_state_termination_host_ms"] = termination_compute_ms
         phase_started = time.perf_counter()
-        terminated = self.termination_manager.terminated
-        time_outs = self.termination_manager.time_outs
-        if self._cfg.is_finite_horizon:
-            torch.logical_or(terminated, time_outs, out=self.reset_terminated)
-            self.reset_time_outs.fill_(False)
-        else:
-            self.reset_terminated.copy_(terminated)
-            self.reset_time_outs.copy_(time_outs)
-        torch.logical_or(self.reset_terminated, self.reset_time_outs, out=self.reset_buf)
         timing["update_state_reset_flags_ms"] = (time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
 
-        self.reward_buf = self.reward_manager.compute(dt=self.step_dt)
+        self.reward_buf = self._compute_rewards()
         reward_timing = getattr(self.reward_manager, "last_step_timing_ms", {})
         state.info["update_state_timing"].update(reward_timing)
         timing.update(reward_timing)
@@ -1263,54 +1262,30 @@ class ManagerBasedRlEnv(TorchEnv):
 
         if self._cfg.sim_substeps == 1:
             self.metrics_manager.compute_substep()
-        self.metrics_manager.compute()
+        self._compute_metrics()
         timing["update_state_metrics_ms"] = (time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
 
         events_started = time.perf_counter()
-        applied_runtime_event = False
-        if "step" in self.event_manager.available_modes:
-            self.event_manager.apply(mode="step", dt=self.step_dt)
-            applied_runtime_event = True
-        if "interval" in self.event_manager.available_modes:
-            self.event_manager.apply(mode="interval", dt=self.step_dt)
-            applied_runtime_event = True
-        if applied_runtime_event:
-            # Event terms may mutate simulation state through their formal
-            # interval/step capabilities; EventManager does not expose whether a
-            # particular interval fired, so this boundary stays fail-closed.
-            self.scene._invalidate_state_reads()
-            self._refresh_tensor_reads_after_mutation()
+        self._apply_runtime_events()
         timing["update_state_events_ms"] = (time.perf_counter() - events_started) * 1000.0
 
         command_preflight_started = time.perf_counter()
-        self._command_dt.fill_(self.step_dt)
-        self._command_dt.masked_fill_(self.reset_buf, 0.0)
-        step_read_plan = self.scene._tensor_read_plan
-        step_reset_capabilities = self._backend.get_tensor_capabilities()
-        if self._uses_device_resident_reset(step_read_plan, step_reset_capabilities):
-            assert step_read_plan is not None
-            self._reset_state.declare_packed_reset_device(step_read_plan.device)
-            step_reset_context = self._reset_state.scoped_device_tensor(self._all_env_rows)
-        else:
-            step_reset_context = self._reset_state.scoped(self._all_env_rows)
+        step_reset_context = self._prepare_command_update()
         timing["update_state_command_preflight_ms"] = (
             time.perf_counter() - command_preflight_started
         ) * 1000.0
         command_started = time.perf_counter()
         with step_reset_context:
-            self.command_manager.compute(dt=self._command_dt)
+            self._compute_commands()
             step_timing = getattr(self.command_manager, "last_step_timing_ms", {})
             state.info["update_state_timing"].update(step_timing)
             timing.update(step_timing)
         timing["update_state_command_compute_ms"] = (time.perf_counter() - command_started) * 1000.0
         command_epilogue_started = time.perf_counter()
-        if self._reset_state.last_commit_had_writes:
-            self.scene._invalidate_state_reads()
-            self._refresh_tensor_reads_after_mutation()
-        read_refresh_ms = (time.perf_counter() - command_epilogue_started) * 1000.0
+        read_refresh_ms = self._refresh_reads_after_command_commit()
         post_compute_started = time.perf_counter()
-        self.command_manager.post_compute()
+        self._post_compute_commands()
         post_compute_ms = (time.perf_counter() - post_compute_started) * 1000.0
         timing["update_state_command_read_refresh_ms"] = read_refresh_ms
         timing["update_state_command_post_compute_ms"] = post_compute_ms
@@ -1320,7 +1295,7 @@ class ManagerBasedRlEnv(TorchEnv):
         timing["update_state_command_ms"] = (time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
 
-        manager_obs = self.observation_manager.compute(update_history=True)
+        manager_obs = self._compute_observations()
         observation_timing = getattr(self.observation_manager, "last_step_timing_ms", {})
         state.info["update_state_timing"].update(observation_timing)
         timing.update(observation_timing)
@@ -1334,13 +1309,9 @@ class ManagerBasedRlEnv(TorchEnv):
         phase_started = time.perf_counter()
 
         publish_started = time.perf_counter()
-        public_obs = {
-            name: self._manager_tensor(values, dtype=self._dtype)
-            for name, values in mapped_obs.items()
-        }
-        public_reward = self._manager_tensor(self.reward_buf, dtype=self._dtype)
-        public_terminated = self._manager_tensor(self.reset_terminated, dtype=torch.bool)
-        public_truncated = self._manager_tensor(self.reset_time_outs, dtype=torch.bool)
+        public_obs, public_reward, public_terminated, public_truncated = self._publish_step_outputs(
+            mapped_obs
+        )
         timing["update_state_publication_ms"] = (time.perf_counter() - publish_started) * 1000.0
 
         replace_started = time.perf_counter()
@@ -1376,8 +1347,76 @@ class ManagerBasedRlEnv(TorchEnv):
             ) / 1.0e6
         return replacement
 
+    def _advance_episode_steps(self, steps: torch.Tensor) -> None:
+        """Advance the fixed-width device episode-step carrier by one."""
+        self.episode_length_buf.copy_(steps).add_(1)
+
+    def _compute_termination_and_reset_flags(self) -> None:
+        """Compute termination and publish fixed-width reset-flag carriers."""
+        self.termination_manager.compute()
+        terminated = self.termination_manager.terminated
+        time_outs = self.termination_manager.time_outs
+        if self._cfg.is_finite_horizon:
+            torch.logical_or(terminated, time_outs, out=self.reset_terminated)
+            self.reset_time_outs.fill_(False)
+        else:
+            self.reset_terminated.copy_(terminated)
+            self.reset_time_outs.copy_(time_outs)
+        torch.logical_or(self.reset_terminated, self.reset_time_outs, out=self.reset_buf)
+
+    def _compute_rewards(self) -> torch.Tensor:
+        """Compute and return the persistent full-width reward carrier."""
+        return self.reward_manager.compute(dt=self.step_dt)
+
+    def _compute_metrics(self) -> None:
+        """Advance Manager metric carriers after the step boundary."""
+        self.metrics_manager.compute()
+
+    def _apply_runtime_events(self) -> None:
+        """Apply runtime events and repack any backend state they mutate."""
+        applied_runtime_event = False
+        if "step" in self.event_manager.available_modes:
+            self.event_manager.apply(mode="step", dt=self.step_dt)
+            applied_runtime_event = True
+        if "interval" in self.event_manager.available_modes:
+            self.event_manager.apply(mode="interval", dt=self.step_dt)
+            applied_runtime_event = True
+        if applied_runtime_event:
+            # Event terms may mutate simulation state through their formal
+            # interval/step capabilities; EventManager does not expose whether a
+            # particular interval fired, so this boundary stays fail-closed.
+            self.scene._invalidate_state_reads()
+            self._refresh_tensor_reads_after_mutation()
+
+    def _prepare_command_update(self):
+        """Pin command dt and return the fixed-width owner transaction scope."""
+        self._command_dt.fill_(self.step_dt)
+        self._command_dt.masked_fill_(self.reset_buf, 0.0)
+        self._reset_state.declare_packed_reset_device(self.device)
+        return self._reset_state.scoped_device_owner_tensor(self._all_env_reset_mask)
+
+    def _compute_commands(self) -> None:
+        """Advance command state using the persistent per-env dt carrier."""
+        self.command_manager.compute(dt=self._command_dt)
+
+    def _refresh_reads_after_command_commit(self) -> float:
+        """Repack backend reads if the fixed-width command commit wrote state."""
+        started = time.perf_counter()
+        if self._reset_state.last_commit_had_writes:
+            self.scene._invalidate_state_reads()
+            self._refresh_tensor_reads_after_mutation()
+        return (time.perf_counter() - started) * 1000.0
+
+    def _post_compute_commands(self) -> None:
+        """Publish command post-compute state on its owner boundary."""
+        self.command_manager.post_compute()
+
+    def _compute_observations(self) -> dict[str, Any]:
+        """Compute all observation groups, histories, and noise carriers."""
+        return self.observation_manager.compute(update_history=True)
+
     def publish_reward_log(self) -> dict[str, float]:
-        """Publish latest device reward means through the legacy log contract."""
+        """Publish the latest device reward means as ``reward/<term>`` entries."""
         if not self._reward_log_names:
             return {}
         means = self._reward_log_means.detach().cpu().tolist()
@@ -1386,123 +1425,137 @@ class ManagerBasedRlEnv(TorchEnv):
             for name, mean in zip(self._reward_log_names, means, strict=True)
         }
 
+    @property
+    def algo_capabilities(self) -> Any:
+        """Expose cold-path metadata to algorithm owners.
+
+        Per-dimension action bounds and action-order joint names are reserved
+        fields. They intentionally stay unset until an algorithm consumes them;
+        the Manager-Based action owner, not the RL runtime, owns their source.
+        """
+        return EnvAlgoCapabilities(
+            action_low=None,
+            action_high=None,
+            joint_names=None,
+            reward_component_names=self.reward_manager.step_reward_names,
+        )
+
+    def _publish_reward_components(self, state: TorchEnvState) -> None:
+        """Publish fixed-width reward components for tensor-native consumers."""
+        if self.reward_manager.step_reward_names:
+            state.info["reward_components"] = self.reward_manager.step_rewards
+
+    def _record_action_finite(self, actions: torch.Tensor) -> None:
+        """Let the action owner record the public finite verdict."""
+        self.action_manager.record_public_action_finite(actions)
+
     def _refresh_tensor_reads_after_mutation(self) -> None:
         """Repack scene tensor reads after an in-phase simulation mutation."""
-        read_plan = self.scene._tensor_read_plan
+        read_plan = self.scene.read_plan
         if read_plan is not None:
             read_plan.refresh()
 
-    def _reset_manager_state(self, rows: torch.Tensor) -> None:
-        """Re-run row-scoped manager reset after initial state allocation."""
-        for manager in (
-            self.observation_manager,
-            self.action_manager,
-            self.reward_manager,
-            self.metrics_manager,
-            self.curriculum_manager,
-            self.event_manager,
-            self.termination_manager,
-        ):
-            manager.reset(rows)
+    def _publish_step_outputs(
+        self, mapped_obs: Mapping[str, torch.Tensor]
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Publish fresh step outputs without aliasing mutable manager carriers."""
+        eager_obs = {
+            name: self._manager_tensor(values, dtype=self._dtype)
+            for name, values in mapped_obs.items()
+        }
+        eager_reward = self._manager_tensor(self.reward_buf, dtype=self._dtype)
+        eager_terminated = self._manager_tensor(self.reset_terminated, dtype=torch.bool)
+        eager_truncated = self._manager_tensor(self.reset_time_outs, dtype=torch.bool)
+        if eager_terminated is self.reset_terminated:
+            eager_terminated = eager_terminated.clone()
+        if eager_truncated is self.reset_time_outs:
+            eager_truncated = eager_truncated.clone()
+        return eager_obs, eager_reward, eager_terminated, eager_truncated
 
     def _compute_truncated(self, state: TorchEnvState) -> torch.Tensor:
-        del state
-        return torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+        return state.truncated
+
+    def _collect_reset_backend_timing_ms(self) -> dict[str, float]:
+        timing = dict(super()._collect_reset_backend_timing_ms())
+        timing.update(self._reset_state.last_set_state_timing_ms)
+        timing.update(self._last_reset_manager_timing_ms)
+        return timing
 
     def reset(
         self,
-        env_indices: torch.Tensor | None = None,
+        env_ids: torch.Tensor | None = None,
         *,
         seed: int | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+        """Execute the selected-row (``env_ids``) Manager reset lifecycle."""
         del options
-        reset_timing: dict[str, float] = {}
-        rows = self._normalize_reset_indices(env_indices)
+        if self._state is None:
+            state = self.init_state()
+            return state.obs, {"log": state.info.get("log", {})}
         if seed is not None:
             self.seed(seed)
-        if self._state is None:
-            all_rows = torch.arange(self.num_envs, dtype=torch.int64, device=self.device)
-            if not torch.equal(rows, all_rows):
-                raise RuntimeError(
-                    "ManagerBasedRlEnv requires a full reset before the first partial reset"
-                )
-            state = self.init_state()
-            self._reset_manager_state(rows)
-            return state.obs, {"log": state.info.get("log", {})}
-
-        done_rows = rows[self.reset_buf[rows]]
-        if self._has_transition and done_rows.numel() > 0:
-            self.recorder_manager.record_pre_reset(done_rows)
-
-        log: dict[str, Any] = {}
-        self.curriculum_manager.compute(env_ids=rows)
-        read_plan = self.scene._tensor_read_plan
-        reset_capabilities = self._backend.get_tensor_capabilities()
-        device_resident_reset = self._uses_device_resident_reset(read_plan, reset_capabilities)
-        tensor_reset_events = False
-        use_packed_reset = (
-            read_plan is not None
-            and read_plan.host_plan is not None
-            # Force eager default materialization: a backend with different
-            # native and public layouts must fall back before terms run.
-            and self._reset_state.can_commit_packed(term_name="reset")
-        )
-        if use_packed_reset:
-            assert read_plan is not None
-            assert read_plan.host_plan is not None
-            self._reset_state.declare_packed_reset_device(read_plan.device)
-            tensor_reset_events = (
-                self.event_manager.uses_tensor_reset_rows
-                or self.command_manager.uses_tensor_reset_rows()
-            )
-            if tensor_reset_events:
-                reset_context = self._reset_state.scoped_device_event_tensor_with_host_commit(
-                    rows, read_plan.host_plan
-                )
-            else:
-                reset_context = self._reset_state.scoped_tensor(rows, read_plan.host_plan)
-        elif device_resident_reset:
-            assert read_plan is not None
-            self._reset_state.declare_packed_reset_device(read_plan.device)
-            tensor_reset_events = self.event_manager.uses_tensor_reset_rows
-            tensor_reset_events = tensor_reset_events or (
-                self.command_manager.uses_tensor_reset_rows()
-            )
-            if tensor_reset_events:
-                reset_context = self._reset_state.scoped_device_event_tensor(rows)
-            else:
-                reset_context = self._reset_state.scoped_device_tensor(rows)
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+            reset_mask = self._all_env_reset_mask
         else:
-            reset_context = self._reset_state.scoped(rows)
-        command_event_started = time.perf_counter()
-        event_term_count = len(self.event_manager.active_terms.get("reset", ()))
-        command_term_count = len(self.command_manager.active_terms)
-        reset_owner = self.reset_owner_manager.owner
-        owns_command_reset = bool(reset_owner is not None and reset_owner.cfg.owns_command_reset)
+            env_ids = resolve_reset_env_ids(
+                env_ids,
+                num_envs=self.num_envs,
+                device=self.device,
+                owner="ManagerBasedRlEnv.reset",
+            )
+            reset_mask = self._reset_mask_buffer.scatter(env_ids)
+        reset_timing: dict[str, float] = {}
+        read_plan = self.scene.read_plan
+        # An empty explicit reset does not publish a pre-reset recorder boundary.
+        if self._has_transition and env_ids.numel() > 0:
+            self.recorder_manager.record_pre_reset(env_ids)
+        # Match the selected-row lifecycle: curriculum consumes the terminal
+        # episode state before reset clears the public counters.
+        self.curriculum_manager.compute(env_ids)
+        self._reset_state.declare_packed_reset_device(
+            read_plan.device if read_plan is not None else self.device
+        )
+        reset_context = self._reset_state.scoped_device_event_tensor(
+            reset_mask,
+        )
+        log: dict[str, Any] = {}
         with reset_context:
             if "reset" in self.event_manager.available_modes:
                 self.event_manager.apply(
-                    mode="reset",
-                    env_ids=rows,
-                    global_env_step_count=self.step_counter,
+                    mode="reset", env_ids=env_ids, global_env_step_count=self.step_counter
                 )
+            reset_owner = self.reset_owner_manager.owner
+            owns_command_reset = bool(
+                reset_owner is not None and reset_owner.cfg.owns_command_reset
+            )
             if owns_command_reset:
                 assert reset_owner is not None
-                log.update(reset_owner.reset_transaction(rows))
+                log.update(reset_owner.reset_transaction(env_ids))
             else:
-                log.update(self.command_manager.reset(rows))
+                log.update(self.command_manager.reset(env_ids))
             reset_timing.update(getattr(self.command_manager, "last_reset_timing_ms", {}))
             reset_timing.update(self.command_manager.reset_diagnostics())
-            reset_commit_started = time.perf_counter()
-        reset_timing["reset_done_reset_commit_ms"] = (
-            time.perf_counter() - reset_commit_started
-        ) * 1000.0
-        reset_timing["reset_done_command_event_ms"] = (
-            time.perf_counter() - command_event_started
-        ) * 1000.0
 
-        manager_state_started = time.perf_counter()
+        self.episode_length_buf.masked_fill_(reset_mask, 0)
+        self._control.copy_(
+            torch.where(
+                reset_mask[:, None],
+                (
+                    self._initial_backend_control()
+                    if self._reset_state.scene_layout is not None
+                    else torch.zeros_like(self._control)
+                ),
+                self._control,
+            )
+        )
+        self._manual_reset_pending.masked_fill_(reset_mask, False)
+        self._state.info["steps"].masked_fill_(reset_mask, 0)
+
+        # Post-reset observations must see cleared Manager-owned state. In
+        # particular, ``last_action`` and stateful observation terms must not
+        # publish the terminated episode's action or phase at the new boundary.
         reset_managers: tuple[Any, ...] = (
             *(
                 ()
@@ -1525,130 +1578,71 @@ class ManagerBasedRlEnv(TorchEnv):
             self.termination_manager,
         )
         for manager in reset_managers:
-            log.update(manager.reset(rows))
-        if reset_owner is not None:
-            log.update(reset_owner.reset_committed(rows))
-        observation_term_count = sum(
-            len(terms) for terms in self.observation_manager.active_terms.values()
-        )
+            reset_impl = getattr(manager, "reset", None)
+            if not callable(reset_impl):
+                raise NotImplementedError(
+                    f"{type(manager).__name__} does not define the reset boundary"
+                )
+            log.update(reset_impl(env_ids))
         reset_timing.update(
             {
-                "reset_done_event_term_count": float(event_term_count),
-                "reset_done_command_term_count": float(command_term_count),
+                "reset_done_event_term_count": float(
+                    len(self.event_manager.active_terms.get("reset", ()))
+                ),
+                "reset_done_command_term_count": float(len(self.command_manager.active_terms)),
                 "reset_done_manager_reset_count": float(len(reset_managers)),
-                "reset_done_observation_term_count": float(observation_term_count),
+                "reset_done_observation_term_count": float(
+                    sum(len(terms) for terms in self.observation_manager.active_terms.values())
+                ),
             }
         )
-        reset_timing["reset_done_manager_state_ms"] = (
-            time.perf_counter() - manager_state_started
-        ) * 1000.0
+        if reset_owner is not None:
+            log.update(reset_owner.reset_committed(env_ids))
 
-        self.episode_length_buf[rows] = 0
-        if self._reset_state.scene_layout is not None:
-            self._control[rows] = self._initial_backend_control()[rows]
-        else:
-            self._control[rows] = 0.0
-        self._manual_reset_pending[rows] = False
-        if self._state is not None:
-            self._state.info["steps"][rows] = 0
-
-        # The read phase starts only after the reset-state transaction above
-        # committed, so cached getter values are post-set_state reads shared
-        # across terms (issue #1295).
-        state_publish_started = time.perf_counter()
         with self.scene._scoped_state_reads():
-            read_plan = self.scene._tensor_read_plan
+            read_plan = self.scene.read_plan
             if read_plan is not None:
-                # A host-bridge plan owns the paired selected-row boundary from
-                # ``apply_reset``. IsaacGym's external CUDA IPC worker marks
-                # body/sensor views stale after a selected reset, so one public
-                # zero-control tensor step materializes the post-reset packet
-                # before Manager terms read those stable views.
-                if use_packed_reset:
-                    selected_read_started = time.perf_counter()
-                    read_plan.refresh_selected()
-                    reset_timing["reset_done_selected_read_ms"] = (
-                        time.perf_counter() - selected_read_started
-                    ) * 1000.0
-                else:
-                    read_drain_started = time.perf_counter()
-                    self._warm_external_cuda_ipc_views()
-                    reset_timing["reset_done_read_drain_ms"] = (
-                        time.perf_counter() - read_drain_started
-                    ) * 1000.0
-                    selected_read_started = time.perf_counter()
-                    read_plan.refresh()
-                    reset_timing["reset_done_selected_read_ms"] = (
-                        time.perf_counter() - selected_read_started
-                    ) * 1000.0
-            command_refresh_started = time.perf_counter()
-            self.command_manager.compute(dt=0.0, env_ids=rows)
-            reset_timing["reset_done_command_refresh_ms"] = (
-                time.perf_counter() - command_refresh_started
-            ) * 1000.0
-            command_post_compute_started = time.perf_counter()
-            self.command_manager.post_compute()
-            reset_timing["reset_done_command_post_compute_ms"] = (
-                time.perf_counter() - command_post_compute_started
-            ) * 1000.0
+                read_plan.refresh()
+            self.command_manager.refresh_reset(reset_mask)
+            self.command_manager.post_compute_reset()
             reset_timing.update(getattr(self.command_manager, "last_post_compute_timing_ms", {}))
-            observation_started = time.perf_counter()
-            # Row-scoped reset rebuild (issue #1259 R2): the observation manager
-            # returns only the reset rows, so no full-batch slice is needed here.
-            manager_obs = self.observation_manager.compute(update_history=True, env_ids=rows)
-            reset_timing["reset_done_observation_ms"] = (
-                time.perf_counter() - observation_started
-            ) * 1000.0
-        reset_timing["reset_done_state_publish_ms"] = (
-            time.perf_counter() - state_publish_started
-        ) * 1000.0
-        mapped_obs = self._map_observations(manager_obs, num_rows=rows.numel())
-        observation_scatter_started = time.perf_counter()
+            # env_ids scopes the temporal reset boundary: delay/history terms
+            # backfill the reset rows and peek, so non-reset rows keep their
+            # history, lag schedule, and lag RNG untouched. The publication
+            # stays full-width and merges through the reset mask below.
+            manager_obs = self.observation_manager.compute(update_history=True, env_ids=env_ids)
+
+        mapped_obs = self._map_observations(manager_obs)
         reset_obs = {
             name: self._manager_tensor(values, dtype=self._dtype)
             for name, values in mapped_obs.items()
         }
-        reset_timing["reset_done_observation_scatter_ms"] = (
-            time.perf_counter() - observation_scatter_started
-        ) * 1000.0
         self._last_reset_manager_timing_ms = reset_timing
-
-        if self._state is not None:
-            for name in mapped_obs:
-                self._state.obs[name].index_copy_(0, rows, reset_obs[name])
-            if self._autoreset_reset_active:
-                # The Manager already published into the full public state.
-                # ``TorchEnv._reset_done_envs`` must not validate and scatter
-                # the selected rows a second time.
-                self._autoreset_scattered_reset_obs = True
-                # Autoreset runs at the tail of step(): keep this step's
-                # per-step log entries (reward/* etc., computed pre-reset) and
-                # layer manager reset extras on top, so consumers still see the
-                # transition's metrics.
-                step_log = self._state.info.get("log")
-                if step_log:
-                    log = {**step_log, **log}
-            self._state.info["log"] = log
-            if not self._autoreset_reset_active:
-                self._state.terminated[rows] = False
-                self._state.truncated[rows] = False
-                self.reset_buf[rows] = False
-                self.reset_terminated[rows] = False
-                self.reset_time_outs[rows] = False
-        if not self.obs_buf or set(self.obs_buf) != set(mapped_obs):
-            self.obs_buf = mapped_obs
-        else:
-            for name, values in mapped_obs.items():
-                self.obs_buf[name][rows] = values
-        self.extras = self._state.info if self._state is not None else {"log": log}
-        self.recorder_manager.record_post_reset(rows)
-        return reset_obs, {"log": log}
-
-    def _collect_reset_backend_timing_ms(self) -> dict[str, float]:
-        timing = dict(super()._collect_reset_backend_timing_ms())
-        timing.update(self._reset_state.last_set_state_timing_ms)
-        timing.update(self._last_reset_manager_timing_ms)
-        return timing
+        for name in mapped_obs:
+            self._state.obs[name].copy_(
+                torch.where(reset_mask[:, None], reset_obs[name], self._state.obs[name])
+            )
+        self._autoreset_scattered_reset_obs = True
+        step_log = self._state.info.get("log")
+        if step_log:
+            log = {**step_log, **log}
+        self._state.info["log"] = log
+        if not self._autoreset_reset_active:
+            self._state.terminated.logical_and_(~reset_mask)
+            self._state.truncated.logical_and_(~reset_mask)
+        self.reset_buf.masked_fill_(reset_mask, False)
+        self.reset_terminated.masked_fill_(reset_mask, False)
+        self.reset_time_outs.masked_fill_(reset_mask, False)
+        for name, values in mapped_obs.items():
+            if set(self.obs_buf) != set(mapped_obs):
+                self.obs_buf = mapped_obs
+            else:
+                self.obs_buf[name].copy_(
+                    torch.where(reset_mask[:, None], values, self.obs_buf[name])
+                )
+        self.extras = self._state.info
+        self.recorder_manager.record_post_reset(env_ids)
+        return self._state.obs, {"log": log}
 
     def _map_observations(
         self,
@@ -1717,10 +1711,8 @@ class ManagerBasedRlEnv(TorchEnv):
             seed = secrets.randbits(63)
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
             raise ValueError(f"ManagerBasedRlEnv seed must be a non-negative integer, got {seed!r}")
-        replacement = np.random.default_rng(seed)
-        self.rng.bit_generator.state = replacement.bit_generator.state
-        if self._torch_rng_owner is not None:
-            self._torch_rng_owner.manual_seed(seed)
+        if self._rng_owner is not None:
+            self._rng_owner.manual_seed(seed)
         self._cfg.seed = seed
         return seed
 
@@ -1731,10 +1723,10 @@ class ManagerBasedRlEnv(TorchEnv):
         self._sim_step_counter = self.step_counter * self._cfg.sim_substeps
 
     def close(self) -> None:
-        read_plan = self.scene._tensor_read_plan
+        read_plan = self.scene.read_plan
         if read_plan is not None:
             read_plan.close()
-            self.scene._tensor_read_plan = None
+            self.scene.read_plan = None
         self.recorder_manager.close()
         super().close()
 
@@ -1746,9 +1738,7 @@ def make_manager_based_rl_env(
 ) -> ManagerBasedRlEnv:
     """Construct the generic Registry-owned Manager-Based production runtime."""
     from unilab.base.registry import (
-        _SHELVED_SIM_BACKENDS,
-        _TENSOR_MANAGER_BACKEND_SCOPE_ERROR,
-        _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS,
+        _SUPPORTED_SIM_BACKENDS,
     )
 
     if not isinstance(cfg, ManagerBasedRlEnvCfg):
@@ -1765,21 +1755,19 @@ def make_manager_based_rl_env(
             "make_manager_based_rl_env backend_type must be a non-empty string, "
             f"got {backend_type!r}"
         )
-    if backend_type in _SHELVED_SIM_BACKENDS:
-        raise ValueError(_TENSOR_MANAGER_BACKEND_SCOPE_ERROR.format(backend=backend_type))
-    if backend_type not in _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS:
+    if backend_type not in _SUPPORTED_SIM_BACKENDS:
         raise ValueError(
             "make_manager_based_rl_env supports only the tensor Manager backends "
-            f"{', '.join(_TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS)}; got {backend_type!r}."
+            f"{', '.join(_SUPPORTED_SIM_BACKENDS)}; got {backend_type!r}."
         )
 
     cfg.validate()
     if cfg.fixed_model_variants is not None and cfg.scene is not None:
         # Validate the complete task identity before allocating backend resources.
-        cfg.scene.fixed_variant_plan = _build_fixed_variant_plan(cfg.fixed_model_variants, num_envs)
+        cfg.scene.fixed_variant_plan = build_fixed_variant_plan(cfg.fixed_model_variants, num_envs)
     # Constrain the process before backend materialization so native pools size
     # themselves from the rank-owned CPU block.
-    apply_env_cpu_runtime(cfg.cpu_ids)
+    apply_cpu_confinement(cfg.cpu_ids)
     assert cfg.scene is not None
     base_name, body_state_requested, tracked_body_names = _resolve_backend_entity_contract(cfg)
     backend_kwargs = env_backend_kwargs(cfg)
@@ -1797,7 +1785,7 @@ def make_manager_based_rl_env(
     )
     try:
         if cfg.scene.fixed_variant_plan is not None:
-            _require_fixed_variant_support(
+            require_fixed_variant_support(
                 backend.get_dr_capabilities(), cfg.scene.fixed_variant_plan
             )
         return ManagerBasedRlEnv(cfg, backend, num_envs)

@@ -6,6 +6,11 @@ The bug surface is ``rsl_rl.utils.logger.Logger.tot_time`` /
 restore them. ``patch_rsl_rl_resume_state`` round-trips both counters via the
 saved checkpoint's ``unilab_logger_state`` key.
 
+Issue #2416 makes the load path fail closed: a checkpoint without a valid
+``unilab_logger_state`` (pre-patch rsl-rl format) is rejected instead of
+silently restarting progress from 0, and an environment that publishes
+versioned training state requires a matching ``unilab_env_training_state``.
+
 These tests bypass ``OnPolicyRunner.__init__`` (which needs a full VecEnv and
 PPO algorithm) by stubbing the few attributes ``save`` / ``load`` actually
 touch. That keeps the patch surface — not the integration — under test, and
@@ -31,6 +36,7 @@ from unilab.training.experiment import patch_rsl_rl_resume_state
 class _AlgStub:
     def __init__(self, returns_iter: bool = True) -> None:
         self._returns_iter = returns_iter
+        self.load_calls = 0
 
     def save(self) -> dict:
         return {
@@ -40,6 +46,7 @@ class _AlgStub:
         }
 
     def load(self, _loaded_dict: dict, _load_cfg: dict | None, _strict: bool) -> bool:
+        self.load_calls += 1
         return self._returns_iter
 
 
@@ -135,8 +142,9 @@ def test_save_round_trip_restores_logger_counters(tmp_path: Path) -> None:
     assert loader.logger.tot_timesteps == 4096 * 100
 
 
-def test_load_legacy_checkpoint_without_unilab_state(tmp_path: Path) -> None:
-    """Pre-patch checkpoints must still load; logger counters keep their defaults."""
+# Issue #2416: pre-patch checkpoints are rejected fail-closed. This replaces
+# the retired #2414 tolerance that loaded them with progress restarted from 0.
+def test_pre_patch_checkpoint_without_logger_state_fails_closed(tmp_path: Path) -> None:
     patch_rsl_rl_resume_state()
 
     legacy = {
@@ -148,13 +156,60 @@ def test_load_legacy_checkpoint_without_unilab_state(tmp_path: Path) -> None:
     }
     ckpt = tmp_path / "model_50_legacy.pt"
     torch.save(legacy, str(ckpt))
+    before = ckpt.read_bytes()
 
     loader = _make_stub_runner(iter=0, tot_time=0.0, tot_timesteps=0)
-    loader.load(str(ckpt))
+    with pytest.raises(ValueError, match="unilab_logger_state") as excinfo:
+        loader.load(str(ckpt))
 
-    assert loader.current_learning_iteration == 50
+    # The error must name the minimum supported format and the recovery path.
+    assert "minimum supported checkpoint format" in str(excinfo.value)
+    assert "retrain" in str(excinfo.value)
+
+    # Nothing is restored or mutated, and the checkpoint input stays immutable.
+    assert loader.alg.load_calls == 0
+    assert loader.current_learning_iteration == 0
     assert loader.logger.tot_time == 0.0
     assert loader.logger.tot_timesteps == 0
+    assert ckpt.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "logger_state",
+    [
+        "not-a-dict",
+        {},
+        {"tot_time": float("nan"), "tot_timesteps": 10},
+        {"tot_time": -1.0, "tot_timesteps": 10},
+        {"tot_time": 12.0, "tot_timesteps": -1},
+        {"tot_time": 12.0, "tot_timesteps": "10"},
+        {"tot_time": 12.0},
+        {"tot_timesteps": 10},
+    ],
+)
+def test_load_rejects_invalid_logger_state(tmp_path: Path, logger_state: Any) -> None:
+    """A malformed ``unilab_logger_state`` fails closed like a missing one."""
+    patch_rsl_rl_resume_state()
+
+    ckpt = tmp_path / "model_50.pt"
+    torch.save(
+        {
+            "actor_state_dict": {},
+            "critic_state_dict": {},
+            "optimizer_state_dict": {},
+            "iter": 50,
+            "infos": None,
+            "unilab_logger_state": logger_state,
+        },
+        str(ckpt),
+    )
+
+    loader = _make_stub_runner()
+    with pytest.raises(ValueError, match="unilab_logger_state"):
+        loader.load(str(ckpt))
+
+    assert loader.alg.load_calls == 0
+    assert loader.current_learning_iteration == 0
 
 
 def test_load_does_not_overwrite_iter_when_alg_skips_iteration(tmp_path: Path) -> None:
@@ -208,24 +263,110 @@ def test_checkpoint_rejects_non_plain_env_training_state(tmp_path: Path) -> None
         saver.save(str(tmp_path / "model_0.pt"))
 
 
-def test_checkpoint_without_env_state_keeps_legacy_load_contract(tmp_path: Path) -> None:
+# Issue #2416: an environment that publishes training state requires the
+# checkpoint to carry it. This replaces the retired #2414 tolerance that
+# silently skipped the missing environment state.
+def test_checkpoint_missing_env_state_fails_closed_when_env_publishes_state(
+    tmp_path: Path,
+) -> None:
     patch_rsl_rl_resume_state()
     env = _EnvTrainingStateStub(step_counter=0)
-    legacy = {
-        "actor_state_dict": {},
-        "critic_state_dict": {},
-        "optimizer_state_dict": {},
-        "iter": 50,
-        "infos": None,
-    }
-    ckpt = tmp_path / "model_50_legacy.pt"
-    torch.save(legacy, str(ckpt))
+    ckpt = tmp_path / "model_50.pt"
+    torch.save(
+        {
+            "actor_state_dict": {},
+            "critic_state_dict": {},
+            "optimizer_state_dict": {},
+            "iter": 50,
+            "infos": None,
+            "unilab_logger_state": {"tot_time": 3.0, "tot_timesteps": 128},
+        },
+        str(ckpt),
+    )
 
     loader = _make_stub_runner(iter=0, env=env)
-    loader.load(str(ckpt))
+    with pytest.raises(ValueError, match="unilab_env_training_state"):
+        loader.load(str(ckpt))
 
+    assert loader.alg.load_calls == 0
     assert env.imported is None
     assert env.step_counter == 0
+
+
+def test_checkpoint_invalid_env_state_version_fails_closed(tmp_path: Path) -> None:
+    """The env-owned version check rejects unsupported training state."""
+    patch_rsl_rl_resume_state()
+    ckpt = tmp_path / "model_10.pt"
+    torch.save(
+        {
+            "actor_state_dict": {},
+            "critic_state_dict": {},
+            "optimizer_state_dict": {},
+            "iter": 10,
+            "infos": None,
+            "unilab_logger_state": {"tot_time": 1.0, "tot_timesteps": 4},
+            "unilab_env_training_state": {"version": 999, "step_counter": 3},
+        },
+        str(ckpt),
+    )
+
+    class _VersionedEnv(_EnvTrainingStateStub):
+        def import_training_state(self, state: dict[str, Any]) -> None:
+            if state.get("version") != 1:
+                raise ValueError("Unsupported training state version")
+            super().import_training_state(state)
+
+    env = _VersionedEnv(step_counter=0)
+    loader = _make_stub_runner(iter=0, env=env)
+    with pytest.raises(ValueError, match="Unsupported training state version"):
+        loader.load(str(ckpt))
+
+    assert env.imported is None
+
+
+def test_checkpoint_rejects_non_plain_env_state_on_load(tmp_path: Path) -> None:
+    patch_rsl_rl_resume_state()
+    env = _EnvTrainingStateStub(step_counter=0)
+    ckpt = tmp_path / "model_10.pt"
+    torch.save(
+        {
+            "actor_state_dict": {},
+            "critic_state_dict": {},
+            "optimizer_state_dict": {},
+            "iter": 10,
+            "infos": None,
+            "unilab_logger_state": {"tot_time": 1.0, "tot_timesteps": 4},
+            "unilab_env_training_state": {"version": 1, "step_counter": torch.tensor(3)},
+        },
+        str(ckpt),
+    )
+
+    loader = _make_stub_runner(iter=0, env=env)
+    with pytest.raises(TypeError, match="plain JSON dictionaries/lists/scalars"):
+        loader.load(str(ckpt))
+
+    assert loader.alg.load_calls == 0
+    assert env.imported is None
+
+
+def test_env_without_training_state_omits_key_and_loads(tmp_path: Path) -> None:
+    """An env with no exportable state writes no placeholder and needs none."""
+    patch_rsl_rl_resume_state()
+
+    saver = _make_stub_runner(iter=10, tot_time=2.0, tot_timesteps=8, env=SimpleNamespace())
+    ckpt = tmp_path / "model_10.pt"
+    saver.save(str(ckpt))
+
+    raw = torch.load(str(ckpt), weights_only=False)
+    assert "unilab_logger_state" in raw
+    assert "unilab_env_training_state" not in raw
+
+    loader = _make_stub_runner(iter=0, env=SimpleNamespace())
+    loader.load(str(ckpt))
+
+    assert loader.current_learning_iteration == 10
+    assert loader.logger.tot_time == pytest.approx(2.0)
+    assert loader.logger.tot_timesteps == 8
 
 
 def test_checkpoint_env_state_requires_import_contract(tmp_path: Path) -> None:
@@ -238,6 +379,7 @@ def test_checkpoint_env_state_requires_import_contract(tmp_path: Path) -> None:
             "optimizer_state_dict": {},
             "iter": 10,
             "infos": None,
+            "unilab_logger_state": {"tot_time": 1.0, "tot_timesteps": 4},
             "unilab_env_training_state": {"version": 1, "step_counter": 701},
         },
         str(ckpt),

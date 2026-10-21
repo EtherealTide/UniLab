@@ -39,7 +39,7 @@ from unilab.envs.mdp.actions import (
 from unilab.envs.mdp.actions import (
     JointPositionActionCfg as ExportedJointPositionActionCfg,
 )
-from unilab.managers._types import ManagerBasedRlEnv
+from unilab.managers.types import ManagerBasedRlEnv
 
 
 class _Backend:
@@ -102,11 +102,15 @@ class _Backend:
         )
 
     def get_state_views(self, fields, device=None) -> dict[str, torch.Tensor]:
-        assert set(fields) == {"qpos", "qvel"}
+        assert set(fields) <= {"qpos", "qvel"}
         target = torch.device(device) if device is not None else torch.device("cpu")
         return {
-            "qpos": torch.from_numpy(self.dof_pos.copy()).to(target),
-            "qvel": torch.zeros(self.dof_pos.shape, dtype=torch.float32, device=target),
+            field: (
+                torch.from_numpy(self.dof_pos.copy()).to(target)
+                if field == "qpos"
+                else torch.zeros(self.dof_pos.shape, dtype=torch.float32, device=target)
+            )
+            for field in fields
         }
 
 
@@ -241,8 +245,9 @@ def test_non_finite_and_wrong_shape_actions_fail_before_control_write() -> None:
     action, control, _ = _action()
     with pytest.raises(ValueError, match="expected action shape"):
         action.process_actions(torch.zeros((2, 1), dtype=torch.float32))
+    action.process_actions(torch.full((2, 2), torch.nan, dtype=torch.float32))
     with pytest.raises(ValueError, match="NaN or Inf"):
-        action.process_actions(torch.full((2, 2), torch.nan, dtype=torch.float32))
+        action.publish_validation_verdict()
     np.testing.assert_array_equal(control, 0.0)
 
 
@@ -319,6 +324,19 @@ def test_tensor_motion_control_stays_on_control_plane_with_default_bias() -> Non
     torch.testing.assert_close(control[:, 1], expected_hip)
     torch.testing.assert_close(control[:, 0], expected_knee)
     torch.testing.assert_close(control[:, 2], torch.zeros_like(control[:, 2]))
+    torch.testing.assert_close(action.tensor_target[:, 0], control[:, 1])
+    torch.testing.assert_close(
+        action._control_adjustment,
+        action._selected_default_bias - action._selected_encoder_bias,
+    )
+
+    # A second processed action recomputes the control plane from the new input.
+    action.process_actions(torch.tensor([[0.0, 0.25], [-1.0, 0.5]], dtype=torch.float32))
+    action.apply_actions()
+
+    torch.testing.assert_close(control[:, 1], torch.tensor([0.0 + 0.2 - 0.05, -1.0 - 0.2 + 0.05]))
+    torch.testing.assert_close(control[:, 0], torch.tensor([0.25 - 0.1, 0.5 + 0.1]))
+    torch.testing.assert_close(action.tensor_target[:, 0], control[:, 1])
 
 
 def test_relative_joint_position_action_reads_current_position_at_apply_time() -> None:
@@ -420,10 +438,10 @@ class _SensorTensorBackend(_Backend):
 
     _device_resident = False
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         if self._device_resident:
             return TensorExecution.DEVICE_RESIDENT
-        return super().tensor_execution()
+        return super().get_tensor_execution()
 
     def get_sensor_view(self, name: str, device: str | torch.device = "cpu") -> torch.Tensor:
         self.sensor_requests.append((name, torch.device(device)))
@@ -621,7 +639,7 @@ def test_go2_joint_targets_are_mapped_to_backend_control_order(backend_type: str
         0.01,
         base_name="base",
     )
-    control = np.zeros((2, backend.num_actuators), dtype=np.float32)
+    control = torch.zeros((2, backend.num_actuators), dtype=torch.float32)
     scene = EntityScene.from_scene_cfg(scene_cfg, backend, control)
     env = cast(ManagerBasedRlEnv, SimpleNamespace(num_envs=2, scene=scene))
     action = JointPositionActionCfg(
@@ -643,7 +661,7 @@ def test_go2_joint_targets_are_mapped_to_backend_control_order(backend_type: str
             for name in backend.get_actuator_joint_names()
         ]
     )
-    np.testing.assert_allclose(control, expected)
+    torch.testing.assert_close(control, torch.from_numpy(expected))
 
 
 def test_action_module_has_no_training_or_backend_private_dependencies() -> None:

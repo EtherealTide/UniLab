@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import fields, is_dataclass
@@ -18,7 +20,7 @@ from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
 
 from unilab.base import registry
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
 from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg, mdp
 from unilab.tasks.locomotion.g1 import manager_terms as g1_terms
@@ -67,7 +69,7 @@ _OFFPOLICY_REWARDS = (
     "feet_phase",
     "alive",
 )
-_TENSOR_RESET_EVENT_BACKENDS = {"mjwarp", "newton"}
+_TENSOR_RESET_EVENT_BACKENDS = {"mujoco", "mjwarp", "newton", "isaacgym", "isaacsim"}
 _MOTRIX_PACKED_HOST_BRIDGE_BACKENDS = {"motrix"}
 
 _OBSERVATION_TERMS = (
@@ -203,6 +205,32 @@ _OWNER_CASES = (
         id="sac-motrix",
     ),
     pytest.param(
+        "sac",
+        ("task=g1_walk_flat/isaacgym",),
+        "G1WalkFlat",
+        "isaacgym",
+        29,
+        1.0,
+        "scene_flat.xml",
+        _OFFPOLICY_REWARDS,
+        _RESET_EVENTS,
+        True,
+        id="sac-isaacgym",
+    ),
+    pytest.param(
+        "sac",
+        ("task=g1_walk_flat/isaacsim",),
+        "G1WalkFlat",
+        "isaacsim",
+        29,
+        1.0,
+        "g1_stand_entity.xml",
+        _OFFPOLICY_REWARDS,
+        _RESET_EVENTS,
+        True,
+        id="sac-isaacsim",
+    ),
+    pytest.param(
         "flashsac",
         ("task=g1_walk_flat/mujoco",),
         "G1WalkFlat",
@@ -223,7 +251,8 @@ _WALK_PROFILE_IDS = {
     "sac-genesis",
     "sac-newton",
     "sac-motrix",
-    "sac-rough-mujoco",
+    "sac-isaacgym",
+    "sac-isaacsim",
     "flashsac-mujoco",
 }
 
@@ -238,7 +267,7 @@ def _materialize(
     config_group: str, overrides: Sequence[str], task_name: str
 ) -> tuple[DictConfig, ManagerBasedRlEnvCfg, dict[str, Any]]:
     hydra_cfg = _compose(config_group, overrides)
-    env_override = BackendAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
+    env_override = EnvConfigAdapter(hydra_cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
     env_cfg = registry.materialize_env_config(task_name)
     assert isinstance(env_cfg, ManagerBasedRlEnvCfg)
     apply_cfg_overrides(env_cfg, env_override)
@@ -295,13 +324,15 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
     assert env_cfg.scale_rewards_by_dt is True
 
     assert env_cfg.scene is not None
-    assert env_cfg.scene.model_file.endswith(f"robots/g1/{model_suffix}")
+    if env_cfg.scene.model_file is not None:
+        assert env_cfg.scene.model_file.endswith(f"robots/g1/{model_suffix}")
     assert env_cfg.scene.default_keyframe_name == "stand"
     robot = env_cfg.scene.entities["robot"]
-    assert robot.root_body_name == "pelvis"
+    expected_root_name = "robot/pelvis" if backend == "isaacsim" else "pelvis"
+    assert robot.root_body_name == expected_root_name
     assert len(robot.joint_names or ()) == num_dof
     assert len(robot.actuator_names or ()) == num_dof
-    assert robot.body_names == ["pelvis"]
+    assert robot.body_names == [expected_root_name]
 
     assert list(env_cfg.observations) == ["policy", "critic"]
     assert list(env_cfg.observations["policy"].terms) == list(_OBSERVATION_TERMS)
@@ -325,8 +356,9 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
         assert terms["gait_phase"].params["frequency"] == pytest.approx(1.5)
     assert critic_terms["base_lin_vel"].scale == expected_linvel
 
-    # Observation noise reproduces the legacy noise_config: actor-only (the
-    # critic reads clean observations), applied before term scaling.
+    # Observation noise reproduces the tuned pre-Manager-Based noise_config:
+    # actor-only (the critic reads clean observations), applied before term
+    # scaling.
     assert env_cfg.observations["policy"].enable_corruption is True
     assert env_cfg.observations["critic"].enable_corruption is False
     expected_noise = (
@@ -353,7 +385,14 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
     assert env_cfg.actions["joint_pos"].scale == pytest.approx(action_scale)
     assert env_cfg.actions["joint_pos"].use_default_offset is True
 
-    uses_fused_termination = case_id in {"sac-mjwarp", "sac-genesis", "sac-newton", "sac-motrix"}
+    uses_fused_termination = case_id in {
+        "sac-mjwarp",
+        "sac-genesis",
+        "sac-newton",
+        "sac-motrix",
+        "sac-isaacgym",
+        "sac-isaacsim",
+    }
     expected_terminations = (
         ["time_out", "tilt", "base_height", "g1_walk_termination_pack"]
         if uses_fused_termination
@@ -373,10 +412,8 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
         expected_events
     )
     if backend in _TENSOR_RESET_EVENT_BACKENDS or backend in _MOTRIX_PACKED_HOST_BRIDGE_BACKENDS:
-        assert env_cfg.events["reset_scene_to_default"].func is mdp.reset_scene_to_default_tensor
-        assert (
-            env_cfg.events["reset_root_state_uniform"].func is mdp.reset_root_state_uniform_tensor
-        )
+        assert env_cfg.events["reset_scene_to_default"].func is mdp.skip_scene_reset
+        assert env_cfg.events["reset_root_state_uniform"].func is mdp.reset_root_state_uniform_fused
     assert tuple(name for name, term in env_cfg.rewards.items() if term is not None) == (
         expected_rewards
     )
@@ -425,6 +462,17 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
         assert env_cfg.scene.terrain is None
         assert env_cfg.events["pd_gains"] is None
         assert hydra_cfg.training.play_render_mode == "record"
+    if backend == "isaacgym":
+        assert env_cfg.isaacgym_device_id == 0
+        assert env_cfg.events["pd_gains"] is None
+        assert hydra_cfg.training.play_render_mode == "record"
+    if backend == "isaacsim":
+        assert env_cfg.scene.model_file is None
+        assert env_cfg.scene.primary_entity == "robot"
+        assert env_cfg.scene.entity_assets[0].source.model_file.endswith("g1_stand_entity.xml")
+        assert env_cfg.isaacsim_tensor_cuda_ipc is True
+        assert env_cfg.events["pd_gains"] is None
+        assert hydra_cfg.training.play_render_mode == "none"
 
     pose = env_cfg.rewards["pose"]
     expected_weights = _POSE_WEIGHTS_29
@@ -450,10 +498,53 @@ def test_g1_owner_materializes_complete_plain_manager_cfg(
                         ".genesis",
                         ".newton",
                         ".motrix",
+                        ".isaacgym",
+                        ".isaacsim",
                     )
                 )
 
     _assert_no_omegaconf(env_cfg)
+
+
+def test_isaacsim_flat_floor_covers_reset_and_nominal_command_reach() -> None:
+    """Keep the mapped finite floor as broad as the canonical nominal reach."""
+
+    _, env_cfg, _ = _materialize("sac", ("task=g1_walk_flat/isaacsim",), "G1WalkFlat")
+    assert env_cfg.scene is not None
+    floor_asset = next(asset for asset in env_cfg.scene.entity_assets if asset.name == "floor")
+    floor_path = ROOT_DIR / floor_asset.source.model_file
+    floor = ET.parse(floor_path).getroot().find("./worldbody/body/geom")
+    assert floor is not None
+    half_x, half_y = (float(value) for value in floor.attrib["size"].split()[:2])
+
+    command = env_cfg.commands["twist"]
+    assert isinstance(command, g1_terms.G1VelocityCommandCfg)
+    reset = env_cfg.events["reset_root_state_uniform"].params
+    max_reset = math.hypot(
+        max(
+            abs(float(reset["pose_range"]["x"][0])),
+            abs(float(reset["pose_range"]["x"][1])),
+        ),
+        max(
+            abs(float(reset["pose_range"]["y"][0])),
+            abs(float(reset["pose_range"]["y"][1])),
+        ),
+    )
+    max_speed = math.hypot(
+        max(
+            abs(float(command.ranges.lin_vel_x[0])),
+            abs(float(command.ranges.lin_vel_x[1])),
+        ),
+        max(
+            abs(float(command.ranges.lin_vel_y[0])),
+            abs(float(command.ranges.lin_vel_y[1])),
+        ),
+    )
+    required_half_extent = max_reset + float(env_cfg.max_episode_seconds) * max_speed
+    assert min(half_x, half_y) == pytest.approx(24.0)
+    assert min(half_x, half_y) >= required_half_extent
+    assert env_cfg.isaacsim_env_spacing == pytest.approx(50.0)
+    assert env_cfg.isaacsim_env_spacing > 2.0 * min(half_x, half_y)
 
 
 def test_g1_walk_registries_are_manager_only() -> None:
@@ -468,6 +559,8 @@ def test_g1_walk_registries_are_manager_only() -> None:
             "genesis",
             "newton",
             "motrix",
+            "isaacsim",
+            "isaacgym",
         ],
     }
 
@@ -516,6 +609,26 @@ def test_g1_walk_registries_are_manager_only() -> None:
             101,
             id="sac-motrix",
         ),
+        pytest.param(
+            "sac",
+            ("task=g1_walk_flat/isaacgym",),
+            "G1WalkFlat",
+            "isaacgym",
+            29,
+            98,
+            101,
+            id="sac-isaacgym",
+        ),
+        pytest.param(
+            "sac",
+            ("task=g1_walk_flat/isaacsim",),
+            "G1WalkFlat",
+            "isaacsim",
+            29,
+            98,
+            101,
+            id="sac-isaacsim",
+        ),
     ),
 )
 def test_g1_registry_executes_real_manager_runtime(
@@ -528,6 +641,13 @@ def test_g1_registry_executes_real_manager_runtime(
     critic_dim: int,
 ) -> None:
     registry.ensure_registries()
+    if backend in {"isaacgym", "isaacsim"}:
+        module = __import__(
+            f"unisim.backend.{backend}.dependencies",
+            fromlist=[f"{backend}_runtime_available"],
+        )
+        if not getattr(module, f"{backend}_runtime_available")():
+            pytest.skip(f"{backend} external worker runtime unavailable")
     _, env_cfg, env_override = _materialize(config_group, overrides, task_name)
     try:
         env = registry.make(
@@ -558,7 +678,7 @@ def test_g1_registry_executes_real_manager_runtime(
             assert isinstance(value, torch.Tensor)
             assert torch.isfinite(value).all()
 
-        # The command and gait-phase segments pin the legacy obs layout tail.
+        # The command and gait-phase segments pin the G1Walk-family obs layout tail.
         command = env.command_manager.get_command("twist")
         torch.testing.assert_close(
             state.obs["obs"][:, obs_dim - 5 : obs_dim - 2],
@@ -572,8 +692,8 @@ def test_g1_registry_executes_real_manager_runtime(
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
-def test_g1_walk_newton_selected_reset_preserves_rows_and_rng() -> None:
-    """The canonical Newton walk owner keeps selected reset row-scoped."""
+def test_g1_walk_newton_mask_reset_preserves_rows_and_rng() -> None:
+    """The canonical Newton walk owner keeps reset fixed-width and masked."""
     registry.ensure_registries()
     _, _, env_override = _materialize("sac", ("task=g1_walk_flat/newton",), "G1WalkFlat")
     try:
@@ -594,12 +714,12 @@ def test_g1_walk_newton_selected_reset_preserves_rows_and_rng() -> None:
         qpos_before = views["qpos"].clone()
         qvel_before = views["qvel"].clone()
         command = env.command_manager.get_command("twist").clone()
-        rng_state = env.torch_rng.get_state().clone() if env.torch_rng is not None else None
+        rng_state = env.rng.get_state().clone() if env.rng is not None else None
         assert rng_state is not None
 
         rows = torch.tensor([1, 3], dtype=torch.int64, device=device)
         keep = torch.tensor([0, 2], dtype=torch.int64, device=device)
-        reset_obs, _ = env.reset(env_indices=rows)
+        reset_obs, _ = env.reset(env_ids=rows)
 
         refreshed = env.backend.get_state_views(("qpos", "qvel"), device=device)
         # The public reset event publishes default-derived rows; it is not a
@@ -610,9 +730,9 @@ def test_g1_walk_newton_selected_reset_preserves_rows_and_rng() -> None:
         torch.testing.assert_close(refreshed["qpos"][keep], qpos_before[keep])
         torch.testing.assert_close(refreshed["qvel"][keep], qvel_before[keep])
         for group, values in reset_obs.items():
-            assert values.shape[0] == rows.numel()
+            assert values.shape == env.state.obs[group].shape
             assert torch.isfinite(values).all()
-            torch.testing.assert_close(env.state.obs[group][rows], values)
+            torch.testing.assert_close(env.state.obs[group][rows], values[rows])
             torch.testing.assert_close(
                 env.state.obs[group][keep],
                 obs_before[group][keep],
@@ -623,16 +743,16 @@ def test_g1_walk_newton_selected_reset_preserves_rows_and_rng() -> None:
             new_command[keep], command[keep], msg="untouched command rows changed"
         )
 
-        env.torch_rng.set_state(rng_state)
-        reference_obs, _ = env.reset(env_indices=rows)
+        env.rng.set_state(rng_state)
+        reference_obs, _ = env.reset(env_ids=rows)
         reference_command = env.command_manager.get_command("twist")
         torch.testing.assert_close(
             reference_command[rows],
             new_command[rows],
-            msg="selected-row Torch RNG replay is not deterministic",
+            msg="mask Torch RNG replay is not deterministic",
         )
         # The first replay starts from a different post-reset physical state;
-        # row-shaped rebuild identity, not equality of every state column, is
+        # full-width shape identity, not equality of every state column, is
         # the reset-observation contract.
         for group, values in reference_obs.items():
             assert values.shape == reset_obs[group].shape
@@ -642,7 +762,66 @@ def test_g1_walk_newton_selected_reset_preserves_rows_and_rng() -> None:
         env._backend.close()
 
 
-def test_g1_walk_profile_runtime_obs_scaling_matches_legacy_layout() -> None:
+def test_g1_walk_mask_reset_preserves_phase_and_action_observation() -> None:
+    """The walk owner delegates phase reset and publishes cleared actions."""
+    registry.ensure_registries()
+    _, _, env_override = _materialize("sac", ("task=g1_walk_flat/mujoco",), "G1WalkFlat")
+    env_override["observations"]["policy"]["enable_corruption"] = False
+    try:
+        env = registry.make(
+            "G1WalkFlat",
+            sim_backend="mujoco",
+            env_cfg_override=env_override,
+            num_envs=4,
+        )
+    except ImportError as exc:
+        pytest.skip(f"mujoco runtime unavailable: {exc}")
+
+    try:
+        owner = env.reset_owner_manager.owner
+        assert isinstance(owner.cfg, g1_terms.G1WalkResetOwnerCfg)
+        assert owner.cfg.owns_observation_reset is False
+
+        initial_obs, _info = env.reset(seed=2303)
+        phase = initial_obs["obs"][:, 96:98]
+        torch.testing.assert_close(
+            torch.remainder(phase[:, 1] - phase[:, 0], 2.0 * torch.pi),
+            torch.full((4,), torch.pi, dtype=phase.dtype, device=phase.device),
+            rtol=1.0e-6,
+            atol=1.0e-6,
+        )
+        assert phase[:, 0].unique().numel() > 1
+
+        stepped = env.step(torch.full((4, 29), 0.25, dtype=torch.float32, device=env.device))
+        action_before = stepped.obs["obs"][:, 64:93].clone()
+        phase_before = stepped.obs["obs"][:, 96:98].clone()
+        torch.testing.assert_close(action_before, torch.full_like(action_before, 0.25))
+
+        reset_mask = torch.tensor([False, True, False, True], dtype=torch.bool, device=env.device)
+        reset_obs, _reset_info = env.reset(
+            env_ids=torch.nonzero(reset_mask, as_tuple=False).flatten()
+        )
+        reset_action = reset_obs["obs"][:, 64:93]
+        reset_phase = reset_obs["obs"][:, 96:98]
+        keep = ~reset_mask
+
+        torch.testing.assert_close(reset_action[keep], action_before[keep])
+        torch.testing.assert_close(
+            reset_action[reset_mask], torch.zeros_like(reset_action[reset_mask])
+        )
+        torch.testing.assert_close(reset_phase[keep], phase_before[keep])
+        torch.testing.assert_close(
+            torch.remainder(reset_phase[:, 1] - reset_phase[:, 0], 2.0 * torch.pi),
+            torch.full((4,), torch.pi, dtype=reset_phase.dtype, device=reset_phase.device),
+            rtol=1.0e-6,
+            atol=1.0e-6,
+        )
+        assert not torch.equal(reset_phase[reset_mask], phase_before[reset_mask])
+    finally:
+        env.close()
+
+
+def test_g1_walk_profile_runtime_obs_scaling_matches_tuned_layout() -> None:
     """Walk-profile owners scale gyro x0.25, dof_vel x0.05, critic linvel x2.0."""
     registry.ensure_registries()
     _, _, env_override = _materialize("sac", ("task=g1_walk_flat/mujoco",), "G1WalkFlat")
@@ -658,10 +837,16 @@ def test_g1_walk_profile_runtime_obs_scaling_matches_legacy_layout() -> None:
     try:
         env.reset(seed=3)
         state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
-        gyro = env._backend.get_sensor_data("torso_gyro")
-        upvector = env._backend.get_sensor_data("torso_upvector")
-        dof_vel = env._backend.get_dof_vel()
-        linvel = env._backend.get_sensor_data("pelvis_local_linvel")
+        gyro = env._backend.get_sensor_view("torso_gyro", device=env.device).cpu().numpy()
+        upvector = env._backend.get_sensor_view("torso_upvector", device=env.device)
+        upvector = upvector.cpu().numpy()
+        robot = env.scene["robot"]
+        joint_vel_ids = env._backend.get_joint_state_qvel_indices(robot.joint_names)
+        dof_vel = env._backend.get_state_views(("qvel",), device=env.device)["qvel"][
+            :, joint_vel_ids
+        ].cpu()
+        linvel = env._backend.get_sensor_view("pelvis_local_linvel", device=env.device)
+        linvel = linvel.cpu().numpy()
         np.testing.assert_allclose(state.obs["obs"][:, :3], 0.25 * gyro, rtol=0.0, atol=1.0e-6)
         np.testing.assert_allclose(state.obs["obs"][:, 3:6], -upvector, rtol=0.0, atol=1.0e-6)
         np.testing.assert_allclose(
@@ -678,8 +863,8 @@ def test_g1_walk_profile_runtime_obs_scaling_matches_legacy_layout() -> None:
         env.close()
 
 
-def test_g1_legacy_profile_runtime_obs_scaling_matches_legacy_layout() -> None:
-    """Legacy-profile owners keep unit scaling on every observation segment."""
+def test_g1_onpolicy_profile_runtime_obs_scaling_matches_tuned_layout() -> None:
+    """On-policy profile owners keep unit scaling on every observation segment."""
     registry.ensure_registries()
     _, _, env_override = _materialize("ppo", ("task=g1_walk_flat/mujoco",), "G1WalkFlat")
     # Exact comparison against raw sensor reads requires clean observations.
@@ -694,9 +879,14 @@ def test_g1_legacy_profile_runtime_obs_scaling_matches_legacy_layout() -> None:
     try:
         env.reset(seed=3)
         state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
-        gyro = env._backend.get_sensor_data("torso_gyro")
-        dof_vel = env._backend.get_dof_vel()
-        linvel = env._backend.get_sensor_data("pelvis_local_linvel")
+        gyro = env._backend.get_sensor_view("torso_gyro", device=env.device).cpu().numpy()
+        robot = env.scene["robot"]
+        joint_vel_ids = env._backend.get_joint_state_qvel_indices(robot.joint_names)
+        dof_vel = env._backend.get_state_views(("qvel",), device=env.device)["qvel"][
+            :, joint_vel_ids
+        ].cpu()
+        linvel = env._backend.get_sensor_view("pelvis_local_linvel", device=env.device)
+        linvel = linvel.cpu().numpy()
         np.testing.assert_allclose(state.obs["obs"][:, :3], gyro, rtol=0.0, atol=1.0e-6)
         np.testing.assert_allclose(state.obs["obs"][:, 35:64], dof_vel, rtol=0.0, atol=1.0e-6)
         np.testing.assert_allclose(state.obs["critic"][:, 98:101], linvel, rtol=0.0, atol=1.0e-6)
@@ -713,7 +903,8 @@ def test_g1_penalty_curriculum_scales_negative_weights_from_start() -> None:
             "G1WalkFlat", sim_backend="mujoco", env_cfg_override=env_override, num_envs=2
         )
         # Repeated construction from the same override must not drift: the
-        # legacy env halved the shared override dict on every construction.
+        # pre-Manager-Based env halved the shared override dict on every
+        # construction.
         env_repeat = registry.make(
             "G1WalkFlat", sim_backend="mujoco", env_cfg_override=env_override, num_envs=2
         )
@@ -724,8 +915,9 @@ def test_g1_penalty_curriculum_scales_negative_weights_from_start() -> None:
         for built in (env, env_repeat):
             assert built.curriculum_manager.active_terms == ["penalty_scaling"]
             # initial_scale=0.0625 scales every negative weight from
-            # construction, matching the legacy collector's effective schedule
-            # (two probe constructions + collector => 1/16 initial, 1/8 cap).
+            # construction, matching the pre-Manager-Based collector's effective
+            # schedule (two probe constructions + collector => 1/16 initial,
+            # 1/8 cap).
             assert built.reward_manager.get_term_cfg("penalty_orientation").weight == pytest.approx(
                 -0.625
             )
@@ -739,8 +931,8 @@ def test_g1_penalty_curriculum_scales_negative_weights_from_start() -> None:
         # The shared override dict is never mutated in place.
         assert env_override == override_snapshot
 
-        state = env.step(torch.zeros((2, 29), dtype=torch.float32))
-        log = state.info["log"]
+        env.step(torch.zeros((2, 29), dtype=torch.float32))
+        log = env.publish_reward_log()
         for name in _OFFPOLICY_REWARDS:
             assert f"reward/{name}" in log
         assert log["reward/penalty_action_rate"] == pytest.approx(0.0)
@@ -750,13 +942,13 @@ def test_g1_penalty_curriculum_scales_negative_weights_from_start() -> None:
 
 
 # Every task owner carrying the penalty curriculum, with the schedule that
-# reproduces its tuned legacy baseline. Legacy offpolicy runners built three
-# envs per training run (two probe envs + the spawned collector) and the
-# legacy PenaltyCurriculum halved the shared override dict in place on each
-# construction, so collectors effectively trained at 1/16 initial / 1/8 cap
-# of the YAML weights. The on-policy runners built a single env, so their
-# effective schedule was the declared 0.5 -> 1.0. The manager runtime isolates
-# each env, so these params are now the single source of truth.
+# reproduces its tuned G1Walk baseline. The pre-Manager-Based offpolicy runners
+# built three envs per training run (two probe envs + the spawned collector) and
+# the pre-Manager-Based PenaltyCurriculum halved the shared override dict in
+# place on each construction, so collectors effectively trained at 1/16 initial
+# / 1/8 cap of the YAML weights. The on-policy runners built a single env, so
+# their effective schedule was the declared 0.5 -> 1.0. The manager runtime
+# isolates each env, so these params are now the single source of truth.
 _PENALTY_CURRICULUM_CASES = (
     pytest.param(
         "sac",
@@ -784,7 +976,7 @@ _OFFPOLICY_ALIGNED_SCHEDULE = {
     _PENALTY_CURRICULUM_CASES,
     ids=[case.id for case in _PENALTY_CURRICULUM_CASES],
 )
-def test_offpolicy_penalty_curriculum_matches_legacy_effective_schedule(
+def test_offpolicy_penalty_curriculum_matches_tuned_effective_schedule(
     config_group: str, overrides: tuple[str, ...], task_name: str
 ) -> None:
     _, env_cfg, _ = _materialize(config_group, overrides, task_name)
@@ -811,9 +1003,9 @@ def _genesis_runtime_available() -> bool:
 
 
 # Runs in a subprocess: Genesis allows exactly one gs.init per process
-# (REPORT #1372 §3.5 [9a]) and tests/base/test_genesis_runtime.py deliberately
-# destroys the session to verify re-init fails closed, so an in-process smoke
-# could observe a poisoned session depending on pytest collection order.
+# (REPORT #1372 §3.5 [9a]), and an in-process smoke could observe a poisoned
+# session depending on pytest collection order. Keep this smoke isolated from
+# other Genesis lifecycle suites.
 # The config group (ppo/sac) arrives as argv[1]; each parametrized case gets
 # its own subprocess, hence its own gs session.
 _GENESIS_ENV_SMOKE_SCRIPT = """
@@ -826,7 +1018,7 @@ from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
 from unilab.base import registry
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.config_materialization import apply_cfg_overrides
 from unilab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg, mdp
 
@@ -843,7 +1035,7 @@ assert hydra_cfg.training.task_name == "G1WalkFlat"
 assert hydra_cfg.training.sim_backend == "genesis"
 assert hydra_cfg.training.play_render_mode == "auto"
 
-env_override = BackendAdapter(
+env_override = EnvConfigAdapter(
     hydra_cfg, root_dir=ROOT, algo_name=CONFIG_GROUP
 ).build_task_env_cfg_override()
 env_cfg = registry.materialize_env_config("G1WalkFlat")

@@ -40,8 +40,8 @@ class EnvFactory(Protocol):
 
 
 TEnvFactory = TypeVar("TEnvFactory", bound=EnvFactory)
-RewardOverrideField = Literal["reward_config", "rewards"]
-_TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS = (
+RewardOverrideField = Literal["rewards"]
+_SUPPORTED_SIM_BACKENDS = (
     "mujoco",
     "mjwarp",
     "genesis",
@@ -49,21 +49,20 @@ _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS = (
     "motrix",
     "superdex",
     "drake",
-)
-_SHELVED_SIM_BACKENDS = (
-    "isaacgym",
     "isaacsim",
+    "isaacgym",
 )
-_SUPPORTED_SIM_BACKENDS = _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS + _SHELVED_SIM_BACKENDS
-# Drake is an explicit owner-selected CPU host bridge during its scoped
-# reintroduction; never use it as an implicit fallback backend.
+# Drake and external-worker Isaac backends are explicit owner selections; never
+# use them as implicit fallback backends.
 _DEFAULT_SIM_BACKEND_ORDER: tuple[str, ...] = tuple(
-    backend for backend in _TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS if backend != "drake"
+    backend
+    for backend in _SUPPORTED_SIM_BACKENDS
+    if backend not in {"drake", "isaacgym", "isaacsim"}
 )
-_TENSOR_MANAGER_BACKEND_SCOPE_ERROR = (
+_BACKEND_SCOPE_ERROR = (
     "Simulation backend '{backend}' is temporarily out of the tensor-only "
     "Manager runtime scope. Active backends: "
-    f"{', '.join(_TENSOR_MANAGER_SUPPORTED_SIM_BACKENDS)}. Re-enabling it requires "
+    f"{', '.join(_SUPPORTED_SIM_BACKENDS)}. Re-enabling it requires "
     "capability, parity, and support-matrix evidence (issue #1811)."
 )
 _REGISTRY_MODULES_ATTR = "__unilab_registry_modules__"
@@ -94,7 +93,7 @@ class EnvMeta:
                 return backend
         return next(iter(self.env_factory_dict), None)
 
-    def support_sim_backend(self, sim_backend: str) -> bool:
+    def supports_sim_backend(self, sim_backend: str) -> bool:
         """Check if the environment supports a specific simulation backend."""
         return sim_backend in self.env_factory_dict
 
@@ -166,8 +165,6 @@ def materialize_env_config(name: str) -> EnvCfg:
 
 def register_env(name: str, env_factory: TEnvFactory, sim_backend: str) -> TEnvFactory:
     """Register and return an environment class or function factory."""
-    if sim_backend in _SHELVED_SIM_BACKENDS:
-        raise ValueError(_TENSOR_MANAGER_BACKEND_SCOPE_ERROR.format(backend=sim_backend))
     if sim_backend not in _SUPPORTED_SIM_BACKENDS:
         raise ValueError(
             f"Unsupported simulation backend: {sim_backend}. "
@@ -227,13 +224,7 @@ def find_available_sim_backend(env_name: str) -> str:
 
 
 def resolve_reward_override_field(env_name: str) -> RewardOverrideField:
-    """Resolve the Hydra root reward target declared by an env config owner.
-
-    Legacy configs own a ``reward_config`` field. Manager-Based configs opt in
-    through the explicit manager-term mapping metadata on ``rewards``. The
-    registry resolves this on the config class without constructing an env or
-    backend so training adapters do not branch on task names.
-    """
+    """Resolve the Manager-Based Hydra root reward target for an env config."""
     if env_name not in _envs:
         raise ValueError(f"Environment '{env_name}' is not registered.")
 
@@ -244,22 +235,14 @@ def resolve_reward_override_field(env_name: str) -> RewardOverrideField:
         rewards_field is not None
         and rewards_field.metadata.get(CONFIG_MAPPING_POLICY_KEY) == MANAGER_TERM_MAPPING_POLICY
     )
-    has_legacy_rewards = "reward_config" in config_fields
     config_owner = type(config).__name__
 
-    if has_manager_rewards and has_legacy_rewards:
-        raise ValueError(
-            f"Environment '{env_name}' config owner '{config_owner}' declares both "
-            "Manager-Based 'rewards' and legacy 'reward_config' targets"
-        )
     if has_manager_rewards:
         return "rewards"
-    if has_legacy_rewards:
-        return "reward_config"
     raise ValueError(
         f"Environment '{env_name}' config owner '{config_owner}' declares no "
-        "supported Hydra root reward target; expected legacy 'reward_config' or an "
-        "explicitly marked Manager-Based 'rewards' field"
+        "supported Hydra root reward target; expected an explicitly marked "
+        "Manager-Based 'rewards' field"
     )
 
 
@@ -300,7 +283,7 @@ def make(
         if sim_backend is None:
             raise ValueError(f"Environment '{name}' does not support any simulation backend.")
 
-    if not meta.support_sim_backend(sim_backend):
+    if not meta.supports_sim_backend(sim_backend):
         raise ValueError(
             f"Environment '{name}' does not support simulation backend '{sim_backend}'."
         )

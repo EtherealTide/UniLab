@@ -17,13 +17,14 @@ import pytest
 import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
-from uni_rl.ipc.dp_launcher import UNILAB_DP_LOG_DIR, UNILAB_DP_RANK, UNILAB_DP_WORLD_SIZE
-from uni_rl.utils.tensor_runtime import (
-    InferencePlacement,
-    InferenceTransport,
-    TensorRuntimeSettings,
-)
 
+from unilab.rl.runtime.distributed.context import (
+    UNILAB_DP_LOG_DIR,
+    UNILAB_DP_RANK,
+    UNILAB_DP_WORLD_SIZE,
+)
+from unilab.rl.runtime.placement import InferencePlacement, InferenceTransport
+from unilab.rl.runtime.settings import RuntimeSettings
 from unilab.training import cuda_process_sharing
 
 _ROOT = Path(__file__).parent.parent.parent
@@ -89,7 +90,7 @@ class _FakeRunner:
 
 
 def _fake_env_factory(num_envs, env_cfg_override):
-    """EnvFactory-shaped probe stub (uni_rl runners receive envs by injection)."""
+    """EnvFactory-shaped probe stub (unilab.rl runners receive envs by injection)."""
     del num_envs, env_cfg_override
     return _FakeEnv()
 
@@ -116,7 +117,7 @@ class _FakeCudaProcessSharingEvidence:
     control_pipe = "/tmp/unilab-mps/control"
     server_pid = 2768293
 
-    def manifest(self):
+    def to_dict(self):
         return {
             "configured": self.configured,
             "effective": self.effective,
@@ -145,6 +146,7 @@ def test_offpolicy_owners_default_cuda_process_sharing_off(algo: str):
     cfg = _offpolicy_cfg(algo=algo)
 
     assert cfg.training.cuda_process_sharing is None
+    assert cfg.training.inference_transport is None
 
 
 def test_flashsac_scoped_tensor_benchmark_reduces_metric_flush_frequency():
@@ -255,7 +257,7 @@ def test_cuda_process_sharing_selects_sole_recorded_daemon_before_probe(
         "configure_backend_process_device",
         lambda _backend, device: device,
     )
-    import uni_rl.algos.sac.double_buffer as owner_module
+    import unilab.rl.algos.sac.double_buffer as owner_module
 
     monkeypatch.setattr(owner_module, "SACLearner", _FakeLearner)
     monkeypatch.setattr(owner_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
@@ -299,14 +301,14 @@ def test_valid_cuda_process_sharing_evidence_enters_runner_manifest(
         lambda *_args, **_kwargs: None,
     )
 
-    import uni_rl.algos.sac.double_buffer as owner_module
+    import unilab.rl.algos.sac.double_buffer as owner_module
 
     monkeypatch.setattr(owner_module, "SACLearner", _FakeLearner)
     monkeypatch.setattr(owner_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
 
     runner = module.build_runner("sac", cfg)
 
-    assert runner.runtime_manifest["cuda_process_sharing"] == evidence.manifest()
+    assert runner.runtime_manifest["cuda_process_sharing"] == evidence.to_dict()
 
 
 @pytest.mark.parametrize("mode", ["invalid_mode", "same_tick"])
@@ -378,7 +380,7 @@ def test_sac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPatch):
     module = _offpolicy()
     cfg = _offpolicy_cfg([])
 
-    import uni_rl.algos.sac.double_buffer as owner_module
+    import unilab.rl.algos.sac.double_buffer as owner_module
 
     monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
     monkeypatch.setattr(owner_module, "SACLearner", _FakeLearner)
@@ -389,8 +391,8 @@ def test_sac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPatch):
     assert runner.kwargs["algo_type"] == "sac"
     assert runner.kwargs["device"] == "cuda:0"
     assert runner.kwargs["replay_prefetch_mode"] == "one_tick"
-    settings = runner.kwargs["tensor_runtime_settings"]
-    assert isinstance(settings, TensorRuntimeSettings)
+    settings = runner.kwargs["runtime_settings"]
+    assert isinstance(settings, RuntimeSettings)
     assert settings.inference_slot_capacity == 1
     assert settings.collector_metrics_interval == 1
     assert settings.replay_ingress_depth == 2
@@ -433,8 +435,8 @@ def test_sac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPatch):
 def test_sac_owner_custom_runtime_can_override_base_learner_kwargs(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    from uni_rl.algos.sac import double_buffer as owner_module
-    from uni_rl.offpolicy.runtime import OffPolicyRuntime
+    from unilab.rl.algos.sac import double_buffer as owner_module
+    from unilab.rl.runtime.offpolicy.resolution import OffPolicyRuntime
 
     cfg = _offpolicy_cfg([])
     custom_runtime = OffPolicyRuntime(
@@ -449,7 +451,7 @@ def test_sac_owner_custom_runtime_can_override_base_learner_kwargs(
     )
     monkeypatch.setattr(owner_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
 
-    runner = owner_module.build_sac_double_buffer_runner(
+    runner = owner_module.build_double_buffer_runner(
         cfg,
         env_factory=_fake_env_factory,
         env_cfg_override={},
@@ -467,7 +469,7 @@ def test_flashsac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPa
     module = _offpolicy()
     cfg = _offpolicy_cfg(algo="flashsac")
 
-    import uni_rl.algos.flash_sac.double_buffer as flash_module
+    import unilab.rl.algos.flash_sac.double_buffer as flash_module
 
     monkeypatch.setattr(module, "registry_env_factory", lambda *args, **kwargs: _fake_env_factory)
     monkeypatch.setattr(flash_module, "FlashSACLearner", _FakeLearner)
@@ -478,8 +480,8 @@ def test_flashsac_dispatch_constructs_unique_runner(monkeypatch: pytest.MonkeyPa
     assert runner.kwargs["algo_type"] == "flashsac"
     assert runner.kwargs["device"] == "cuda:0"
     assert runner.kwargs["replay_prefetch_mode"] == "one_tick"
-    settings = runner.kwargs["tensor_runtime_settings"]
-    assert isinstance(settings, TensorRuntimeSettings)
+    settings = runner.kwargs["runtime_settings"]
+    assert isinstance(settings, RuntimeSettings)
     assert settings.inference_slot_capacity == 1
     assert settings.collector_metrics_interval == 1
     assert settings.replay_ingress_depth == 2
@@ -503,11 +505,11 @@ def test_flashsac_n_step_is_rejected():
 
 
 def _bare_runner():
-    from uni_rl.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
+    from unilab.rl.runtime.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
 
     runner = object.__new__(DoubleBufferOffPolicyRunner)
     runner.inference_placement = InferencePlacement(
-        mode=InferenceTransport.CPU,
+        mode=InferenceTransport.HOST,
         env_device="cpu",
         ring_device="cpu",
         learner_device="cpu",
@@ -545,7 +547,7 @@ def _build_sac_runner_with_fakes(
 
     monkeypatch.setattr(module.os, "cpu_count", lambda: cpu_count)
     monkeypatch.setattr(
-        "uni_rl.ipc.dp_launcher.os.sched_getaffinity",
+        "unilab.rl.runtime.distributed.affinity.os.sched_getaffinity",
         lambda _: set(range(cpu_count)),
         raising=False,
     )
@@ -556,7 +558,7 @@ def _build_sac_runner_with_fakes(
             lambda backend, device: backend_binding_calls.append((str(backend), str(device))),
         )
 
-    import uni_rl.algos.sac.double_buffer as owner_module
+    import unilab.rl.algos.sac.double_buffer as owner_module
 
     monkeypatch.setattr(
         module, "registry_env_factory", lambda *args, **kwargs: fake_probe_env_factory
@@ -589,7 +591,7 @@ def test_build_runner_binds_mjwarp_rank_process_to_learner_device(
 
 def test_build_runner_partitions_collector_cpus_per_rank(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
-        "uni_rl.ipc.dp_launcher._discover_physical_cpu_groups",
+        "unilab.rl.runtime.distributed.affinity.discover_physical_cpu_groups",
         lambda _: [[core, core + 64] for core in range(64)],
     )
     # Spawned rank/world size come from the launcher environment.
@@ -621,7 +623,7 @@ def test_build_runner_rank_zero_partitions_without_dp_env(monkeypatch: pytest.Mo
     monkeypatch.setenv(UNILAB_DP_WORLD_SIZE, "2")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-rank-local")
     monkeypatch.setattr(
-        "uni_rl.ipc.dp_launcher._discover_physical_cpu_groups",
+        "unilab.rl.runtime.distributed.affinity.discover_physical_cpu_groups",
         lambda _: [[core, core + 64] for core in range(64)],
     )
     runner, _ = _build_sac_runner_with_fakes(
@@ -686,3 +688,53 @@ def test_collector_env_cfg_override_from_none_base():
     runner.env_cfg_override = None
     runner.collector_cpu_ids = [4, 5]
     assert runner._collector_env_cfg_override() == {"cpu_ids": [4, 5]}
+
+
+@pytest.mark.parametrize("field", ["tensor_runtime", "tensor_runtime_device"])
+def test_collector_env_cfg_override_rejects_removed_tensor_runtime_fields(field: str):
+    runner = _bare_runner()
+    runner.env_cfg_override = {field: None}
+    runner.collector_cpu_ids = None
+    with pytest.raises(ValueError, match="removed tensor_runtime fields"):
+        runner._collector_env_cfg_override()
+
+
+def test_train_resume_defaults_disabled():
+    module = _offpolicy()
+    cfg = _offpolicy_cfg()
+
+    assert cfg.algo.resume is False
+    assert module.resolve_train_resume_checkpoint(cfg) is None
+
+
+def test_train_resume_resolves_selected_checkpoint(tmp_path):
+    module = _offpolicy()
+    run_dir = tmp_path / "G1WalkFlat" / "2026-10-05_14-28-04_mjwarp"
+    run_dir.mkdir(parents=True)
+    checkpoint = run_dir / "model_32000.pt"
+    checkpoint.write_bytes(b"stub")
+    cfg = _offpolicy_cfg(
+        algo="flashsac",
+        overrides=[
+            f"training.log_root={tmp_path}",
+            "algo.resume=true",
+            "algo.load_run=2026-10-05_14-28-04_mjwarp",
+        ],
+    )
+
+    assert module.resolve_train_resume_checkpoint(cfg) == str(checkpoint)
+
+
+def test_train_resume_fails_closed_when_checkpoint_missing(tmp_path):
+    module = _offpolicy()
+    cfg = _offpolicy_cfg(
+        algo="flashsac",
+        overrides=[
+            f"training.log_root={tmp_path}",
+            "algo.resume=true",
+            "algo.load_run=no-such-run",
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="algo.resume=true"):
+        module.resolve_train_resume_checkpoint(cfg)

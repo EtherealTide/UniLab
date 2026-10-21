@@ -53,6 +53,7 @@ def _require_genesis_runtime() -> None:
 def _require_newton_runtime() -> None:
     if sys.platform == "darwin":
         pytest.skip("newton is a CUDA-only backend; macOS has no supported CUDA runtime")
+    pytest.importorskip("newton", reason="newton requires the newton extra")
     from unisim.backend.newton.dependencies import load_newton_dependencies
 
     dependencies = load_newton_dependencies()
@@ -69,14 +70,14 @@ def _g1_manager_override(
 ) -> dict[str, Any]:
     from hydra import compose, initialize_config_dir
 
-    from unilab.base.config_adapter import BackendAdapter
+    from unilab.base.config_adapter import EnvConfigAdapter
 
     repo_root = Path(__file__).parents[2]
     with initialize_config_dir(
         config_dir=str(repo_root / "src" / "unilab" / "conf" / config_group), version_base="1.3"
     ):
         cfg = compose("config", overrides=[f"task={task}/{backend}"])
-    return BackendAdapter(
+    return EnvConfigAdapter(
         cfg, root_dir=repo_root, algo_name=config_group
     ).build_task_env_cfg_override()
 
@@ -90,7 +91,7 @@ def _motion_manager_override(
     from hydra import compose, initialize_config_dir
     from hydra.core.global_hydra import GlobalHydra
 
-    from unilab.base.config_adapter import BackendAdapter
+    from unilab.base.config_adapter import EnvConfigAdapter
 
     repo_root = Path(__file__).parents[2]
     GlobalHydra.instance().clear()
@@ -99,7 +100,7 @@ def _motion_manager_override(
     ):
         overrides = [f"task={task}/{backend}"]
         cfg = compose("config", overrides=overrides)
-    return str(cfg.training.task_name), BackendAdapter(
+    return str(cfg.training.task_name), EnvConfigAdapter(
         cfg,
         root_dir=repo_root,
         algo_name=config_root,
@@ -300,9 +301,7 @@ def test_g1_motion_core_registrations_are_manager_only() -> None:
     }
 
 
-def test_g1_motion_manager_ppo_wraps_only_active_rows_in_one_state_commit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_g1_motion_manager_ppo_resets_only_active_mask_in_one_owner_commit() -> None:
     ensure_registries()
     _require_mujoco_runtime()
     from unilab.base import registry
@@ -317,43 +316,23 @@ def test_g1_motion_manager_ppo_wraps_only_active_rows_in_one_state_commit(
     try:
         env.init_state()
         command = env.command_manager.get_term("motion")
-        command.time_steps[:] = command.sampler.current_clip_end_frames
+        command.time_steps[:] = command.tensor_sampler.current_clip_end_frames
         env.reset_buf.copy_(torch.tensor([True, False], device=env.device))
 
-        set_state_env_ids: list[np.ndarray] = []
-        original_set_state = env._backend.set_state
-
-        def record_set_state(
-            env_ids: np.ndarray,
-            qpos: np.ndarray,
-            qvel: np.ndarray,
-            *,
-            randomization: Any = None,
-        ) -> Any:
-            set_state_env_ids.append(env_ids.copy())
-            return original_set_state(
-                env_ids,
-                qpos,
-                qvel,
-                randomization=randomization,
-            )
-
-        monkeypatch.setattr(env._backend, "set_state", record_set_state)
-        all_ids = np.arange(env.num_envs, dtype=np.int32)
-        with env._reset_state.scoped(all_ids):
+        assert torch.equal(env.reset_buf, torch.tensor([True, False], device=env.device))
+        env._reset_state.declare_packed_reset_device(env.device)
+        with env._reset_state.scoped_device_owner_tensor(env.reset_buf):
             env.command_manager.compute(dt=0.0)
         env.command_manager.post_compute()
 
-        assert len(set_state_env_ids) == 1
-        np.testing.assert_array_equal(set_state_env_ids[0], [1])
-        assert command.time_steps[0] == command.sampler.current_clip_end_frames[0]
-        assert command.time_steps[1] <= command.sampler.current_clip_end_frames[1]
-        expected_motion = command.motion.get_motion_at_frame(command.time_steps)
-        np.testing.assert_array_equal(command.joint_pos, expected_motion.joint_pos)
-        np.testing.assert_array_equal(
-            command._robot_body_pos_w,
-            command.robot.data.body_link_pos_w[:, command._robot_body_ids],
-        )
+        assert command.time_steps[0] == command.tensor_sampler.current_clip_end_frames[0]
+        assert command.time_steps[1] <= command.tensor_sampler.current_clip_end_frames[1]
+        expected_joint_pos = command._motion_features[
+            :,
+            : command.motion.num_joints,
+        ].index_select(0, command.time_steps.to(dtype=torch.int64))
+        torch.testing.assert_close(command.joint_pos, expected_joint_pos)
+        torch.testing.assert_close(command._robot_body_pos_w, command.robot_body_pos_w)
         assert command._robot_cache_step == env.common_step_counter
     finally:
         env.close()
@@ -379,13 +358,15 @@ def test_g1_motion_manager_sac_clip_end_is_truncation() -> None:
     try:
         env.init_state()
         command = env.command_manager.get_term("motion")
-        command.time_steps[:] = command.sampler.current_clip_end_frames
+        command.time_steps[:] = command.tensor_sampler.current_clip_end_frames
 
         state = env.step(torch.zeros((2, 29), dtype=torch.float32))
 
         np.testing.assert_array_equal(state.terminated, [False, False])
         np.testing.assert_array_equal(state.truncated, [True, True])
-        np.testing.assert_array_equal(command.time_steps, command.sampler.current_clip_end_frames)
+        np.testing.assert_array_equal(
+            command.time_steps, command.tensor_sampler.current_clip_end_frames
+        )
     finally:
         env.close()
 
@@ -448,7 +429,6 @@ def test_flashsac_g1_motion_mjwarp_anchor_observations_roll_out() -> None:
     assert isinstance(env, ManagerBasedRlEnv)
     command = env.command_manager.get_term("motion")
     assert command.tensor_carrier is True
-    assert env.command_manager.uses_tensor_reset_rows()
     try:
         assert env.obs_groups_spec == {"obs": 160, "critic": 289}
 
@@ -459,6 +439,8 @@ def test_flashsac_g1_motion_mjwarp_anchor_observations_roll_out() -> None:
         from unisim.backend.base import SelectedResetPublication
 
         capabilities = env.backend.get_tensor_capabilities()
+        assert capabilities.packed_reset
+        assert capabilities.mask_selected_reset
         assert capabilities.selected_reset_publication is (
             SelectedResetPublication.AUTHORITATIVE_VIEWS
         )
@@ -471,7 +453,7 @@ def test_flashsac_g1_motion_mjwarp_anchor_observations_roll_out() -> None:
             return original_step(*args, **kwargs)
 
         env.backend.step_tensor = count_step  # type: ignore[method-assign]
-        env.reset(env_indices=torch.tensor([1], dtype=torch.int64, device=env.device))
+        env.reset(env_ids=torch.tensor([1], dtype=torch.int64, device=env.device))
         assert step_calls == 0
         assert state.obs["obs"].shape == (2, 160)
         assert state.obs["critic"].shape == (2, 289)
@@ -492,7 +474,7 @@ def test_flashsac_g1_motion_mujoco_tensor_command_roll_out() -> None:
         from hydra import compose, initialize_config_dir
         from hydra.core.global_hydra import GlobalHydra
         from unilab.base import registry
-        from unilab.base.config_adapter import BackendAdapter
+        from unilab.base.config_adapter import EnvConfigAdapter
         from unilab.envs import ManagerBasedRlEnv
 
         registry.ensure_registries()
@@ -502,7 +484,7 @@ def test_flashsac_g1_motion_mujoco_tensor_command_roll_out() -> None:
             config_dir=str(root / "src/unilab/conf/flashsac"), version_base="1.3"
         ):
             owner = compose("config", overrides=["task=g1_motion_tracking/mujoco"])
-        override = BackendAdapter(
+        override = EnvConfigAdapter(
             owner, root_dir=root, algo_name="flashsac"
         ).build_task_env_cfg_override()
         env = registry.make(
@@ -515,7 +497,7 @@ def test_flashsac_g1_motion_mujoco_tensor_command_roll_out() -> None:
         try:
             command = env.command_manager.get_term("motion")
             assert command.tensor_carrier is True
-            assert env.torch_rng is not None
+            assert env.rng is not None
             state = env.reset(seed=7)[0]
             for _ in range(3):
                 state = env.step(torch.zeros((2, 29), dtype=torch.float32))
@@ -531,7 +513,7 @@ def test_flashsac_g1_motion_mujoco_tensor_command_roll_out() -> None:
                 return original_step(*args, **kwargs)
 
             env.backend.step_tensor = count_step
-            env.reset(env_indices=torch.tensor([1], dtype=torch.int64))
+            env.reset(env_ids=torch.tensor([1], dtype=torch.int64))
             assert not step_calls
             state = env.step(torch.zeros((2, 29), dtype=torch.float32))
             assert torch.isfinite(state.obs["obs"]).all()
@@ -549,6 +531,110 @@ def test_flashsac_g1_motion_mujoco_tensor_command_roll_out() -> None:
     )
     assert result.returncode == 0, result.stderr or result.stdout
     assert "[mujoco tensor motion rollout] OK" in result.stdout
+
+
+@pytest.mark.parametrize("mode", ["startup", "reset"])
+def test_flashsac_g1_motion_mujoco_tensor_command_model_field_dr_roll_out(
+    mode: str,
+) -> None:
+    """MuJoCo tensor motion commits startup/reset model-field DR in one boundary."""
+    ensure_registries()
+    _require_mujoco_runtime()
+    from unilab.base import registry
+    from unilab.envs import ManagerBasedRlEnv
+
+    _, override = _motion_manager_override("g1_motion_tracking", "mujoco", config_root="flashsac")
+    override["scene"]["entities"]["robot"]["geom_names"] = [
+        f"{side}_foot{index}_collision" for side in ("left", "right") for index in range(1, 8)
+    ]
+    events = {
+        "body_mass": {
+            "_target_": "unilab.managers.event_manager.EventTermCfg",
+            "func": "unilab.envs.mdp.randomize_rigid_body_mass",
+            "mode": mode,
+            "params": {
+                "asset_cfg": {
+                    "_target_": "unilab.managers.SceneEntityCfg",
+                    "name": "robot",
+                    "body_names": ["pelvis", "torso_link"],
+                },
+                "mass_distribution_params": [1.0, 1.0],
+                "operation": "scale",
+                "recompute_inertia": False,
+            },
+        },
+        "body_com": {
+            "_target_": "unilab.managers.event_manager.EventTermCfg",
+            "func": "unilab.envs.mdp.randomize_rigid_body_com",
+            "mode": mode,
+            "params": {
+                "asset_cfg": {
+                    "_target_": "unilab.managers.SceneEntityCfg",
+                    "name": "robot",
+                    "body_names": ["pelvis", "torso_link"],
+                },
+                "com_range": {"x": [0.0, 0.0], "y": [0.0, 0.0], "z": [0.0, 0.0]},
+            },
+        },
+    }
+    if mode == "reset":
+        events.update(
+            {
+                "foot_friction": {
+                    "_target_": "unilab.managers.event_manager.EventTermCfg",
+                    "func": "unilab.envs.mdp.geom_friction",
+                    "mode": "reset",
+                    "params": {
+                        "asset_cfg": {
+                            "_target_": "unilab.managers.SceneEntityCfg",
+                            "name": "robot",
+                            "geom_names": "^(left|right)_foot[1-7]_collision$",
+                        },
+                        "ranges": [1.0, 1.0],
+                        "operation": "abs",
+                    },
+                },
+                "pd_gains": {
+                    "_target_": "unilab.managers.event_manager.EventTermCfg",
+                    "func": "unilab.envs.mdp.pd_gains",
+                    "mode": "reset",
+                    "params": {
+                        "asset_cfg": {
+                            "_target_": "unilab.managers.SceneEntityCfg",
+                            "name": "robot",
+                            "actuator_names": ".*",
+                        },
+                        "kp_range": [1.0, 1.0],
+                        "kd_range": [1.0, 1.0],
+                        "operation": "scale",
+                    },
+                },
+            }
+        )
+    override["events"] = events
+
+    env = registry.make(
+        "G1MotionTracking",
+        num_envs=2,
+        sim_backend="mujoco",
+        env_cfg_override=override,
+    )
+    assert isinstance(env, ManagerBasedRlEnv)
+    try:
+        command = env.command_manager.get_term("motion")
+        assert command.tensor_carrier is True
+        obs, _ = env.reset(seed=1812)
+        assert all(torch.isfinite(values).all() for values in obs.values())
+        for _ in range(3):
+            state = env.step(torch.zeros((2, 29), dtype=torch.float32))
+        assert torch.isfinite(state.reward).all()
+        assert all(torch.isfinite(values).all() for values in state.obs.values())
+
+        obs, _ = env.reset(env_ids=torch.tensor([1], dtype=torch.int64))
+        assert all(torch.isfinite(values).all() for values in obs.values())
+    finally:
+        env.close()
+        env._backend.close()
 
 
 def test_flashsac_g1_motion_genesis_manager_tensor_command_roll_out() -> None:
@@ -574,8 +660,6 @@ def test_flashsac_g1_motion_genesis_manager_tensor_command_roll_out() -> None:
         assert env.obs_groups_spec == {"obs": 160, "critic": 289}
         command = env.command_manager.get_term("motion")
         assert command.tensor_carrier is True
-        assert env.command_manager.uses_tensor_reset_rows()
-
         state = env.init_state()
         for _ in range(3):
             state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
@@ -612,8 +696,6 @@ def test_flashsac_g1_motion_newton_manager_tensor_command_roll_out() -> None:
         assert env.obs_groups_spec == {"obs": 160, "critic": 289}
         command = env.command_manager.get_term("motion")
         assert command.tensor_carrier is True
-        assert env.command_manager.uses_tensor_reset_rows()
-
         state = env.init_state()
         for _ in range(3):
             state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
@@ -650,8 +732,6 @@ def test_flashsac_g1_motion_motrix_manager_tensor_command_roll_out() -> None:
         assert env.obs_groups_spec == {"obs": 160, "critic": 289}
         command = env.command_manager.get_term("motion")
         assert command.tensor_carrier is True
-        assert env.command_manager.uses_tensor_reset_rows()
-
         state = env.init_state()
         for _ in range(3):
             state = env.step(torch.zeros((2, 29), dtype=torch.float32, device=env.device))
@@ -696,7 +776,8 @@ def test_selected_reset_publication_requires_no_manager_readiness_step(
     )
     try:
         capabilities = env.backend.get_tensor_capabilities()
-        assert capabilities.selected_reset
+        assert capabilities.packed_reset
+        assert capabilities.mask_selected_reset
         assert (
             capabilities.selected_reset_publication is SelectedResetPublication.AUTHORITATIVE_VIEWS
         )
@@ -711,7 +792,7 @@ def test_selected_reset_publication_requires_no_manager_readiness_step(
             return original_step(*args, **kwargs)
 
         env.backend.step_tensor = count_step  # type: ignore[method-assign]
-        env.reset(env_indices=torch.tensor([1], dtype=torch.int64, device=env.device))
+        env.reset(env_ids=torch.tensor([1], dtype=torch.int64, device=env.device))
         assert step_calls == 0
 
         state_views = env.backend.get_state_views(("qpos", "qvel"), device=env.device)
@@ -859,6 +940,7 @@ def test_flashsac_motion_reset_publishes_call_graph_counts() -> None:
         assert timing["reset_done_command_term_count"] == 1.0
         assert timing["reset_done_manager_reset_count"] == 7.0
         assert timing["reset_done_observation_term_count"] == 19.0
+        assert timing["reset_done_sampler_dispatch_count"] == 1.0
         assert timing["reset_done_sampler_host_transfer_count"] == 0.0
     finally:
         env.close()
@@ -871,7 +953,7 @@ def test_flashsac_motion_selected_reset_uses_generic_manager_lifecycle() -> None
     _require_mjwarp_runtime()
     from unilab.base import registry
     from unilab.envs import ManagerBasedRlEnv
-    from unilab.tasks.motion_tracking.common.manager_terms import TensorMotionCommand
+    from unilab.tasks.motion_tracking.common.manager_terms import MotionCommand
 
     _, override = _motion_manager_override("g1_motion_tracking", "mjwarp", config_root="flashsac")
     env = registry.make(
@@ -892,13 +974,14 @@ def test_flashsac_motion_selected_reset_uses_generic_manager_lifecycle() -> None
         env.reset_time_outs[rows] = True
         env.reset_buf.fill_(False)
         env.reset_buf[rows] = True
-        obs, _info = env.reset(env_indices=rows)
+        obs, _info = env.reset(env_ids=rows)
 
         assert all(torch.isfinite(values).all() for values in obs.values())
         command = env.command_manager.get_term("motion")
-        assert isinstance(command, TensorMotionCommand)
+        assert isinstance(command, MotionCommand)
         timing = env._last_reset_manager_timing_ms
         assert timing["reset_done_manager_reset_count"] == 7.0
+        assert timing["reset_done_sampler_dispatch_count"] == 1.0
         assert timing["reset_done_sampler_host_transfer_count"] == 0.0
     finally:
         env.close()

@@ -19,10 +19,9 @@ pytest.importorskip(
     reason="unisim-core MuJoCo adapter (mjbatch build) not available",
 )
 
-from uni_rl.algos.appo.runner import APPORunner
-
-from unilab.base.config_adapter import BackendAdapter
+from unilab.base.config_adapter import EnvConfigAdapter
 from unilab.base.env_factory import registry_env_factory
+from unilab.rl.algos.appo.runner import APPORunner
 from unilab.structured_configs import APPOConfig
 
 
@@ -46,7 +45,7 @@ def test_appo_runner_learn_two_iterations(env_name):
         config_dir=str(root_dir / "src" / "unilab" / "conf" / "appo"), version_base="1.3"
     ):
         hydra_cfg = compose("config", overrides=["task=go2_joystick_flat/mujoco"])
-    env_cfg_overrides = BackendAdapter(hydra_cfg, root_dir=root_dir).build_task_env_cfg_override()
+    env_cfg_overrides = EnvConfigAdapter(hydra_cfg, root_dir=root_dir).build_task_env_cfg_override()
 
     runner = APPORunner(
         env_name=env_name,

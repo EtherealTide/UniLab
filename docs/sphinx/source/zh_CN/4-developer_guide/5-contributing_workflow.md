@@ -61,6 +61,10 @@ child branch 从最新集成分支创建，使用常规类型前缀，例如
 使用 Conventional Commit 标题。说明改动是否影响 MuJoCo、Motrix、其他后端、macOS、Linux 或
 训练行为。文档改动运行相应的 docs 检查，并遵守该 PR 所需的仓库 gate。
 
+依赖维护是双轨的：修改 `pyproject.toml` 依赖钉版时，必须在同一 PR 中把相同的
+版本钉进 `pyproject.rocm.toml` 并重新生成 `uv.rocm.lock`。切换已发布依赖时，
+上游版本必须已在 PyPI 发布后才能合入钉版变更；见下文 tensor-runtime 切换小节。
+
 ## 架构决策
 
 改动 runtime、backend、config、registry 或其他公共 contract 时，在 issue 或 PR 关联相应 ADR。
@@ -82,8 +86,8 @@ child branch 从最新集成分支创建，使用常规类型前缀，例如
 1. M11 的长时 soak、泄漏、异常退出、schema、平台 fail-closed 与文档验收项已完成。
 2. 所需的公开 `unisim-core` tensor lifecycle contract 和 adapter 已进入某个已发布
    `unisim-core` 版本，并且该包的 standalone gate 通过。
-3. 所需的 CUDA inference/replay runner 行为已进入某个已发布 `unilab-rl` 版本，
-   并且其完整仓库 gate 通过。
+3. 所需的 CUDA inference/replay runner 行为已进入仓内的 `unilab.rl` 栈
+   （原 `unilab-rl` 包已并入本仓库），并且其完整仓库 gate 通过。
 4. 所需的 MJBatch executor API 已进入 UniSim adapter contract 支持的已发布
    `mjbatch-uni` 版本。
 5. 默认与 ROCm lock profile 只解析 registry 包。
