@@ -24,11 +24,27 @@ def test_resolve_reward_dict_reads_task_reward():
             overrides=["task=go2_joystick_flat/mujoco"],
         )
 
-    reward_dict = resolve_reward_dict(cfg)["reward_config"]
+    reward_dict = resolve_reward_dict(cfg)["rewards"]
 
     assert reward_dict["tracking_lin_vel"]["weight"] == 1.0
     assert reward_dict["tracking_ang_vel"]["weight"] == 0.2
     assert reward_dict["tracking_lin_vel"]["func"].endswith("track_lin_vel")
+
+
+def test_resolve_reward_dict_rejects_reward_config_target():
+    """The removed 'reward_config' override key must fail closed."""
+    import pytest
+
+    from unilab.utils.reward import resolve_reward_dict
+
+    with initialize(config_path="../../src/unilab/conf/ppo", version_base="1.3"):
+        cfg = compose(
+            config_name="config",
+            overrides=["task=go2_joystick_flat/mujoco"],
+        )
+
+    with pytest.raises(ValueError, match="target_field must be 'rewards'"):
+        resolve_reward_dict(cfg, target_field="reward_config")
 
 
 def test_reward_config_conversion():

@@ -24,12 +24,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from unisim.backend.base import CameraCfg
@@ -49,45 +48,6 @@ from unilab.base import registry
 
 if TYPE_CHECKING:
     from unilab.base.scene import SceneCfg
-
-
-def _build_reward_stub(env_cfg_cls: type) -> dict[str, Any] | None:
-    """Generate a minimal reward_config dict for the given env cfg class."""
-    try:
-        type_hints = get_type_hints(env_cfg_cls)
-    except Exception:
-        return None
-    reward_type = type_hints.get("reward_config")
-    if reward_type is None:
-        return None
-    if get_origin(reward_type) is not None:
-        non_none = [a for a in get_args(reward_type) if a is not type(None)]
-        if not non_none:
-            return None
-        reward_type = non_none[0]
-    if not dataclasses.is_dataclass(reward_type):
-        return None
-
-    stub: dict[str, Any] = {}
-    for f in dataclasses.fields(reward_type):
-        if f.default is not dataclasses.MISSING:
-            continue
-        if f.default_factory is not dataclasses.MISSING:  # type: ignore[misc]
-            continue
-        type_str = str(f.type)
-        if "dict" in type_str:
-            stub[f.name] = {}
-        elif "list" in type_str or "tuple" in type_str or "Sequence" in type_str:
-            stub[f.name] = []
-        elif "bool" in type_str:
-            stub[f.name] = False
-        elif "float" in type_str or "int" in type_str:
-            stub[f.name] = 0.0
-        elif "str" in type_str:
-            stub[f.name] = ""
-        else:
-            stub[f.name] = None
-    return stub
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -291,12 +251,7 @@ def _build_env_cfg_override(task_name: str) -> dict[str, Any]:
             f"Task '{task_name}' is not registered. "
             f"Available: {sorted(registry.list_registered_envs())}"
         )
-    env_cfg = registry.materialize_env_config(task_name)
-    override: dict[str, Any] = {}
-    reward_stub = _build_reward_stub(type(env_cfg))
-    if reward_stub is not None:
-        override["reward_config"] = reward_stub
-    return override
+    return {}
 
 
 def _print_backend_scene(env) -> None:
