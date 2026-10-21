@@ -28,6 +28,7 @@ from unilab.base.process_device import (
 )
 from unilab.rl import RslRlVecEnvAdapter
 from unilab.rl.algos.appo.resolution import resolve_appo_runtime
+from unilab.rl.runtime.tf32 import apply_tf32_matmul_from_cfg
 from unilab.training import (
     algo_config_dict,
     build_run_dir_name,
@@ -103,6 +104,7 @@ def build_appo_runner_kwargs(
     env_cfg_override: dict | None,
     collector_device: str | None,
     rl_cfg: dict[str, Any] | None = None,
+    tf32_matmul_policy: Any | None = None,
 ) -> dict:
     if rl_cfg is None:
         rl_cfg = algo_config_dict(cfg)
@@ -376,6 +378,7 @@ def main(cfg: DictConfig) -> None:
         learner_device=_env_carrier_device(cfg, collector_device, runner_device=learner_device),
     )
     seed_info = apply_configured_training_seed(cfg, torch_runtime=True, cuda=True)
+    tf32_matmul_policy = apply_tf32_matmul_from_cfg(cfg, device=learner_device)
     resolved_sim_carrier = (
         canonicalize_sim_carrier_device(env_cfg_override.get("sim_carrier_device"))
         if str(cfg.training.sim_backend) == "mujoco"
@@ -422,6 +425,7 @@ def main(cfg: DictConfig) -> None:
                 ),
             },
             seed_info=seed_info,
+            tf32_matmul_policy=tf32_matmul_policy,
         )
         tracker.start()
 
@@ -433,6 +437,7 @@ def main(cfg: DictConfig) -> None:
                     env_cfg_override=env_cfg_override,
                     collector_device=collector_device,
                     rl_cfg=rl_cfg,
+                    tf32_matmul_policy=tf32_matmul_policy,
                 )
             )
 

@@ -26,6 +26,7 @@ from unilab.rl.logging.metrics_drain import RewardComponentWindow, drain_collect
 from unilab.rl.runtime.device import get_default_device
 from unilab.rl.runtime.ipc import AsyncRunner, SharedWeightSync, TensorRolloutRingBuffer
 from unilab.rl.runtime.seed import apply_worker_seed, derive_worker_seed
+from unilab.rl.runtime.tf32 import format_tf32_matmul
 
 
 def _optimizer_lr_from_state(optimizer: torch.optim.Optimizer) -> float:
@@ -66,6 +67,7 @@ class APPORunner(AsyncRunner):
         nan_guard_cfg: Any | None = None,
         nan_guard_factory: Any | None = None,
         log_interval: int = 1,
+        tf32_matmul_policy: Any | None = None,
     ):
         super().__init__(
             env_name=env_name,
@@ -85,6 +87,7 @@ class APPORunner(AsyncRunner):
         self.nan_guard_cfg = nan_guard_cfg
         self.nan_guard_factory = nan_guard_factory
         self.log_interval = max(1, int(log_interval))
+        self.tf32_matmul_policy = tf32_matmul_policy
         self.env_factory = env_factory
         if self.staging_pool_size < 1:
             raise ValueError("APPO staging pool size must be >= 1")
@@ -302,6 +305,7 @@ class APPORunner(AsyncRunner):
             timing_profile="appo",
             log_interval=self.log_interval,
         )
+        logger.log_status(format_tf32_matmul(self.tf32_matmul_policy))
         logger.log_status(
             f"Waiting for first rollout... "
             f"(staging_pool={self.staging_pool_size}, "
@@ -431,6 +435,9 @@ class APPORunner(AsyncRunner):
             "mean_episode_length": float(logger._mean_ep_length),
             "last_checkpoint": ckpt_path,
             "training_wall_time_sec": time.time() - train_start_wall,
+            "tf32_matmul": (
+                self.tf32_matmul_policy.manifest() if self.tf32_matmul_policy is not None else None
+            ),
         }
         self.last_run_summary = summary
 
