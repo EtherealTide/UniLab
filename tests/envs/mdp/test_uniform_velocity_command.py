@@ -232,6 +232,15 @@ def test_metrics_and_fixed_interval_resampling_follow_manager_schedule() -> None
     np.testing.assert_allclose(term.time_left, 0.2)
 
 
+def test_metrics_fail_closed_before_read_plan_compilation() -> None:
+    env, _ = _env()
+    manager = _manager(env)
+    env.scene.read_plan = None
+
+    with pytest.raises(RuntimeError, match="compiled packed tensor read plan"):
+        manager.compute(0.1)
+
+
 def test_heading_world_forward_and_standing_modes() -> None:
     all_mask = torch.ones(4, dtype=torch.bool)
 

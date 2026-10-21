@@ -132,14 +132,17 @@ class UniformVelocityCommand(CommandTerm):
 
     def _metric_velocities(self) -> tuple[torch.Tensor, torch.Tensor]:
         read_plan = getattr(self._env.scene, "read_plan", None)
+        if read_plan is None:
+            raise RuntimeError(
+                "UniformVelocityCommand metrics require the scene's compiled packed "
+                "tensor read plan. The lifecycle order is manager construction, then "
+                "ManagerBasedRlEnv read-plan compilation, then per-step command "
+                "compute; consuming metrics before the plan exists is an ordering bug"
+            )
         names = self.tensor_sensor_names
-        packed = read_plan.sensor_names.get(self.cfg.entity_name, ()) if read_plan else ()
+        packed = read_plan.sensor_names.get(self.cfg.entity_name, ())
         # The scene pack negotiates backend-local aliases (Go2 ``local_linvel``/
         # ``gyro``) but the semantic metric remains the canonical IMU contract.
-        if read_plan is None:
-            # Manager construction and command reset before plan compilation do
-            # not consume metrics; defer to the compiled packed phase.
-            return torch.zeros((self.num_envs, 3)), torch.zeros((self.num_envs, 3))
         aliases = self.packed_sensor_aliases
         resolved_names = tuple(
             next((local for local in aliases.get(name, (name,)) if local in packed), name)
