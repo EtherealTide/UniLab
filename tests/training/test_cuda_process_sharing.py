@@ -70,6 +70,8 @@ def test_disabled_default_does_not_probe_host(monkeypatch: pytest.MonkeyPatch) -
         raise AssertionError("disabled mode must not probe CUDA or MPS")
 
     monkeypatch.setattr(platform, "system", lambda: "not-linux")
+    monkeypatch.delenv("CUDA_MPS_PIPE_DIRECTORY", raising=False)
+    monkeypatch.delenv("CUDA_MPS_LOG_DIRECTORY", raising=False)
     evidence = probe_cuda_process_sharing(
         None,
         "cpu",
@@ -87,8 +89,12 @@ def test_disabled_default_does_not_probe_host(monkeypatch: pytest.MonkeyPatch) -
         "collector_device": None,
         "learner_gpu_uuid": None,
         "collector_gpu_uuid": None,
+        "pipe_directory_env": None,
+        "pipe_directory": None,
         "control_pipe": None,
+        "control_pipe_kind": None,
         "server_pid": None,
+        "ambient_server": False,
         "rank": 0,
         "world_size": 1,
     }
@@ -130,8 +136,12 @@ def test_valid_single_rank_request_records_server_evidence(linux_mps: Any) -> No
         "collector_device": "cuda:0",
         "learner_gpu_uuid": "A",
         "collector_gpu_uuid": "A",
+        "pipe_directory_env": str(linux_mps.parent),
+        "pipe_directory": str(linux_mps.parent),
         "control_pipe": str(linux_mps),
+        "control_pipe_kind": "unix_socket",
         "server_pid": 2768293,
+        "ambient_server": False,
         "rank": 0,
         "world_size": 1,
     }
@@ -295,3 +305,107 @@ def test_unreachable_daemon_rejects_without_fallback(linux_mps: Any) -> None:
             torch_module=_torch("GPU-a"),
             run_command=failing_daemon,
         )
+
+
+def test_unconfigured_cuda_rank_records_ambient_server(linux_mps: Any) -> None:
+    """A transparent environment-level daemon must be self-reported by the run."""
+
+    _socket_control(linux_mps)
+
+    evidence = probe_cuda_process_sharing(
+        None,
+        "cuda:0",
+        "cuda:0",
+        backend="mujoco",
+        torch_module=_torch("GPU-a"),
+        run_command=_fake_commands(),
+    )
+
+    assert evidence.configured is None
+    assert evidence.effective is None
+    assert not evidence.validated
+    assert evidence.ambient_server
+    assert evidence.pipe_directory_env == str(linux_mps.parent)
+    assert evidence.pipe_directory == str(linux_mps.parent)
+    assert evidence.control_pipe == str(linux_mps)
+    assert evidence.control_pipe_kind == "unix_socket"
+    assert evidence.server_pid == 2768293
+    assert evidence.learner_gpu_uuid == "A"
+    assert evidence.collector_gpu_uuid == "A"
+
+
+def test_unconfigured_cuda_rank_without_daemon_records_absence(linux_mps: Any) -> None:
+    linux_mps.unlink()
+
+    evidence = probe_cuda_process_sharing(
+        None,
+        "cuda:0",
+        "cuda:0",
+        backend="mujoco",
+        torch_module=_torch("GPU-a"),
+        run_command=_fake_commands(),
+    )
+
+    assert not evidence.validated
+    assert not evidence.ambient_server
+    assert evidence.pipe_directory == str(linux_mps.parent)
+    assert evidence.control_pipe == str(linux_mps)
+    assert evidence.control_pipe_kind is None
+    assert evidence.server_pid is None
+    assert evidence.learner_gpu_uuid == "A"
+    assert evidence.collector_gpu_uuid == "A"
+
+
+def test_unconfigured_cpu_rank_skips_host_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    def reject(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise AssertionError("a cpu rank must not probe CUDA or MPS")
+
+    monkeypatch.setenv("CUDA_MPS_PIPE_DIRECTORY", "/tmp/nvidia-mps-test")
+    evidence = probe_cuda_process_sharing(
+        None,
+        "cpu",
+        None,
+        backend="mujoco",
+        torch_module=None,
+        run_command=reject,
+    )
+
+    assert evidence.pipe_directory_env == "/tmp/nvidia-mps-test"
+    assert evidence.pipe_directory is None
+    assert evidence.control_pipe is None
+    assert evidence.control_pipe_kind is None
+    assert evidence.server_pid is None
+    assert evidence.learner_gpu_uuid is None
+    assert evidence.collector_gpu_uuid is None
+    assert not evidence.ambient_server
+
+
+def test_ambient_probe_records_unresolvable_facts_as_none(linux_mps: Any) -> None:
+    """Ambient observation never fails closed, even with broken host tools."""
+
+    _socket_control(linux_mps)
+    failing_torch = SimpleNamespace(
+        version=SimpleNamespace(hip=None),
+        cuda=SimpleNamespace(is_available=lambda: (_ for _ in ()).throw(RuntimeError("no cuda"))),
+    )
+
+    def failing_commands(command: list[str], **kwargs: Any) -> Any:
+        del command, kwargs
+        raise RuntimeError("no host tools")
+
+    evidence = probe_cuda_process_sharing(
+        None,
+        "cuda:0",
+        "cuda:0",
+        backend="mujoco",
+        torch_module=failing_torch,
+        run_command=failing_commands,
+    )
+
+    assert evidence.control_pipe_kind == "unix_socket"
+    assert evidence.server_pid is None
+    assert evidence.learner_gpu_uuid is None
+    assert evidence.collector_gpu_uuid is None
+    assert not evidence.ambient_server
+    assert not evidence.validated

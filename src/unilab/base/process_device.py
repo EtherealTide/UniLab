@@ -70,6 +70,17 @@ def _host_bridge_profile(backend_type: str) -> TensorPlatformProfile | None:
     return profile
 
 
+def is_host_bridge_backend(backend_type: str) -> bool:
+    """Return whether the backend executes through the packed HOST_BRIDGE plane.
+
+    Only HOST_BRIDGE backends route ``training.sim_carrier_device``; callers
+    that record or display the resolved carrier use this predicate instead of
+    naming individual backends.
+    """
+
+    return _host_bridge_profile(backend_type) is not None
+
+
 def _cuda_device_index(device: str | None) -> int | None:
     """Extract an integer CUDA index from a device string.
 
@@ -519,6 +530,7 @@ __all__ = [
     "bind_backend_process_device",
     "bind_genesis_process_device",
     "configure_backend_process_device",
+    "is_host_bridge_backend",
     "pin_genesis_device_before_cuda_init",
     "resolve_backend_env_device_id",
     "resolve_backend_process_device",

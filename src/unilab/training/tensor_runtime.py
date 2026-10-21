@@ -9,8 +9,15 @@ value objects they produce live in :mod:`unilab.rl.runtime.settings` and
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from omegaconf import DictConfig, OmegaConf
 
+from unilab.base.process_device import (
+    canonicalize_sim_carrier_device,
+    is_host_bridge_backend,
+)
 from unilab.rl.runtime.placement import (
     InferencePlacement,
     resolve_inference_placement,
@@ -28,7 +35,7 @@ from unilab.rl.runtime.settings import (
 
 
 def select_sim_carrier_device(cfg: DictConfig) -> str:
-    """Select the MuJoCo Manager carrier request and reject the removed key."""
+    """Select the HOST_BRIDGE Manager carrier request and reject the removed key."""
     training = OmegaConf.select(cfg, "training", default=None)
     if training is not None and "collector_tensor_device" in training:
         raise ValueError(
@@ -41,6 +48,22 @@ def select_sim_carrier_device(cfg: DictConfig) -> str:
     if not isinstance(value, str):
         raise TypeError(f"training.sim_carrier_device must be a string or omitted, got {value!r}")
     return value
+
+
+def resolve_recorded_sim_carrier(
+    sim_backend: str,
+    env_cfg_override: Mapping[str, Any] | None,
+) -> str | None:
+    """Resolve the sim carrier recorded in ``run_config.json``.
+
+    Every HOST_BRIDGE backend routes ``training.sim_carrier_device``; gating
+    the record on one backend name drops the resolved carrier from the other
+    HOST_BRIDGE backends' run configs.
+    """
+
+    if not is_host_bridge_backend(sim_backend):
+        return None
+    return canonicalize_sim_carrier_device((env_cfg_override or {}).get("sim_carrier_device"))
 
 
 def resolve_inference_transport(
