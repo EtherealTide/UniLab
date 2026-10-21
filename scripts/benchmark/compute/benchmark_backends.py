@@ -22,7 +22,7 @@ from scripts.benchmark.core import (
     print_table,
     torch_dtype,
 )
-from scripts.benchmark.core.device_info import get_device_info_dict
+from unilab.utils.device import get_device_info_dict
 
 try:
     import numpy as np

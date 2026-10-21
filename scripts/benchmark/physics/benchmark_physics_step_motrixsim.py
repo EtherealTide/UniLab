@@ -42,11 +42,9 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from scripts.benchmark.core import device_info as _benchmark_device_info
 from scripts.benchmark.core import task_names as _benchmark_task_names
+from unilab.utils.device import get_device_info_dict, get_device_info_line
 
-get_device_info_dict = _benchmark_device_info.get_device_info_dict
-get_device_info_line = _benchmark_device_info.get_device_info_line
 canonical_locomotion_task_ids = _benchmark_task_names.canonical_locomotion_task_ids
 locomotion_task_spec = _benchmark_task_names.locomotion_task_spec
 locomotion_task_model_file = _benchmark_task_names.locomotion_task_model_file
