@@ -273,7 +273,7 @@ def test_reset_extras_log_only_staged_scalar_keys(fake_env_full: _FakeEnv) -> No
     )
     fake_env_full.common_step_counter = 200
     manager.compute()
-    extras = manager.reset(torch.ones(fake_env_full.num_envs, dtype=torch.bool))
+    extras = manager.reset(torch.arange(fake_env_full.num_envs, dtype=torch.int64))
     assert extras["Curriculum/pen_ramp/weight"] == pytest.approx(-1.0)
     assert extras["Curriculum/pen_ramp/std"] == pytest.approx(0.2)
     # Not staged by any stage -> not logged.
@@ -286,7 +286,7 @@ def test_weight_not_logged_when_only_params_staged(fake_env_full: _FakeEnv) -> N
     )
     fake_env_full.common_step_counter = 200
     manager.compute()
-    extras = manager.reset(torch.ones(fake_env_full.num_envs, dtype=torch.bool))
+    extras = manager.reset(torch.arange(fake_env_full.num_envs, dtype=torch.int64))
     assert extras["Curriculum/energy_ramp/threshold"] == pytest.approx(500.0)
     assert "Curriculum/energy_ramp/weight" not in extras
 
@@ -398,8 +398,9 @@ def test_command_curriculum_logs_scalar_fields(fake_env_full: _FakeEnv) -> None:
         ],
     )
     fake_env_full.common_step_counter = 60
-    manager.compute(torch.ones(fake_env_full.num_envs, dtype=torch.bool))
-    extras = manager.reset(torch.ones(fake_env_full.num_envs, dtype=torch.bool))
+    all_ids = torch.arange(fake_env_full.num_envs, dtype=torch.int64)
+    manager.compute(all_ids)
+    extras = manager.reset(all_ids)
     assert extras["Curriculum/standing_ramp/rel_standing_envs"] == pytest.approx(0.05)
     # Non-scalar staged fields are applied but not logged.
     assert "Curriculum/standing_ramp/ranges" not in extras

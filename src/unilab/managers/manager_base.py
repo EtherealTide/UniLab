@@ -118,9 +118,8 @@ class ManagerBase(abc.ABC):
         """Resets manager state for the selected environment rows.
 
         The public selector follows the IsaacLab/mjlab ``env_ids`` row-index
-        form (``None`` selects every row). A fixed-width bool mask is the
-        deprecated form: it is accepted for one release with a
-        ``DeprecationWarning`` (removed in v1.6).
+        form (``None`` selects every row); the v1.4 fixed-width bool mask form
+        is removed.
         """
         del env_ids
         return {}

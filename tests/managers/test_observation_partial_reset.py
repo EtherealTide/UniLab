@@ -113,7 +113,7 @@ def test_invalid_temporal_config_fails_clearly() -> None:
         )
 
 
-def test_reset_rejects_malformed_mask_and_deprecates_bool_mask() -> None:
+def test_reset_rejects_bool_mask() -> None:
     env = FakeEnv(seed=3)
     manager = ObservationManager(
         {
@@ -125,11 +125,11 @@ def test_reset_rejects_malformed_mask_and_deprecates_bool_mask() -> None:
     )
     manager.compute(update_history=True)
 
-    with pytest.raises(ValueError, match="reset mask must have shape"):
+    # The v1.4 bool-mask form is removed: any bool tensor fails closed.
+    with pytest.raises(TypeError, match="integer row-index tensor"):
         manager.reset(torch.ones(env.num_envs + 1, dtype=torch.bool))
-    # The v1.4 bool-mask form is accepted for one release with a warning.
-    with pytest.warns(DeprecationWarning, match="env_ids"):
-        assert manager.reset(torch.zeros(env.num_envs, dtype=torch.bool)) == {}
+    with pytest.raises(TypeError, match="integer row-index tensor"):
+        manager.reset(torch.zeros(env.num_envs, dtype=torch.bool))
 
 
 def test_partial_reset_temporal_group_backfills_and_preserves_rows() -> None:

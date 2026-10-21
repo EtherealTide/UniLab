@@ -231,8 +231,7 @@ class TorchEnv(ABEnv):
         """Reset the selected environment rows; ``None`` resets all rows.
 
         The public selector follows the IsaacLab/mjlab ``env_ids`` row-index
-        form. A fixed-width bool mask is the deprecated form: it is accepted
-        for one release with a ``DeprecationWarning`` (removed in v1.6).
+        form; the v1.4 fixed-width bool mask form is removed.
         """
         raise NotImplementedError(f"{type(self).__name__} must define a tensor reset lifecycle")
 

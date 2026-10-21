@@ -105,7 +105,7 @@ def test_gait_phase_advances_with_counter_and_resamples_per_init_mode():
     )
 
     np.testing.assert_array_equal(term(env), np.zeros((4, 2)))
-    term.reset(torch.ones(4, dtype=torch.bool))
+    term.reset(torch.arange(4, dtype=torch.int64))
     phase = term(env)
     np.testing.assert_allclose(phase[:, 1] - phase[:, 0], np.pi, rtol=1.0e-6)
     assert bool(torch.all(phase[:, 0] >= 0.0)) and bool(torch.all(phase[:, 0] < 2.0 * np.pi))
@@ -129,7 +129,7 @@ def test_gait_phase_independent_mode_samples_feet_independently():
         ObservationTermCfg(func=G1GaitPhase, params={"frequency": 1.5, "init_mode": "independent"}),
         cast(Any, env),
     )
-    term.reset(torch.ones(64, dtype=torch.bool))
+    term.reset(torch.arange(64, dtype=torch.int64))
     phase = term(env)
     assert not np.allclose(phase[:, 1] - phase[:, 0], np.pi)
 
@@ -143,7 +143,7 @@ def test_gait_phase_reset_fails_closed_without_rng() -> None:
     )
 
     with pytest.raises(RuntimeError, match="Manager-owned Torch generator"):
-        term.reset(torch.ones(4, dtype=torch.bool))
+        term.reset(torch.arange(4, dtype=torch.int64))
 
 
 def test_bezier_targets_match_legacy_reference_values():
@@ -335,7 +335,7 @@ def test_penalty_curriculum_repeated_construction_never_mutates_source_cfg():
         assert weight == pytest.approx(-0.0625)
 
 
-def test_penalty_curriculum_mask_weights_by_selected_episode_count():
+def test_penalty_curriculum_env_ids_weight_by_selected_episode_count():
     env = _curriculum_env({"pose": -0.5}, num_envs=2048)
     term = G1PenaltyCurriculum(
         RewardTermCfg(
@@ -348,14 +348,12 @@ def test_penalty_curriculum_mask_weights_by_selected_episode_count():
     env.episode_length_buf[:] = 500
     env.reset_buf.zero_()
     env.reset_buf[7] = True
-    mask = torch.zeros(2048, dtype=torch.bool)
-    mask[7] = True
 
-    term.__call_mask__(cast(Any, env), mask)
+    term(cast(Any, env), torch.tensor([7], dtype=torch.int64))
 
-    assert term._tracker.average.item() == pytest.approx(500.0)
-    # A single selected episode must receive the same moving-average weight
-    # as the selected-row lifecycle, not the full-batch carrier width.
+    # A single selected episode moves the average by the selected-row weight
+    # (1 / window_size), not the full-batch carrier width.
+    assert term._tracker.average.item() == pytest.approx(500.0 / term._tracker.window_size)
     assert term._tracker.average.item() != 0.0
 
 
@@ -404,7 +402,7 @@ def test_velocity_command_dead_zone_zeroes_small_planar_commands():
         ),
     )
     term = cfg.build(cast(Any, env))
-    term._resample_command(torch.arange(64, dtype=torch.int64))
+    term._resample_command(torch.ones(64, dtype=torch.bool))
 
     planar_norm = torch.linalg.vector_norm(term.command[:, :2], dim=1)
     assert bool(torch.all((planar_norm == 0.0) | (planar_norm > 0.2)))
@@ -412,7 +410,7 @@ def test_velocity_command_dead_zone_zeroes_small_planar_commands():
     assert term.command.dtype == torch.float32
 
 
-def test_velocity_command_mask_reset_preserves_unselected_rows():
+def test_velocity_command_reset_preserves_unselected_rows():
     env = SimpleNamespace(
         num_envs=8,
         rng=ManagerRng.seeded(0),
@@ -442,7 +440,7 @@ def test_velocity_command_mask_reset_preserves_unselected_rows():
     term.metrics["error_vel_xy"][:] = torch.arange(8, dtype=torch.float32)
     mask = torch.tensor([False, True, False, True, False, True, False, True])
 
-    term.reset_mask(mask)
+    term.reset(torch.nonzero(mask, as_tuple=False).flatten())
 
     torch.testing.assert_close(
         term.command[~mask],
@@ -454,7 +452,7 @@ def test_velocity_command_mask_reset_preserves_unselected_rows():
     torch.testing.assert_close(
         term.metrics["error_vel_xy"][~mask], torch.arange(8, dtype=torch.float32)[~mask]
     )
-    assert bool((term.command_counter[mask] == 0).all())
+    assert bool((term.command_counter[mask] == 1).all())
     assert bool((term.metrics["error_vel_xy"][mask] == 0).all())
     planar_norm = torch.linalg.vector_norm(term.command[mask, :2], dim=1)
     assert bool(torch.all((planar_norm == 0.0) | (planar_norm > 0.2)))

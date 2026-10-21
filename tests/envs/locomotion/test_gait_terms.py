@@ -179,7 +179,7 @@ def test_feet_air_time_command_gate_and_reset() -> None:
         np.testing.assert_allclose(term(env), [0.0, 0.0])  # Standing: gated off.
 
     moving_env = _env(scene)
-    term.reset(torch.ones(env.num_envs, dtype=torch.bool))  # Episode reset clears air time.
+    term.reset(torch.arange(env.num_envs, dtype=torch.int64))  # Episode reset clears air time.
     np.testing.assert_allclose(term(moving_env), [0.0, 0.0])  # 0.02 <= threshold_min.
     for _ in range(2):
         term(moving_env)
@@ -258,7 +258,7 @@ def test_feet_swing_height_charges_peak_error_at_landing() -> None:
     # After landing the peaks reset; continued contact charges nothing.
     np.testing.assert_allclose(term(env), [0.0, 0.0])
 
-    term.reset(torch.ones(env.num_envs, dtype=torch.bool))
+    term.reset(torch.arange(env.num_envs, dtype=torch.int64))
     standing = _env(scene, command=torch.zeros((2, 3), dtype=torch.float32))
     scene.set_foot_contact(0, False)
     scene.set_foot_contact(1, False)

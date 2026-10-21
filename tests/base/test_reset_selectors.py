@@ -1,7 +1,5 @@
 """Unit tests for the env_ids→mask reset adaptation layer (roadmap #2461)."""
 
-import warnings
-
 import pytest
 import torch
 
@@ -85,27 +83,14 @@ def test_resolve_ids_matches_allocating_form() -> None:
         assert torch.equal(reused, expected)
 
 
-def test_resolve_bool_mask_warns_and_passes_through() -> None:
+def test_resolve_rejects_bool_mask() -> None:
     num_envs = 8
     buffer = ResetMaskBuffer(num_envs, torch.device("cpu"))
-    buffer.scatter(torch.tensor([0, 1], dtype=torch.int64))
     caller_mask = torch.zeros(num_envs, dtype=torch.bool)
     caller_mask[[3, 4]] = True
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        resolved = buffer.resolve(caller_mask, owner="test.resolve")
-    assert any(issubclass(item.category, DeprecationWarning) for item in caught)
-    assert resolved.data_ptr() == caller_mask.data_ptr()
-    # The deprecated passthrough never aliases or rewrites the buffer.
-    assert resolved.data_ptr() != buffer.scatter(torch.tensor([5], dtype=torch.int64)).data_ptr()
-    with pytest.warns(DeprecationWarning):
-        allocating = resolve_reset_mask(
-            caller_mask, num_envs=num_envs, device=torch.device("cpu"), owner="t"
-        )
-    assert torch.equal(allocating, caller_mask)
-
-
-def test_resolve_bool_mask_wrong_shape_raises() -> None:
-    buffer = ResetMaskBuffer(8, torch.device("cpu"))
-    with pytest.raises(ValueError, match="reset mask must have shape"):
+    with pytest.raises(TypeError, match="integer row-index tensor"):
+        buffer.resolve(caller_mask, owner="test.resolve")
+    with pytest.raises(TypeError, match="integer row-index tensor"):
         buffer.resolve(torch.zeros(4, dtype=torch.bool), owner="test.resolve")
+    with pytest.raises(TypeError, match="integer row-index tensor"):
+        resolve_reset_mask(caller_mask, num_envs=num_envs, device=torch.device("cpu"), owner="t")
