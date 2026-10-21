@@ -8,6 +8,7 @@ coverage lives in ``tests/training/test_tensor_runtime.py``.
 from __future__ import annotations
 
 import pytest
+import torch
 
 from unilab.rl.runtime.placement import InferenceTransport, resolve_inference_placement
 
@@ -64,11 +65,21 @@ def test_auto_follows_cpu_learner_to_host_ring() -> None:
     assert placement.staging_policy == "cpu_no_device_transfer"
 
 
-def test_explicit_cpu_keeps_host_ring_with_cuda_learner() -> None:
+def test_explicit_cpu_with_cuda_learner_fails_closed() -> None:
+    with pytest.raises(ValueError, match="collector_tensor_device=cpu with CUDA learner"):
+        resolve_inference_placement(
+            learner_device="cuda:1",
+            collector_tensor_device="cpu",
+            algo_name="SAC",
+        )
+
+
+def test_explicit_cpu_with_cuda_learner_requires_opt_in() -> None:
     placement = resolve_inference_placement(
         learner_device="cuda:1",
         collector_tensor_device="cpu",
         algo_name="SAC",
+        allow_cpu_carrier_with_cuda_learner=True,
     )
 
     assert placement.mode is InferenceTransport.HOST
@@ -77,6 +88,32 @@ def test_explicit_cpu_keeps_host_ring_with_cuda_learner() -> None:
     assert placement.learner_device == "cuda:1"
     assert placement.collector_tensor_native is False
     assert placement.staging_policy == "cpu_ring_explicit_learner_actor_h2d_action_d2h"
+
+
+def test_explicit_cpu_with_cuda_learner_allowed_on_rocm_build(monkeypatch) -> None:
+    """ROCm/HIP builds keep the CPU carrier as their only sharing mitigation."""
+    monkeypatch.setattr(torch.version, "hip", "6.2")
+
+    placement = resolve_inference_placement(
+        learner_device="cuda:0",
+        collector_tensor_device="cpu",
+        algo_name="SAC",
+    )
+
+    assert placement.mode is InferenceTransport.HOST
+    assert placement.staging_policy == "cpu_ring_explicit_learner_actor_h2d_action_d2h"
+
+
+@pytest.mark.parametrize("learner_device", ["cpu", "mps"])
+def test_explicit_cpu_stays_allowed_for_non_cuda_learners(learner_device: str) -> None:
+    placement = resolve_inference_placement(
+        learner_device=learner_device,
+        collector_tensor_device="cpu",
+        algo_name="SAC",
+    )
+
+    assert placement.mode is InferenceTransport.HOST
+    assert placement.collector_tensor_native is False
 
 
 def test_explicit_cuda_places_env_and_ring_on_learner_device() -> None:

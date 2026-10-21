@@ -330,7 +330,23 @@ def test_explicit_collector_tensor_cuda_requests_cuda_ring() -> None:
     assert placement.collector_tensor_native is True
 
 
-def test_explicit_collector_tensor_cpu_keeps_cpu_ring_with_cuda_learner() -> None:
+def test_explicit_collector_tensor_cpu_with_cuda_learner_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER", raising=False)
+    with pytest.raises(ValueError, match="collector_tensor_device=cpu with CUDA learner"):
+        resolve_collector_tensor_placement(
+            _cfg(training={"collector_tensor_device": "cpu"}),
+            device="cuda:0",
+            algo_name="SAC",
+        )
+
+
+def test_explicit_collector_tensor_cpu_opt_in_keeps_cpu_ring_with_cuda_learner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The attribution-baseline/debug opt-in retains the pre-#2483 topology."""
+    monkeypatch.setenv("UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER", "1")
     placement = resolve_collector_tensor_placement(
         _cfg(training={"collector_tensor_device": "cpu"}),
         device="cuda:0",
@@ -344,17 +360,20 @@ def test_explicit_collector_tensor_cpu_keeps_cpu_ring_with_cuda_learner() -> Non
     assert placement.staging_policy == "cpu_ring_explicit_learner_actor_h2d_action_d2h"
 
 
-@pytest.mark.parametrize("device", [None, "auto", "cpu", "cuda"])
+@pytest.mark.parametrize("device", [None, "auto", "cuda"])
 def test_collector_tensor_device_owner_yaml_semantics(device: str | None) -> None:
-    """The owner enum is exactly auto/cpu/cuda with null retained for auto."""
+    """The owner enum is exactly auto/cpu/cuda with null retained for auto.
+
+    The ``cpu`` member's CUDA-learner pairing is covered by the fail-closed
+    and opt-in tests above; every other value resolves the CUDA ring here.
+    """
     placement = resolve_collector_tensor_placement(
         _cfg(training={"collector_tensor_device": device}),
         device="cuda:0",
         algo_name="SAC",
     )
 
-    expected = InferenceTransport.HOST if device == "cpu" else InferenceTransport.CUDA
-    assert placement.mode is expected
+    assert placement.mode is InferenceTransport.CUDA
 
 
 def test_collector_tensor_cuda_requires_cuda_learner() -> None:
