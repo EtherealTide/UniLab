@@ -36,6 +36,7 @@ from unilab.rl import (
     resolve_rsl_rl_device,
     rsl_rl_single_process_topology,
 )
+from unilab.rl.runtime.tf32 import apply_tf32_matmul_from_cfg
 from unilab.training import (
     algo_config_dict,
     apply_env_nan_guard,
@@ -453,6 +454,7 @@ def main(cfg: DictConfig) -> None:
         learner_device=device,
     )
     seed_info = apply_configured_training_seed(cfg, torch_runtime=True, cuda=True)
+    tf32_matmul_policy = apply_tf32_matmul_from_cfg(cfg, device=device)
     resolved_sim_carrier = (
         canonicalize_sim_carrier_device(env_cfg_override.get("sim_carrier_device"))
         if str(cfg.training.sim_backend) == "mujoco"
@@ -507,6 +509,7 @@ def main(cfg: DictConfig) -> None:
                 ),
             },
             seed_info=seed_info,
+            tf32_matmul_policy=tf32_matmul_policy,
         )
         tracker.start()
 
@@ -590,6 +593,7 @@ def main(cfg: DictConfig) -> None:
                         pending_summary = {
                             "status": "completed",
                             "backend_diagnostics": env.get_backend_runtime_diagnostics(),
+                            "tf32_matmul": tf32_matmul_policy.manifest(),
                             "completed_iterations": int(runner.current_learning_iteration),
                             "total_env_steps": total_timesteps,
                             "run_env_steps": run_timesteps,

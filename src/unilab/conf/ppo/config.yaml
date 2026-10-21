@@ -80,6 +80,7 @@ training:
     output_dir: null
   play_only: false
   no_play: false
+  tf32_matmul: ieee
   sim2sim_strict: true
   play_render_mode: auto
   play_env_num: 16
