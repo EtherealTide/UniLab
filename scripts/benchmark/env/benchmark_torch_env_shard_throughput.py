@@ -43,8 +43,8 @@ ROOT_DIR = Path(__file__).resolve().parents[3]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from scripts.benchmark.core.device_info import get_device_info_dict, get_device_info_line
 from scripts.benchmark.core.output import print_table, save_json
+from unilab.utils.device import get_device_info_dict, get_device_info_line
 
 DEFAULT_OUTPUT_JSON = (
     ROOT_DIR / "scripts" / "benchmark" / "outputs" / "torch_env_shard_throughput" / "results.json"

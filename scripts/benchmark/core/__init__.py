@@ -1,7 +1,6 @@
 """Core benchmark utilities for standardized benchmarking."""
 
 from .backends import available_backends, mlx_dtype, numpy_dtype, sync_backend, torch_dtype
-from .device_info import get_device_info_dict, get_device_info_line
 from .mlp_utils import MLPBenchRecord, env_nums_pow2, mlp_param_count, print_mlp_table, trimmed_mean
 from .output import print_table, save_json
 from .plotting import save_line_plot
@@ -15,8 +14,6 @@ __all__ = [
     "torch_dtype",
     "mlx_dtype",
     "sync_backend",
-    "get_device_info_dict",
-    "get_device_info_line",
     "BenchRecord",
     "MLPBenchRecord",
     "bench_callable",

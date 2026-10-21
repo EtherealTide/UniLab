@@ -47,6 +47,7 @@ from matplotlib.patches import Rectangle
 from unisim.backend.mujoco.xml import create_discardvisual_xml
 
 from unilab.dtype_config import get_global_dtype
+from unilab.utils.device import get_device_info_dict, get_device_info_line
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -65,12 +66,9 @@ def _load_helper_module(module_name: str, relative_path: str):
     return module
 
 
-_DEVICE_INFO = _load_helper_module("bench_device_info", "device_info.py")
 _OUTPUT = _load_helper_module("bench_output", "output.py")
 _TASK_NAMES = _load_helper_module("bench_task_names", "task_names.py")
 
-get_device_info_dict = _DEVICE_INFO.get_device_info_dict
-get_device_info_line = _DEVICE_INFO.get_device_info_line
 save_json = _OUTPUT.save_json
 canonical_locomotion_task_ids = _TASK_NAMES.canonical_locomotion_task_ids
 locomotion_task_model_file = _TASK_NAMES.locomotion_task_model_file

@@ -38,7 +38,6 @@ ROOT_DIR = Path(__file__).resolve().parents[3]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from scripts.benchmark.core.device_info import get_device_info_dict
 from scripts.benchmark.torch_env import motion_tracking, walk_flat
 from scripts.benchmark.torch_env.xp import (
     NumpyBackend,
@@ -48,6 +47,7 @@ from scripts.benchmark.torch_env.xp import (
     TorchBackend,
     TorchRng,
 )
+from unilab.utils.device import get_device_info_dict
 
 DEFAULT_OUTPUT_JSON = ROOT_DIR / "scripts" / "benchmark" / "outputs" / "torch_env" / "results.json"
 RESET_SIZES = (16, 256, 2048)

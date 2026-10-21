@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import gc
-import importlib.util
 import json
 import os
 import resource
@@ -31,6 +30,8 @@ from pathlib import Path
 from typing import Sequence
 
 import numpy as np
+
+from unilab.utils.device import get_device_info_dict, get_device_info_line
 
 try:
     import matplotlib
@@ -65,19 +66,6 @@ MODE_LABELS = {
 PLOT_BG = "#f8fafc"
 PLOT_GRID = "#cbd5e1"
 PLOT_TEXT = "#0f172a"
-
-
-def _load_device_info_helpers():
-    device_info_path = Path(__file__).resolve().parent.parent / "core" / "device_info.py"
-    spec = importlib.util.spec_from_file_location("_local_benchmark_device_info", device_info_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Failed to load device info helpers from {device_info_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.get_device_info_dict, module.get_device_info_line
-
-
-_get_device_info_dict, _get_device_info_line = _load_device_info_helpers()
 
 
 def _resolve_xml_path(xml_arg: str) -> str:
@@ -602,7 +590,7 @@ def _plot_summary_plots(
     if legend_handles:
         throughput_ax.legend(handles=legend_handles, frameon=False, loc="upper right")
     throughput_fig.suptitle(
-        f"MuJoCo Rollout Model Sharing\n{_get_device_info_line()}",
+        f"MuJoCo Rollout Model Sharing\n{get_device_info_line()}",
         y=0.98,
         fontsize=13,
     )
@@ -656,7 +644,7 @@ def _plot_summary_plots(
     _style_axis(axes[1])
 
     memory_fig.suptitle(
-        f"MuJoCo Rollout Model Sharing Memory\n{_get_device_info_line()}",
+        f"MuJoCo Rollout Model Sharing Memory\n{get_device_info_line()}",
         y=0.985,
         fontsize=13,
     )
@@ -805,7 +793,7 @@ def main() -> None:
         out_dir / "results.json",
         all_results,
         {
-            "device_info": _get_device_info_dict(),
+            "device_info": get_device_info_dict(),
             "targets": [{"robot": name, "xml_path": xml_path} for name, xml_path in targets],
             "num_envs": args.num_envs,
             "steps": args.steps,
@@ -821,7 +809,7 @@ def main() -> None:
             out_dir / f"{target_name}_results.json",
             results,
             {
-                "device_info": _get_device_info_dict(),
+                "device_info": get_device_info_dict(),
                 "robot": target_name,
                 "xml_path": xml_path,
                 "num_envs": args.num_envs,
