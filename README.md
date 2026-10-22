@@ -111,6 +111,15 @@ and [support matrix](https://unilabsim.github.io/UniLab-doc/en/5-reference/5-sup
 
 ## Ecosystem
 
+For multi-GPU FlashSAC, select the GPU UUID list with `CUDA_VISIBLE_DEVICES`;
+the native launcher starts one rank per visible GPU. Keep `algo.num_envs` and
+`algo.batch_size` fixed per rank. Opt into whole-cycle DP graphs with
+`+algo.algo_params.dp_whole_cycle_cuda_graph=true`; communication remains FP32
+unless `training.dp_gradient_wire_dtype=bfloat16` is explicitly selected.
+See [execution and precision contracts](docs/flashsac_dp.md) and the
+[FlashMimic launch instructions](https://github.com/Motphys/FlashMimic#train)
+for per-GPU MPS services and the live training panel.
+
 UniLab is designed to be a shared task and training surface for robot-specific
 repositories. They can ship robot recipes independently while consuming the
 same task, backend, and RL contracts. Current downstream examples:

@@ -104,6 +104,14 @@ uv run --extra genesis eval --algo flashsac --task g1_motion_tracking --sim gene
 
 ## 生态
 
+多卡 FlashSAC 通过 `CUDA_VISIBLE_DEVICES` 指定 GPU UUID 列表，原生 launcher
+为每张可见卡启动一个 rank。`algo.num_envs` 和 `algo.batch_size` 均保持每 rank
+固定。使用 `+algo.algo_params.dp_whole_cycle_cuda_graph=true` 显式启用 DP 整周期
+CUDA graph；通信默认 FP32，可通过 `training.dp_gradient_wire_dtype=bfloat16`
+显式选择有损 BF16。详见[执行与精度约定](docs/flashsac_dp.md)和
+[FlashMimic 启动说明](https://github.com/Motphys/FlashMimic#train)，包含逐卡 MPS
+服务管理和训练面板。
+
 UniLab 被设计为机器人专属仓库共享的任务与训练界面。下游仓库可以独立发布机器人
 recipe，同时消费同一套 task、backend 和 RL contract。目前的下游示例：
 
