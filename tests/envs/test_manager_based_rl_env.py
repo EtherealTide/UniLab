@@ -2335,6 +2335,9 @@ def test_update_state_publishes_drain_vs_host_termination_attribution() -> None:
     assert timing["update_state_state_replace_ms"] >= 0.0
     assert timing["update_state_child_sum_ms"] >= 0.0
     assert timing["update_state_command_preflight_ms"] >= 0.0
+    assert env._collect_step_core_drain_ms(state) == pytest.approx(
+        timing["update_state_queue_drain_ms"]
+    )
     observation_timing = {
         key: state.info["update_state_timing"][key]
         for key in (

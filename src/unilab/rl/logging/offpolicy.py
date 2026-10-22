@@ -872,6 +872,17 @@ class OffPolicyLogger(BaseTrainingLogger):
             source_iteration=max(source_iterations) if source_iterations else None,
         )
 
+    def _cuda_mps_status_label(self) -> str | None:
+        """Render rank-local CUDA MPS state from runtime-manifest evidence."""
+        evidence = self._runtime_manifest.get("cuda_process_sharing")
+        if not isinstance(evidence, dict):
+            return None
+        if evidence.get("effective") == "mps":
+            return "[green]on[/]"
+        if evidence.get("ambient_server"):
+            return "[yellow]ambient[/]"
+        return "[dim]off[/]"
+
     def _build_timing_table(self, snapshot: _TerminalSnapshot | None = None) -> Table:
         snapshot = snapshot or self._terminal_snapshot
         terminal_width = self._console.width
@@ -1006,6 +1017,9 @@ class OffPolicyLogger(BaseTrainingLogger):
         system_items.append(("Envs", f"{self.num_envs:,}"))
         if batch_size_per_rank > 0:
             system_items.append(("Batch/Rank", f"{batch_size_per_rank:,}"))
+        cuda_mps_status = self._cuda_mps_status_label()
+        if cuda_mps_status is not None:
+            system_items.append(("CUDA MPS", cuda_mps_status))
         column_items: tuple[list[tuple[str, str]], ...]
         if terminal_width >= 120:
             column_items = (learner_items, collector_items, system_items)

@@ -324,6 +324,41 @@ def test_offpolicy_terminal_render_is_width_aware() -> None:
         assert "Wait Ms" not in output
 
 
+def test_offpolicy_logger_system_column_shows_cuda_mps_status() -> None:
+    logger = OffPolicyLogger(log_backend="none")
+    logger._console = Console(width=140, record=True, force_terminal=False)
+
+    def system_cells() -> tuple[list[str], list[str]]:
+        table = logger._build_timing_table()
+        labels = [cell for cell in table.columns[4].cells if cell]
+        values = [cell for cell in table.columns[5].cells if cell]
+        return labels, values
+
+    labels, _ = system_cells()
+    assert "CUDA MPS" not in labels
+
+    logger.update_runtime_manifest(
+        {"cuda_process_sharing": {"effective": "mps", "ambient_server": False}}
+    )
+    labels, values = system_cells()
+    assert labels[-1] == "CUDA MPS"
+    assert values[-1] == "[green]on[/]"
+
+    logger.update_runtime_manifest(
+        {"cuda_process_sharing": {"effective": None, "ambient_server": True}}
+    )
+    labels, values = system_cells()
+    assert labels[-1] == "CUDA MPS"
+    assert values[-1] == "[yellow]ambient[/]"
+
+    logger.update_runtime_manifest(
+        {"cuda_process_sharing": {"effective": None, "ambient_server": False}}
+    )
+    labels, values = system_cells()
+    assert labels[-1] == "CUDA MPS"
+    assert values[-1] == "[dim]off[/]"
+
+
 def test_offpolicy_logger_rejects_retired_collector_timing_names() -> None:
     logger = OffPolicyLogger(log_backend="none")
 

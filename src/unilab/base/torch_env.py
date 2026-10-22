@@ -308,6 +308,14 @@ class TorchEnv(ABEnv):
         self._validate_state(self._state)
         update_state_ms = (time.perf_counter() - phase) * 1000.0
         update_state_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
+        if self.produces_completion_receipts:
+            # An event-backed asynchronous step drains its device work at the
+            # first update-state host read; re-attribute that measured window
+            # to the backend step phase so update_state reports manager work.
+            drain_ms = self._collect_step_core_drain_ms(self._state)
+            if drain_ms > 0.0:
+                step_core_ms += drain_ms
+                update_state_ms = max(update_state_ms - drain_ms, 0.0)
 
         self._state.info["steps"] += 1
         self.step_counter += 1
@@ -317,8 +325,17 @@ class TorchEnv(ABEnv):
         phase = time.perf_counter()
         phase_cpu = _cpu_time()
         # Preserve the semantic autoreset gate: an empty done mask must not
-        # consume reset RNG or publish a terminal carrier.
+        # consume reset RNG or publish a terminal carrier. When update_state
+        # made no host read of the step outputs, this gate is the first
+        # synchronization point after an event-backed asynchronous backend
+        # step, so its wait belongs to the backend step phase rather than to
+        # reset bookkeeping.
         did_reset = self._autoreset and bool((self._state.terminated | self._state.truncated).any())
+        step_core_ms += (time.perf_counter() - phase) * 1000.0
+        step_core_cpu_ms += (_cpu_time() - phase_cpu) * 1000.0
+
+        phase = time.perf_counter()
+        phase_cpu = _cpu_time()
         if did_reset:
             self._reset_done_envs()
         reset_done_ms = (time.perf_counter() - phase) * 1000.0
@@ -644,6 +661,18 @@ class TorchEnv(ABEnv):
     def _collect_reset_backend_timing_ms(self) -> dict[str, float]:
         """Return backend-owned sub-timings from the most recent tensor reset."""
         return {}
+
+    def _collect_step_core_drain_ms(self, state: TorchEnvState) -> float:
+        """Return the update-state window that drained an async backend step.
+
+        Only consulted when the backend publishes event-backed completion
+        receipts (``produces_completion_receipts``); synchronous backends drain
+        nothing, so the default is zero. An env whose update-state sub-phase
+        hosts the first read of asynchronous step outputs overrides this to
+        report that measured window.
+        """
+        del state
+        return 0.0
 
     def _clear_step_final_observation(self) -> None:
         assert self._state is not None
