@@ -269,8 +269,9 @@ reach at least 1% of the collector cycle. `Backend Step`, `Update State`, and
 `Reset Done` follow the same materiality rule because they are nested diagnostics
 rather than additional cycle slices. For an event-backed asynchronous backend
 (mjwarp), the device physics wait surfaces at the first host read of the step
-outputs — the autoreset done-mask gate — and is attributed to `Backend Step`, so
-the row reports real device work instead of only the kernel-launch overhead.
+outputs — the update-state termination drain, or the autoreset done-mask gate
+when update_state performs no host read — and is attributed to `Backend Step`,
+so the row reports real device work instead of only the kernel-launch overhead.
 
 `Learner Action Wait` is deliberately not named “Inference Wait”: it is not pure
 inference latency. If the collector finishes `Env Step + Replay Write` and submits its

@@ -1469,6 +1469,20 @@ class ManagerBasedRlEnv(TorchEnv):
         timing.update(self._last_reset_manager_timing_ms)
         return timing
 
+    def _collect_step_core_drain_ms(self, state: TorchEnvState) -> float:
+        # Termination is the first update-state reduction after the backend
+        # step; for an event-backed asynchronous step its window (measured as
+        # update_state_queue_drain_ms) drains the queued device work, which is
+        # backend step time rather than Manager work.
+        timing = state.info.get("timing")
+        if not isinstance(timing, dict):
+            return 0.0
+        value = timing.get("update_state_queue_drain_ms")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0.0
+        value_float = float(value)
+        return value_float if math.isfinite(value_float) else 0.0
+
     def reset(
         self,
         env_ids: torch.Tensor | None = None,

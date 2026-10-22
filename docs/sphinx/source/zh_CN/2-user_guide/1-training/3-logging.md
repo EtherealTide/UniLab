@@ -241,7 +241,8 @@ SAC / FlashSAC 每个 vectorized env tick 记录热路径互斥阶段，终端�
 但只有达到 collector cycle 的 1% 时才出现在终端。`Backend Step`、
 `Update State` 与 `Reset Done` 是嵌套诊断而非额外 cycle 切片，同样按该显著性规则显示。
 对于事件型异步后端（mjwarp），设备物理等待发生在 step 输出的第一次 host 读取
-——autoreset 的 done-mask 门控——并归因到 `Backend Step`，因此该行反映真实设备
+——update_state 内 termination 阶段的 queue drain（若 update_state 没有 host 读取，
+则为 autoreset 的 done-mask 门控）——并归因到 `Backend Step`，因此该行反映真实设备
 工作而非仅 kernel 发射开销。
 
 `Learner Action Wait` 特意不叫 “Inference Wait”：它不是纯 inference latency。如果 collector

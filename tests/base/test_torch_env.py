@@ -248,6 +248,41 @@ def test_step_done_gate_host_read_is_attributed_to_step_core(monkeypatch) -> Non
     assert timing["env_step_other_cpu_ms"] >= 0.0
 
 
+def test_step_reattributes_update_state_drain_to_step_core(monkeypatch) -> None:
+    wall = itertools.count(start=0.0, step=0.001)
+    cpu = itertools.count(start=0.0, step=0.001)
+    monkeypatch.setattr(
+        torch_env_module,
+        "time",
+        types.SimpleNamespace(perf_counter=lambda: next(wall)),
+    )
+    monkeypatch.setattr(torch_env_module, "_cpu_time", lambda: next(cpu))
+
+    class _DrainEnv(_StubTorchEnv):
+        def _collect_step_core_drain_ms(self, state: TorchEnvState) -> float:
+            return 0.6
+
+    async_backend = _backend()
+    async_backend.backend_type = "mjwarp"
+    env = _DrainEnv(backend=async_backend, terminate=False)
+    env.init_state()
+    timing = env.step(_actions(env)).info["timing"]
+
+    # Fake clock: every window spans 1 ms. Backend launch (1 ms) + the drained
+    # update-state window (0.6 ms) + the done-gate host read (1 ms) all belong
+    # to step_core; update_state keeps only the remaining manager work.
+    assert timing["step_core_ms"] == pytest.approx(2.6)
+    assert timing["update_state_ms"] == pytest.approx(0.4)
+    assert timing["reset_done_ms"] == pytest.approx(1.0)
+
+    # Synchronous producers publish no completion receipt and drain nothing.
+    sync_env = _DrainEnv(terminate=False)
+    sync_env.init_state()
+    sync_timing = sync_env.step(_actions(sync_env)).info["timing"]
+    assert sync_timing["step_core_ms"] == pytest.approx(2.0)
+    assert sync_timing["update_state_ms"] == pytest.approx(1.0)
+
+
 def test_reset_done_count_remains_device_resident_before_timing_publication() -> None:
     env = _StubTorchEnv()
     env.init_state()
