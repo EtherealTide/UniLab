@@ -100,8 +100,52 @@ uv run eval --algo sac --task g1_walk_flat --sim isaacgym --load-run -1
 
 # Train the g1 motion-tracking task with mjwarp and replay it with Genesis physics.
 uv run --extra mjwarp train --algo flashsac --task g1_motion_tracking --sim mjwarp
+# Two GPUs; disable peer access and enable NCCL shared memory on hosts that need it.
+CUDA_VISIBLE_DEVICES=0,1 NCCL_P2P_DISABLE=1 NCCL_SHM_DISABLE=0 \
+  uv run --extra mjwarp train --algo flashsac --task g1_motion_tracking --sim mjwarp
 uv run --extra genesis eval --algo flashsac --task g1_motion_tracking --sim genesis --load-run -1
 ```
+
+Run these commands from the UniLab root. Without `CUDA_VISIBLE_DEVICES`, training
+uses the first GPU as a single rank; a comma-separated list selects one rank per
+GPU. Change `0,1` to any available GPU subset. NCCL's `*_DISABLE=1` disables a
+transport and `0` enables it; omit those variables to use the runtime defaults.
+
+CUDA MPS remains manually managed; see the setup below if you want to use it.
+FlashSAC whole-cycle DP CUDA graphs are enabled by default through the owner
+configuration; this captures the learner update cycle around compiled objectives,
+not the entire training system in one `torch.compile(fullgraph=True)` graph.
+
+Append overrides only when needed:
+
+| Override | Purpose |
+| --- | --- |
+| `algo.num_envs=2048` | Environments per rank |
+| `algo.batch_size=2048` | Learner batch size per rank |
+| `algo.max_iterations=5000` | Training length |
+| `algo.updates_per_step=6` | Learner updates per cycle |
+| `algo.algo_params.dp_whole_cycle_cuda_graph=false` | Disable whole-cycle graphs for DP |
+| `algo.algo_params.use_whole_cycle_cuda_graph=false` | Disable whole-cycle graphs for both single- and multi-GPU training |
+| `training.cuda_process_sharing=mps` | Use manually started MPS services; `null` uses independent CUDA contexts |
+| `training.dp_gradient_wire_dtype=bfloat16` | Opt into lossy BF16 communication; default is FP32, independently of AMP |
+| `training.no_play=true training.export_onnx=false` | Skip post-training playback and export |
+
+Environment and batch totals grow with rank count when their per-rank values
+stay fixed. BF16 long-run convergence equivalence has not been established.
+To use MPS, start one service per selected GPU before training, append
+`training.cuda_process_sharing=mps` to the training command, and stop those
+services manually after training. For example, for GPUs 0 and 1:
+
+```bash
+uv run uni-cumps start --gpus 0 --name train-gpu0 --daemon
+uv run uni-cumps start --gpus 1 --name train-gpu1 --daemon
+# Run training, then stop only these services after its processes exit.
+uv run uni-cumps stop --name train-gpu0
+uv run uni-cumps stop --name train-gpu1
+```
+
+Run these management commands without a conflicting GPU mask. For more options,
+use `uv run uni-cumps --help`. See [execution contracts](docs/flashsac_dp.md).
 
 The flags keep algorithm, task, and simulator choices visible. Resume, W&B,
 Hydra overrides, playback, backend setup, and the full command matrix belong in
@@ -110,15 +154,6 @@ the [training guide](https://unilabsim.github.io/UniLab-doc/en/2-user_guide/1-tr
 and [support matrix](https://unilabsim.github.io/UniLab-doc/en/5-reference/5-support_matrix.html).
 
 ## Ecosystem
-
-For multi-GPU FlashSAC, select the GPU UUID list with `CUDA_VISIBLE_DEVICES`;
-the native launcher starts one rank per visible GPU. Keep `algo.num_envs` and
-`algo.batch_size` fixed per rank. Opt into whole-cycle DP graphs with
-`+algo.algo_params.dp_whole_cycle_cuda_graph=true`; communication remains FP32
-unless `training.dp_gradient_wire_dtype=bfloat16` is explicitly selected.
-See [execution and precision contracts](docs/flashsac_dp.md) and the
-[FlashMimic launch instructions](https://github.com/Motphys/FlashMimic#train)
-for per-GPU MPS services and the live training panel.
 
 UniLab is designed to be a shared task and training surface for robot-specific
 repositories. They can ship robot recipes independently while consuming the

@@ -93,8 +93,49 @@ uv run eval --algo sac --task g1_walk_flat --sim isaacgym --load-run -1
 
 # 使用 mjwarp 训练并用 genesis 物理 回放 g1动作跟踪 任务
 uv run --extra mjwarp train --algo flashsac --task g1_motion_tracking --sim mjwarp
+# 双卡；在需要的主机上禁用 P2P、启用 NCCL 共享内存。
+CUDA_VISIBLE_DEVICES=0,1 NCCL_P2P_DISABLE=1 NCCL_SHM_DISABLE=0 \
+  uv run --extra mjwarp train --algo flashsac --task g1_motion_tracking --sim mjwarp
 uv run --extra genesis eval --algo flashsac --task g1_motion_tracking --sim genesis --load-run -1
 ```
+
+从 UniLab 根目录运行。不设置 `CUDA_VISIBLE_DEVICES` 时默认使用第一张 GPU，
+运行一个 rank；设置逗号分隔列表时，每张卡运行一个 rank。将 `0,1` 改为任意
+空闲 GPU 子集即可。NCCL 的 `*_DISABLE=1` 表示禁用该传输，`0` 表示启用；
+省略这些环境变量时使用运行时默认值。
+
+CUDA MPS 仍需手动管理，需要时按下方步骤准备。
+FlashSAC 的 DP 整周期 CUDA graph 在配置中默认开启，捕获的是包含编译后 objectives 的
+learner 更新周期，并不表示整个训练系统是一个 `torch.compile(fullgraph=True)` 图。
+
+需要时在命令末尾追加参数：
+
+| 参数 | 作用 |
+| --- | --- |
+| `algo.num_envs=2048` | 每 rank 的环境数 |
+| `algo.batch_size=2048` | 每 rank 的 learner batch size |
+| `algo.max_iterations=5000` | 训练迭代次数 |
+| `algo.updates_per_step=6` | 每周期的 learner 更新次数 |
+| `algo.algo_params.dp_whole_cycle_cuda_graph=false` | 关闭 DP 整周期 graph |
+| `algo.algo_params.use_whole_cycle_cuda_graph=false` | 同时关闭单卡和多卡整周期 graph |
+| `training.cuda_process_sharing=mps` | 使用手动启动的 MPS 服务；`null` 使用独立 CUDA context |
+| `training.dp_gradient_wire_dtype=bfloat16` | 显式选择有损 BF16 通信；默认 FP32，独立于 AMP |
+| `training.no_play=true training.export_onnx=false` | 跳过训练后的回放与导出 |
+
+保持每 rank 的 env 和 batch 不变时，其总数随 rank 数增长。BF16 长期收敛等价性
+尚未验证。使用 MPS 时，先为每张选中的 GPU 手动启动服务，在训练命令后追加
+`training.cuda_process_sharing=mps`，训练结束后再手动关闭。例如 GPU 0、1：
+
+```bash
+uv run uni-cumps start --gpus 0 --name train-gpu0 --daemon
+uv run uni-cumps start --gpus 1 --name train-gpu1 --daemon
+# 执行训练，等训练进程退出后，仅关闭上述服务。
+uv run uni-cumps stop --name train-gpu0
+uv run uni-cumps stop --name train-gpu1
+```
+
+管理命令应在没有冲突的 GPU mask 时执行。更多选项见 `uv run uni-cumps --help`。
+执行约定见[运行指南](docs/flashsac_dp.md)。
 
 这些 flag 会让 algorithm、task 和 simulator 选择保持可见。续训、W&B、Hydra override、
 回放、后端安装和完整命令矩阵属于
@@ -103,14 +144,6 @@ uv run --extra genesis eval --algo flashsac --task g1_motion_tracking --sim gene
 [支持矩阵](https://unilabsim.github.io/UniLab-doc/zh_CN/5-reference/5-support_matrix.html)。
 
 ## 生态
-
-多卡 FlashSAC 通过 `CUDA_VISIBLE_DEVICES` 指定 GPU UUID 列表，原生 launcher
-为每张可见卡启动一个 rank。`algo.num_envs` 和 `algo.batch_size` 均保持每 rank
-固定。使用 `+algo.algo_params.dp_whole_cycle_cuda_graph=true` 显式启用 DP 整周期
-CUDA graph；通信默认 FP32，可通过 `training.dp_gradient_wire_dtype=bfloat16`
-显式选择有损 BF16。详见[执行与精度约定](docs/flashsac_dp.md)和
-[FlashMimic 启动说明](https://github.com/Motphys/FlashMimic#train)，包含逐卡 MPS
-服务管理和训练面板。
 
 UniLab 被设计为机器人专属仓库共享的任务与训练界面。下游仓库可以独立发布机器人
 recipe，同时消费同一套 task、backend 和 RL contract。目前的下游示例：

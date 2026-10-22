@@ -4,10 +4,10 @@
 
 This change ports the measured FlashMimic multi-GPU optimization to UniLab
 1.5.0 (`03b75353`) with UniSim 2.1.0 (`6994cd1`). The intended PR base is `main`.
-The requested scope is opt-in DP graph execution and optional BF16 gradient
+The requested scope is default DP graph execution and optional BF16 gradient
 communication; the existing runner owns process lifecycle and synchronization.
-No new runner or backend protocol is introduced. Defaults remain FP32 and DP
-eager execution. The actor/temperature fusion experiment is excluded because
+No new runner or backend protocol is introduced. Communication remains FP32;
+DP graphs default on, with explicit opt-out. The actor/temperature fusion experiment is excluded because
 it did not provide a stable throughput improvement.
 
 The proposed contract is recorded in
@@ -15,8 +15,9 @@ The proposed contract is recorded in
 
 ## Execution contract
 
-Set `+algo.algo_params.dp_whole_cycle_cuda_graph=true` to let FlashSAC capture
-the update cycle with NCCL reductions. The runner attaches synchronizer hooks
+FlashSAC captures the update cycle with NCCL reductions by default on supported
+compiled CUDA execution. Set `algo.algo_params.dp_whole_cycle_cuda_graph=false`
+to disable DP capture. The runner attaches synchronizer hooks
 around capture and before replay. Replacing callbacks, hooks, or checkpoint
 state invalidates the graph. A DP capture failure raises rather than allowing
 one rank to fall back to eager collectives. A loss-validity sentinel is packed
@@ -50,4 +51,20 @@ Acceptance covers default precision, BF16 threshold and mean semantics, stable
 buffer storage, graph ownership and failure behavior, rank-wide nonfinite-loss
 gates, and Linux multi-GPU capture/replay. README commands show explicit GPU
 selection and user-owned MPS. CPU mock tests do not establish NCCL graph support.
+
+## Minimal launch and manual MPS
+
+From UniLab, use `CUDA_VISIBLE_DEVICES=0,1 uv run --extra mjwarp train --algo
+flashsac --task g1_motion_tracking --sim mjwarp` for two ranks. Omit the visibility
+variable for one rank.
+On hosts with broken peer transport, prefix `NCCL_P2P_DISABLE=1
+NCCL_SHM_DISABLE=0` to disable P2P and enable shared memory.
+
+MPS remains manually managed. Start one service per selected GPU with
+`uv run uni-cumps start --gpus 0 --name train-gpu0 --daemon` (repeat for GPU 1
+with its own name), then append `training.cuda_process_sharing=mps` to training.
+After training clients exit, stop each service with
+`uv run uni-cumps stop --name train-gpu0`. The default `null` uses independent
+CUDA contexts. Training does not start or stop services. README documents the
+complete examples and optional env, batch, iteration, and transport overrides.
 Full repository and current-head remote CI gates remain required before merge.

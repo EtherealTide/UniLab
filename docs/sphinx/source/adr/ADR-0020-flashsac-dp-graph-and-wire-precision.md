@@ -20,9 +20,10 @@ capabilities rather than patching algorithm or communication implementations.
 
 ## Decision
 
-Keep the existing runner and process-group owner. Add an explicit FlashSAC DP
-whole-cycle capture opt-in and a separate runtime wire-precision option. Preserve
-FP32 communication and existing DP eager execution as defaults. This decision
+Keep the existing runner and process-group owner. Enable FlashSAC DP whole-cycle
+capture in the owner YAML by default, with an explicit
+`algo.algo_params.dp_whole_cycle_cuda_graph=false` opt-out, and expose a separate
+runtime wire-precision option. Preserve FP32 communication as the default. This decision
 does not change physics backend contracts or establish BF16 convergence parity.
 
 ## Stable Contracts
