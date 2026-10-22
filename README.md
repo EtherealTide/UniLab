@@ -106,32 +106,6 @@ CUDA_VISIBLE_DEVICES=0,1 NCCL_P2P_DISABLE=1 NCCL_SHM_DISABLE=0 \
 uv run --extra genesis eval --algo flashsac --task g1_motion_tracking --sim genesis --load-run -1
 ```
 
-Run these commands from the UniLab root. Without `CUDA_VISIBLE_DEVICES`, training
-uses the first GPU as a single rank; a comma-separated list selects one rank per
-GPU. Change `0,1` to any available GPU subset. NCCL's `*_DISABLE=1` disables a
-transport and `0` enables it; omit those variables to use the runtime defaults.
-
-CUDA MPS remains manually managed; see the setup below if you want to use it.
-FlashSAC whole-cycle DP CUDA graphs are enabled by default through the owner
-configuration; this captures the learner update cycle around compiled objectives,
-not the entire training system in one `torch.compile(fullgraph=True)` graph.
-
-Append overrides only when needed:
-
-| Override | Purpose |
-| --- | --- |
-| `algo.num_envs=2048` | Environments per rank |
-| `algo.batch_size=2048` | Learner batch size per rank |
-| `algo.max_iterations=5000` | Training length |
-| `algo.updates_per_step=6` | Learner updates per cycle |
-| `algo.algo_params.dp_whole_cycle_cuda_graph=false` | Disable whole-cycle graphs for DP |
-| `algo.algo_params.use_whole_cycle_cuda_graph=false` | Disable whole-cycle graphs for both single- and multi-GPU training |
-| `training.cuda_process_sharing=mps` | Use manually started MPS services; `null` uses independent CUDA contexts |
-| `training.dp_gradient_wire_dtype=bfloat16` | Opt into lossy BF16 communication; default is FP32, independently of AMP |
-| `training.no_play=true training.export_onnx=false` | Skip post-training playback and export |
-
-Environment and batch totals grow with rank count when their per-rank values
-stay fixed. BF16 long-run convergence equivalence has not been established.
 To use MPS, start one service per selected GPU before training, append
 `training.cuda_process_sharing=mps` to the training command, and stop those
 services manually after training. For example, for GPUs 0 and 1:
