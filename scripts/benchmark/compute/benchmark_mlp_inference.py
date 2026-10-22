@@ -43,7 +43,7 @@ from scripts.benchmark.core import (
     print_mlp_table,
     trimmed_mean,
 )
-from scripts.benchmark.core.device_info import get_device_info_dict, get_device_info_line
+from unilab.utils.device import get_device_info_dict, get_device_info_line
 
 try:
     import numpy as np

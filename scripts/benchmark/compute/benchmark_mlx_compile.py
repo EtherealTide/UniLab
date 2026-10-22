@@ -38,7 +38,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 import matplotlib
 
-from scripts.benchmark.core.device_info import get_device_info_dict, get_device_info_line
+from unilab.utils.device import get_device_info_dict, get_device_info_line
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt

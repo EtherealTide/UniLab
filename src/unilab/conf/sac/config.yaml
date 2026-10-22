@@ -58,12 +58,14 @@ training:
   wandb_notes: null
   wandb_mode: null
   sim_backend: mujoco
-  # HOST_BRIDGE Manager carrier family follows backend capability
-  # declarations. 'auto' follows the learner device (CUDA learner -> CUDA
-  # carrier; CPU learner -> CPU; torch.mps learner keeps the owner CPU
-  # placement). Explicit 'cpu'/'cuda' wins over 'auto' and fails closed
-  # when the backend does not declare the device.
-  sim_carrier_device: auto
+  # Collector-tensor device for HOST_BRIDGE Manager carriers (and, for
+  # off-policy algos, the derived inference ring). 'auto' follows the learner
+  # device (CUDA learner -> CUDA; CPU learner -> CPU; torch.mps learner keeps
+  # the owner CPU placement). Explicit 'cpu'/'cuda' wins over 'auto' and fails
+  # closed when the backend does not declare the device. Explicit 'cpu' with a
+  # CUDA learner also fails closed (issue #2483) except on ROCm/HIP builds;
+  # attribution baselines opt in via UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER=1.
+  collector_tensor_device: auto
   # null preserves independent CUDA contexts; 'mps' explicitly requests CUDA
   # process sharing and fails closed if the host daemon is not already valid.
   # Manage an explicit user-owned daemon with `uni-cumps`.
@@ -90,10 +92,6 @@ training:
   # Fixed in-flight learner-inference requests; 1 keeps inference strictly
   # serialized (one request in flight per collector).
   inference_slot_capacity: 1
-  # Off-policy inference boundary: 'host' keeps the ring on CPU and supports
-  # CPU tests plus macOS MPS learners; 'cuda' follows Torch's CUDA-family type
-  # (NVIDIA or ROCm). null lets the resolved placement choose automatically.
-  inference_transport: null
   # Tensor-collector steps between metric compaction and one host flush.
   collector_metrics_interval: 1
   # Fixed replay-ingress chunks that may be published before learner commit.

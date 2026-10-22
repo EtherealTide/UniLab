@@ -237,6 +237,7 @@ class ExperimentTracker:
         collector_device: str | None = None,
         device_resolution: Mapping[str, Mapping[str, str]] | None = None,
         seed_info: Any | None = None,
+        tf32_matmul_policy: Any | None = None,
     ):
         self.root_dir = Path(root_dir)
         self.log_dir = Path(log_dir)
@@ -250,6 +251,7 @@ class ExperimentTracker:
         self.collector_device = collector_device
         self.device_resolution = dict(device_resolution) if device_resolution is not None else None
         self.seed_info = seed_info
+        self.tf32_matmul_policy = tf32_matmul_policy
         self.enabled = str(_cfg_get(training_cfg, "logger", "tensorboard")).lower() == "wandb"
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -312,6 +314,8 @@ class ExperimentTracker:
             else:
                 seed_payload = {"effective_seed": self.seed_info}
             metadata.update(seed_payload)
+        if self.tf32_matmul_policy is not None and hasattr(self.tf32_matmul_policy, "manifest"):
+            metadata["tf32_matmul"] = self.tf32_matmul_policy.manifest()
 
         payload = write_run_config_snapshot(
             self.log_dir,
@@ -388,6 +392,8 @@ class ExperimentTracker:
                 payload.update(self.seed_info)
             else:
                 payload["effective_seed"] = self.seed_info
+        if self.tf32_matmul_policy is not None and hasattr(self.tf32_matmul_policy, "manifest"):
+            payload["tf32_matmul"] = self.tf32_matmul_policy.manifest()
         _write_json(self.log_dir / "run_summary.json", _json_safe(payload))
 
         if self._run is not None:

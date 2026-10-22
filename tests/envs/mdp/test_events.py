@@ -593,56 +593,6 @@ def test_uniform_root_state_composes_in_one_reset_transaction_commit() -> None:
     np.testing.assert_array_equal(qvel[1], backend.init_qvel + [0.5, 0, 0, 0, 0, 0])
 
 
-def test_dispatch_reset_mask_form_is_deprecated_but_functional() -> None:
-    env, backend, transaction = _transaction_env(rng_seed=11)
-    manager = EventManager(
-        {
-            "randomize_pd": EventTermCfg(
-                func=mdp.pd_gains,
-                mode="reset",
-                params={"kp_range": (2.0, 2.0), "kd_range": (3.0, 3.0)},
-            )
-        },
-        env,
-    )
-    transaction.declare_packed_reset_device(torch.device("cpu"))
-    reset_mask = torch.tensor([True, False, True])
-
-    with transaction.scoped_device_event_tensor(reset_mask):
-        with pytest.warns(DeprecationWarning, match="mask"):
-            manager.dispatch_reset(reset_mask, global_env_step_count=0)
-
-    assert len(backend.set_state_calls) == 1
-    committed_rows, _, _ = backend.set_state_calls[0]
-    np.testing.assert_array_equal(committed_rows, [0, 2])
-
-
-def test_mask_form_reset_term_is_deprecated_but_still_dispatched() -> None:
-    env, backend, transaction = _transaction_env()
-    calls: list[torch.Tensor] = []
-
-    def mask_form_term(env: Any, reset_mask: torch.Tensor) -> None:
-        del env
-        calls.append(reset_mask.clone())
-
-    setattr(mask_form_term, "reset", mask_form_term)
-    with pytest.warns(DeprecationWarning, match="mask-form reset boundary"):
-        manager = EventManager(
-            {"legacy_term": EventTermCfg(func=mask_form_term, mode="reset")},
-            env,
-        )
-    transaction.declare_packed_reset_device(torch.device("cpu"))
-    reset_mask = torch.tensor([False, True, True])
-
-    with transaction.scoped_device_event_tensor(reset_mask):
-        manager.apply(
-            "reset", env_ids=torch.tensor([1, 2], dtype=torch.int64), global_env_step_count=0
-        )
-
-    assert len(calls) == 1
-    torch.testing.assert_close(calls[0], reset_mask)
-
-
 def test_pd_gains_reset_randomization_commits_in_one_packed_transaction() -> None:
     env, backend, transaction = _transaction_env(rng_seed=11)
     manager = EventManager(

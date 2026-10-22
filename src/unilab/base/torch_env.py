@@ -106,6 +106,7 @@ class TorchEnv(ABEnv):
         self._final_observation_scratch: dict[str, torch.Tensor] | None = None
         self._action_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
         self._state_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
+        self._pending_control_finite_check: bool | None = None
         self._reset_obs_finite_valid = torch.ones((), dtype=torch.bool, device=self._device)
         self._reset_done_count = torch.zeros((), dtype=torch.int64, device=self._device)
         self._tensor_runtime_bound = False
@@ -230,8 +231,7 @@ class TorchEnv(ABEnv):
         """Reset the selected environment rows; ``None`` resets all rows.
 
         The public selector follows the IsaacLab/mjlab ``env_ids`` row-index
-        form. A fixed-width bool mask is the deprecated form: it is accepted
-        for one release with a ``DeprecationWarning`` (removed in v1.6).
+        form; the v1.4 fixed-width bool mask form is removed.
         """
         raise NotImplementedError(f"{type(self).__name__} must define a tensor reset lifecycle")
 
@@ -249,6 +249,9 @@ class TorchEnv(ABEnv):
 
         phase = time.perf_counter()
         phase_cpu = _cpu_time()
+        # Manager action owners publish one device-resident control verdict
+        # during this phase; it must not leak into the next step.
+        self._pending_control_finite_check = None
         ctrl = self.apply_action(actions, self._state)
         if self._nan_guard is not None:
             bad_ctrl_ids = self._nan_guard.check_ctrl(ctrl, step=self.step_counter)
@@ -305,6 +308,14 @@ class TorchEnv(ABEnv):
         self._validate_state(self._state)
         update_state_ms = (time.perf_counter() - phase) * 1000.0
         update_state_cpu_ms = (_cpu_time() - phase_cpu) * 1000.0
+        if self.produces_completion_receipts:
+            # An event-backed asynchronous step drains its device work at the
+            # first update-state host read; re-attribute that measured window
+            # to the backend step phase so update_state reports manager work.
+            drain_ms = self._collect_step_core_drain_ms(self._state)
+            if drain_ms > 0.0:
+                step_core_ms += drain_ms
+                update_state_ms = max(update_state_ms - drain_ms, 0.0)
 
         self._state.info["steps"] += 1
         self.step_counter += 1
@@ -314,8 +325,17 @@ class TorchEnv(ABEnv):
         phase = time.perf_counter()
         phase_cpu = _cpu_time()
         # Preserve the semantic autoreset gate: an empty done mask must not
-        # consume reset RNG or publish a terminal carrier.
+        # consume reset RNG or publish a terminal carrier. When update_state
+        # made no host read of the step outputs, this gate is the first
+        # synchronization point after an event-backed asynchronous backend
+        # step, so its wait belongs to the backend step phase rather than to
+        # reset bookkeeping.
         did_reset = self._autoreset and bool((self._state.terminated | self._state.truncated).any())
+        step_core_ms += (time.perf_counter() - phase) * 1000.0
+        step_core_cpu_ms += (_cpu_time() - phase_cpu) * 1000.0
+
+        phase = time.perf_counter()
+        phase_cpu = _cpu_time()
         if did_reset:
             self._reset_done_envs()
         reset_done_ms = (time.perf_counter() - phase) * 1000.0
@@ -388,6 +408,14 @@ class TorchEnv(ABEnv):
             raise ValueError("TorchEnv control must be contiguous")
         if ctrl.device != self.device:
             raise ValueError(f"TorchEnv control device must be {self.device}, got {ctrl.device}")
+        verdict = self._publish_control_finite_verdict()
+        if verdict is not None:
+            # The action owner records one device-resident control verdict per
+            # step. Publishing it here keeps the fail-closed contract while
+            # removing the per-step scalar host read from the CUDA hot path.
+            if not verdict:
+                raise ValueError("TorchEnv control contains NaN or Inf")
+            return
         valid = torch.isfinite(ctrl).all()
         if not bool(valid):
             raise ValueError("TorchEnv control contains NaN or Inf")
@@ -441,6 +469,12 @@ class TorchEnv(ABEnv):
     def _record_action_finite(self, actions: torch.Tensor) -> None:
         """Record the public action finite verdict on its persistent carrier."""
         self._action_finite_valid.copy_(torch.isfinite(actions).all())
+
+    def _publish_control_finite_verdict(self) -> bool | None:
+        """Publish and consume the manager control verdict, if recorded."""
+        verdict = self._pending_control_finite_check
+        self._pending_control_finite_check = None
+        return verdict
 
     def _require_floating_float(self, value: torch.Tensor) -> None:
         if not value.is_floating_point():
@@ -627,6 +661,18 @@ class TorchEnv(ABEnv):
     def _collect_reset_backend_timing_ms(self) -> dict[str, float]:
         """Return backend-owned sub-timings from the most recent tensor reset."""
         return {}
+
+    def _collect_step_core_drain_ms(self, state: TorchEnvState) -> float:
+        """Return the update-state window that drained an async backend step.
+
+        Only consulted when the backend publishes event-backed completion
+        receipts (``produces_completion_receipts``); synchronous backends drain
+        nothing, so the default is zero. An env whose update-state sub-phase
+        hosts the first read of asynchronous step outputs overrides this to
+        report that measured window.
+        """
+        del state
+        return 0.0
 
     def _clear_step_final_observation(self) -> None:
         assert self._state is not None

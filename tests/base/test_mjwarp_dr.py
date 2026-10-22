@@ -316,7 +316,7 @@ def test_heavier_world_accelerates_less_under_identical_body_force(backend: Any)
         randomization=_tensor_payload(body_mass=body_mass),
     )
 
-    force = np.zeros((backend.num_envs, 1, 3), dtype=np.float32)
+    force = torch.zeros((backend.num_envs, 1, 3), dtype=torch.float32)
     force[:, 0, 0] = 300.0
     backend.apply_interval_randomization(
         IntervalRandomizationPlan(
@@ -324,7 +324,7 @@ def test_heavier_world_accelerates_less_under_identical_body_force(backend: Any)
                 IntervalTermOp(
                     INTERVAL_TERM_BODY_FORCE,
                     force,
-                    body_ids=np.asarray([backend._base_body_id]),
+                    body_ids=torch.as_tensor([backend._base_body_id]),
                 ),
             )
         )
@@ -348,7 +348,11 @@ def test_push_robots_stages_one_step_force(backend: Any) -> None:
     _reset_all(backend)
     backend.apply_interval_randomization(
         IntervalRandomizationPlan(
-            ops=(IntervalTermOp(INTERVAL_TERM_PUSH, np.asarray([80.0, 0.0, 0.0])),)
+            ops=(
+                IntervalTermOp(
+                    INTERVAL_TERM_PUSH, torch.tensor([80.0, 0.0, 0.0], dtype=torch.float64)
+                ),
+            )
         )
     )
     assert backend._xfrc_pending
@@ -363,21 +367,23 @@ def test_push_robots_stages_one_step_force(backend: Any) -> None:
 def test_interval_velocity_delta_kicks_selected_rows(backend: Any) -> None:
     _reset_all(backend)
     before = backend.get_base_lin_vel().copy()
-    delta = np.zeros((backend.num_envs, 1, 3), dtype=np.float32)
-    delta[[0, 3], 0, :] = np.asarray([[0.4, -0.2, 0.0], [-0.3, 0.1, 0.0]], dtype=np.float32)
+    delta = torch.zeros((backend.num_envs, 1, 3), dtype=torch.float32)
+    delta[[0, 3], 0, :] = torch.tensor([[0.4, -0.2, 0.0], [-0.3, 0.1, 0.0]], dtype=torch.float32)
     backend.apply_interval_randomization(
         IntervalRandomizationPlan(
             ops=(
                 IntervalTermOp(
                     INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
                     delta,
-                    body_ids=np.asarray([backend._base_body_id], dtype=np.int32),
+                    body_ids=torch.as_tensor([backend._base_body_id], dtype=torch.int32),
                 ),
             )
         )
     )
     after = backend.get_base_lin_vel()
-    np.testing.assert_allclose(after[[0, 3]], before[[0, 3]] + delta[[0, 3], 0, :], atol=1e-6)
+    np.testing.assert_allclose(
+        after[[0, 3]], before[[0, 3]] + delta[[0, 3], 0, :].numpy(), atol=1e-6
+    )
     np.testing.assert_allclose(after[[1, 2]], before[[1, 2]], atol=1e-6)
     # The kick commits through the forward barrier, keeping sensors coherent.
     assert np.isfinite(backend.get_sensor_data("torso_upvector")).all()
@@ -419,7 +425,7 @@ def test_low_friction_world_changes_kick_response(backend: Any) -> None:
         randomization=_tensor_payload(geom_friction=geom_friction),
     )
     start = backend.get_base_pos()[:, :2].copy()
-    delta = np.zeros((backend.num_envs, 1, 3), dtype=np.float32)
+    delta = torch.zeros((backend.num_envs, 1, 3), dtype=torch.float32)
     delta[:, 0, 0] = 1.5
     backend.apply_interval_randomization(
         IntervalRandomizationPlan(
@@ -427,7 +433,7 @@ def test_low_friction_world_changes_kick_response(backend: Any) -> None:
                 IntervalTermOp(
                     INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
                     delta,
-                    body_ids=np.asarray([backend._base_body_id], dtype=np.int32),
+                    body_ids=torch.as_tensor([backend._base_body_id], dtype=torch.int32),
                 ),
             )
         )

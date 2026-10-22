@@ -500,8 +500,12 @@ def _make_device_runner(
     if placement is None and collector_tensor_native is not None:
         placement = resolve_inference_placement(
             learner_device=device,
-            env_tensor_native=collector_tensor_native,
+            collector_tensor_device="cuda" if collector_tensor_native else "cpu",
             algo_name="TestRunner",
+            # Runner unit tests deliberately exercise the host-ring topology
+            # with a (fake) CUDA learner — the #2483 attribution-baseline
+            # pairing, gated here by the explicit opt-in flag.
+            allow_cpu_carrier_with_cuda_learner=True,
         )
     return device_runner_module.DoubleBufferOffPolicyRunner(
         learner=learner or _Learner(),
@@ -1374,12 +1378,12 @@ def test_mujoco_cuda_carrier_resolves_cuda_tensor_ring_by_default(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ):
-    """Pin the Wave 2 default topology: a mujoco env presenting CUDA obs.
+    """Pin the Wave 2 default topology: a CUDA learner with default config.
 
-    With the probe reporting tensor-native CUDA observations, a CUDA learner,
-    and no explicit transport config, resolution must select the CUDA tensor
-    ring with no host staging, replay ingress on the learner device, and a
-    relaxed receipt gate for the sync-declared (no completion receipts) env.
+    With ``training.collector_tensor_device`` at its default ``auto``, a CUDA
+    learner resolves to the CUDA tensor ring with no host staging, replay
+    ingress on the learner device, and a relaxed receipt gate for the
+    sync-declared (no completion receipts) env.
     """
     _FakePipeline.close_calls = 0
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", _FakeReplayBuffer)
@@ -1389,11 +1393,11 @@ def test_mujoco_cuda_carrier_resolves_cuda_tensor_ring_by_default(
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
 
     learner_device = f"cuda:{torch.cuda.current_device()}"
-    # Probe-driven resolution: env obs arrive as CUDA tensors and the owner
-    # config carries no explicit inference transport request.
+    # Default resolution: collector_tensor_device=auto follows the CUDA
+    # learner, so placement selects the CUDA tensor ring with no host boundary.
     placement = resolve_inference_placement(
         learner_device=learner_device,
-        env_tensor_native=True,
+        collector_tensor_device="auto",
         algo_name="TestRunner",
     )
     assert placement.mode is InferenceTransport.CUDA
@@ -1459,7 +1463,7 @@ def test_mps_learner_cpu_env_resolves_cpu_ring_with_device_copy_staging(
 
     placement = resolve_inference_placement(
         learner_device="mps",
-        env_tensor_native=False,
+        collector_tensor_device="cpu",
         algo_name="TestRunner",
     )
     assert placement.mode is InferenceTransport.HOST
@@ -1750,11 +1754,11 @@ def test_runner_collector_resources_follow_tensor_runtime_capability(
     assert collector_kwargs["collector_metrics_interval"] == 1
 
 
-def test_runner_rejects_tensor_native_collector_without_cuda(
+def test_runner_rejects_cuda_collector_tensor_device_without_cuda(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with pytest.raises(
-        ValueError, match="CUDA inference transport requires CUDA env and learner devices"
+        ValueError, match="collector_tensor_device=cuda requires a CUDA learner device"
     ):
         _make_device_runner(
             monkeypatch,

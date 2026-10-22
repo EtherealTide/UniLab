@@ -39,11 +39,9 @@ except ImportError:
 else:
     gs = _gs
 
-from scripts.benchmark.core import device_info as _device_info
 from scripts.benchmark.core import task_names as _task_names
+from unilab.utils.device import get_device_info_dict, get_device_info_line
 
-get_device_info_dict = _device_info.get_device_info_dict
-get_device_info_line = _device_info.get_device_info_line
 canonical_locomotion_task_ids = _task_names.canonical_locomotion_task_ids
 locomotion_task_spec = _task_names.locomotion_task_spec
 locomotion_task_model_file = _task_names.locomotion_task_model_file

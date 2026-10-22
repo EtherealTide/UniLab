@@ -76,6 +76,7 @@ from unilab.rl.runtime.settings import (
     DEFAULT_REPLAY_INGRESS_DEPTH,
     RuntimeSettings,
 )
+from unilab.rl.runtime.tf32 import format_tf32_matmul
 
 # Terminal/W&B display names for the off-policy algo types. Keep these
 # user-facing (no internal "Fast*" implementation prefixes).
@@ -210,6 +211,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         inference_slot_capacity: int | None = None,
         inference_epoch: int = 0,
         collector_metrics_interval: int | None = None,
+        tf32_matmul_policy: Any | None = None,
         **kwargs,
     ):
         kwargs["device"] = require_offpolicy_replay_device(kwargs.get("device"))
@@ -342,6 +344,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         self._shutdown_recorder = ShutdownDiagnosticsRecorder(inference_epoch=self.inference_epoch)
         self._active_inference_ring: Any = None
         self._active_replay_buffer: ReplayBuffer | None = None
+        self.tf32_matmul_policy = tf32_matmul_policy
         self.runtime_manifest = {
             "schema_version": RUNTIME_MANIFEST_SCHEMA_VERSION,
             "inference_owner": "learner",
@@ -370,6 +373,9 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             "logger_cross_rank_aggregation": self.dp_sync is not None,
             "learner_performance_tier": self._learner_performance_tier_manifest(),
             "learner_amp_policy": getattr(self.learner, "amp_policy", None),
+            "learner_tf32_matmul": (
+                tf32_matmul_policy.manifest() if tf32_matmul_policy is not None else None
+            ),
             "device_runtime_capabilities": device_runtime_capabilities(self.device).manifest(),
             "cuda_graph": self._cuda_graph_runtime_manifest(),
         }
@@ -1015,8 +1021,8 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         if removed_tensor_runtime_fields:
             raise ValueError(
                 "Collector env override must not set removed tensor_runtime fields; "
-                "inference transport is an explicit worker argument and carrier "
-                "placement is owned by training.sim_carrier_device"
+                "inference transport is an explicit worker argument and collector "
+                "tensor placement is owned by training.collector_tensor_device"
             )
         # Inference transport is process-local metadata, not an EnvCfg field.
         # The resolved placement reaches the worker only through the explicit
@@ -1645,6 +1651,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         )
         logger.update_runtime_manifest(self.runtime_manifest)
         logger.log_status(format_torch_thread_runtime(self.torch_thread_runtime))
+        logger.log_status(format_tf32_matmul(self.tf32_matmul_policy))
         logger.log_status("Replay storage: device-authoritative bounded ingress")
         logger.log_status(f"Replay prefetch mode: {self.replay_prefetch_mode}")
         logger.log_status(f"Replay pack executor: {self.replay_pack_executor}")

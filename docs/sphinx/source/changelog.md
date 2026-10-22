@@ -13,33 +13,88 @@ UniLab 遵循[语义化版本](https://semver.org/)。本共享页面以中英�
 PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完整提交历史请参阅
 [UniLab 仓库](https://github.com/unilabsim/UniLab)。
 
-## Unreleased / 未发布
+## 1.5.0 (2026-10-22)
 
 ### Breaking changes / 破坏性变更
+
+- An explicit `training.collector_tensor_device=cpu` paired with a CUDA
+  learner now fails closed on non-ROCm Torch builds: the CPU carrier is no
+  longer a CUDA-learner performance path (issue #2479 retest showed throughput
+  parity with CUDA carriers plus CUDA MPS). CPU carriers remain legal for CPU
+  and torch.mps learners and for ROCm/HIP builds; attribution baselines and
+  debug runs opt in via `UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER=1`
+  ([#2483](https://github.com/Motphys/UniLab/issues/2483), ADR-0019).
+  显式 `training.collector_tensor_device=cpu` 与 CUDA learner 的组合在非 ROCm
+  Torch 构建上现在 fail closed：CPU 载体不再是 CUDA learner 的性能路径
+  （#2479 重测确认其与 CUDA 载体 + CUDA MPS 吞吐持平）。CPU 载体对 CPU /
+  torch.mps learner 与 ROCm/HIP 构建仍然合法；归因基线与调试 run 通过
+  `UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER=1` 显式 opt-in（#2483，ADR-0019）。
+
+- `training.sim_carrier_device` and `training.inference_transport` are removed
+  without a compatibility layer; both merge into the single one-dimensional
+  collector-tensor residency knob `training.collector_tensor_device`
+  (`auto`/`cpu`/`cuda`, default `auto`, following the learner device). The
+  off-policy inference transport is now a pure derived fact (`cpu` → host
+  ring, `cuda` → CUDA ring). The env owner field is likewise renamed
+  `env.sim_carrier_device` → `env.collector_tensor_device`. All removed keys
+  fail closed with a migration hint; `run_config.json` records the mapping
+  under `device_resolution.collector_tensor`
+  ([#2481](https://github.com/Motphys/UniLab/issues/2481)).
+  `training.sim_carrier_device` 与 `training.inference_transport` 已删除，
+  无兼容层；两者合并为单一一维 collector tensor 驻留旋钮
+  `training.collector_tensor_device`（`auto`/`cpu`/`cuda`，默认 `auto`，
+  跟随 learner 设备）。off-policy inference transport 变为纯派生事实
+  （`cpu` → host ring，`cuda` → CUDA ring）。env owner 字段同步改名
+  `env.sim_carrier_device` → `env.collector_tensor_device`。全部已移除键
+  带迁移提示 fail closed；`run_config.json` 在
+  `device_resolution.collector_tensor` 记录映射（#2481）。
 
 - The public reset contract speaks IsaacLab/mjlab-style `env_ids` row indices
   again: `TorchEnv.reset`, `ManagerBase.reset` and all manager/term reset
   boundaries, `EventManager.apply(mode="reset", env_ids=...)`, reset owners,
   and the recorder pre/post-reset hooks take a one-dimensional integer tensor
-  (or `None` for every row). The v1.4 fixed-width bool mask form is deprecated:
-  a bool tensor passed **positionally** still works for one release with a
-  `DeprecationWarning` and will be removed in v1.6. The keyword form is **not**
-  covered by the deprecation window — `reset(reset_mask=...)` now raises
-  `TypeError`; rename the argument to `env_ids` and pass row indices
-  ([#2460](https://github.com/Motphys/UniLab/issues/2460)).
+  (or `None` for every row). The v1.4 fixed-width bool mask form is removed
+  without a compatibility layer: a bool tensor passed positionally now raises
+  `TypeError`, mask-form reset event terms (`reset(env, reset_mask, **params)`)
+  are no longer detected or dispatched, and the `EventManager.dispatch_reset`
+  wrapper is gone — use `apply(mode="reset", env_ids=...)`. The keyword form
+  likewise raises `TypeError`; rename the argument to `env_ids` and pass row
+  indices
+  ([#2460](https://github.com/Motphys/UniLab/issues/2460),
+  [#2474](https://github.com/Motphys/UniLab/issues/2474)).
   公共 reset 契约恢复 IsaacLab/mjlab 风格的 `env_ids` 行索引形态：
   `TorchEnv.reset`、`ManagerBase.reset` 及所有 manager/term reset 边界、
   `EventManager.apply(mode="reset", env_ids=...)`、reset owner 与 recorder
   的 pre/post-reset 钩子均接收一维整数张量（`None` 表示全部行）。v1.4 的
-  定宽 bool mask 形态已 deprecated：**位置传参**的 bool 张量仍可使用一个
-  版本并触发 `DeprecationWarning`，将于 v1.6 移除。关键字形式**不在**
-  兼容窗口内——`reset(reset_mask=...)` 现在直接抛 `TypeError`；请将参数名
-  改为 `env_ids` 并传行索引（#2460）。
+  定宽 bool mask 形态已直接移除、无兼容层：位置传参的 bool 张量现在抛
+  `TypeError`；mask 形态的 reset 事件项（`reset(env, reset_mask, **params)`）
+  不再被检测或派发；`EventManager.dispatch_reset` 包装已删除——请使用
+  `apply(mode="reset", env_ids=...)`。关键字形式同样抛 `TypeError`；请将
+  参数名改为 `env_ids` 并传行索引（#2460，#2474）。
   迁移步骤与逐类 term 的 before/after 示例见迁移指南
   {doc}`/en/1-getting_started/6-migration_1_4_to_1_5` /
   {doc}`/zh_CN/1-getting_started/6-migration_1_4_to_1_5`。
 
 ### Added / 新增
+
+- `training.tf32_matmul` is a new PPO/APPO float32 matmul backend knob:
+  `ieee` (default) preserves full-precision FP32, and `tf32` opts into TF32
+  tensor-core kernels with an automatic IEEE fallback on MPS/macOS, ROCm/HIP,
+  pre-Ampere GPUs (compute capability below 7.0), and CPU. Training
+  entrypoints apply the policy before CUDA and learner construction, play
+  paths honor it, and the resolved value plus fallback reason are recorded in
+  `run_config.json`/`run_summary.json`. The knob is intentionally not exposed
+  for SAC-family learners: their bf16-AMP updates already cast the main
+  matmuls, and the closed #2477 benchmark measured TF32 as neutral there.
+  The main benefit is the FP32 PPO/RSL-RL update path
+  ([#2475](https://github.com/Motphys/UniLab/issues/2475)).
+  新增 PPO/APPO 的 float32 matmul 后端开关 `training.tf32_matmul`：`ieee`
+  （默认）保持全精度 FP32；`tf32` 启用 TF32 tensor-core kernel，并在
+  MPS/macOS、ROCm/HIP、pre-Ampere GPU（compute capability < 7.0）与 CPU 上自动
+  回退为 IEEE。训练入口会在 CUDA 与 learner 构造前应用该策略，play 路径同样
+  生效，解析结果与回退原因写入 `run_config.json`/`run_summary.json`。该键有意
+  不暴露给 SAC 家族：其 bf16-AMP 更新已接管主要 matmul，已关闭的 #2477 实测
+  TF32 在该路径为噪声级。主要收益在 FP32 的 PPO/RSL-RL 更新路径（#2475）。
 
 - Manager-owned observation history and delay are restored:
   `ObservationTermCfg.history_length > 0` and `delay_*` construct and reset
@@ -64,18 +119,38 @@ PyPI 版本变更与未发布变更；发布日期采用 PyPI 上传日期。完
   instead of allocating a fresh `num_envs` bool tensor on every reset/event
   term call: the RL env reset entry, the event/observation/command managers,
   and per-term reset owners each hold their own scratch buffer, so the hot
-  reset path no longer pays a per-call allocation. Public contracts and
-  deprecated bool-mask semantics (positional-only `DeprecationWarning`
-  passthrough, never touching a buffer) are unchanged; `reset_env_ids_mask`
-  keeps its allocating form for fixtures and external callers
+  reset path no longer pays a per-call allocation. Public contracts are
+  unchanged; `reset_env_ids_mask` keeps its allocating form for fixtures and
+  external callers
   ([#2461](https://github.com/Motphys/UniLab/issues/2461)).
   内部 `env_ids` → bool mask 适配层改为 scatter 进 owner 持有的可复用
   buffer（`unilab.base.reset_selectors.ResetMaskBuffer`），不再在每次
   reset/event term 调用时新分配 `num_envs` 大小的 bool 张量：RL env reset
   入口、event/observation/command manager 及各 term 的 reset owner 分别持有
-  各自的 scratch buffer，热路径上消除了逐次分配。公开契约与 deprecated
-  bool-mask 语义（仅位置传参、`DeprecationWarning` 透传、不经 buffer）不变；
+  各自的 scratch buffer，热路径上消除了逐次分配。公开契约不变；
   `reset_env_ids_mask` 保留逐次分配形态供 fixture 与外部调用方使用（#2461）。
+
+### Fixed / 修复
+
+- Fixed the mjwarp off-policy collector `Env Step` breakdown hiding
+  `Backend Step`: an event-backed asynchronous step's physics wait surfaces at
+  the first host read of the step outputs — the update-state termination drain,
+  or the autoreset done-mask gate when update_state performs no host read — and
+  was misattributed to `Update State` / `Reset Done`. Both windows now roll up
+  into `Backend Step` through `TorchEnv._collect_step_core_drain_ms`; total
+  `Env Step` accounting is unchanged and synchronous backends keep their
+  existing attribution. The off-policy terminal System column also gained a
+  `CUDA MPS` indicator (`on` / `ambient` / `off`) driven by the run's
+  `cuda_process_sharing` manifest evidence
+  ([#2495](https://github.com/Motphys/UniLab/issues/2495)).
+  修复 mjwarp off-policy collector `Env Step` 分解缺 `Backend Step` 的问题：
+  事件型异步 step 的物理等待发生在 step 输出后的第一个 host 读取处
+  （update_state 内 termination drain；若 update_state 无 host 读取则为
+  autoreset done-mask 门控），此前被误归入 `Update State` / `Reset Done`。
+  两个窗口现在经 `TorchEnv._collect_step_core_drain_ms` 归入 `Backend Step`；
+  `Env Step` 总额不变，同步后端归因不变。off-policy 终端 System 列新增
+  `CUDA MPS` 指示（`on` / `ambient` / `off`），取值自 run 的
+  `cuda_process_sharing` manifest 证据（#2495）。
 
 ## 1.4.0 (2026-10-20)
 

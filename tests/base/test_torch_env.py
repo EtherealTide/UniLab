@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import itertools
+import types
 from dataclasses import dataclass
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -19,6 +21,7 @@ from unisim.backend.base import (
     TensorRuntimeDiagnostic,
 )
 
+import unilab.base.torch_env as torch_env_module
 from unilab.base.base import EnvCfg, EnvPlayCapabilities
 from unilab.base.scene import SceneCfg
 from unilab.base.torch_env import TorchEnv, TorchEnvState
@@ -220,6 +223,66 @@ def test_step_without_done_preserves_eager_autoreset_gate() -> None:
     assert state.info["timing"]["reset_done_count"] == 0.0
 
 
+def test_step_done_gate_host_read_is_attributed_to_step_core(monkeypatch) -> None:
+    wall = itertools.count(start=0.0, step=0.001)
+    cpu = itertools.count(start=0.0, step=0.001)
+    monkeypatch.setattr(
+        torch_env_module,
+        "time",
+        types.SimpleNamespace(perf_counter=lambda: next(wall)),
+    )
+    monkeypatch.setattr(torch_env_module, "_cpu_time", lambda: next(cpu))
+
+    env = _StubTorchEnv(terminate=False)
+    env.init_state()
+    state = env.step(_actions(env))
+
+    timing = state.info["timing"]
+    # The fake clocks advance 1 ms per call, so each measured window spans
+    # exactly 1 ms. The backend call window and the done-gate host read both
+    # belong to step_core; reset bookkeeping keeps only its own empty window.
+    assert timing["step_core_ms"] == pytest.approx(2.0)
+    assert timing["step_core_cpu_ms"] == pytest.approx(2.0)
+    assert timing["reset_done_ms"] == pytest.approx(1.0)
+    assert timing["reset_done_cpu_ms"] == pytest.approx(1.0)
+    assert timing["env_step_other_cpu_ms"] >= 0.0
+
+
+def test_step_reattributes_update_state_drain_to_step_core(monkeypatch) -> None:
+    wall = itertools.count(start=0.0, step=0.001)
+    cpu = itertools.count(start=0.0, step=0.001)
+    monkeypatch.setattr(
+        torch_env_module,
+        "time",
+        types.SimpleNamespace(perf_counter=lambda: next(wall)),
+    )
+    monkeypatch.setattr(torch_env_module, "_cpu_time", lambda: next(cpu))
+
+    class _DrainEnv(_StubTorchEnv):
+        def _collect_step_core_drain_ms(self, state: TorchEnvState) -> float:
+            return 0.6
+
+    async_backend = _backend()
+    async_backend.backend_type = "mjwarp"
+    env = _DrainEnv(backend=async_backend, terminate=False)
+    env.init_state()
+    timing = env.step(_actions(env)).info["timing"]
+
+    # Fake clock: every window spans 1 ms. Backend launch (1 ms) + the drained
+    # update-state window (0.6 ms) + the done-gate host read (1 ms) all belong
+    # to step_core; update_state keeps only the remaining manager work.
+    assert timing["step_core_ms"] == pytest.approx(2.6)
+    assert timing["update_state_ms"] == pytest.approx(0.4)
+    assert timing["reset_done_ms"] == pytest.approx(1.0)
+
+    # Synchronous producers publish no completion receipt and drain nothing.
+    sync_env = _DrainEnv(terminate=False)
+    sync_env.init_state()
+    sync_timing = sync_env.step(_actions(sync_env)).info["timing"]
+    assert sync_timing["step_core_ms"] == pytest.approx(2.0)
+    assert sync_timing["update_state_ms"] == pytest.approx(1.0)
+
+
 def test_reset_done_count_remains_device_resident_before_timing_publication() -> None:
     env = _StubTorchEnv()
     env.init_state()
@@ -356,6 +419,38 @@ def test_nonfinite_backend_control_fails_closed() -> None:
     env.init_state()
     with pytest.raises(ValueError, match="control contains NaN or Inf"):
         env.step(_actions(env))
+
+
+def test_nonfinite_manager_control_verdict_fails_closed_without_host_read() -> None:
+    class _ManagerControlEnv(_StubTorchEnv):
+        def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:
+            control = actions * torch.nan
+            self._pending_control_finite_check = False
+            return control
+
+    env = _ManagerControlEnv()
+    env.init_state()
+    with pytest.raises(ValueError, match="control contains NaN or Inf"):
+        env.step(_actions(env))
+
+
+def test_manager_control_verdict_does_not_leak_between_steps() -> None:
+    class _SpuriousVerdictEnv(_StubTorchEnv):
+        first = True
+
+        def apply_action(self, actions: torch.Tensor, state: TorchEnvState) -> torch.Tensor:
+            if self.first:
+                self.first = False
+                self._pending_control_finite_check = False
+                return actions * torch.nan
+            return actions
+
+    env = _SpuriousVerdictEnv()
+    env.init_state()
+    with pytest.raises(ValueError, match="control contains NaN or Inf"):
+        env.step(_actions(env))
+    state = env.step(_actions(env))
+    assert state.obs["obs"].shape == (env.num_envs, 3)
 
 
 def test_tensor_nan_guard_detects_and_dumps_at_explicit_host_boundary(tmp_path) -> None:

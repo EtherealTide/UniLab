@@ -34,7 +34,7 @@ from scripts.benchmark.core import (
     parse_sizes,
     torch_dtype,
 )
-from scripts.benchmark.core.device_info import get_device_info_dict, get_device_info_line
+from unilab.utils.device import get_device_info_dict, get_device_info_line
 
 _IS_MACOS = platform.system() == "Darwin"
 

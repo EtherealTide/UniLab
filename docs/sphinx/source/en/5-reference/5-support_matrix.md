@@ -85,6 +85,8 @@ This table is derived from UniSim's SDK-free public static inventory. It describ
 | `isaacgym` | Device-resident / external worker / cuda ipc | CUDA | Required for the entire tensor lifecycle | Supported: Linux CUDA only | Unsupported; no CPU, MPS, or ROCm fallback | Unsupported; no CPU, MPS, or ROCm fallback | Dedicated external Python 3.8 worker; host Python paths are not inherited | Exact | Unsupported | Unsupported | Unsupported |
 | `isaacsim` | Device-resident / external worker / cuda ipc | CUDA | Required for the entire tensor lifecycle | Supported: Linux CUDA only | Unsupported; no CPU, MPS, or ROCm fallback | Unsupported; no CPU, MPS, or ROCm fallback | Dedicated external Python 3.11 worker; host Python paths are not inherited | Exact | Unsupported | Unsupported | Unsupported |
 
+Pairing contract (issue #2483, ADR-0019): with a CUDA learner on a non-ROCm Torch build, `training.collector_tensor_device=cpu` fails closed — the HOST_BRIDGE `CPU` Torch-device capability above is not a CUDA-learner pairing. CPU carriers remain valid for CPU and torch.mps learners and for ROCm/HIP builds; attribution baselines opt in via `UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER=1`.
+
 ### Entrypoint x Task Owner
 
 | Entrypoint | Task owner | MuJoCo | Motrix | Drake | mjwarp | Newton | SuperDex | Genesis | IsaacGym | IsaacSim |
@@ -129,10 +131,10 @@ remapped namespace, not host-global physical indices.
 
 On macOS and ROCm, use a CPU-authoritative host-bridge backend. On ROCm,
 Manager/TorchEnv uses the current GPU whenever the learner device is CUDA —
-the default `training.sim_carrier_device=auto` follows the learner device —
-or when training explicitly sets `training.sim_carrier_device=cuda`, provided
+the default `training.collector_tensor_device=auto` follows the learner device —
+or when training explicitly sets `training.collector_tensor_device=cuda`, provided
 the selected HOST_BRIDGE backend declares and accepts the routed `cuda`
-`env.sim_carrier_device`; CPU learners keep CPU, torch.mps learners retain the
+`env.collector_tensor_device`; CPU learners keep CPU, torch.mps learners retain the
 owner/default CPU placement, and direct environment construction remains CPU.
 GPU Torch buffers on a host bridge do not imply GPU physics or a
 device-resident backend lifecycle.

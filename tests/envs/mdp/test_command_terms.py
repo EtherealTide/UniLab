@@ -30,7 +30,7 @@ def test_uniform_pose_command_samples_configured_width_and_zero_bucket() -> None
     term = cfg.build(env)
     assert isinstance(term, UniformPoseCommand)
 
-    term.reset(torch.ones(2, dtype=torch.bool))
+    term.reset(torch.arange(2, dtype=torch.int64))
     assert term.command.shape == (2, 2)
     np.testing.assert_array_equal(term.command, 0.0)
 

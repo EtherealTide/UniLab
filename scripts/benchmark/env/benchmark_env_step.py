@@ -31,6 +31,8 @@ from typing import Any, cast
 import numpy as np
 import torch
 
+from unilab.utils.device import get_device_info_dict, get_device_info_line
+
 plt: Any = None
 mpatches: Any = None
 
@@ -61,12 +63,9 @@ def _load_helper_module(module_name: str, relative_path: str):
     return module
 
 
-_DEVICE_INFO = _load_helper_module("bench_env_step_device_info", "device_info.py")
 _MEM_PROFILE = _load_helper_module("bench_env_step_mem_profile", "mem_profile.py")
 _OUTPUT = _load_helper_module("bench_env_step_output", "output.py")
 
-get_device_info_dict = _DEVICE_INFO.get_device_info_dict
-get_device_info_line = _DEVICE_INFO.get_device_info_line
 MEMORY_METRICS = _MEM_PROFILE.MEMORY_METRICS
 _build_memory_summary = _MEM_PROFILE.build_memory_summary
 _format_mb = _MEM_PROFILE.format_mb

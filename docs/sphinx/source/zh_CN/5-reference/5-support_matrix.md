@@ -77,6 +77,8 @@ uv run scripts/generate_support_matrix.py --write
 | `isaacgym` | Device-resident / external worker / cuda ipc | CUDA | Required for the entire tensor lifecycle | Supported: Linux CUDA only | Unsupported; no CPU, MPS, or ROCm fallback | Unsupported; no CPU, MPS, or ROCm fallback | Dedicated external Python 3.8 worker; host Python paths are not inherited | 支持 | 不支持 | 不支持 | 不支持 |
 | `isaacsim` | Device-resident / external worker / cuda ipc | CUDA | Required for the entire tensor lifecycle | Supported: Linux CUDA only | Unsupported; no CPU, MPS, or ROCm fallback | Unsupported; no CPU, MPS, or ROCm fallback | Dedicated external Python 3.11 worker; host Python paths are not inherited | 支持 | 不支持 | 不支持 | 不支持 |
 
+配对契约（issue #2483，ADR-0019）：在非 ROCm 的 Torch 构建上，CUDA learner 下 `training.collector_tensor_device=cpu` 会 fail closed——上表 HOST_BRIDGE 的 `CPU` Torch 设备能力不等于 CUDA learner 可用该配对。CPU 载体对 CPU / torch.mps learner 与 ROCm/HIP 构建仍然合法；归因基线通过 `UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER=1` 显式 opt-in。
+
 ### Entrypoint x Task Owner
 
 | Entrypoint | Task owner | MuJoCo | Motrix | Drake | mjwarp | Newton | SuperDex | Genesis | IsaacGym | IsaacSim |
@@ -119,9 +121,9 @@ NVIDIA 驱动与容器运行时不匹配，再调整任务配置。设置了
 全局物理索引。
 
 在 macOS 与 ROCm 上请使用 CPU-authoritative host-bridge 后端。在 ROCm 上，
-只要 learner 设备为 CUDA——默认的 `training.sim_carrier_device=auto` 会跟随
-learner 设备——或训练显式设置 `training.sim_carrier_device=cuda`，且所选
-HOST_BRIDGE 后端声明并接受被路由的 `cuda` `env.sim_carrier_device`，
+只要 learner 设备为 CUDA——默认的 `training.collector_tensor_device=auto` 会跟随
+learner 设备——或训练显式设置 `training.collector_tensor_device=cuda`，且所选
+HOST_BRIDGE 后端声明并接受被路由的 `cuda` `env.collector_tensor_device`，
 Manager/TorchEnv 就使用当前 GPU；CPU learner 保持 CPU，torch.mps learner
 保留 owner/default CPU 放置，直接构造环境仍为 CPU。host bridge 使用 GPU
 Torch buffer 不代表 GPU physics，也不代表 device-resident 后端生命周期。

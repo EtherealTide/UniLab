@@ -23,7 +23,7 @@ from omegaconf import OmegaConf
 
 from unilab.rl.runtime.placement import InferencePlacement
 from unilab.rl.runtime.settings import RuntimeSettings
-from unilab.training.tensor_runtime import resolve_inference_transport
+from unilab.training.tensor_runtime import resolve_collector_tensor_placement
 
 
 class _FakeEnv:
@@ -288,7 +288,7 @@ def test_double_buffer_builders_forward_injected_tensor_runtime(
     monkeypatch.setattr(module, learner_name, _FakeLearner)
     monkeypatch.setattr(module, "DoubleBufferOffPolicyRunner", _FakeRunner)
     settings = _injected_settings()
-    placement = resolve_inference_transport(cfg, device="cpu", algo_name=algo.upper())
+    placement = resolve_collector_tensor_placement(cfg, device="cpu", algo_name=algo.upper())
 
     runner = build(
         cfg,

@@ -461,8 +461,25 @@ def render_support_matrix(root: Path | None = None, language: str = "zh") -> str
             f"{_capability_label(profile.packed_host_bridge, language)} |"
         )
 
+    pairing_note = (
+        "Pairing contract (issue #2483, ADR-0019): with a CUDA learner on a "
+        "non-ROCm Torch build, `training.collector_tensor_device=cpu` fails "
+        "closed — the HOST_BRIDGE `CPU` Torch-device capability above is not a "
+        "CUDA-learner pairing. CPU carriers remain valid for CPU and torch.mps "
+        "learners and for ROCm/HIP builds; attribution baselines opt in via "
+        "`UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER=1`."
+        if language == "en"
+        else "配对契约（issue #2483，ADR-0019）：在非 ROCm 的 Torch 构建上，CUDA "
+        "learner 下 `training.collector_tensor_device=cpu` 会 fail closed——上表 "
+        "HOST_BRIDGE 的 `CPU` Torch 设备能力不等于 CUDA learner 可用该配对。CPU "
+        "载体对 CPU / torch.mps learner 与 ROCm/HIP 构建仍然合法；归因基线通过 "
+        "`UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER=1` 显式 opt-in。"
+    )
+
     lines.extend(
         [
+            "",
+            pairing_note,
             "",
             "### Entrypoint x Task Owner",
             "",

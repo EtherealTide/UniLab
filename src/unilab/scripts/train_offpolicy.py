@@ -20,8 +20,7 @@ from unilab.base.config_adapter import create_env
 from unilab.base.env_factory import registry_env_factory
 from unilab.base.process_device import (
     apply_backend_env_device_override,
-    apply_sim_carrier_device_override,
-    canonicalize_sim_carrier_device,
+    apply_collector_tensor_device_override,
     configure_backend_process_device,
     pin_genesis_device_before_cuda_init,
     resolve_backend_env_device_id,
@@ -61,9 +60,10 @@ from unilab.training.experiment import ExperimentTracker
 from unilab.training.onnx_export import export_policy_onnx, verify_policy_onnx
 from unilab.training.seed import apply_configured_training_seed
 from unilab.training.tensor_runtime import (
-    resolve_inference_transport,
+    resolve_collector_tensor_placement,
+    resolve_recorded_collector_tensor_device,
     resolve_runtime_settings,
-    select_sim_carrier_device,
+    select_collector_tensor_device,
 )
 from unilab.utils.checkpoint import normalize_checkpoint_value, resolve_checkpoint_path
 from unilab.visualization.interactive_playback import (
@@ -212,10 +212,10 @@ def build_offpolicy_env_cfg_override(algo_name: str, cfg: DictConfig) -> dict[st
         str(cfg.training.sim_backend),
         learner_device=rank_device,
     )
-    return apply_sim_carrier_device_override(
+    return apply_collector_tensor_device_override(
         routed,
         str(cfg.training.sim_backend),
-        sim_carrier_device=select_sim_carrier_device(cfg),
+        collector_tensor_device=select_collector_tensor_device(cfg),
         learner_device=rank_device,
     )
 
@@ -231,10 +231,10 @@ def build_offpolicy_play_env_cfg_override(algo_name: str, cfg: DictConfig) -> di
         str(cfg.training.sim_backend),
         learner_device=rank_device,
     )
-    return apply_sim_carrier_device_override(
+    return apply_collector_tensor_device_override(
         routed,
         str(cfg.training.sim_backend),
-        sim_carrier_device=select_sim_carrier_device(cfg),
+        collector_tensor_device=select_collector_tensor_device(cfg),
         learner_device=rank_device,
     )
 
@@ -387,21 +387,29 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
     with _genesis_probe_para_level(str(cfg.training.sim_backend)):
         import torch
 
+        placement = resolve_collector_tensor_placement(
+            cfg,
+            device=replay_device,
+            algo_name=algo_label,
+        )
         probe_env = env_factory(1, env_cfg_override)
         try:
             probe_state = probe_env.init_state()
             probe_observation = probe_state.obs.get("obs")
-            env_tensor_native = isinstance(probe_observation, torch.Tensor) and str(
+            probe_tensor_native = isinstance(probe_observation, torch.Tensor) and str(
                 probe_observation.device
             ).startswith("cuda")
         finally:
             probe_env.close()
-        builder_kwargs["inference_placement"] = resolve_inference_transport(
-            cfg,
-            device=replay_device,
-            algo_name=algo_label,
-            env_tensor_native=env_tensor_native,
-        )
+        if probe_tensor_native != placement.collector_tensor_native:
+            raise ValueError(
+                f"{algo_label} probe env produced "
+                f"{'CUDA' if probe_tensor_native else 'CPU'} observations, but "
+                f"training.collector_tensor_device resolved to "
+                f"{'cuda' if placement.collector_tensor_native else 'cpu'}; "
+                "the env did not honor the routed collector tensor device"
+            )
+        builder_kwargs["inference_placement"] = placement
         builder_kwargs["runtime_settings"] = runtime_settings
         if algo_name == "sac":
             from unilab.rl.algos.sac.double_buffer import (
@@ -700,12 +708,9 @@ def main(cfg: DictConfig) -> None:
     # directory (UNILAB_DP_LOG_DIR); they never create logging backends,
     # checkpoints, summaries, or traces there.
     log_dir = resolve_run_log_dir(cfg, world_size=world_size)
-    resolved_sim_carrier = (
-        canonicalize_sim_carrier_device(
-            (build_offpolicy_env_cfg_override(algo_name, cfg) or {}).get("sim_carrier_device")
-        )
-        if str(cfg.training.sim_backend) == "mujoco"
-        else None
+    resolved_collector_tensor_device = resolve_recorded_collector_tensor_device(
+        str(cfg.training.sim_backend),
+        build_offpolicy_env_cfg_override(algo_name, cfg),
     )
 
     supervisor: DpRankSupervisor | None = None
@@ -733,12 +738,12 @@ def main(cfg: DictConfig) -> None:
                 },
                 **(
                     {
-                        "sim_carrier": {
-                            "configured": select_sim_carrier_device(cfg),
-                            "resolved": resolved_sim_carrier,
+                        "collector_tensor": {
+                            "configured": select_collector_tensor_device(cfg),
+                            "resolved": resolved_collector_tensor_device,
                         }
                     }
-                    if resolved_sim_carrier is not None
+                    if resolved_collector_tensor_device is not None
                     else {}
                 ),
             },

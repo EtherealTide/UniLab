@@ -9,20 +9,12 @@ Hot reset paths must not allocate a fresh mask per conversion
 (roadmap #2461): each conversion site owns a ``ResetMaskBuffer`` whose storage
 is allocated once on the env/manager/term and rewritten in place per call. The
 module-level helpers keep allocating and remain the owned-copy form for
-callers without a stable owner (tests, fixtures, deprecated shims).
+callers without a stable owner (tests, fixtures).
 """
 
 from __future__ import annotations
 
-import warnings
-
 import torch
-
-_MASK_DEPRECATION = (
-    "{owner} received a fixed-width bool reset mask; the public reset contract "
-    "takes env_ids (row indices) again. Mask selectors are deprecated since "
-    "v1.5 and will be removed in v1.6."
-)
 
 
 class ResetMaskBuffer:
@@ -58,18 +50,9 @@ class ResetMaskBuffer:
     def resolve(self, selector: torch.Tensor | slice | None, *, owner: str) -> torch.Tensor:
         """Resolve a public reset selector like ``resolve_reset_mask``.
 
-        The deprecated fixed-width bool form passes the caller's tensor through
-        with a ``DeprecationWarning`` (it never aliases this buffer, preserving
-        the identity semantics of the shim path). Every other selector is
-        normalized to ``env_ids`` and scattered into this buffer.
+        Every selector is normalized to ``env_ids`` and scattered into this
+        buffer.
         """
-        if (
-            isinstance(selector, torch.Tensor)
-            and selector.dtype == torch.bool
-            and selector.shape == (self.num_envs,)
-        ):
-            warnings.warn(_MASK_DEPRECATION.format(owner=owner), DeprecationWarning, stacklevel=2)
-            return selector.to(device=self.device)
         env_ids = resolve_reset_env_ids(
             selector, num_envs=self.num_envs, device=self.device, owner=owner
         )
@@ -86,9 +69,8 @@ def resolve_reset_env_ids(
     """Normalize a public reset selector to an int64 row-index tensor.
 
     ``None`` selects every row; a slice selects ``arange(num_envs)[slice]``; an
-    integer tensor is validated and moved onto ``device``. A fixed-width bool
-    mask is the deprecated form: it is accepted for one release with a
-    ``DeprecationWarning`` and converted to row indices.
+    integer tensor is validated and moved onto ``device``. Fixed-width bool
+    masks are rejected: the v1.4 mask form was removed in v1.5.
     """
     if selector is None:
         return torch.arange(num_envs, dtype=torch.int64, device=device)
@@ -99,12 +81,10 @@ def resolve_reset_env_ids(
             f"{owner} env_ids must be a torch.Tensor, slice, or None; got {type(selector).__name__}"
         )
     if selector.dtype == torch.bool:
-        if selector.shape != (num_envs,):
-            raise ValueError(
-                f"{owner} reset mask must have shape {(num_envs,)}; got {tuple(selector.shape)}"
-            )
-        warnings.warn(_MASK_DEPRECATION.format(owner=owner), DeprecationWarning, stacklevel=2)
-        return torch.nonzero(selector, as_tuple=False).flatten().to(device=device)
+        raise TypeError(
+            f"{owner} env_ids must be a 1-D integer row-index tensor; got a bool "
+            "mask (the v1.4 fixed-width mask form was removed in v1.5)"
+        )
     if selector.ndim != 1:
         raise ValueError(
             f"{owner} env_ids must be a 1-D row-index tensor; got shape {tuple(selector.shape)}"
@@ -135,17 +115,9 @@ def resolve_reset_mask(
 ) -> torch.Tensor:
     """Resolve a public reset selector to the internal fixed-width bool mask.
 
-    A bool mask is the deprecated form: it passes through for one release with
-    a ``DeprecationWarning``. Everything else is normalized to ``env_ids`` and
-    scattered into the mask.
+    The selector is normalized to ``env_ids`` and scattered into a freshly
+    allocated mask.
     """
-    if (
-        isinstance(selector, torch.Tensor)
-        and selector.dtype == torch.bool
-        and selector.shape == (num_envs,)
-    ):
-        warnings.warn(_MASK_DEPRECATION.format(owner=owner), DeprecationWarning, stacklevel=2)
-        return selector.to(device=device)
     env_ids = resolve_reset_env_ids(selector, num_envs=num_envs, device=device, owner=owner)
     return reset_env_ids_mask(env_ids, num_envs=num_envs, device=device)
 

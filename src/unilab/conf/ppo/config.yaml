@@ -67,12 +67,14 @@ training:
   wandb_notes: null
   wandb_mode: null
   sim_backend: mujoco
-  # HOST_BRIDGE Manager carrier family follows backend capability
-  # declarations. 'auto' follows the learner device (CUDA learner -> CUDA
-  # carrier; CPU learner -> CPU; torch.mps learner keeps the owner CPU
-  # placement). Explicit 'cpu'/'cuda' wins over 'auto' and fails closed
-  # when the backend does not declare the device.
-  sim_carrier_device: auto
+  # Collector-tensor device for HOST_BRIDGE Manager carriers (and, for
+  # off-policy algos, the derived inference ring). 'auto' follows the learner
+  # device (CUDA learner -> CUDA; CPU learner -> CPU; torch.mps learner keeps
+  # the owner CPU placement). Explicit 'cpu'/'cuda' wins over 'auto' and fails
+  # closed when the backend does not declare the device. Explicit 'cpu' with a
+  # CUDA learner also fails closed (issue #2483) except on ROCm/HIP builds;
+  # attribution baselines opt in via UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER=1.
+  collector_tensor_device: auto
   nan_guard:
     enabled: true
     buffer_size: 100
@@ -80,6 +82,7 @@ training:
     output_dir: null
   play_only: false
   no_play: false
+  tf32_matmul: ieee
   sim2sim_strict: true
   play_render_mode: auto
   play_env_num: 16

@@ -8,6 +8,12 @@ coarse driver time-slicing.
 This module never starts or stops an MPS daemon.  An explicit request is either
 validated against the host state or rejected before UniLab constructs a learner,
 collector, or environment.
+
+An unconfigured (``null``) request still records ambient host MPS state: an
+environment-level daemon reachable through ``CUDA_MPS_PIPE_DIRECTORY`` (or the
+default pipe directory) multiplexes this rank's CUDA contexts transparently,
+so every run must be able to self-report that state.  Ambient observation is
+best-effort and never fails closed; unresolvable facts record ``None``.
 """
 
 from __future__ import annotations
@@ -31,7 +37,14 @@ _MPS_CONTROL_QUERY_TIMEOUT_SEC = 5.0
 
 @dataclass(frozen=True)
 class CudaProcessSharingEvidence:
-    """Structured per-rank evidence for an explicitly requested mode."""
+    """Structured per-rank evidence for a requested mode plus ambient state.
+
+    ``pipe_directory_env`` is the raw ``CUDA_MPS_PIPE_DIRECTORY`` value (``None``
+    when unset); ``pipe_directory``/``control_pipe``/``control_pipe_kind``/
+    ``server_pid`` describe the effective pipe this rank's CUDA contexts would
+    use.  ``ambient_server`` is true only for an unconfigured run whose
+    effective control pipe answered a daemon query — the transparent-MPS case.
+    """
 
     configured: str | None
     effective: str | None
@@ -42,8 +55,12 @@ class CudaProcessSharingEvidence:
     collector_device: str | None = None
     learner_gpu_uuid: str | None = None
     collector_gpu_uuid: str | None = None
+    pipe_directory_env: str | None = None
+    pipe_directory: str | None = None
     control_pipe: str | None = None
+    control_pipe_kind: str | None = None
     server_pid: int | None = None
+    ambient_server: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Return the JSON-shaped diagnostics stored in a runtime manifest."""
@@ -57,8 +74,12 @@ class CudaProcessSharingEvidence:
             "collector_device": self.collector_device,
             "learner_gpu_uuid": self.learner_gpu_uuid,
             "collector_gpu_uuid": self.collector_gpu_uuid,
+            "pipe_directory_env": self.pipe_directory_env,
+            "pipe_directory": self.pipe_directory,
             "control_pipe": self.control_pipe,
+            "control_pipe_kind": self.control_pipe_kind,
             "server_pid": self.server_pid,
+            "ambient_server": self.ambient_server,
         }
 
 
@@ -102,30 +123,28 @@ def _torch_device_uuid(
     index: int,
     *,
     device_kind: str,
-    requested: str,
 ) -> str:
     if not torch_module.cuda.is_available():
         raise ValueError(
-            "training.cuda_process_sharing='mps' requires CUDA, but CUDA is "
+            "training.cuda_process_sharing requires CUDA, but CUDA is "
             f"unavailable for the {device_kind} device cuda:{index}."
         )
     if torch_module.version.hip is not None:
         raise ValueError(
-            "training.cuda_process_sharing='mps' supports NVIDIA CUDA only; "
+            "training.cuda_process_sharing supports NVIDIA CUDA only; "
             "this process reports a ROCm/HIP Torch build."
         )
     device_count = int(torch_module.cuda.device_count())
     if index >= device_count:
         raise ValueError(
-            f"training.cuda_process_sharing='mps' {device_kind} device "
+            f"training.cuda_process_sharing {device_kind} device "
             f"cuda:{index} is out of range; torch.cuda.device_count()={device_count}."
         )
     properties = torch_module.cuda.get_device_properties(index)
     uuid = str(getattr(properties, "uuid", "") or "").strip()
     if not uuid:
         raise ValueError(
-            "training.cuda_process_sharing='mps' could not resolve the "
-            f"{device_kind} CUDA device UUID; required mode={requested!r}."
+            f"training.cuda_process_sharing could not resolve the {device_kind} CUDA device UUID."
         )
     return canonicalize_gpu_uuid(uuid)
 
@@ -242,6 +261,78 @@ def _visible_entries(raw: str | None) -> tuple[str, ...]:
     return tuple(entry.strip() for entry in raw.split(",") if entry.strip())
 
 
+def _ambient_cuda_index(device: str | None) -> int | None:
+    """Parse a CUDA device string without rejecting other device families."""
+
+    if device is None:
+        return None
+    value = str(device).strip().lower()
+    if value == "cuda":
+        return 0
+    base, separator, index_text = value.partition(":")
+    if base != "cuda" or not separator:
+        return None
+    try:
+        index = int(index_text)
+    except ValueError:
+        return None
+    return index if index >= 0 else None
+
+
+def _probe_ambient(
+    evidence: CudaProcessSharingEvidence,
+    *,
+    torch_module: Any | None,
+    run_command: Callable[..., Any],
+) -> CudaProcessSharingEvidence:
+    """Record ambient host MPS state for an unconfigured rank.
+
+    Environment-level MPS multiplexes this rank's CUDA contexts transparently
+    when the effective pipe directory holds a live control pipe, so an
+    unconfigured run still self-reports pipe, daemon, and GPU identity facts.
+    Nothing here validates, starts, or stops anything: every host query is
+    best-effort and unresolved facts record ``None``.
+    """
+
+    pipe_env = os.environ.get("CUDA_MPS_PIPE_DIRECTORY")
+    evidence = replace(evidence, pipe_directory_env=pipe_env)
+    learner_index = _ambient_cuda_index(evidence.learner_device)
+    collector_index = _ambient_cuda_index(evidence.collector_device)
+    if learner_index is None and collector_index is None:
+        return evidence
+
+    pipe_directory = Path(pipe_env or _DEFAULT_PIPE_DIRECTORY)
+    control_pipe = pipe_directory / "control"
+    pipe_kind = _control_pipe_kind(control_pipe)
+    server_pid = _server_evidence(run_command, control_pipe) if pipe_kind is not None else None
+
+    learner_uuid: str | None = None
+    if learner_index is not None:
+        try:
+            if torch_module is None:
+                import torch
+
+                torch_module = torch
+            learner_uuid = _torch_device_uuid(torch_module, learner_index, device_kind="learner")
+        except Exception:
+            learner_uuid = None
+    collector_uuid: str | None = None
+    if collector_index is not None:
+        visible_entries = _visible_entries(os.environ.get("CUDA_VISIBLE_DEVICES"))
+        collector_uuid = _nvidia_uuid(run_command, visible_entries, collector_index)
+
+    return replace(
+        evidence,
+        pipe_directory=str(pipe_directory),
+        control_pipe=str(control_pipe),
+        control_pipe_kind=pipe_kind,
+        server_pid=server_pid,
+        learner_gpu_uuid=learner_uuid,
+        collector_gpu_uuid=collector_uuid,
+        ambient_server=server_pid is not None,
+    )
+
+
 def probe_cuda_process_sharing(
     requested: Any,
     learner_device: str,
@@ -274,14 +365,18 @@ def probe_cuda_process_sharing(
 
     configured = _configured_mode(requested)
     if configured is None:
-        return CudaProcessSharingEvidence(
-            configured=None,
-            effective=None,
-            validated=False,
-            rank=rank,
-            world_size=world_size,
-            learner_device=str(learner_device),
-            collector_device=str(collector_device) if collector_device is not None else None,
+        return _probe_ambient(
+            CudaProcessSharingEvidence(
+                configured=None,
+                effective=None,
+                validated=False,
+                rank=rank,
+                world_size=world_size,
+                learner_device=str(learner_device),
+                collector_device=str(collector_device) if collector_device is not None else None,
+            ),
+            torch_module=torch_module,
+            run_command=run_command,
         )
 
     normalized_backend = str(backend).strip().lower()
@@ -328,6 +423,8 @@ def probe_cuda_process_sharing(
         world_size=world_size,
         learner_device=f"cuda:{learner_index}",
         collector_device=f"cuda:{collector_index}",
+        pipe_directory_env=os.environ.get("CUDA_MPS_PIPE_DIRECTORY"),
+        pipe_directory=str(pipe_directory),
         control_pipe=str(control_pipe),
     )
 
@@ -339,7 +436,6 @@ def probe_cuda_process_sharing(
         torch_module,
         learner_index,
         device_kind="learner",
-        requested=configured,
     )
     collector_uuid = _nvidia_uuid(run_command, visible_entries, collector_index)
     evidence = replace(
@@ -391,6 +487,7 @@ def probe_cuda_process_sharing(
         evidence,
         learner_gpu_uuid=learner_uuid,
         collector_gpu_uuid=collector_uuid,
+        control_pipe_kind=pipe_kind,
         server_pid=server_pid,
     )
 

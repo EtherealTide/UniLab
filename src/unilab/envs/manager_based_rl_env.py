@@ -112,7 +112,7 @@ class ManagerBasedRlEnvCfg(EnvCfg):
     # a training process may request accelerator Torch carriers shared with its
     # learner. This selects public-manager carrier placement only; it is neither a
     # physics-device claim nor a tensor/NumPy runtime compatibility switch.
-    sim_carrier_device: str | None = None
+    collector_tensor_device: str | None = None
     seed: int | None = None
     is_finite_horizon: bool = False
     auto_reset: bool = True
@@ -121,23 +121,26 @@ class ManagerBasedRlEnvCfg(EnvCfg):
     critic_observation_group: str | None = None
 
     def validate(self) -> None:
-        if self.sim_carrier_device is not None:
-            if not isinstance(self.sim_carrier_device, str) or not self.sim_carrier_device.strip():
+        if self.collector_tensor_device is not None:
+            if (
+                not isinstance(self.collector_tensor_device, str)
+                or not self.collector_tensor_device.strip()
+            ):
                 raise TypeError(
-                    "ManagerBasedRlEnvCfg sim_carrier_device must be 'cpu', "
-                    f"'cuda', or 'cuda:<index>', or None; got {self.sim_carrier_device!r}"
+                    "ManagerBasedRlEnvCfg collector_tensor_device must be 'cpu', "
+                    f"'cuda', or 'cuda:<index>', or None; got {self.collector_tensor_device!r}"
                 )
             try:
-                requested_device = torch.device(self.sim_carrier_device)
+                requested_device = torch.device(self.collector_tensor_device)
             except (RuntimeError, TypeError, ValueError) as exc:
                 raise ValueError(
-                    "ManagerBasedRlEnvCfg sim_carrier_device is not a valid Torch "
-                    f"device: {self.sim_carrier_device!r}"
+                    "ManagerBasedRlEnvCfg collector_tensor_device is not a valid Torch "
+                    f"device: {self.collector_tensor_device!r}"
                 ) from exc
             if requested_device.type not in {"cpu", "cuda"}:
                 raise ValueError(
-                    "ManagerBasedRlEnvCfg sim_carrier_device must be cpu, cuda, or "
-                    f"None; got {self.sim_carrier_device!r}"
+                    "ManagerBasedRlEnvCfg collector_tensor_device must be cpu, cuda, or "
+                    f"None; got {self.collector_tensor_device!r}"
                 )
         for name, value in (("sim_dt", self.sim_dt), ("ctrl_dt", self.ctrl_dt)):
             if not _finite_real(value):
@@ -334,7 +337,9 @@ class ManagerBasedRlEnv(TorchEnv):
             )
 
         initial_capabilities = backend.get_tensor_capabilities()
-        runtime_device = self._resolve_runtime_device(initial_capabilities, cfg.sim_carrier_device)
+        runtime_device = self._resolve_runtime_device(
+            initial_capabilities, cfg.collector_tensor_device
+        )
         super().__init__(cfg, backend, num_envs, device=runtime_device)
         actual_seed = cfg.seed if cfg.seed is not None else secrets.randbits(63)
         cfg.seed = actual_seed
@@ -1030,23 +1035,8 @@ class ManagerBasedRlEnv(TorchEnv):
 
         return _get_overlay
 
-    def _enter_suppressed_hot_state_refresh(self) -> None:
-        """Allow a cold proxy to temporarily replace NumPy body-state reads."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support suppressed hot state refresh"
-        )
-
-    def _exit_suppressed_hot_state_refresh(self) -> None:
-        """Undo :meth:`_enter_suppressed_hot_state_refresh`."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support suppressed hot state refresh"
-        )
-
     def _load_managers(self) -> None:
         """Construct managers in the pinned community dependency order."""
-        suppress_hot_state_refresh = bool(getattr(self, "_suppress_hot_state_refresh", False))
-        if suppress_hot_state_refresh:
-            self._enter_suppressed_hot_state_refresh()
         self.event_manager = EventManager(self._cfg.events, self)
         self.command_manager = (
             CommandManager(self._cfg.commands, self) if self._cfg.commands else NullCommandManager()
@@ -1059,8 +1049,6 @@ class ManagerBasedRlEnv(TorchEnv):
             self,
             scale_by_dt=self._cfg.scale_rewards_by_dt,
         )
-        if suppress_hot_state_refresh:
-            self._exit_suppressed_hot_state_refresh()
         self.curriculum_manager = (
             CurriculumManager(self._cfg.curriculum, self)
             if self._cfg.curriculum
@@ -1480,6 +1468,20 @@ class ManagerBasedRlEnv(TorchEnv):
         timing.update(self._reset_state.last_set_state_timing_ms)
         timing.update(self._last_reset_manager_timing_ms)
         return timing
+
+    def _collect_step_core_drain_ms(self, state: TorchEnvState) -> float:
+        # Termination is the first update-state reduction after the backend
+        # step; for an event-backed asynchronous step its window (measured as
+        # update_state_queue_drain_ms) drains the queued device work, which is
+        # backend step time rather than Manager work.
+        timing = state.info.get("timing")
+        if not isinstance(timing, dict):
+            return 0.0
+        value = timing.get("update_state_queue_drain_ms")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0.0
+        value_float = float(value)
+        return value_float if math.isfinite(value_float) else 0.0
 
     def reset(
         self,

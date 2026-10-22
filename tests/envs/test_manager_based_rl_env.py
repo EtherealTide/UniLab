@@ -1095,17 +1095,14 @@ def _reset_joint_state_tensor(
     )
 
 
-def _reset_joint_state_tensor_mask(
-    env: _TestEnv, reset_mask: torch.Tensor, position: float, velocity: float
+def _reset_joint_state_full_mask_write(
+    env: _TestEnv, env_ids: torch.Tensor, position: float, velocity: float
 ) -> None:
     env.scene["robot"].write_joint_state_to_sim_mask(
         torch.full((env.num_envs, 1), position, dtype=torch.float32, device=env.device),
         torch.full((env.num_envs, 1), velocity, dtype=torch.float32, device=env.device),
-        reset_mask=reset_mask,
+        reset_mask=env.event_term_mask_buffer.scatter(env_ids),
     )
-
-
-setattr(_reset_joint_state_tensor_mask, "reset", _reset_joint_state_tensor_mask)
 
 
 def _episode_step_observation(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -1171,35 +1168,24 @@ def _event(env: _TestEnv, env_ids: np.ndarray | None) -> None:
     env.trace.append(("event", rendered_ids))
 
 
-def _event_mask(env: _TestEnv, reset_mask: torch.Tensor) -> None:
-    env.trace.append(("event", reset_mask.detach().cpu().tolist()))
-
-
-setattr(_event, "reset", _event_mask)
-
-
 def _startup_event(env: _TestEnv, env_ids: np.ndarray | None) -> None:
     assert env_ids is None
     backend = cast(_FakeBackend, env._backend)
     backend.lifecycle.append("startup")
 
 
-def _observe_uncommitted_reset(env: _TestEnv, reset_mask: torch.Tensor) -> None:
-    del reset_mask
+def _observe_uncommitted_reset(env: _TestEnv, env_ids: torch.Tensor) -> None:
+    del env_ids
     backend = cast(_ResetBackend, env._backend)
     env.trace.append(("commit_count_during_event", len(backend.set_state_calls)))
 
 
-def _write_reset_joint_state(env: _TestEnv, reset_mask: torch.Tensor) -> None:
+def _write_reset_joint_state(env: _TestEnv, env_ids: torch.Tensor) -> None:
     env.scene["robot"].write_joint_state_to_sim_mask(
         torch.full((env.num_envs, 1), 0.25, dtype=torch.float32),
         torch.full((env.num_envs, 1), -0.5, dtype=torch.float32),
-        reset_mask=reset_mask,
+        reset_mask=env.event_term_mask_buffer.scatter(env_ids),
     )
-
-
-setattr(_observe_uncommitted_reset, "reset", _observe_uncommitted_reset)
-setattr(_write_reset_joint_state, "reset", _write_reset_joint_state)
 
 
 def _make_cfg(
@@ -1451,7 +1437,7 @@ def test_no_done_explicit_reset_skips_pre_reset_recorder_in_eager_mode() -> None
     env, _backend = _make_env(cfg)
     env.init_state()
     env._has_transition = True
-    obs, _info = env.reset(torch.zeros(2, dtype=torch.bool))
+    obs, _info = env.reset(torch.empty(0, dtype=torch.int64, device=env.device))
 
     assert obs["obs"].shape == (2, 2)
     assert env.reset_buf.tolist() == [False, False]
@@ -1479,18 +1465,18 @@ def test_manager_public_inputs_and_episode_counters_are_tensor_first() -> None:
 
 
 @pytest.mark.parametrize(
-    ("sim_carrier_device", "expected_device"),
+    ("collector_tensor_device", "expected_device"),
     [
         (None, torch.device("cpu")),
         ("cpu", torch.device("cpu")),
     ],
 )
 def test_backend_capability_defaults_host_bridge_manager_carriers_to_cpu(
-    sim_carrier_device: str | None,
+    collector_tensor_device: str | None,
     expected_device: torch.device,
 ) -> None:
     cfg = _make_cfg()
-    cfg.sim_carrier_device = sim_carrier_device
+    cfg.collector_tensor_device = collector_tensor_device
 
     env, backend = _make_env(cfg)
 
@@ -1519,10 +1505,10 @@ def test_host_bridge_ignores_accelerator_availability_without_explicit_request(
     assert env.device == torch.device("cpu")
 
 
-def test_sim_carrier_device_rejects_non_tensor_device_and_invalid_syntax() -> None:
+def test_collector_tensor_device_rejects_non_tensor_device_and_invalid_syntax() -> None:
     for value, error in (("mps", ValueError), (12, TypeError), ("", TypeError)):
         cfg = _make_cfg()
-        cfg.sim_carrier_device = value
+        cfg.collector_tensor_device = value
         with pytest.raises(error):
             cfg.validate()
 
@@ -1570,7 +1556,7 @@ def test_mujoco_host_bridge_packed_reset_lifecycle(
         policy_observation_group="actor",
     )
     if device == "cuda":
-        cfg.sim_carrier_device = device
+        cfg.collector_tensor_device = device
     backend = create_backend(
         "mujoco", scene, 2, cfg.sim_dt, base_name="base", add_body_sensors=True
     )
@@ -2349,6 +2335,9 @@ def test_update_state_publishes_drain_vs_host_termination_attribution() -> None:
     assert timing["update_state_state_replace_ms"] >= 0.0
     assert timing["update_state_child_sum_ms"] >= 0.0
     assert timing["update_state_command_preflight_ms"] >= 0.0
+    assert env._collect_step_core_drain_ms(state) == pytest.approx(
+        timing["update_state_queue_drain_ms"]
+    )
     observation_timing = {
         key: state.info["update_state_timing"][key]
         for key in (
@@ -3247,7 +3236,7 @@ def test_device_resident_tensor_joint_event_commits_selected_columns_once() -> N
     }
     cfg.events = {
         "reset_joint_state": EventTermCfg(
-            func=_reset_joint_state_tensor_mask,
+            func=_reset_joint_state_full_mask_write,
             mode="reset",
             params={"position": 0.25, "velocity": -0.5},
         )
@@ -3396,7 +3385,7 @@ def test_partial_reset_preserves_other_env_counter_and_terminal_obs() -> None:
     assert state.final_observation is not None
     torch.testing.assert_close(state.final_observation["obs"][0], torch.tensor([1.0, 1.0]))
     assert "_final_observation" not in state.info
-    assert ("event", [True, False]) in env.trace
+    assert ("event", [0]) in env.trace
 
 
 def test_finite_horizon_maps_time_out_to_terminated() -> None:

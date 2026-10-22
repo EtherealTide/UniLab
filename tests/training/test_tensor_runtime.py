@@ -24,10 +24,10 @@ from unilab.rl.runtime.settings import (
 )
 from unilab.training.tensor_runtime import (
     resolve_collector_metrics_interval,
+    resolve_collector_tensor_placement,
     resolve_inference_slot_capacity,
-    resolve_inference_transport,
     resolve_runtime_settings,
-    select_sim_carrier_device,
+    select_collector_tensor_device,
 )
 
 
@@ -55,12 +55,24 @@ def test_runtime_settings_use_reviewed_defaults() -> None:
     assert settings.learner_sample_count == 8
 
 
-def test_sim_carrier_device_key_migration_fails_closed() -> None:
-    assert select_sim_carrier_device(_cfg({"sim_carrier_device": "cpu"})) == "cpu"
-    assert select_sim_carrier_device(_cfg()) == "auto"
+def test_collector_tensor_device_selection() -> None:
+    assert select_collector_tensor_device(_cfg()) == "auto"
+    assert select_collector_tensor_device(_cfg({"collector_tensor_device": None})) == "auto"
+    assert select_collector_tensor_device(_cfg({"collector_tensor_device": "cpu"})) == "cpu"
+    assert select_collector_tensor_device(_cfg({"collector_tensor_device": "cuda"})) == "cuda"
 
-    with pytest.raises(ValueError, match="training.sim_carrier_device"):
-        select_sim_carrier_device(_cfg({"collector_tensor_device": None}))
+
+def test_removed_training_keys_fail_closed() -> None:
+    with pytest.raises(ValueError, match="training.sim_carrier_device was removed"):
+        select_collector_tensor_device(_cfg({"sim_carrier_device": "cpu"}))
+
+    with pytest.raises(ValueError, match="training.inference_transport was removed"):
+        select_collector_tensor_device(_cfg({"inference_transport": "cuda"}))
+
+
+def test_collector_tensor_device_must_be_a_string() -> None:
+    with pytest.raises(TypeError, match="training.collector_tensor_device must be a string"):
+        select_collector_tensor_device(_cfg({"collector_tensor_device": 1}))
 
 
 def test_runtime_settings_accept_reviewed_maxima() -> None:
@@ -247,29 +259,39 @@ def test_removed_env_tensor_runtime_fields_fail_closed() -> None:
         {"tensor_runtime_device": None},
     ):
         with pytest.raises(ValueError, match="env.tensor_runtime"):
-            resolve_inference_transport(_cfg(env=env), device="cuda", algo_name="SAC")
+            resolve_collector_tensor_placement(_cfg(env=env), device="cuda", algo_name="SAC")
 
 
-def test_default_owner_config_resolves_host_transport_with_explicit_cuda_learner() -> None:
-    placement = resolve_inference_transport(_cfg(), device="cuda:3", algo_name="SAC")
+def test_removed_training_keys_fail_closed_in_placement_resolution() -> None:
+    for key in ("sim_carrier_device", "inference_transport"):
+        with pytest.raises(ValueError, match=f"training.{key} was removed"):
+            resolve_collector_tensor_placement(
+                _cfg(training={key: "cuda"}),
+                device="cuda:0",
+                algo_name="SAC",
+            )
 
-    assert placement.mode is InferenceTransport.HOST
-    assert placement.env_device == "cpu"
-    assert placement.ring_device == "cpu"
+
+def test_default_auto_follows_cuda_learner_to_cuda_ring() -> None:
+    placement = resolve_collector_tensor_placement(_cfg(), device="cuda:3", algo_name="SAC")
+
+    assert placement.mode is InferenceTransport.CUDA
+    assert placement.env_device == "cuda:3"
+    assert placement.ring_device == "cuda:3"
     assert placement.learner_device == "cuda:3"
-    assert placement.collector_tensor_native is False
-    assert placement.staging_policy == "cpu_ring_explicit_learner_actor_h2d_action_d2h"
+    assert placement.collector_tensor_native is True
+    assert placement.staging_policy == "cuda_no_host_boundary"
     assert placement.manifest() == {
-        "mode": "host",
-        "env_device": "cpu",
-        "ring_device": "cpu",
+        "mode": "cuda",
+        "env_device": "cuda:3",
+        "ring_device": "cuda:3",
         "learner_device": "cuda:3",
-        "staging_policy": "cpu_ring_explicit_learner_actor_h2d_action_d2h",
+        "staging_policy": "cuda_no_host_boundary",
         "transport_table": {
-            "ring_device_type": "cpu",
-            "requires_tensor_native": False,
-            "requires_rank_local_device_match": False,
-            "publication_sync": "cpu_synchronous",
+            "ring_device_type": "cuda",
+            "requires_tensor_native": True,
+            "requires_rank_local_device_match": True,
+            "publication_sync": "cuda_ipc_events",
             "evidence": "policy",
         },
     }
@@ -278,7 +300,7 @@ def test_default_owner_config_resolves_host_transport_with_explicit_cuda_learner
 def test_host_transport_labels_non_cuda_accelerator_learners_with_device_copy() -> None:
     # torch.mps (Apple Metal Performance Shaders) learners still cross devices
     # at the CPU-ring copy_ boundary; they must not claim cpu_no_device_transfer.
-    placement = resolve_inference_transport(_cfg(), device="mps", algo_name="SAC")
+    placement = resolve_collector_tensor_placement(_cfg(), device="mps", algo_name="SAC")
 
     assert placement.mode is InferenceTransport.HOST
     assert placement.env_device == "cpu"
@@ -289,15 +311,15 @@ def test_host_transport_labels_non_cuda_accelerator_learners_with_device_copy() 
 
 
 def test_host_transport_cpu_learner_reports_no_device_transfer() -> None:
-    placement = resolve_inference_transport(_cfg(), device="cpu", algo_name="SAC")
+    placement = resolve_collector_tensor_placement(_cfg(), device="cpu", algo_name="SAC")
 
     assert placement.mode is InferenceTransport.HOST
     assert placement.staging_policy == "cpu_no_device_transfer"
 
 
-def test_explicit_transport_can_request_cuda_without_legacy_boolean() -> None:
-    placement = resolve_inference_transport(
-        _cfg(training={"inference_transport": "cuda"}),
+def test_explicit_collector_tensor_cuda_requests_cuda_ring() -> None:
+    placement = resolve_collector_tensor_placement(
+        _cfg(training={"collector_tensor_device": "cuda"}),
         device="cuda:4",
         algo_name="FlashSAC",
     )
@@ -308,49 +330,65 @@ def test_explicit_transport_can_request_cuda_without_legacy_boolean() -> None:
     assert placement.collector_tensor_native is True
 
 
-def test_explicit_host_transport_keeps_cpu_ring() -> None:
-    placement = resolve_inference_transport(
-        _cfg(training={"inference_transport": "host"}),
-        device="cuda:0",
-        algo_name="SAC",
-    )
-
-    assert placement.mode is InferenceTransport.HOST
-    assert placement.collector_tensor_native is False
-
-
-@pytest.mark.parametrize("transport", [None, "host", "cuda"])
-def test_inference_transport_owner_yaml_semantics(transport: str | None) -> None:
-    """The owner enum is exactly host/cuda with null retained for auto."""
-    placement = resolve_inference_transport(
-        _cfg(training={"inference_transport": transport}),
-        device="cuda:0" if transport == "cuda" else "cpu",
-        algo_name="SAC",
-    )
-
-    expected = InferenceTransport.CUDA if transport == "cuda" else InferenceTransport.HOST
-    assert placement.mode is expected
-
-
-def test_removed_cpu_inference_transport_spelling_fails_closed() -> None:
-    with pytest.raises(ValueError, match="must be one of \\{'cuda', 'host'\\}"):
-        resolve_inference_transport(
-            _cfg(training={"inference_transport": "cpu"}),
+def test_explicit_collector_tensor_cpu_with_cuda_learner_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER", raising=False)
+    with pytest.raises(ValueError, match="collector_tensor_device=cpu with CUDA learner"):
+        resolve_collector_tensor_placement(
+            _cfg(training={"collector_tensor_device": "cpu"}),
             device="cuda:0",
             algo_name="SAC",
         )
 
 
-def test_backend_tensor_native_owner_derives_cuda_without_removed_fields() -> None:
-    placement = resolve_inference_transport(
-        _cfg(),
+def test_explicit_collector_tensor_cpu_opt_in_keeps_cpu_ring_with_cuda_learner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The attribution-baseline/debug opt-in retains the pre-#2483 topology."""
+    monkeypatch.setenv("UNILAB_ALLOW_CUDA_LEARNER_CPU_CARRIER", "1")
+    placement = resolve_collector_tensor_placement(
+        _cfg(training={"collector_tensor_device": "cpu"}),
         device="cuda:0",
-        algo_name="FlashSAC",
-        env_tensor_native=True,
+        algo_name="SAC",
+    )
+
+    assert placement.mode is InferenceTransport.HOST
+    assert placement.env_device == "cpu"
+    assert placement.ring_device == "cpu"
+    assert placement.collector_tensor_native is False
+    assert placement.staging_policy == "cpu_ring_explicit_learner_actor_h2d_action_d2h"
+
+
+@pytest.mark.parametrize("device", [None, "auto", "cuda"])
+def test_collector_tensor_device_owner_yaml_semantics(device: str | None) -> None:
+    """The owner enum is exactly auto/cpu/cuda with null retained for auto.
+
+    The ``cpu`` member's CUDA-learner pairing is covered by the fail-closed
+    and opt-in tests above; every other value resolves the CUDA ring here.
+    """
+    placement = resolve_collector_tensor_placement(
+        _cfg(training={"collector_tensor_device": device}),
+        device="cuda:0",
+        algo_name="SAC",
     )
 
     assert placement.mode is InferenceTransport.CUDA
-    assert placement.env_device == "cuda:0"
-    assert placement.ring_device == "cuda:0"
-    assert placement.learner_device == "cuda:0"
-    assert placement.collector_tensor_native is True
+
+
+def test_collector_tensor_cuda_requires_cuda_learner() -> None:
+    with pytest.raises(ValueError, match="collector_tensor_device=cuda requires a CUDA learner"):
+        resolve_collector_tensor_placement(
+            _cfg(training={"collector_tensor_device": "cuda"}),
+            device="cpu",
+            algo_name="SAC",
+        )
+
+
+def test_removed_host_transport_spelling_fails_closed() -> None:
+    with pytest.raises(ValueError, match="collector tensor device must be one of"):
+        resolve_collector_tensor_placement(
+            _cfg(training={"collector_tensor_device": "host"}),
+            device="cuda:0",
+            algo_name="SAC",
+        )
